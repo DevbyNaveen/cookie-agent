@@ -27,6 +27,11 @@ impl Effect {
     }
 }
 
+/// What every provider accepts as a tool name: 1–64 of letters, digits, `_`, `-`.
+pub fn valid_tool_name(name: &str) -> bool {
+    (1..=64).contains(&name.len()) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolSpec {
     pub name: String,

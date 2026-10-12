@@ -17,7 +17,7 @@ use crate::{
     provider::{ModelRequest, Provider, ProviderEvent, StopReason, Usage},
     providers,
     session::Session,
-    tool::Tool,
+    tool::{valid_tool_name, Tool},
 };
 
 pub struct Agent {
@@ -154,6 +154,7 @@ impl Agent {
         open: &mut Vec<String>,
     ) -> Result<String> {
         let cancel = &control.cancel;
+        self.check_tools()?;
         session.repair().await?;
         session.append(input).await?;
         // The developer's instructions are not credited as the person's words:
@@ -236,6 +237,22 @@ impl Agent {
                 return Err(Error::Stopped);
             }
         }
+    }
+
+    /// Tool names must be unique (otherwise providers refuse the request, or
+    /// the wrong tool runs) and acceptable to every provider.
+    fn check_tools(&self) -> Result<()> {
+        let mut seen = std::collections::HashSet::new();
+        for tool in &self.tools {
+            let name = &tool.spec().name;
+            if !valid_tool_name(name) {
+                return Err(Error::Tool(format!("`{name}` is not a valid tool name (letters, digits, _ and -, at most 64)")));
+            }
+            if !seen.insert(name.as_str()) {
+                return Err(Error::Tool(format!("two tools are called `{name}`; give one a prefix")));
+            }
+        }
+        Ok(())
     }
 
     /// When the view is over the limit, summarise everything before the kept
@@ -756,6 +773,17 @@ mod tests {
         });
         let out = tokio::time::timeout(std::time::Duration::from_secs(2), a.run_in(&mut s, Message::user("next"), &cancel)).await;
         assert!(matches!(out, Ok(Err(Error::Cancelled))), "returned promptly as cancelled");
+    }
+
+    #[tokio::test]
+    async fn two_tools_with_one_name_or_an_invalid_name_are_refused_before_any_call() {
+        let (a, p) = agent(vec![Scripted::text("never")]);
+        let out = a.tool(weather()).tool(weather()).run("hi").await;
+        assert!(matches!(out, Err(Error::Tool(m)) if m.contains("weather")));
+        assert!(p.seen().is_empty(), "the provider was never called");
+        let bad = tool("repo.search", "x", json!({"type": "object"}), Effect::Read, |_| async move { Ok(String::new()) });
+        let (a, _) = agent(vec![Scripted::text("never")]);
+        assert!(matches!(a.tool(bad).run("hi").await, Err(Error::Tool(m)) if m.contains("repo.search")));
     }
 
     #[tokio::test]

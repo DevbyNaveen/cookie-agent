@@ -13,7 +13,7 @@ use std::{
 
 use serde_json::{json, Value};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     sync::{oneshot, Mutex as AsyncMutex},
 };
 
@@ -22,11 +22,16 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     error::{Error, Result},
-    tool::{Effect, Tool, ToolSpec},
+    tool::{valid_tool_name, Effect, Tool, ToolSpec},
 };
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// The longest message accepted from a server; a longer line means the
+/// server is broken or hostile, and the connection is dropped.
+const MAX_LINE: usize = if cfg!(test) { 64 * 1024 } else { 16 * 1024 * 1024 };
+/// Pages of `tools/list` before the server is considered to be looping.
+const MAX_PAGES: usize = 100;
 
 type Writer = Arc<AsyncMutex<Box<dyn AsyncWrite + Send + Unpin>>>;
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<std::result::Result<Value, String>>>>>;
@@ -125,7 +130,8 @@ impl McpClient {
     pub async fn list_tools(&self) -> Result<Vec<McpToolInfo>> {
         let mut tools = Vec::new();
         let mut cursor: Option<String> = None;
-        loop {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..MAX_PAGES {
             let params = match &cursor {
                 Some(cursor) => json!({"cursor": cursor}),
                 None => json!({}),
@@ -143,10 +149,16 @@ impl McpClient {
                 });
             }
             match page["nextCursor"].as_str() {
-                Some(next) if !next.is_empty() => cursor = Some(next.to_string()),
+                Some(next) if !next.is_empty() => {
+                    if !seen.insert(next.to_string()) {
+                        return Err(Error::Mcp(format!("tools/list repeated the cursor `{next}`")));
+                    }
+                    cursor = Some(next.to_string());
+                }
                 _ => return Ok(tools),
             }
         }
+        Err(Error::Mcp(format!("tools/list went past {MAX_PAGES} pages")))
     }
 
     /// Call a tool. Returns its text output and whether the server marked it an error.
@@ -259,6 +271,16 @@ impl McpServer {
                 return Err(Error::Mcp(format!("`{}` has no tool called `{name}`", self.command)));
             }
         }
+        let name_of = |name: &str| match &self.prefix {
+            Some(prefix) => format!("{prefix}__{name}"),
+            None => name.to_string(),
+        };
+        if let Some(bad) = listed.iter().map(|t| name_of(&t.name)).find(|n| !valid_tool_name(n)) {
+            return Err(Error::Mcp(format!(
+                "`{}` offers a tool named `{bad}`, which providers reject (letters, digits, _ and -, at most 64)",
+                self.command
+            )));
+        }
         let client = Arc::new(client);
         let tools = listed
             .into_iter()
@@ -268,10 +290,7 @@ impl McpServer {
                     effect = Effect::Destroy;
                 }
                 let spec = ToolSpec {
-                    name: match &self.prefix {
-                        Some(prefix) => format!("{prefix}__{}", info.name),
-                        None => info.name.clone(),
-                    },
+                    name: name_of(&info.name),
                     description: info.description,
                     schema: info.input_schema,
                     effect,
@@ -309,9 +328,17 @@ impl Tool for McpTool {
 /// Routes responses to their callers; answers `ping`; refuses any other
 /// server request (sampling, elicitation, roots), which this client doesn't offer.
 async fn read_loop(reader: impl AsyncRead + Send + Unpin, writer: Writer, pending: Pending) {
-    let mut lines = BufReader::new(reader).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
+    let mut reader = BufReader::new(reader);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        // Bounded: never buffer more than MAX_LINE bytes of one message.
+        match (&mut reader).take(MAX_LINE as u64 + 1).read_until(b'\n', &mut line).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) if line.len() > MAX_LINE => break,
+            Ok(_) => {}
+        }
+        let Ok(message) = serde_json::from_slice::<Value>(&line) else { continue };
         match (message.get("id"), message["method"].as_str()) {
             (Some(id), Some(method)) => {
                 let reply = if method == "ping" {
@@ -512,5 +539,49 @@ mod tests {
         let client = server_with(vec![annotated("send", json!({}))]).await;
         let out = McpServer::stdio("x", &[]).guard("sned", "to").tools_from(client).await;
         assert!(matches!(out, Err(Error::Mcp(m)) if m.contains("sned")));
+    }
+
+    #[tokio::test]
+    async fn a_server_that_repeats_its_cursor_is_refused_instead_of_looping() {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(serve(server_io, |method, _| match method {
+            "initialize" => Some(json!({"protocolVersion": "2025-06-18", "capabilities": {}})),
+            "tools/list" => Some(json!({"tools": [tool("a")], "nextCursor": "same"})),
+            _ => None,
+        }));
+        let (r, w) = tokio::io::split(client_io);
+        let client = McpClient::over(r, w).await.unwrap();
+        let out = tokio::time::timeout(std::time::Duration::from_secs(2), client.list_tools()).await;
+        assert!(matches!(&out, Ok(Err(Error::Mcp(m))) if m.contains("cursor")), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn an_endless_line_is_cut_off_instead_of_filling_memory() {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let (read, mut write) = tokio::io::split(server_io);
+            let mut lines = BufReader::new(read).lines();
+            let init: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            write.write_all(format!("{}\n", json!({"jsonrpc": "2.0", "id": init["id"], "result": {"protocolVersion": "2025-06-18", "capabilities": {}}})).as_bytes()).await.unwrap();
+            let _initialized = lines.next_line().await.unwrap();
+            let _ = lines.next_line().await;
+            let chunk = vec![b'x'; 8 * 1024];
+            for _ in 0..(MAX_LINE / chunk.len() + 2) {
+                if write.write_all(&chunk).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let (r, w) = tokio::io::split(client_io);
+        let client = McpClient::over(r, w).await.unwrap();
+        let out = tokio::time::timeout(std::time::Duration::from_secs(5), client.list_tools()).await;
+        assert!(matches!(out, Ok(Err(Error::Mcp(_)))), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn a_tool_name_providers_would_reject_is_refused_at_connect() {
+        let client = server_with(vec![annotated("repo.search", json!({}))]).await;
+        let out = McpServer::stdio("x", &[]).tools_from(client).await;
+        assert!(matches!(out, Err(Error::Mcp(m)) if m.contains("repo.search")));
     }
 }
