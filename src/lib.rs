@@ -7,6 +7,8 @@ pub mod label;
 pub mod message;
 pub mod model_id;
 pub mod policy;
+pub mod provider;
+pub mod providers;
 pub mod tool;
 
 pub use approval::{ApprovalRequest, Approver, DenyAll, FnApprover};
@@ -15,4 +17,5 @@ pub use label::{Origin, Source};
 pub use message::{Content, Message, Role};
 pub use model_id::ModelId;
 pub use policy::{Decision, Policy, Provenance};
+pub use provider::{ModelRequest, ModelResponse, Provider, StopReason, Usage};
 pub use tool::{tool, Effect, FnTool, Tool, ToolSpec};
