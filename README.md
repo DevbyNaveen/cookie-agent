@@ -67,6 +67,29 @@ you can pin it. Skills (`SKILL.md`) are offered through one `use_skill`
 tool and loaded on demand; `read_agents_md` gives you `AGENTS.md` to put in
 your instructions — nothing is added behind your back.
 
+## From the terminal, or from any language
+
+```sh
+cookie run anthropic:claude-sonnet-4-6 "Weather in Riga?" --session riga.jsonl
+cookie serve    # one JSON object per line on stdin/stdout
+```
+
+`cookie serve` speaks a small protocol. You send
+`{"type":"run","id":"r1","model":"…","input":"…","tools":[{"name":"lookup","effect":"read","schema":{…}}]}`;
+you get `event` lines while it works, `tool_call` when the model calls one of
+your tools (answer with `tool_result`), `approval` when something needs a
+person (answer with `approve` — no answer means no), and `done` or `error`.
+`cancel` stops a run now, `finish_turn` after this turn. Your tools go
+through the same gates as Rust ones, and their results are untrusted.
+
+## Tracing
+
+Every run emits OpenTelemetry GenAI spans through `tracing`:
+`invoke_agent`, `chat {model}` and `execute_tool {tool}`, with provider,
+model, token usage, tool call id and `error.type` — never message content.
+Export them with `tracing-opentelemetry`. The GenAI conventions are still
+marked Development, so the names may change.
+
 ## Enkeon (on when you have a key)
 
 Set `ENKEON_API_KEY` and every agent gets the person's context from
