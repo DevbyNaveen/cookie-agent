@@ -118,6 +118,7 @@ fn block(content: &Content, origin: &Origin, tag: &str) -> Option<Value> {
     };
     Some(match content {
         Content::Text { text } if text.trim().is_empty() => return None,
+        Content::Reasoning { .. } => return None,
         Content::Text { text } => json!({"text": fenced(text)}),
         Content::ToolCall { id, name, args } => json!({"toolUse": {"toolUseId": id, "name": name, "input": args}}),
         Content::ToolResult { id, output, is_error } => {

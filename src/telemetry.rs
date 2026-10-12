@@ -7,6 +7,7 @@
 pub(crate) fn provider_name(prefix: &str) -> String {
     match prefix {
         "bedrock" => "aws.bedrock".into(),
+        "gemini" => "gcp.gemini".into(),
         other => other.into(),
     }
 }
@@ -161,5 +162,6 @@ mod tests {
         assert_eq!(super::provider_name("bedrock"), "aws.bedrock");
         assert_eq!(super::provider_name("openai"), "openai");
         assert_eq!(super::provider_name("ollama"), "ollama");
+        assert_eq!(super::provider_name("gemini"), "gcp.gemini");
     }
 }

@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use super::{
     fence::{fence, fence_tag},
     http_error,
+    sse::SseDecoder,
 };
 use crate::{
     error::{Error, Result},
@@ -67,6 +68,7 @@ fn block(content: &Content, origin: &Origin, tag: &str) -> Option<Value> {
     };
     Some(match content {
         Content::Text { text } if text.trim().is_empty() => return None,
+        Content::Reasoning { .. } => return None,
         Content::Text { text } => match source {
             Some(source) => json!({"type": "text", "text": fence(text, source, tag)}),
             None => json!({"type": "text", "text": text}),
@@ -177,7 +179,7 @@ enum Partial {
 /// reply. Bytes may arrive split anywhere, including inside a character.
 #[derive(Default)]
 pub struct SseAssembler {
-    pending: Vec<u8>,
+    sse: SseDecoder,
     blocks: Vec<Partial>,
     stop: Option<StopReason>,
     usage: Usage,
@@ -186,35 +188,18 @@ pub struct SseAssembler {
 
 impl SseAssembler {
     pub fn feed(&mut self, chunk: &[u8], on: &mut (dyn FnMut(ProviderEvent) + Send)) -> Result<()> {
-        self.pending.extend_from_slice(chunk);
-        normalize_newlines(&mut self.pending);
-        // An event ends at a blank line; complete events are whole UTF-8.
-        while let Some(at) = self.pending.windows(2).position(|w| w == b"\n\n") {
-            let raw: Vec<u8> = self.pending.drain(..at + 2).collect();
-            self.dispatch(&raw, on)?;
+        for data in self.sse.feed(chunk)? {
+            self.event(&serde_json::from_str(&data)?, on)?;
         }
         Ok(())
     }
 
     /// The stream closed: a last event without its blank line still counts.
     pub fn end(&mut self, on: &mut (dyn FnMut(ProviderEvent) + Send)) -> Result<()> {
-        let raw = std::mem::take(&mut self.pending);
-        self.dispatch(&raw, on)
-    }
-
-    /// One event: its `data:` lines joined by newlines, as SSE defines.
-    fn dispatch(&mut self, raw: &[u8], on: &mut (dyn FnMut(ProviderEvent) + Send)) -> Result<()> {
-        let text = std::str::from_utf8(raw).map_err(|e| Error::Provider(format!("stream is not UTF-8: {e}")))?;
-        let data: Vec<&str> = text
-            .split('\n')
-            .filter_map(|line| line.strip_prefix("data:"))
-            .map(|d| d.strip_prefix(' ').unwrap_or(d).trim_end_matches('\r'))
-            .collect();
-        let data = data.join("\n");
-        if data.trim().is_empty() {
-            return Ok(());
+        match self.sse.end()? {
+            Some(data) => self.event(&serde_json::from_str(&data)?, on),
+            None => Ok(()),
         }
-        self.event(&serde_json::from_str(&data)?, on)
     }
 
     fn event(&mut self, event: &Value, on: &mut (dyn FnMut(ProviderEvent) + Send)) -> Result<()> {
@@ -302,28 +287,6 @@ impl SseAssembler {
         }
         Ok(ModelResponse { content, stop: self.stop.unwrap_or(StopReason::EndTurn), usage: self.usage })
     }
-}
-
-/// SSE lines end in CRLF, LF or a lone CR; make them all LF. A CR at the very
-/// end is kept, since its LF may arrive in the next chunk.
-fn normalize_newlines(bytes: &mut Vec<u8>) {
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\r' if i + 1 == bytes.len() => {
-                out.push(b'\r');
-            }
-            b'\r' if bytes[i + 1] == b'\n' => {
-                out.push(b'\n');
-                i += 1;
-            }
-            b'\r' => out.push(b'\n'),
-            other => out.push(other),
-        }
-        i += 1;
-    }
-    *bytes = out;
 }
 
 #[async_trait]

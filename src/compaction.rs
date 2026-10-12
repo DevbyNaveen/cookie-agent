@@ -53,6 +53,7 @@ pub fn estimate_tokens(messages: &[Message]) -> u64 {
             Content::Text { text } => text.chars().count(),
             Content::ToolCall { name, args, .. } => name.len() + args.to_string().len(),
             Content::ToolResult { output, .. } => output.chars().count(),
+            Content::Reasoning { data, .. } => data.to_string().len(),
         })
         .sum();
     (chars as u64).div_ceil(4)

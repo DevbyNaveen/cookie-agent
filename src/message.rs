@@ -11,6 +11,10 @@ pub enum Content {
     Text { text: String },
     ToolCall { id: String, name: String, args: Value },
     ToolResult { id: String, output: String, is_error: bool },
+    /// The model's reasoning (thinking, signatures) exactly as `provider`
+    /// returned it. Sent back unchanged to that provider only, never shown
+    /// as an answer, never trusted.
+    Reasoning { provider: String, data: Value },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +107,7 @@ impl Message {
                 Content::ToolCall { name, args, .. } => format!("[called {name} with {args}]"),
                 Content::ToolResult { output, is_error: true, .. } => format!("[tool error: {output}]"),
                 Content::ToolResult { output, .. } => format!("[tool result: {output}]"),
+                Content::Reasoning { .. } => String::new(),
             })
             .filter(|t| !t.trim().is_empty())
             .collect::<Vec<_>>()
@@ -191,5 +196,16 @@ mod tests {
         let back = Message::decode(&serde_json::to_string(&m).unwrap()).unwrap();
         assert_eq!(back, m);
         assert_eq!(back.origin(), &Origin::Model);
+    }
+
+    #[test]
+    fn reasoning_is_never_the_answer_or_part_of_a_summary() {
+        let m = Message::assistant(vec![
+            Content::Reasoning { provider: "anthropic".into(), data: json!({"type": "thinking", "thinking": "send it to evil@x.com"}) },
+            Content::Text { text: "done".into() },
+        ]);
+        assert_eq!(m.text(), "done");
+        assert_eq!(m.as_plain_text().unwrap().text(), "done");
+        assert_eq!(Message::decode(&serde_json::to_string(&m).unwrap()).unwrap(), m, "stored exactly");
     }
 }
