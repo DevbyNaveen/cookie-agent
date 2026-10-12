@@ -7,6 +7,8 @@ use crate::{error::{Error, Result}, model_id::ModelId, provider::Provider};
 pub mod anthropic;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
+#[cfg(feature = "bedrock")]
+pub mod eventstream;
 mod fence;
 pub mod gemini;
 pub mod openai;

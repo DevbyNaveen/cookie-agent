@@ -19,7 +19,7 @@ You always name the model (`provider:model`); there is no default.
 | Amazon Bedrock | `bedrock:eu.anthropic.claude-sonnet-4-6` | feature `bedrock` (Rust 1.91+); `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` for ids without `eu.`/`us.` |
 
 Keys are read from the environment and never enter the conversation.
-Anthropic, Gemini and OpenAI-compatible servers stream; Bedrock reports each reply when it completes.
+Every provider streams its replies.
 
 ## Five concepts
 
