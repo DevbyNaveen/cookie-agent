@@ -28,6 +28,8 @@ pub enum Error {
     Session(String),
     #[error("replay {0}")]
     Replay(String),
+    #[error("image: {0}")]
+    Image(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

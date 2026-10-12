@@ -43,8 +43,12 @@ impl Compaction {
     }
 }
 
-/// About four characters per token: an estimate for deciding when to compact,
-/// never a bill.
+/// What one image counts for in the estimate. Real counts depend on the
+/// provider and the image's size; this only decides when to compact.
+pub const IMAGE_TOKEN_ESTIMATE: u64 = 1_600;
+
+/// About four characters per token, and `IMAGE_TOKEN_ESTIMATE` per image: an
+/// estimate for deciding when to compact, never a bill.
 pub fn estimate_tokens(messages: &[Message]) -> u64 {
     let chars: usize = messages
         .iter()
@@ -54,9 +58,11 @@ pub fn estimate_tokens(messages: &[Message]) -> u64 {
             Content::ToolCall { name, args, .. } => name.len() + args.to_string().len(),
             Content::ToolResult { output, .. } => output.chars().count(),
             Content::Reasoning { data, .. } => data.to_string().len(),
+            Content::Image { .. } => 0,
         })
         .sum();
-    (chars as u64).div_ceil(4)
+    let images = messages.iter().flat_map(|m| m.content()).filter(|c| matches!(c, Content::Image { .. })).count() as u64;
+    (chars as u64).div_ceil(4) + images * IMAGE_TOKEN_ESTIMATE
 }
 
 /// What a whole request costs in the same estimate: instructions and tool
@@ -69,7 +75,8 @@ pub fn estimate_request_tokens(system: &str, tools: &[&crate::tool::ToolSpec], m
 
 /// A turn starts at a new instruction — the person's words, or a task handed
 /// to a sub-agent — never at tool results, so a boundary there never splits a
-/// tool call from its result.
+/// tool call from its result, and never at images, which go with the words
+/// before them.
 fn turn_starts(messages: &[Message]) -> Vec<usize> {
     messages
         .iter()
@@ -77,7 +84,7 @@ fn turn_starts(messages: &[Message]) -> Vec<usize> {
         .filter(|(_, m)| {
             m.role() == crate::message::Role::User
                 && m.summary_of().is_none()
-                && !m.content().iter().any(|c| matches!(c, Content::ToolResult { .. }))
+                && !m.content().iter().any(|c| matches!(c, Content::ToolResult { .. } | Content::Image { .. }))
         })
         .map(|(i, _)| i)
         .collect()
@@ -329,4 +336,26 @@ mod tests {
         };
         assert!(estimate_request_tokens(&"y".repeat(400), &[&spec], &messages) >= 200);
     }
+
+    fn screenshot() -> Message {
+        Message::untrusted_image("image/png", b"\x89PNG\r\n\x1a\nxx", Source::Screen).unwrap()
+    }
+
+    #[test]
+    fn an_image_counts_as_a_fixed_estimate() {
+        assert_eq!(estimate_tokens(&[screenshot()]), IMAGE_TOKEN_ESTIMATE);
+    }
+
+    #[test]
+    fn an_image_belongs_to_the_turn_of_the_words_before_it() {
+        let mut messages = vec![Message::user("what is this?"), screenshot(), Message::assistant(vec![Content::Text { text: "a page".into() }])];
+        messages.extend([Message::user("and now?"), screenshot(), Message::assistant(vec![Content::Text { text: "same".into() }])]);
+        assert_eq!(summary_boundary(&messages, 1), Some(3), "never between the question and its screenshot");
+        let policy = Compaction { clear_tool_results_after: 1, ..Compaction::default() };
+        let view = context_view(&messages, &policy);
+        assert_eq!(view[1].text(), "[cleared: an image/png image from turn 1, 1 KB]");
+        assert!(view[1].origin().is_untrusted());
+        assert!(matches!(view[4].content()[0], Content::Image { .. }), "the recent turn keeps its image");
+    }
+
 }

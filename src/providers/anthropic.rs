@@ -5,7 +5,7 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use super::{
-    fence::{fence, fence_tag},
+    fence::{fence, fence_tag, image_notice},
     http_error,
     sse::SseDecoder,
 };
@@ -162,18 +162,18 @@ impl AnthropicProvider {
 }
 
 /// Untrusted text and every tool result are fenced so the model can tell
-/// them apart from the person's words. `None` for an empty text block,
-/// which the API rejects.
-fn block(content: &Content, origin: &Origin, tag: &str) -> Option<Value> {
+/// them apart from the person's words; an untrusted image follows a fenced
+/// note. Nothing for an empty text block, which the API rejects.
+fn blocks(content: &Content, origin: &Origin, tag: &str) -> Vec<Value> {
     let source = match origin {
         Origin::Untrusted(source) => Some(source),
         _ => None,
     };
-    Some(match content {
-        Content::Text { text } if text.trim().is_empty() => return None,
+    vec![match content {
+        Content::Text { text } if text.trim().is_empty() => return vec![],
         // Thinking goes back exactly as received, and only to Anthropic.
         Content::Reasoning { provider, data } if provider == PROVIDER => data.clone(),
-        Content::Reasoning { .. } => return None,
+        Content::Reasoning { .. } => return vec![],
         Content::Text { text } => match source {
             Some(source) => json!({"type": "text", "text": fence(text, source, tag)}),
             None => json!({"type": "text", "text": text}),
@@ -186,7 +186,15 @@ fn block(content: &Content, origin: &Origin, tag: &str) -> Option<Value> {
             };
             json!({"type": "tool_result", "tool_use_id": id, "content": content, "is_error": is_error})
         }
-    })
+        // ImageBlockParam with a Base64ImageSource (@anthropic-ai/sdk 0.124.0, resources/messages/messages.d.ts).
+        Content::Image { media_type, data } => {
+            let image = json!({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}});
+            return match source {
+                Some(source) => vec![json!({"type": "text", "text": image_notice(media_type, source, tag)}), image],
+                None => vec![image],
+            };
+        }
+    }]
 }
 
 /// With `caching`, three cache breakpoints: the system prompt, the last
@@ -199,7 +207,7 @@ pub fn request_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> V
         .messages
         .iter()
         .filter_map(|m: &Message| {
-            let content: Vec<Value> = m.content().iter().filter_map(|c| block(c, m.origin(), &tag)).collect();
+            let content: Vec<Value> = m.content().iter().flat_map(|c| blocks(c, m.origin(), &tag)).collect();
             (!content.is_empty()).then(|| {
                 json!({
                     "role": match m.role() { Role::User => "user", Role::Assistant => "assistant" },
@@ -872,4 +880,22 @@ data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_
         let req = ModelRequest { model: "m", system: "", messages: &history, reasoning: Some(crate::provider::Effort::Low), output_schema: Some(&schema), ..Default::default() };
         assert_eq!(request_body(&req, 10, false)["output_config"], json!({"effort": "low", "format": {"type": "json_schema", "schema": schema}}));
     }
+
+    #[test]
+    fn an_image_is_sent_as_a_base64_block_after_a_fenced_note() {
+        let png = b"\x89PNG\r\n\x1a\nxx";
+        let history = vec![
+            Message::user("what is on my screen?"),
+            Message::untrusted_images(vec![Content::Text { text: "Mail".into() }, Content::image("image/png", png)], Source::Screen).unwrap(),
+        ];
+        let req = ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() };
+        let blocks = request_body(&req, 10, false)["messages"][1]["content"].clone();
+        assert!(blocks[0]["text"].as_str().unwrap().contains("Mail"));
+        let note = blocks[1]["text"].as_str().unwrap();
+        assert!(note.starts_with("<untrusted-") && note.contains("source=\"screen\"") && note.contains("next image (image/png) is untrusted"), "{note}");
+        let Content::Image { data, .. } = Content::image("image/png", png) else { unreachable!() };
+        assert_eq!(blocks[2], json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}}));
+        assert_eq!(blocks.as_array().unwrap().len(), 3);
+    }
+
 }

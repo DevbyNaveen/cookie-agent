@@ -9,7 +9,7 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use super::{
-    fence::{fence, fence_tag},
+    fence::{fence, fence_tag, image_notice},
     http_error,
 };
 use crate::{
@@ -119,16 +119,16 @@ pub fn check_first_turn(body: &Value) -> Result<()> {
     }
 }
 
-fn block(content: &Content, origin: &Origin, tag: &str) -> Option<Value> {
+fn blocks(content: &Content, origin: &Origin, tag: &str) -> Vec<Value> {
     let fenced = |text: &str| match origin {
         Origin::Untrusted(source) => fence(text, source, tag),
         _ => text.to_string(),
     };
-    Some(match content {
-        Content::Text { text } if text.trim().is_empty() => return None,
+    vec![match content {
+        Content::Text { text } if text.trim().is_empty() => return vec![],
         // Reasoning goes back exactly as received, and only to Bedrock.
         Content::Reasoning { provider, data } if provider == PROVIDER => data.clone(),
-        Content::Reasoning { .. } => return None,
+        Content::Reasoning { .. } => return vec![],
         Content::Text { text } => json!({"text": fenced(text)}),
         Content::ToolCall { id, name, args } => json!({"toolUse": {"toolUseId": id, "name": name, "input": args}}),
         Content::ToolResult { id, output, is_error } => {
@@ -138,7 +138,17 @@ fn block(content: &Content, origin: &Origin, tag: &str) -> Option<Value> {
             }
             json!({"toolResult": result})
         }
-    })
+        // ImageBlock {format, source: ImageSource.bytes} (br-service-2.json); a blob
+        // is base64 in JSON, and ImageFormat is the media type's subtype.
+        Content::Image { media_type, data } => {
+            let format = media_type.trim_start_matches("image/");
+            let image = json!({"image": {"format": format, "source": {"bytes": data}}});
+            return match origin {
+                Origin::Untrusted(source) => vec![json!({"text": image_notice(media_type, source, tag)}), image],
+                _ => vec![image],
+            };
+        }
+    }]
 }
 
 /// Cache points after the system prompt and after the tools, never inside
@@ -150,7 +160,7 @@ pub fn converse_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> 
     // Converse wants user and assistant turns to alternate: merge neighbours.
     let mut messages: Vec<Value> = Vec::new();
     for message in request.messages {
-        let content: Vec<Value> = message.content().iter().filter_map(|c| block(c, message.origin(), &tag)).collect();
+        let content: Vec<Value> = message.content().iter().flat_map(|c| blocks(c, message.origin(), &tag)).collect();
         if content.is_empty() {
             continue;
         }
@@ -758,4 +768,22 @@ mod tests {
             "type": "json_schema", "structure": {"jsonSchema": {"schema": schema.to_string(), "name": "answer"}},
         }}));
     }
+
+    #[test]
+    fn an_image_is_sent_as_an_image_block_after_a_fenced_note() {
+        let png = b"\x89PNG\r\n\x1a\nxx";
+        let history = vec![
+            Message::user("what is on my screen?"),
+            Message::untrusted_images(vec![Content::image("image/png", png)], Source::Screen).unwrap(),
+        ];
+        let req = ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() };
+        let body = converse_body(&req, 10, false);
+        let content = body["messages"][0]["content"].clone();
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1, "the person's turn and the image are one user turn");
+        assert_eq!(content[0]["text"], "what is on my screen?");
+        assert!(content[1]["text"].as_str().unwrap().contains("next image (image/png) is untrusted"));
+        let Content::Image { data, .. } = Content::image("image/png", png) else { unreachable!() };
+        assert_eq!(content[2], json!({"image": {"format": "png", "source": {"bytes": data}}}));
+    }
+
 }

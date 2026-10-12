@@ -8,7 +8,7 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use super::{
-    fence::{fence, fence_tag},
+    fence::{fence, fence_tag, image_notice},
     http_error,
     sse::SseDecoder,
 };
@@ -124,6 +124,13 @@ pub fn request_body(request: &ModelRequest, max_tokens: Option<u32>) -> Result<V
                                 response["id"] = json!(id);
                             }
                             parts.push(json!({"functionResponse": response}));
+                        }
+                        // Part.inlineData, a Blob {mimeType, data: base64} (ai.google.dev/api/generate-content#Blob).
+                        Content::Image { media_type, data } => {
+                            if let Origin::Untrusted(source) = message.origin() {
+                                parts.push(json!({"text": image_notice(media_type, source, &tag)}));
+                            }
+                            parts.push(json!({"inlineData": {"mimeType": media_type, "data": data}}));
                         }
                         _ => {}
                     }
@@ -591,4 +598,21 @@ mod tests {
         let req = ModelRequest { model: "m", system: "", messages: &history, output_schema: Some(&schema), ..Default::default() };
         assert_eq!(request_body(&req, None).unwrap()["generationConfig"], json!({"responseMimeType": "application/json", "responseJsonSchema": schema}));
     }
+
+    #[test]
+    fn an_image_is_sent_as_inline_data_after_a_fenced_note() {
+        let png = b"\x89PNG\r\n\x1a\nxx";
+        let history = vec![
+            Message::user("what is on my screen?"),
+            Message::untrusted_images(vec![Content::image("image/png", png)], Source::Screen).unwrap(),
+        ];
+        let req = ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() };
+        let body = request_body(&req, None).unwrap();
+        let parts = body["contents"][0]["parts"].clone();
+        assert_eq!(parts[0]["text"], "what is on my screen?");
+        assert!(parts[1]["text"].as_str().unwrap().contains("next image (image/png) is untrusted"));
+        let Content::Image { data, .. } = Content::image("image/png", png) else { unreachable!() };
+        assert_eq!(parts[2], json!({"inlineData": {"mimeType": "image/png", "data": data}}));
+    }
+
 }
