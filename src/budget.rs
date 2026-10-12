@@ -26,7 +26,8 @@ impl Default for Budget {
 
 /// What a model costs, in dollars per million tokens. You supply it: the
 /// harness ships no price table, because prices change and a stale one lies.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Price {
     pub input: f64,
     pub output: f64,

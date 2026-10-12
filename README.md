@@ -74,8 +74,17 @@ your instructions — nothing is added behind your back.
 
 ```sh
 cookie run anthropic:claude-sonnet-4-6 "Weather in Riga?" --session riga.jsonl
+cookie chat anthropic:claude-sonnet-4-6 --session riga.jsonl   # one run per line
+cookie replay riga.jsonl   # run it again from the log: exit 0 if it reproduced
 cookie serve    # one JSON object per line on stdin/stdout
 ```
+
+`cookie chat` asks approvals on the same terminal it reads your lines from;
+Ctrl-C stops the answer being written, `/exit` or Ctrl-D leaves. `cookie
+replay` calls no model and runs no tool: each reply and each tool result
+comes from the file, so it shows whether the loop still does what it did, and
+names the first message that differs. In Rust, `Replay::from_session(&s)`
+gives the same, and `ReplayProvider` alone replays the model against new tools.
 
 `cookie serve` speaks a small protocol. You send
 `{"type":"run","id":"r1","model":"…","input":"…","tools":[{"name":"lookup","effect":"read","schema":{…}}]}`;
@@ -84,6 +93,24 @@ your tools (answer with `tool_result`), `approval` when something needs a
 person (answer with `approve` — no answer means no), and `done` or `error`.
 `cancel` stops a run now, `finish_turn` after this turn. Your tools go
 through the same gates as Rust ones, and their results are untrusted.
+
+A `run` may also carry, besides `instructions`, `session` (a file to resume),
+`allow` (values the person approved in advance) and `enkeon: false`:
+
+```json
+"budget": {"max_steps": 10, "max_tokens": 50000},
+"mcp": [
+  {"command": "github-mcp", "args": [], "effects": {"search_issues": "read"},
+   "guards": {"create_issue": ["repo"]}, "pin": "3f2a…"},
+  {"url": "https://mcp.example.com/mcp", "headers": {"Authorization": "Bearer …"}, "prefix": "ex"}
+]
+```
+
+A limit left out keeps its default (25 model calls, 200,000 tokens). Each MCP
+server is connected for that run only and works as in Rust: every tool asks
+a person unless `effects` lowers it, and a `pin` refuses a server whose tool
+list changed. A server that can't be reached, or fails its pin, ends that
+run with an `error`. Unknown fields are refused, here as everywhere.
 
 ## Tracing
 

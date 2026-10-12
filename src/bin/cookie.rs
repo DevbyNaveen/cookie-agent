@@ -1,38 +1,29 @@
 //! `cookie run <provider:model> <prompt>` — one run in the terminal.
+//! `cookie chat <provider:model>` — a conversation, one run per line.
+//! `cookie replay <session.jsonl>` — run a recording again from its log.
 //! `cookie serve` — the harness over stdio, one JSON object per line.
 
-use std::io::{IsTerminal, Write};
+use std::{
+    io::{IsTerminal, Write},
+    sync::Arc,
+};
 
-use async_trait::async_trait;
-use cookie_harness::{serve::serve, Agent, ApprovalRequest, Approver, Event, Message, RunControl, Session};
+use cookie_harness::{
+    chat::{chat, Input, LineApprover},
+    serve::serve,
+    Agent, Error, Event, Message, Replay, RunControl, Session,
+};
 use tokio::{
-    io::{AsyncBufReadExt, BufReader, Stdin},
-    sync::Mutex,
+    io::{BufReader, Stdin},
+    sync::{mpsc, Mutex},
 };
 
 const USAGE: &str = "usage:
   cookie run <provider:model> <prompt> [--session FILE] [--instructions TEXT] [--no-enkeon] [-- <prompt starting with ->]
+  cookie chat <provider:model> [--session FILE] [--instructions TEXT] [--no-enkeon]
+  cookie replay <session.jsonl>
   cookie serve
   cookie --version";
-
-/// Asks on the terminal. With no terminal there is no person, so: no. One
-/// reader for the whole run, so an answer typed early is not lost.
-struct Terminal(Mutex<BufReader<Stdin>>);
-
-#[async_trait]
-impl Approver for Terminal {
-    async fn approve(&self, request: &ApprovalRequest) -> bool {
-        if !std::io::stdin().is_terminal() {
-            eprintln!("\ncookie: `{}` needs a person and there is no terminal to ask; declined.", request.tool);
-            return false;
-        }
-        eprint!("\n{}\n{}\nAllow? [y/N] ", request.reason, request.preview);
-        let _ = std::io::stderr().flush();
-        let mut answer = String::new();
-        let _ = self.0.lock().await.read_line(&mut answer).await;
-        matches!(answer.trim(), "y" | "Y" | "yes")
-    }
-}
 
 enum Failure {
     /// The command line was wrong: print usage, exit 2.
@@ -41,38 +32,64 @@ enum Failure {
     Run(String),
 }
 
-async fn run(args: &[String]) -> Result<(), Failure> {
-    let (mut positional, mut session, mut instructions, mut enkeon) = (Vec::new(), None, None, true);
+fn failed(error: impl ToString) -> Failure {
+    Failure::Run(error.to_string())
+}
+
+/// What `run` and `chat` share: the words that are not flags, and the flags.
+struct Options {
+    positional: Vec<String>,
+    session: Option<String>,
+    instructions: Option<String>,
+    enkeon: bool,
+}
+
+fn options(args: &[String]) -> Result<Options, Failure> {
+    let mut options = Options { positional: Vec::new(), session: None, instructions: None, enkeon: true };
     let mut args = args.iter();
     let mut flags = true;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             // Everything after `--` is a value, even if it starts with dashes.
             "--" if flags => flags = false,
-            "--session" if flags => session = Some(args.next().ok_or(Failure::Usage("--session needs a file".into()))?.clone()),
+            "--session" if flags => options.session = Some(args.next().ok_or(Failure::Usage("--session needs a file".into()))?.clone()),
             "--instructions" if flags => {
-                instructions = Some(args.next().ok_or(Failure::Usage("--instructions needs text".into()))?.clone())
+                options.instructions = Some(args.next().ok_or(Failure::Usage("--instructions needs text".into()))?.clone())
             }
-            "--no-enkeon" if flags => enkeon = false,
+            "--no-enkeon" if flags => options.enkeon = false,
             flag if flags && flag.starts_with("--") => return Err(Failure::Usage(format!("unknown flag `{flag}`"))),
-            value => positional.push(value.to_string()),
+            value => options.positional.push(value.to_string()),
         }
     }
-    let [model, prompt] = <[String; 2]>::try_from(positional)
-        .map_err(|_| Failure::Usage("cookie run needs a model and a prompt".into()))?;
-    let mut agent = Agent::new(&model)
-        .map_err(|e| Failure::Run(e.to_string()))?
-        .approver(Terminal(Mutex::new(BufReader::new(tokio::io::stdin()))));
-    if let Some(text) = instructions {
-        agent = agent.instructions(text);
+    Ok(options)
+}
+
+/// The agent and session the options describe, asking on the terminal
+/// through `input`, the one reader of stdin.
+async fn setup(model: &str, options: &Options, input: &Input<BufReader<Stdin>>) -> Result<(Agent, Session), Failure> {
+    let mut agent = Agent::new(model).map_err(failed)?.approver(LineApprover::new(input.clone(), std::io::stdin().is_terminal()));
+    if let Some(text) = &options.instructions {
+        agent = agent.instructions(text.clone());
     }
-    if !enkeon {
+    if !options.enkeon {
         agent = agent.without_enkeon();
     }
-    let mut session = match session {
-        Some(path) => Session::open(path).await.map_err(|e| Failure::Run(e.to_string()))?,
+    let session = match &options.session {
+        Some(path) => Session::open(path).await.map_err(failed)?,
         None => Session::in_memory(),
     };
+    Ok((agent, session))
+}
+
+fn stdin() -> Input<BufReader<Stdin>> {
+    Arc::new(Mutex::new(BufReader::new(tokio::io::stdin())))
+}
+
+async fn run(args: &[String]) -> Result<(), Failure> {
+    let options = options(args)?;
+    let [model, prompt] = <[String; 2]>::try_from(options.positional.clone())
+        .map_err(|_| Failure::Usage("cookie run needs a model and a prompt".into()))?;
+    let (agent, mut session) = setup(&model, &options, &stdin()).await?;
     // Ctrl-C cancels the run; what already happened stays in the session.
     let control = RunControl::default();
     let cancel = control.cancel.clone();
@@ -93,7 +110,7 @@ async fn run(args: &[String]) -> Result<(), Failure> {
             _ => {}
         })
         .await
-        .map_err(|e| Failure::Run(e.to_string()))?;
+        .map_err(failed)?;
     if streamed {
         println!();
     } else {
@@ -102,32 +119,70 @@ async fn run(args: &[String]) -> Result<(), Failure> {
     Ok(())
 }
 
+async fn chat_command(args: &[String]) -> Result<(), Failure> {
+    let options = options(args)?;
+    let [model] = <[String; 1]>::try_from(options.positional.clone())
+        .map_err(|_| Failure::Usage("cookie chat needs a model, and nothing else".into()))?;
+    let input = stdin();
+    let (agent, mut session) = setup(&model, &options, &input).await?;
+    // Ctrl-C from here on cancels the run going on, never the chat.
+    let (interrupt, mut interrupts) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while tokio::signal::ctrl_c().await.is_ok() && interrupt.send(()).is_ok() {}
+    });
+    let prompt = std::io::stdin().is_terminal();
+    if prompt {
+        eprintln!("cookie chat with {model}. /exit or Ctrl-D to leave; Ctrl-C stops an answer.");
+    }
+    chat(&agent, &mut session, input, &mut std::io::stdout(), &mut interrupts, prompt).await.map_err(failed)
+}
+
+async fn replay(args: &[String]) -> Result<(), Failure> {
+    let [path] = args else { return Err(Failure::Usage("cookie replay needs one session file".into())) };
+    let recorded = Session::load(path).await.map_err(|e| failed(format!("{path}: {e}")))?;
+    match Replay::from_session(&recorded).run().await {
+        Ok(replayed) => {
+            println!("reproduced: {} messages", replayed.messages().len());
+            Ok(())
+        }
+        Err(Error::Replay(what)) => {
+            println!("{what}");
+            Err(Failure::Run(String::new()))
+        }
+        Err(error) => Err(failed(error)),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let code = match args.first().map(String::as_str) {
+    let rest = args.get(1..).unwrap_or_default();
+    let ended = match args.first().map(String::as_str) {
         Some("--version") => {
             println!("cookie {}", env!("CARGO_PKG_VERSION"));
-            0
+            Ok(())
         }
-        Some("serve") => {
-            let made = serve(BufReader::new(tokio::io::stdin()), tokio::io::stdout(), |request| Agent::new(&request.model)).await;
-            i32::from(made.is_err())
-        }
-        Some("run") => match run(&args[1..]).await {
-            Ok(()) => 0,
-            Err(Failure::Usage(message)) => {
-                eprintln!("cookie: {message}\n{USAGE}");
-                2
-            }
-            Err(Failure::Run(message)) => {
-                eprintln!("cookie: {message}");
-                1
-            }
-        },
-        _ => {
+        Some("serve") => serve(BufReader::new(tokio::io::stdin()), tokio::io::stdout(), |request| Agent::new(&request.model)).await.map_err(failed),
+        Some("run") => run(rest).await,
+        Some("chat") => chat_command(rest).await,
+        Some("replay") => replay(rest).await,
+        _ => Err(Failure::Usage(String::new())),
+    };
+    let code = match ended {
+        Ok(()) => 0,
+        Err(Failure::Usage(message)) if message.is_empty() => {
             eprintln!("{USAGE}");
             2
+        }
+        Err(Failure::Usage(message)) => {
+            eprintln!("cookie: {message}\n{USAGE}");
+            2
+        }
+        Err(Failure::Run(message)) => {
+            if !message.is_empty() {
+                eprintln!("cookie: {message}");
+            }
+            1
         }
     };
     std::process::exit(code);

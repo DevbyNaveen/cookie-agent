@@ -55,3 +55,65 @@ fn a_prompt_that_starts_with_dashes_goes_after_a_double_dash() {
     assert_eq!(out.status.code(), Some(1), "{stderr}");
     assert!(!stderr.contains("unknown flag") && stderr.contains("ANTHROPIC_API_KEY"), "{stderr}");
 }
+
+/// A session file written the way the harness writes one: a question, a
+/// tool call, its result, an answer.
+fn recorded(dir: &std::path::Path, result: &str) -> std::path::PathBuf {
+    let path = dir.join("rec.jsonl");
+    let lines = [
+        r#"{"role":"user","content":[{"type":"text","text":"weather?"}],"origin":{"origin":"user"}}"#.to_string(),
+        r#"{"role":"assistant","content":[{"type":"tool_call","id":"c1","name":"bad name","args":{}}],"origin":{"origin":"model"}}"#.to_string(),
+        format!(r#"{{"role":"user","content":[{{"type":"tool_result","id":"c1","output":"{result}","is_error":true}}],"origin":{{"origin":"untrusted","source":{{"kind":"tool","detail":"bad name"}}}}}}"#),
+        r#"{"role":"assistant","content":[{"type":"text","text":"9°C"}],"origin":{"origin":"model"}}"#.to_string(),
+    ];
+    std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    path
+}
+
+#[test]
+fn replay_says_whether_a_recording_reproduced() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = recorded(dir.path(), "There is no tool called `bad name`.");
+    let out = Command::new(COOKIE).arg("replay").arg(&path).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("reproduced"));
+
+    // A result the loop would never have written: the replay differs there.
+    let path = recorded(dir.path(), "sunny");
+    let out = Command::new(COOKIE).arg("replay").arg(&path).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(said.contains("diverged at message 3") && said.contains("sunny"), "{said}");
+}
+
+#[test]
+fn replay_needs_one_readable_file() {
+    let out = Command::new(COOKIE).arg("replay").output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cookie replay <session.jsonl>"));
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("none.jsonl");
+    let out = Command::new(COOKIE).arg("replay").arg(&missing).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!missing.exists(), "replay never creates the file");
+}
+
+#[test]
+fn chat_checks_its_arguments_before_reading_anything() {
+    let out = Command::new(COOKIE).arg("chat").stdin(Stdio::null()).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cookie chat <provider:model>"));
+    let out = Command::new(COOKIE).args(["chat", "anthropic:claude-sonnet-4-6", "--sesion", "x"]).stdin(Stdio::null()).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--sesion"));
+    let out = Command::new(COOKIE).args(["chat", "scripted:x"]).stdin(Stdio::null()).output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "no fake models in the shipping binary");
+    let out = Command::new(COOKIE)
+        .args(["chat", "anthropic:claude-sonnet-4-6", "--no-enkeon"])
+        .env_remove("ANTHROPIC_API_KEY")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("ANTHROPIC_API_KEY"));
+}
