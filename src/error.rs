@@ -16,6 +16,8 @@ pub enum Error {
     Stopped,
     #[error("stopped a loop: `{0}` was called with the same arguments three times in a row")]
     Loop(String),
+    #[error("mcp: {0}")]
+    Mcp(String),
     #[error("session: {0}")]
     Session(String),
     #[error(transparent)]

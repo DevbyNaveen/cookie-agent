@@ -7,6 +7,7 @@ pub mod budget;
 pub mod compaction;
 pub mod error;
 pub mod label;
+pub mod mcp;
 pub mod message;
 pub mod model_id;
 pub mod policy;
