@@ -129,7 +129,8 @@ marked Development, so the names may change.
 
 ## Enkeon (on when you have a key)
 
-Set `ENKEON_API_KEY` and every agent gets the person's context from
+Set `ENKEON_API_KEY` (or sign in with the Enkeon CLI — its current project is
+used, `ENKEON_PROJECT` picks another) and every agent gets the person's context from
 [Enkeon](https://enkeon.com): a `recall` tool to look things up and a
 `remember` tool to save what lands. The system prompt gains one paragraph,
 `ENKEON_INSTRUCTIONS` — read it in `src/enkeon.rs`; nothing else is added.
@@ -162,8 +163,58 @@ and its answer comes back as untrusted output. It inherits the parent's
 trust exactly — a recipient the parent couldn't use, the child can't use
 either, because the task is the parent model's words, not the person's.
 Readers hold only `Read` tools; one agent per tree may change things.
-Children spend from the parent's budget and stop when the parent is
-cancelled. Delegation goes at most 3 levels deep.
+Children spend from what the parent has left — siblings running side by
+side share it — and stop when the parent is cancelled. A child allows only
+destinations its parent allows, and asks whoever its parent asks unless it
+has its own approver. Delegation goes at most 3 levels deep. A long answer
+comes back as its start and an id (`art-1`); the parent reads more with
+`read_artifact` if it needs to.
+
+To pass the conversation itself on, use a handoff: the next agent carries
+on in the same session, with the same budget and the person's words still
+credited. At most 5 hops per run.
+
+```rust
+let front = Agent::new("anthropic:claude-haiku-4-5")?
+    .tool(Handoff::to("billing", "Questions about invoices", billing_agent));
+```
+
+## Earned trust
+
+```rust
+let agent = agent.earned_trust(EarnedTrust::open("trust.json", 5)?);
+```
+
+After a person approves the same `write` tool 5 times in a row, it runs
+without asking, and `Event::RanOnEarnedTrust` says so. One "no" resets it;
+`revoke` takes it back. Tools that send, delete or pay are never earned.
+
+## Reading untrusted text through a quarantine
+
+```rust
+let reader = Agent::new("anthropic:claude-haiku-4-5")?;  // no tools
+let orders = quarantine(read_email, reader, json!({"type": "object", "properties": {
+    "order": {"type": "string", "maxLength": 20}, "total": {"type": "number"}}}))?;
+```
+
+The email is read by a model with no tools, and only fields that match the
+schema come back — no extra keys, strings capped at 200 characters unless
+you say otherwise. An instruction hidden in the email has nowhere to go but
+those fields. They are still untrusted (after CaMeL).
+
+## Many tools
+
+`agent.tool_search(ToolSearch { after: 30, top_k: 5 })`: past 30 tools the
+model gets one `search_tools` tool instead of every definition, and what it
+finds is offered for the rest of the run. Every call still goes through the
+gates.
+
+## Limits
+
+`Budget { max_steps, max_tokens, max_dollars }` caps each run; a cap stops
+the run, it never just warns. Dollars need `agent.prices(Price { input,
+output, cache_read, cache_write })` in dollars per million tokens — you
+supply them; the harness ships no price table, because a stale one lies.
 
 ## Shell commands, sandboxed
 
