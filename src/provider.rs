@@ -23,6 +23,9 @@ pub enum StopReason {
     EndTurn,
     ToolUse,
     MaxTokens,
+    /// The provider paused a long turn: send the conversation again as it
+    /// is, and the model carries on.
+    PauseTurn,
 }
 
 pub struct ModelRequest<'a> {

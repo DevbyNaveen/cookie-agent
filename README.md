@@ -140,6 +140,10 @@ replaces older turns with a summary (`SUMMARY_PROMPT`, public). The session
 file keeps every message. What the person wrote before a summary still
 counts as theirs; a summary of untrusted content stays untrusted.
 
+On Anthropic, the server can clear old tool results instead (beta):
+`Agent::with_provider(Arc::new(AnthropicProvider::from_env()?.context_editing(ClearToolUses::default())), model)`.
+What it cleared is reported as a `tracing` event.
+
 ## Licence
 
 MIT

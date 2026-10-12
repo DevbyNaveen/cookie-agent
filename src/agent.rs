@@ -285,8 +285,11 @@ impl Agent {
             let calls: Vec<_> = reply.tool_calls().map(|(id, name, args)| (id.into(), name.into(), args.clone())).collect();
             let answer = reply.text();
             session.append(reply).await?;
-            if calls.is_empty() {
-                return Ok(answer);
+            match (calls.is_empty(), response.stop) {
+                // Paused: the same conversation goes again and the turn continues.
+                (true, StopReason::PauseTurn) => continue,
+                (true, _) => return Ok(answer),
+                _ => {}
             }
 
             let context = ToolContext {
@@ -834,5 +837,16 @@ mod tests {
         s.append(Message::assistant(vec![Content::Text { text: "reply one".into() }])).await.unwrap();
         a.run_in(&mut s, Message::user("two"), &CancellationToken::new()).await.unwrap();
         assert_eq!(p.asked()[0].0, "Mine.");
+    }
+
+    #[tokio::test]
+    async fn a_paused_turn_is_sent_again_until_it_finishes() {
+        let mut paused = Scripted::text("Searching");
+        paused.stop = StopReason::PauseTurn;
+        let (a, p) = agent(vec![paused, Scripted::text("Found it.")]);
+        assert_eq!(a.run("look it up").await.unwrap(), "Found it.");
+        let resent = &p.seen()[1];
+        assert_eq!(resent.len(), 2, "no extra message is added to continue");
+        assert_eq!(resent[1].text(), "Searching");
     }
 }

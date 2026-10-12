@@ -21,7 +21,74 @@ pub struct AnthropicProvider {
     base_url: String,
     max_tokens: u32,
     caching: bool,
+    context_editing: Option<ClearToolUses>,
     client: reqwest::Client,
+}
+
+/// When server-side clearing starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trigger {
+    InputTokens(u64),
+    ToolUses(u64),
+}
+
+/// Server-side context editing (beta): once the prompt passes `trigger`,
+/// Anthropic replaces the oldest tool results with a placeholder, keeping
+/// the last `keep`. The session keeps everything; only what the model sees
+/// changes. Clearing invalidates the prompt cache from the cleared point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClearToolUses {
+    pub trigger: Trigger,
+    /// Tool uses kept, most recent first.
+    pub keep: u64,
+    /// Skip the edit unless it frees at least this many input tokens.
+    pub clear_at_least: Option<u64>,
+    /// Tools whose results are never cleared.
+    pub exclude_tools: Vec<String>,
+    /// Also clear the calls' inputs, not only their results.
+    pub clear_tool_inputs: bool,
+}
+
+/// Anthropic's documented defaults: from 100,000 input tokens, keep 3.
+impl Default for ClearToolUses {
+    fn default() -> Self {
+        Self { trigger: Trigger::InputTokens(100_000), keep: 3, clear_at_least: None, exclude_tools: Vec::new(), clear_tool_inputs: false }
+    }
+}
+
+impl ClearToolUses {
+    fn edit(&self) -> Value {
+        let trigger = match self.trigger {
+            Trigger::InputTokens(n) => json!({"type": "input_tokens", "value": n}),
+            Trigger::ToolUses(n) => json!({"type": "tool_uses", "value": n}),
+        };
+        let mut edit = json!({
+            "type": "clear_tool_uses_20250919",
+            "trigger": trigger,
+            "keep": {"type": "tool_uses", "value": self.keep},
+            "clear_tool_inputs": self.clear_tool_inputs,
+        });
+        if let Some(n) = self.clear_at_least {
+            edit["clear_at_least"] = json!({"type": "input_tokens", "value": n});
+        }
+        if !self.exclude_tools.is_empty() {
+            edit["exclude_tools"] = json!(self.exclude_tools);
+        }
+        edit
+    }
+}
+
+/// What the server cleared, as a tracing event (counts only, no content).
+fn report_applied_edits(context_management: &Value) {
+    for edit in context_management["applied_edits"].as_array().into_iter().flatten() {
+        tracing::info!(
+            edit = edit["type"].as_str().unwrap_or("unknown"),
+            cleared_tool_uses = edit["cleared_tool_uses"].as_u64(),
+            cleared_thinking_turns = edit["cleared_thinking_turns"].as_u64(),
+            cleared_input_tokens = edit["cleared_input_tokens"].as_u64(),
+            "anthropic cleared context"
+        );
+    }
 }
 
 impl AnthropicProvider {
@@ -31,6 +98,7 @@ impl AnthropicProvider {
             base_url: "https://api.anthropic.com".into(),
             max_tokens: 4096,
             caching: true,
+            context_editing: None,
             client: super::http_client(),
         }
     }
@@ -45,6 +113,38 @@ impl AnthropicProvider {
     pub fn caching(mut self, on: bool) -> Self {
         self.caching = on;
         self
+    }
+
+    /// Let Anthropic clear old tool results server-side (beta, off by default).
+    pub fn context_editing(mut self, edits: ClearToolUses) -> Self {
+        self.context_editing = Some(edits);
+        self
+    }
+
+    fn body(&self, request: &ModelRequest) -> Value {
+        let mut body = request_body(request, self.max_tokens, self.caching);
+        if let Some(edits) = &self.context_editing {
+            body["context_management"] = json!({"edits": [edits.edit()]});
+        }
+        body
+    }
+
+    async fn post(&self, body: &Value) -> Result<reqwest::Response> {
+        let mut call = self
+            .client
+            .post(format!("{}/v1/messages", self.base_url))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01");
+        if self.context_editing.is_some() {
+            call = call.header("anthropic-beta", "context-management-2025-06-27");
+        }
+        let response = call.json(body).send().await.map_err(|e| Error::Provider(e.to_string()))?;
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(http_error(status.as_u16(), &text));
+        }
+        Ok(response)
     }
 
     pub fn from_env() -> Result<Self> {
@@ -137,6 +237,7 @@ fn stop_reason(reason: Option<&str>) -> Result<StopReason> {
     match reason {
         Some("tool_use") => Ok(StopReason::ToolUse),
         Some("max_tokens" | "model_context_window_exceeded") => Ok(StopReason::MaxTokens),
+        Some("pause_turn") => Ok(StopReason::PauseTurn),
         Some("refusal") => Err(Error::Provider("the model stopped without an answer: refusal".into())),
         _ => Ok(StopReason::EndTurn),
     }
@@ -158,6 +259,7 @@ pub fn parse_response(raw: &Value) -> Result<ModelResponse> {
         }
     }
     let stop = stop_reason(raw["stop_reason"].as_str())?;
+    report_applied_edits(&raw["context_management"]);
     let usage = Usage {
         input_tokens: raw["usage"]["input_tokens"].as_u64().unwrap_or(0),
         output_tokens: raw["usage"]["output_tokens"].as_u64().unwrap_or(0),
@@ -245,6 +347,7 @@ impl SseAssembler {
             }
             Some("message_delta") => {
                 self.stop = Some(stop_reason(event["delta"]["stop_reason"].as_str())?);
+                report_applied_edits(&event["context_management"]);
                 if let Some(output) = event["usage"]["output_tokens"].as_u64() {
                     self.usage.output_tokens = output;
                 }
@@ -292,20 +395,7 @@ impl SseAssembler {
 #[async_trait]
 impl Provider for AnthropicProvider {
     async fn complete(&self, request: ModelRequest<'_>) -> Result<ModelResponse> {
-        let response = self
-            .client
-            .post(format!("{}/v1/messages", self.base_url))
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .json(&request_body(&request, self.max_tokens, self.caching))
-            .send()
-            .await
-            .map_err(|e| Error::Provider(e.to_string()))?;
-        let status = response.status();
-        let text = response.text().await.map_err(|e| Error::Provider(e.to_string()))?;
-        if !status.is_success() {
-            return Err(http_error(status.as_u16(), &text));
-        }
+        let text = self.post(&self.body(&request)).await?.text().await.map_err(|e| Error::Provider(e.to_string()))?;
         parse_response(&serde_json::from_str(&text)?)
     }
 
@@ -314,24 +404,10 @@ impl Provider for AnthropicProvider {
         request: ModelRequest<'_>,
         on: &mut (dyn FnMut(ProviderEvent) + Send),
     ) -> Result<ModelResponse> {
-        let mut body = request_body(&request, self.max_tokens, self.caching);
+        let mut body = self.body(&request);
         body["stream"] = json!(true);
-        let response = self
-            .client
-            .post(format!("{}/v1/messages", self.base_url))
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Provider(e.to_string()))?;
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(http_error(status.as_u16(), &text));
-        }
         let mut assembler = SseAssembler::default();
-        let mut bytes = response.bytes_stream();
+        let mut bytes = self.post(&body).await?.bytes_stream();
         while let Some(chunk) = bytes.next().await {
             assembler.feed(&chunk.map_err(|e| Error::Provider(e.to_string()))?, on)?;
         }
@@ -604,5 +680,100 @@ data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_d
 data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\": \\\"Ri\"}}\n\n";
         let stop = STOP.replace("end_turn", "max_tokens");
         assert!(matches!(run(&format!("{START}{block}{stop}")), Err(Error::MaxTokens)));
+    }
+
+    #[test]
+    fn pause_turn_is_its_own_stop_reason() {
+        let raw = json!({"content": [{"type": "text", "text": "Searching"}], "stop_reason": "pause_turn", "usage": {}});
+        assert_eq!(parse_response(&raw).unwrap().stop, StopReason::PauseTurn);
+        assert_eq!(run(&format!("{START}{}", STOP.replace("end_turn", "pause_turn"))).unwrap().stop, StopReason::PauseTurn);
+    }
+
+    /// Records every tracing event's fields.
+    struct Events(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Events {
+        fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+            struct Fields(String);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                    self.0.push_str(&format!("{}={:?} ", field.name(), value));
+                }
+            }
+            let mut fields = Fields(String::new());
+            event.record(&mut fields);
+            self.0.lock().unwrap().push(fields.0);
+        }
+    }
+
+    #[test]
+    fn applied_context_edits_are_reported() {
+        use tracing_subscriber::prelude::*;
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(Events(seen.clone())));
+        let edits = json!({"applied_edits": [{"type": "clear_tool_uses_20250919", "cleared_tool_uses": 8, "cleared_input_tokens": 50000}]});
+        let raw = json!({"content": [], "stop_reason": "end_turn", "usage": {}, "context_management": edits});
+        parse_response(&raw).unwrap();
+        let delta = format!("data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":2}},\"context_management\":{edits}}}\n\ndata: {{\"type\":\"message_stop\"}}");
+        run(&format!("{START}{delta}")).unwrap();
+        let seen = seen.lock().unwrap();
+        let reports: Vec<_> = seen.iter().filter(|e| e.contains("clear_tool_uses_20250919")).collect();
+        assert_eq!(reports.len(), 2, "{seen:?}");
+        assert!(reports.iter().all(|e| e.contains("cleared_tool_uses=8") && e.contains("cleared_input_tokens=50000")));
+    }
+
+    #[tokio::test]
+    async fn context_editing_is_opt_in_and_sent_with_its_beta_header() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        async fn capture(provider: AnthropicProvider) -> (String, Value) {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut seen = Vec::new();
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = socket.read(&mut buf).await.unwrap();
+                    seen.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&seen).to_string();
+                    if let Some(at) = text.find("\r\n\r\n") {
+                        if serde_json::from_str::<Value>(&text[at + 4..]).is_ok() {
+                            break;
+                        }
+                    }
+                }
+                let body = r#"{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{}}"#;
+                let reply = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}", body.len());
+                socket.write_all(reply.as_bytes()).await.unwrap();
+                String::from_utf8_lossy(&seen).to_string()
+            });
+            let mut provider = provider;
+            provider.base_url = format!("http://{addr}");
+            let history = vec![Message::user("hi")];
+            provider.complete(ModelRequest { model: "m", system: "", messages: &history, tools: vec![] }).await.unwrap();
+            let request = server.await.unwrap();
+            let at = request.find("\r\n\r\n").unwrap();
+            (request[..at].to_lowercase(), serde_json::from_str(&request[at + 4..]).unwrap())
+        }
+        let (headers, body) = capture(AnthropicProvider::new("k".into())).await;
+        assert!(!headers.contains("anthropic-beta") && body.get("context_management").is_none(), "off unless asked");
+
+        let edits = ClearToolUses { trigger: Trigger::InputTokens(30_000), keep: 3, clear_at_least: Some(5_000), exclude_tools: vec!["web_search".into()], clear_tool_inputs: false };
+        let (headers, body) = capture(AnthropicProvider::new("k".into()).context_editing(edits)).await;
+        assert!(headers.contains("anthropic-beta: context-management-2025-06-27"), "{headers}");
+        assert_eq!(body["context_management"], json!({"edits": [{
+            "type": "clear_tool_uses_20250919",
+            "trigger": {"type": "input_tokens", "value": 30000},
+            "keep": {"type": "tool_uses", "value": 3},
+            "clear_at_least": {"type": "input_tokens", "value": 5000},
+            "exclude_tools": ["web_search"],
+            "clear_tool_inputs": false,
+        }]}));
+        let defaults = ClearToolUses::default();
+        assert_eq!((defaults.trigger, defaults.keep, defaults.clear_at_least), (Trigger::InputTokens(100_000), 3, None), "the documented defaults");
+        let by_count = ClearToolUses { trigger: Trigger::ToolUses(10), ..ClearToolUses::default() };
+        let (_, body) = capture(AnthropicProvider::new("k".into()).context_editing(by_count)).await;
+        let edit = &body["context_management"]["edits"][0];
+        assert_eq!(edit["trigger"], json!({"type": "tool_uses", "value": 10}));
+        assert!(edit.get("clear_at_least").is_none() && edit.get("exclude_tools").is_none());
     }
 }
