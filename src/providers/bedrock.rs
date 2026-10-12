@@ -60,15 +60,12 @@ impl BedrockProvider {
     }
 }
 
-/// `eu.`/`us.` inference profiles run in their own geography: the configured
-/// region when it is in that geography, else that geography's main region.
+/// `eu.` profiles are called in eu-central-1 and `us.` in us-east-1, as in
+/// Enkeon's production gateway; any other model id uses the configured region.
 pub fn region_for_model(configured: Option<&str>, model: &str) -> Result<String> {
-    for (profile, geography, home) in [("eu.", "eu-", "eu-central-1"), ("us.", "us-", "us-east-1")] {
+    for (profile, home) in [("eu.", "eu-central-1"), ("us.", "us-east-1")] {
         if model.starts_with(profile) {
-            return Ok(match configured {
-                Some(region) if region.starts_with(geography) => region.to_string(),
-                _ => home.to_string(),
-            });
+            return Ok(home.to_string());
         }
     }
     configured
@@ -174,7 +171,11 @@ pub fn parse_response(raw: &Value) -> Result<ModelResponse> {
     }
     let stop = match raw["stopReason"].as_str() {
         Some("tool_use") => StopReason::ToolUse,
-        Some("max_tokens") => StopReason::MaxTokens,
+        Some("max_tokens" | "model_context_window_exceeded") => StopReason::MaxTokens,
+        // Blocked, filtered or broken: whatever text came back is not an answer.
+        Some(reason @ ("guardrail_intervened" | "content_filtered" | "malformed_tool_use" | "malformed_model_output")) => {
+            return Err(Error::Provider(format!("the model stopped without an answer: {reason}")));
+        }
         _ => StopReason::EndTurn,
     };
     // `inputTokens` excludes cached tokens; Bedrock reports reads and writes separately.
@@ -346,7 +347,7 @@ mod tests {
     #[test]
     fn picks_the_region_from_the_inference_profile() {
         assert_eq!(region_for_model(None, "eu.anthropic.claude-sonnet-4-6").unwrap(), "eu-central-1");
-        assert_eq!(region_for_model(Some("eu-west-1"), "eu.anthropic.claude-sonnet-4-6").unwrap(), "eu-west-1");
+        assert_eq!(region_for_model(Some("eu-west-1"), "eu.anthropic.claude-sonnet-4-6").unwrap(), "eu-central-1");
         assert_eq!(region_for_model(Some("us-west-2"), "eu.anthropic.claude-sonnet-4-6").unwrap(), "eu-central-1");
         assert_eq!(region_for_model(None, "us.anthropic.claude-sonnet-4-6").unwrap(), "us-east-1");
         assert_eq!(region_for_model(Some("eu-north-1"), "anthropic.claude-v2").unwrap(), "eu-north-1");
@@ -380,5 +381,15 @@ mod tests {
     fn model_ids_are_escaped_in_the_url() {
         assert_eq!(converse_url("eu-central-1", "anthropic.claude-3-haiku-20240307-v1:0"),
             "https://bedrock-runtime.eu-central-1.amazonaws.com/model/anthropic.claude-3-haiku-20240307-v1%3A0/converse");
+    }
+
+    #[test]
+    fn a_blocked_or_filtered_reply_is_an_error_not_an_answer() {
+        for reason in ["guardrail_intervened", "content_filtered", "malformed_tool_use"] {
+            let raw = json!({"output": {"message": {"content": [{"text": "Sorry."}]}}, "stopReason": reason});
+            assert!(matches!(parse_response(&raw), Err(Error::Provider(m)) if m.contains(reason)), "{reason}");
+        }
+        let full = json!({"output": {"message": {"content": [{"text": "The ans"}]}}, "stopReason": "model_context_window_exceeded"});
+        assert_eq!(parse_response(&full).unwrap().stop, StopReason::MaxTokens);
     }
 }

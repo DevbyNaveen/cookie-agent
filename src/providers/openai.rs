@@ -123,6 +123,12 @@ pub fn request_body(request: &ModelRequest, max_tokens: Option<(&str, u32)>) -> 
 pub fn parse_response(raw: &Value) -> Result<ModelResponse> {
     let choice = raw["choices"].get(0).ok_or_else(|| Error::Provider(format!("no choices in {raw}")))?;
     let message = &choice["message"];
+    if let Some(refusal) = message["refusal"].as_str().filter(|r| !r.trim().is_empty()) {
+        return Err(Error::Provider(format!("the model refused: {refusal}")));
+    }
+    if choice["finish_reason"] == "content_filter" {
+        return Err(Error::Provider("the model stopped without an answer: content_filter".into()));
+    }
     let mut content = Vec::new();
     if let Some(text) = message["content"].as_str().filter(|t| !t.trim().is_empty()) {
         content.push(Content::Text { text: text.to_string() });
@@ -284,5 +290,13 @@ mod tests {
     fn ollama_needs_no_key() {
         let id = crate::model_id::ModelId::parse("ollama:qwen3").unwrap();
         assert!(crate::providers::resolve(&id).is_ok());
+    }
+
+    #[test]
+    fn a_filtered_or_refused_reply_is_an_error_not_an_answer() {
+        let filtered = json!({"choices": [{"message": {"content": "partial"}, "finish_reason": "content_filter"}]});
+        assert!(matches!(parse_response(&filtered), Err(Error::Provider(m)) if m.contains("content_filter")));
+        let refused = json!({"choices": [{"message": {"content": null, "refusal": "I can't help with that."}, "finish_reason": "stop"}]});
+        assert!(matches!(parse_response(&refused), Err(Error::Provider(m)) if m.contains("can't help")));
     }
 }

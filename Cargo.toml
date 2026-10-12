@@ -9,12 +9,18 @@ description = "A tiny agent loop where text the model read can never decide who 
 [features]
 default = []
 # Amazon Bedrock (Converse API), signed with SigV4.
-bedrock = ["dep:aws-sigv4", "dep:aws-credential-types"]
+# Needs Rust 1.91+. The AWS crates are pinned to the versions Enkeon's
+# gateway runs in production; newer releases need Rust 1.94.
+bedrock = ["dep:aws-sigv4", "dep:aws-credential-types", "dep:aws-smithy-async", "dep:aws-smithy-http", "dep:aws-smithy-runtime-api", "dep:aws-smithy-types"]
 
 [dependencies]
 async-trait = "0.1"
 aws-credential-types = { version = "=1.2.13", optional = true }
 aws-sigv4 = { version = "=1.4.1", optional = true }
+aws-smithy-async = { version = "=1.2.13", optional = true }
+aws-smithy-http = { version = "=0.63.5", optional = true }
+aws-smithy-runtime-api = { version = "=1.11.5", optional = true }
+aws-smithy-types = { version = "=1.4.5", optional = true }
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }

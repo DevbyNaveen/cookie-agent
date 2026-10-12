@@ -130,6 +130,16 @@ pub fn request_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> V
     body
 }
 
+/// A refusal is not an answer, so it is an error rather than an empty reply.
+fn stop_reason(reason: Option<&str>) -> Result<StopReason> {
+    match reason {
+        Some("tool_use") => Ok(StopReason::ToolUse),
+        Some("max_tokens" | "model_context_window_exceeded") => Ok(StopReason::MaxTokens),
+        Some("refusal") => Err(Error::Provider("the model stopped without an answer: refusal".into())),
+        _ => Ok(StopReason::EndTurn),
+    }
+}
+
 pub fn parse_response(raw: &Value) -> Result<ModelResponse> {
     let blocks = raw["content"].as_array().ok_or_else(|| Error::Provider(format!("no content in {raw}")))?;
     let mut content = Vec::new();
@@ -145,11 +155,7 @@ pub fn parse_response(raw: &Value) -> Result<ModelResponse> {
             _ => {}
         }
     }
-    let stop = match raw["stop_reason"].as_str() {
-        Some("tool_use") => StopReason::ToolUse,
-        Some("max_tokens") => StopReason::MaxTokens,
-        _ => StopReason::EndTurn,
-    };
+    let stop = stop_reason(raw["stop_reason"].as_str())?;
     let usage = Usage {
         input_tokens: raw["usage"]["input_tokens"].as_u64().unwrap_or(0),
         output_tokens: raw["usage"]["output_tokens"].as_u64().unwrap_or(0),
@@ -234,11 +240,7 @@ impl SseAssembler {
                 }
             }
             Some("message_delta") => {
-                self.stop = Some(match event["delta"]["stop_reason"].as_str() {
-                    Some("tool_use") => StopReason::ToolUse,
-                    Some("max_tokens") => StopReason::MaxTokens,
-                    _ => StopReason::EndTurn,
-                });
+                self.stop = Some(stop_reason(event["delta"]["stop_reason"].as_str())?);
                 if let Some(output) = event["usage"]["output_tokens"].as_u64() {
                     self.usage.output_tokens = output;
                 }
@@ -543,5 +545,19 @@ mod tests {
         let other_req = ModelRequest { model: "m", system: "", messages: &other, tools: vec![] };
         let tag_of = |body: &Value, i: usize| body["messages"][i]["content"][0]["text"].as_str().unwrap().split(' ').next().unwrap().to_string();
         assert_ne!(tag_of(&request_body(&req(), 10, false), 1), tag_of(&request_body(&other_req, 10, false), 1));
+    }
+
+    #[test]
+    fn a_refusal_is_an_error_not_an_answer() {
+        let raw = json!({"content": [{"type": "text", "text": ""}], "stop_reason": "refusal", "usage": {}});
+        assert!(matches!(parse_response(&raw), Err(Error::Provider(m)) if m.contains("refusal")));
+        let mut asm = SseAssembler::default();
+        let stream = STREAM.replace("\"stop_reason\":\"tool_use\"", "\"stop_reason\":\"refusal\"");
+        // Raised as soon as the stop reason arrives, before the stream ends.
+        let error = match asm.feed(stream.as_bytes(), &mut |_| {}) {
+            Err(error) => error,
+            Ok(()) => asm.finish().unwrap_err(),
+        };
+        assert!(matches!(error, Error::Provider(m) if m.contains("refusal")));
     }
 }
