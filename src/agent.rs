@@ -89,6 +89,12 @@ impl Agent {
         self
     }
 
+    /// Add shared tools, e.g. `McpTools::tools` from an MCP server.
+    pub fn tools(mut self, tools: impl IntoIterator<Item = Arc<dyn Tool>>) -> Self {
+        self.tools.extend(tools);
+        self
+    }
+
     pub fn policy(mut self, policy: Policy) -> Self {
         self.policy = policy;
         self

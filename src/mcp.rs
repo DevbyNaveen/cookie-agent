@@ -17,7 +17,13 @@ use tokio::{
     sync::{oneshot, Mutex as AsyncMutex},
 };
 
-use crate::error::{Error, Result};
+use async_trait::async_trait;
+use sha2::{Digest, Sha256};
+
+use crate::{
+    error::{Error, Result},
+    tool::{Effect, Tool, ToolSpec},
+};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
@@ -162,6 +168,144 @@ impl McpClient {
     }
 }
 
+/// One MCP server and how its tools may be used. Every tool asks a person
+/// (`Outbound`) unless the developer lowers it with `effect`; a server's own
+/// annotations are untrusted and can only make a tool stricter.
+pub struct McpServer {
+    command: String,
+    args: Vec<String>,
+    pin: Option<String>,
+    effects: HashMap<String, Effect>,
+    guards: Vec<(String, String)>,
+    prefix: Option<String>,
+}
+
+/// The server's tools, ready for `Agent::tools`, and the hash of its tool
+/// list to pass to `pin` next time.
+pub struct McpTools {
+    pub hash: String,
+    pub tools: Vec<Arc<dyn Tool>>,
+}
+
+/// SHA-256 over the tool list in name order, as canonical JSON.
+pub fn tool_list_hash(tools: &[McpToolInfo]) -> String {
+    let mut sorted: Vec<&McpToolInfo> = tools.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    let canonical: Vec<Value> = sorted
+        .iter()
+        .map(|t| json!({"name": t.name, "description": t.description, "inputSchema": t.input_schema, "annotations": t.annotations}))
+        .collect();
+    let digest = Sha256::digest(serde_json::to_vec(&canonical).unwrap_or_default());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+impl McpServer {
+    pub fn stdio(command: &str, args: &[&str]) -> Self {
+        Self {
+            command: command.to_string(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            pin: None,
+            effects: HashMap::new(),
+            guards: Vec::new(),
+            prefix: None,
+        }
+    }
+
+    /// Refuse the server if its tool list no longer hashes to this.
+    pub fn pin(mut self, hash: &str) -> Self {
+        self.pin = Some(hash.to_string());
+        self
+    }
+
+    /// Set a tool's effect (e.g. lower a search tool to `Read`).
+    pub fn effect(mut self, tool: &str, effect: Effect) -> Self {
+        self.effects.insert(tool.to_string(), effect);
+        self
+    }
+
+    /// Guard an argument of a tool (see `ToolSpec::guarded_args`).
+    pub fn guard(mut self, tool: &str, arg: &str) -> Self {
+        self.guards.push((tool.to_string(), arg.to_string()));
+        self
+    }
+
+    /// Name the tools `<prefix>__<name>`, to keep servers apart.
+    pub fn prefix(mut self, prefix: &str) -> Self {
+        self.prefix = Some(prefix.to_string());
+        self
+    }
+
+    pub async fn connect(self) -> Result<McpTools> {
+        let args: Vec<&str> = self.args.iter().map(String::as_str).collect();
+        let client = McpClient::spawn(&self.command, &args).await?;
+        self.tools_from(client).await
+    }
+
+    /// Build the tools from an already connected client.
+    pub async fn tools_from(self, client: McpClient) -> Result<McpTools> {
+        let listed = client.list_tools().await?;
+        let hash = tool_list_hash(&listed);
+        if let Some(pin) = &self.pin {
+            if pin != &hash {
+                return Err(Error::Mcp(format!(
+                    "`{}`: the tool list changed since it was pinned (pinned {pin}, now {hash}); review it before trusting it again",
+                    self.command
+                )));
+            }
+        }
+        let known = |name: &str| listed.iter().any(|t| t.name == name);
+        for name in self.effects.keys().chain(self.guards.iter().map(|(tool, _)| tool)) {
+            if !known(name) {
+                return Err(Error::Mcp(format!("`{}` has no tool called `{name}`", self.command)));
+            }
+        }
+        let client = Arc::new(client);
+        let tools = listed
+            .into_iter()
+            .map(|info| {
+                let mut effect = self.effects.get(&info.name).copied().unwrap_or(Effect::Outbound);
+                if info.annotations["destructiveHint"] == true {
+                    effect = Effect::Destroy;
+                }
+                let spec = ToolSpec {
+                    name: match &self.prefix {
+                        Some(prefix) => format!("{prefix}__{}", info.name),
+                        None => info.name.clone(),
+                    },
+                    description: info.description,
+                    schema: info.input_schema,
+                    effect,
+                    guarded_args: self.guards.iter().filter(|(tool, _)| *tool == info.name).map(|(_, arg)| arg.clone()).collect(),
+                    parallel_safe: false,
+                };
+                Arc::new(McpTool { client: client.clone(), remote_name: info.name, spec }) as Arc<dyn Tool>
+            })
+            .collect();
+        Ok(McpTools { hash, tools })
+    }
+}
+
+struct McpTool {
+    client: Arc<McpClient>,
+    remote_name: String,
+    spec: ToolSpec,
+}
+
+#[async_trait]
+impl Tool for McpTool {
+    fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+
+    async fn call(&self, args: Value) -> std::result::Result<String, String> {
+        match self.client.call_tool(&self.remote_name, args).await {
+            Ok((output, false)) => Ok(output),
+            Ok((output, true)) => Err(output),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+}
+
 /// Routes responses to their callers; answers `ping`; refuses any other
 /// server request (sampling, elicitation, roots), which this client doesn't offer.
 async fn read_loop(reader: impl AsyncRead + Send + Unpin, writer: Writer, pending: Pending) {
@@ -198,6 +342,7 @@ async fn read_loop(reader: impl AsyncRead + Send + Unpin, writer: Writer, pendin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool::Effect;
     use serde_json::json;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -295,5 +440,77 @@ mod tests {
         let (r, w) = tokio::io::split(client_io);
         let client = McpClient::over(r, w).await.unwrap();
         assert_eq!(client.call_tool("x", json!({})).await.unwrap(), ("no such repo".to_string(), true));
+    }
+
+    fn annotated(name: &str, annotations: Value) -> Value {
+        json!({"name": name, "description": format!("{name} tool"), "inputSchema": {"type": "object"}, "annotations": annotations})
+    }
+
+    async fn server_with(tools: Vec<Value>) -> McpClient {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(serve(server_io, move |method, params| match method {
+            "initialize" => Some(json!({"protocolVersion": "2025-06-18", "capabilities": {}})),
+            "tools/list" => Some(json!({"tools": tools})),
+            "tools/call" if params["name"] == "fail" => Some(json!({"content": [{"type": "text", "text": "boom"}], "isError": true})),
+            "tools/call" => Some(json!({"content": [{"type": "text", "text": format!("ran {}", params["name"])}]})),
+            _ => None,
+        }));
+        let (r, w) = tokio::io::split(client_io);
+        McpClient::over(r, w).await.unwrap()
+    }
+
+    fn effect_of(tools: &McpTools, name: &str) -> Effect {
+        tools.tools.iter().find(|t| t.spec().name == name).unwrap().spec().effect
+    }
+
+    #[tokio::test]
+    async fn every_mcp_tool_asks_a_person_unless_the_developer_lowers_it() {
+        let client = server_with(vec![
+            annotated("search", json!({"readOnlyHint": true})),
+            annotated("post", json!({})),
+            annotated("wipe", json!({"destructiveHint": true})),
+        ]).await;
+        let tools = McpServer::stdio("unused", &[]).effect("search", Effect::Read).effect("wipe", Effect::Read).tools_from(client).await.unwrap();
+        assert_eq!(effect_of(&tools, "search"), Effect::Read, "lowered by the developer");
+        assert_eq!(effect_of(&tools, "post"), Effect::Outbound, "the server's own hints never lower it");
+        assert_eq!(effect_of(&tools, "wipe"), Effect::Destroy, "a destructive hint only ever raises it");
+    }
+
+    #[tokio::test]
+    async fn a_pinned_server_whose_tools_changed_is_refused() {
+        let pinned = McpServer::stdio("unused", &[]).tools_from(server_with(vec![annotated("a", json!({}))]).await).await.unwrap().hash;
+        let same = McpServer::stdio("unused", &[]).pin(&pinned).tools_from(server_with(vec![annotated("a", json!({}))]).await).await;
+        assert!(same.is_ok());
+        let changed = McpServer::stdio("unused", &[])
+            .pin(&pinned)
+            .tools_from(server_with(vec![json!({"name": "a", "description": "now also emails your files", "inputSchema": {"type": "object"}})]).await)
+            .await;
+        assert!(matches!(changed, Err(Error::Mcp(m)) if m.contains("changed")));
+    }
+
+    #[tokio::test]
+    async fn the_hash_does_not_depend_on_tool_order() {
+        let one = McpServer::stdio("x", &[]).tools_from(server_with(vec![annotated("a", json!({})), annotated("b", json!({}))]).await).await.unwrap().hash;
+        let two = McpServer::stdio("x", &[]).tools_from(server_with(vec![annotated("b", json!({})), annotated("a", json!({}))]).await).await.unwrap().hash;
+        assert_eq!(one, two);
+        assert_eq!(one.len(), 64, "sha-256 hex");
+    }
+
+    #[tokio::test]
+    async fn prefixes_names_guards_arguments_and_calls_by_the_server_name() {
+        let client = server_with(vec![annotated("send", json!({})), annotated("fail", json!({}))]).await;
+        let tools = McpServer::stdio("x", &[]).prefix("mail").guard("send", "to").tools_from(client).await.unwrap();
+        let send = tools.tools.iter().find(|t| t.spec().name == "mail__send").unwrap();
+        assert_eq!(send.spec().guarded_args, vec!["to".to_string()]);
+        assert_eq!(send.call(json!({"to": "anna@x.com"})).await.unwrap(), "ran \"send\"");
+        let fail = tools.tools.iter().find(|t| t.spec().name == "mail__fail").unwrap();
+        assert_eq!(fail.call(json!({})).await.unwrap_err(), "boom");
+    }
+
+    #[tokio::test]
+    async fn settings_for_a_tool_the_server_does_not_have_are_refused() {
+        let client = server_with(vec![annotated("send", json!({}))]).await;
+        let out = McpServer::stdio("x", &[]).guard("sned", "to").tools_from(client).await;
+        assert!(matches!(out, Err(Error::Mcp(m)) if m.contains("sned")));
     }
 }

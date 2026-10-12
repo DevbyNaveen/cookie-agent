@@ -29,3 +29,4 @@ pub use provider::{ModelRequest, ModelResponse, Provider, ProviderEvent, StopRea
 pub use session::Session;
 pub use tool::{tool, Effect, FnTool, Tool, ToolSpec};
 pub use tokio_util::sync::CancellationToken;
+pub use mcp::{McpClient, McpServer, McpTools};
