@@ -114,6 +114,9 @@ pub fn request_body(request: &ModelRequest, max_tokens: Option<(&str, u32)>) -> 
         }
     }
     let mut body = json!({"model": request.model, "messages": messages});
+    if let Some(effort) = request.reasoning {
+        body["reasoning_effort"] = json!(effort.as_str());
+    }
     if let Some((field, limit)) = max_tokens {
         body[field] = json!(limit);
     }
@@ -376,7 +379,7 @@ mod tests {
             parallel_safe: true,
             delegates: false,
         };
-        let req = ModelRequest { model: "gpt-x", system: "be brief", messages: &h, tools: vec![&spec] };
+        let req = ModelRequest { model: "gpt-x", system: "be brief", messages: &h, tools: vec![&spec], ..Default::default() };
         let body = request_body(&req, Some(("max_completion_tokens", 512)));
         let m = body["messages"].as_array().unwrap();
         assert_eq!(body["model"], "gpt-x");
@@ -457,7 +460,7 @@ mod tests {
             Message::assistant(vec![Content::ToolCall { id: "c1".into(), name: "w".into(), args: json!({}) }]),
             Message::tool_results(vec![Content::ToolResult { id: "c1".into(), output: "no such city".into(), is_error: true }], Origin::Untrusted(Source::Tool("w".into()))),
         ];
-        let body = request_body(&ModelRequest { model: "m", system: "", messages: &history, tools: vec![] }, None);
+        let body = request_body(&ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() }, None);
         let tool = body["messages"].as_array().unwrap().iter().find(|m| m["role"] == "tool").unwrap().clone();
         assert!(tool["content"].as_str().unwrap().starts_with("Error: "));
     }
@@ -474,7 +477,7 @@ mod tests {
         let history = vec![Message::user("hi")];
         let out = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            provider.complete(ModelRequest { model: "m", system: "", messages: &history, tools: vec![] }),
+            provider.complete(ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() }),
         )
         .await;
         assert!(matches!(out, Ok(Err(Error::Provider(_)))), "{out:?}");
@@ -579,7 +582,7 @@ mod tests {
         let history = vec![Message::user("weather?")];
         let mut events = 0;
         let reply = provider
-            .stream(ModelRequest { model: "qwen3", system: "", messages: &history, tools: vec![] }, &mut |_| events += 1)
+            .stream(ModelRequest { model: "qwen3", system: "", messages: &history, tools: vec![], ..Default::default() }, &mut |_| events += 1)
             .await
             .unwrap();
         assert_eq!((reply.stop, events), (StopReason::ToolUse, 4));
@@ -587,5 +590,18 @@ mod tests {
         let body: Value = serde_json::from_str(&request[request.find("\r\n\r\n").unwrap() + 4..]).unwrap();
         assert_eq!(body["stream"], true);
         assert_eq!(body["stream_options"], json!({"include_usage": true}));
+    }
+
+    #[test]
+    fn reasoning_is_sent_as_reasoning_effort_and_other_reasoning_is_dropped() {
+        let history = vec![Message::user("a"), Message::assistant(vec![
+            Content::Reasoning { provider: "anthropic".into(), data: json!({"type": "thinking", "thinking": "x", "signature": "s"}) },
+            Content::Text { text: "b".into() },
+        ])];
+        let req = ModelRequest { model: "m", system: "", messages: &history, reasoning: Some(crate::provider::Effort::Low), ..Default::default() };
+        let body = request_body(&req, None);
+        assert_eq!(body["reasoning_effort"], "low");
+        assert_eq!(body["messages"][1], json!({"role": "assistant", "content": "b"}));
+        assert!(request_body(&ModelRequest { model: "m", system: "", messages: &history, ..Default::default() }, None).get("reasoning_effort").is_none());
     }
 }

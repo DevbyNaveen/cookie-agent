@@ -19,6 +19,9 @@ use crate::{
     provider::{ModelRequest, ModelResponse, Provider, ProviderEvent, StopReason, Usage},
 };
 
+/// The `provider` of the reasoning blocks this provider stores.
+const PROVIDER: &str = "bedrock";
+
 pub struct Credentials {
     pub access_key: String,
     pub secret_key: String,
@@ -123,6 +126,8 @@ fn block(content: &Content, origin: &Origin, tag: &str) -> Option<Value> {
     };
     Some(match content {
         Content::Text { text } if text.trim().is_empty() => return None,
+        // Reasoning goes back exactly as received, and only to Bedrock.
+        Content::Reasoning { provider, data } if provider == PROVIDER => data.clone(),
         Content::Reasoning { .. } => return None,
         Content::Text { text } => json!({"text": fenced(text)}),
         Content::ToolCall { id, name, args } => json!({"toolUse": {"toolUseId": id, "name": name, "input": args}}),
@@ -161,6 +166,9 @@ pub fn converse_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> 
         }
     }
     let mut body = json!({"messages": messages, "inferenceConfig": {"maxTokens": max_tokens}});
+    if let Some(effort) = request.reasoning {
+        body["outputConfig"]["effort"] = json!(effort.as_str());
+    }
     if !request.system.is_empty() {
         let mut system = vec![json!({"text": request.system})];
         if caching {
@@ -196,6 +204,8 @@ pub fn parse_response(raw: &Value) -> Result<ModelResponse> {
                 return Err(Error::Provider(format!("toolUse without an id or name: {tool}")));
             };
             content.push(Content::ToolCall { id: id.into(), name: name.into(), args: tool["input"].clone() });
+        } else if b.get("reasoningContent").is_some() {
+            content.push(Content::Reasoning { provider: PROVIDER.into(), data: b.clone() });
         }
     }
     Ok(ModelResponse { content, stop: stop_reason(raw["stopReason"].as_str())?, usage: usage(&raw["usage"]) })
@@ -227,6 +237,8 @@ fn usage(raw: &Value) -> Usage {
 enum Partial {
     Text(String),
     Tool { id: String, name: String, json: String },
+    /// A `reasoningContent` block, built from its deltas.
+    Reasoning(Value),
 }
 
 /// Turns a ConverseStream reply (event-stream frames) into progress events
@@ -280,11 +292,31 @@ impl StreamAssembler {
                     // Text blocks have no start event: the first delta opens one.
                     match at.map(|at| &mut self.blocks[at].1) {
                         Some(Partial::Text(sofar)) => sofar.push_str(text),
-                        Some(Partial::Tool { .. }) => return Err(Error::Provider(format!("text inside tool block {index}"))),
+                        Some(_) => return Err(Error::Provider(format!("text inside block {index}, which is not text"))),
                         None => self.blocks.push((index, Partial::Text(text.to_string()))),
                     }
                     if !text.is_empty() {
                         on(ProviderEvent::TextDelta(text.to_string()));
+                    }
+                } else if let Some(piece) = delta.get("reasoningContent") {
+                    // Like text, a reasoning block opens with its first delta.
+                    if at.is_none() {
+                        self.blocks.push((index, Partial::Reasoning(json!({"reasoningContent": {}}))));
+                    }
+                    let at = at.unwrap_or(self.blocks.len() - 1);
+                    let Partial::Reasoning(block) = &mut self.blocks[at].1 else {
+                        return Err(Error::Provider(format!("reasoning inside block {index}, which is not reasoning")));
+                    };
+                    let content = &mut block["reasoningContent"];
+                    if let Some(text) = piece["text"].as_str() {
+                        let joined = format!("{}{text}", content["reasoningText"]["text"].as_str().unwrap_or_default());
+                        content["reasoningText"]["text"] = json!(joined);
+                    }
+                    if let Some(signature) = piece.get("signature") {
+                        content["reasoningText"]["signature"] = signature.clone();
+                    }
+                    if let Some(redacted) = piece.get("redactedContent") {
+                        content["redactedContent"] = redacted.clone();
                     }
                 } else if let Some(input) = delta["toolUse"]["input"].as_str() {
                     match at.map(|at| &mut self.blocks[at].1) {
@@ -313,6 +345,7 @@ impl StreamAssembler {
             match block {
                 Partial::Text(text) if !text.is_empty() => content.push(Content::Text { text }),
                 Partial::Text(_) => {}
+                Partial::Reasoning(data) => content.push(Content::Reasoning { provider: PROVIDER.into(), data }),
                 Partial::Tool { id, name, json } => {
                     let args = if json.trim().is_empty() {
                         json!({})
@@ -465,7 +498,7 @@ mod tests {
             parallel_safe: true,
             delegates: false,
         };
-        let req = ModelRequest { model: "eu.anthropic.claude-sonnet-4-6", system: "be brief", messages: &history, tools: vec![&spec] };
+        let req = ModelRequest { model: "eu.anthropic.claude-sonnet-4-6", system: "be brief", messages: &history, tools: vec![&spec], ..Default::default() };
         let body = converse_body(&req, 2048, true);
         assert_eq!(body["system"], json!([{"text": "be brief"}, {"cachePoint": {"type": "default"}}]));
         assert_eq!(body["inferenceConfig"]["maxTokens"], 2048);
@@ -488,7 +521,7 @@ mod tests {
     #[test]
     fn leaves_out_empty_system_and_tools() {
         let history = vec![Message::user("hi")];
-        let req = ModelRequest { model: "m", system: "", messages: &history, tools: vec![] };
+        let req = ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() };
         let body = converse_body(&req, 10, true);
         assert!(body.get("system").is_none() && body.get("toolConfig").is_none());
     }
@@ -577,7 +610,7 @@ mod tests {
     #[test]
     fn a_history_that_starts_with_the_model_is_refused_here() {
         let history = vec![Message::user("   "), Message::assistant(vec![Content::Text { text: "hello".into() }])];
-        let request = ModelRequest { model: "m", system: "", messages: &history, tools: vec![] };
+        let request = ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() };
         assert!(matches!(check_first_turn(&converse_body(&request, 100, false)), Err(Error::Provider(m)) if m.contains("first")));
     }
 
@@ -672,5 +705,42 @@ mod tests {
     fn the_stream_url_escapes_the_model_id() {
         assert_eq!(converse_stream_url("eu-central-1", "anthropic.claude-3-haiku-20240307-v1:0"),
             "https://bedrock-runtime.eu-central-1.amazonaws.com/model/anthropic.claude-3-haiku-20240307-v1%3A0/converse-stream");
+    }
+
+    #[test]
+    fn reasoning_sets_the_effort_and_reasoning_blocks_go_back_unchanged() {
+        let history = vec![Message::user("hi")];
+        let req = ModelRequest { model: "m", system: "", messages: &history, reasoning: Some(crate::provider::Effort::High), ..Default::default() };
+        assert_eq!(converse_body(&req, 10, false)["outputConfig"], json!({"effort": "high"}));
+        assert!(converse_body(&ModelRequest { model: "m", system: "", messages: &history, ..Default::default() }, 10, false).get("outputConfig").is_none());
+
+        let reasoning = json!({"reasoningContent": {"reasoningText": {"text": "Riga.", "signature": "sig"}}});
+        let raw = json!({"output": {"message": {"content": [reasoning, {"text": "9°C"}]}}, "stopReason": "end_turn", "usage": {}});
+        let r = parse_response(&raw).unwrap();
+        assert_eq!(r.content[0], Content::Reasoning { provider: "bedrock".into(), data: reasoning.clone() });
+        let turn = Message::assistant(r.content);
+        assert_eq!(turn.text(), "9°C");
+        let history = vec![Message::user("weather?"), turn];
+        let body = converse_body(&ModelRequest { model: "m", system: "", messages: &history, ..Default::default() }, 10, false);
+        assert_eq!(body["messages"][1]["content"][0], reasoning);
+    }
+
+    #[test]
+    fn streamed_reasoning_is_assembled_and_never_shown() {
+        let mut bytes = Vec::new();
+        bytes.extend(event("contentBlockDelta", json!({"contentBlockIndex": 0, "delta": {"reasoningContent": {"text": "Riga, "}}})));
+        bytes.extend(event("contentBlockDelta", json!({"contentBlockIndex": 0, "delta": {"reasoningContent": {"text": "so weather."}}})));
+        bytes.extend(event("contentBlockDelta", json!({"contentBlockIndex": 0, "delta": {"reasoningContent": {"signature": "sig"}}})));
+        bytes.extend(event("contentBlockDelta", json!({"contentBlockIndex": 1, "delta": {"reasoningContent": {"redactedContent": "AAEC"}}})));
+        bytes.extend(event("contentBlockDelta", json!({"contentBlockIndex": 2, "delta": {"text": "9°C"}})));
+        bytes.extend(event("messageStop", json!({"stopReason": "end_turn"})));
+        bytes.extend(event("metadata", json!({"usage": {"inputTokens": 1, "outputTokens": 1}, "metrics": {}})));
+        let (r, events) = run_stream(&bytes, 9);
+        assert_eq!(events, vec![ProviderEvent::TextDelta("9°C".into())]);
+        assert_eq!(r.unwrap().content, vec![
+            Content::Reasoning { provider: "bedrock".into(), data: json!({"reasoningContent": {"reasoningText": {"text": "Riga, so weather.", "signature": "sig"}}}) },
+            Content::Reasoning { provider: "bedrock".into(), data: json!({"reasoningContent": {"redactedContent": "AAEC"}}) },
+            Content::Text { text: "9°C".into() },
+        ]);
     }
 }

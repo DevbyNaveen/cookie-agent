@@ -153,7 +153,10 @@ pub fn request_body(request: &ModelRequest, max_tokens: Option<u32>) -> Result<V
         body["tools"] = json!([{"functionDeclarations": declarations}]);
     }
     if let Some(limit) = max_tokens {
-        body["generationConfig"] = json!({"maxOutputTokens": limit});
+        body["generationConfig"]["maxOutputTokens"] = json!(limit);
+    }
+    if let Some(effort) = request.reasoning {
+        body["generationConfig"]["thinkingConfig"] = json!({"thinkingLevel": effort.as_str()});
     }
     Ok(body)
 }
@@ -353,7 +356,7 @@ mod tests {
             Message::user(""),
         ];
         let tool = spec();
-        let req = ModelRequest { model: "gemini-3.8-flash", system: "be brief", messages: &history, tools: vec![&tool] };
+        let req = ModelRequest { model: "gemini-3.8-flash", system: "be brief", messages: &history, tools: vec![&tool], ..Default::default() };
         let body = request_body(&req, Some(512)).unwrap();
         assert_eq!(body["systemInstruction"], json!({"parts": [{"text": "be brief"}]}));
         assert_eq!(body["generationConfig"]["maxOutputTokens"], 512);
@@ -383,7 +386,7 @@ mod tests {
                 Origin::Untrusted(Source::Tool("weather".into())),
             ),
         ];
-        let body = request_body(&ModelRequest { model: "m", system: "", messages: &history, tools: vec![] }, None).unwrap();
+        let body = request_body(&ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() }, None).unwrap();
         assert!(body.get("systemInstruction").is_none() && body.get("tools").is_none() && body.get("generationConfig").is_none());
         let response = &body["contents"][2]["parts"][0]["functionResponse"]["response"];
         assert!(response.get("output").is_none() && response["error"].as_str().unwrap().contains("no such city"));
@@ -391,7 +394,7 @@ mod tests {
             vec![Content::ToolResult { id: "zz".into(), output: "x".into(), is_error: false }],
             Origin::Untrusted(Source::Tool("w".into())),
         )];
-        assert!(matches!(request_body(&ModelRequest { model: "m", system: "", messages: &orphan, tools: vec![] }, None), Err(Error::Provider(_))));
+        assert!(matches!(request_body(&ModelRequest { model: "m", system: "", messages: &orphan, tools: vec![], ..Default::default() }, None), Err(Error::Provider(_))));
     }
 
     #[test]
@@ -421,7 +424,7 @@ mod tests {
                 Origin::Untrusted(Source::Tool("weather".into())),
             ),
         ];
-        let body = request_body(&ModelRequest { model: "m", system: "", messages: &history, tools: vec![] }, None).unwrap();
+        let body = request_body(&ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() }, None).unwrap();
         assert_eq!(body["contents"][1], json!({"role": "model", "parts": raw["candidates"][0]["content"]["parts"]}));
         assert_eq!(body["contents"][2]["parts"][0]["functionResponse"]["id"], "fc1");
         assert_eq!(Message::assistant(r.content).text(), "checking", "reasoning is never part of the answer");
@@ -443,7 +446,7 @@ mod tests {
                 Origin::Untrusted(Source::Tool("weather".into())),
             ),
         ];
-        let body = request_body(&ModelRequest { model: "m", system: "", messages: &history, tools: vec![] }, None).unwrap();
+        let body = request_body(&ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() }, None).unwrap();
         assert_eq!(body["contents"][1]["parts"][0], json!({"functionCall": {"name": "weather", "args": {}}}));
         let response = &body["contents"][2]["parts"][0]["functionResponse"];
         assert_eq!(response["name"], "weather");
@@ -459,7 +462,7 @@ mod tests {
                 Content::Text { text: "hello".into() },
             ]),
         ];
-        let body = request_body(&ModelRequest { model: "m", system: "", messages: &history, tools: vec![] }, None).unwrap();
+        let body = request_body(&ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() }, None).unwrap();
         assert_eq!(body["contents"][1], json!({"role": "model", "parts": [{"text": "hello"}]}));
     }
 
@@ -557,7 +560,7 @@ mod tests {
         let history = vec![Message::user("weather?")];
         let mut events = 0;
         let reply = provider
-            .stream(ModelRequest { model: "gemini-3.8-flash", system: "", messages: &history, tools: vec![] }, &mut |_| events += 1)
+            .stream(ModelRequest { model: "gemini-3.8-flash", system: "", messages: &history, tools: vec![], ..Default::default() }, &mut |_| events += 1)
             .await
             .unwrap();
         assert_eq!(reply.stop, StopReason::ToolUse);
@@ -566,5 +569,13 @@ mod tests {
         assert!(request.starts_with("POST /v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse "), "{request}");
         assert!(request.to_lowercase().contains("x-goog-api-key: secret-key"));
         assert!(!request.contains("key=secret"), "the key never goes in the URL");
+    }
+
+    #[test]
+    fn reasoning_sets_the_thinking_level() {
+        let history = vec![Message::user("hi")];
+        let req = ModelRequest { model: "m", system: "", messages: &history, reasoning: Some(crate::provider::Effort::Medium), ..Default::default() };
+        let body = request_body(&req, Some(100)).unwrap();
+        assert_eq!(body["generationConfig"], json!({"maxOutputTokens": 100, "thinkingConfig": {"thinkingLevel": "medium"}}));
     }
 }

@@ -173,7 +173,7 @@ impl crate::agent::Agent {
         source.push(Message::user("Write the summary now."));
 
         meter.check(budget)?;
-        let request = ModelRequest { model: &self.model, system: policy.prompt(), messages: &source, tools: Vec::new() };
+        let request = ModelRequest { model: &self.model, system: policy.prompt(), messages: &source, tools: Vec::new(), ..Default::default() };
         let span = crate::telemetry::chat_span(&self.model, self.provider_name.as_deref());
         let reply = tokio::select! {
             reply = tracing::Instrument::instrument(self.provider.complete(request), span.clone()) => reply,

@@ -16,7 +16,7 @@ use crate::{
     message::{Content, Message},
     model_id::ModelId,
     policy::{Policy, Provenance},
-    provider::{ModelRequest, Provider, ProviderEvent, StopReason, Usage},
+    provider::{Effort, ModelRequest, Provider, ProviderEvent, StopReason, Usage},
     providers,
     session::Session,
     telemetry,
@@ -37,6 +37,7 @@ pub struct Agent {
     pub(crate) enkeon: Option<Arc<Enkeon>>,
     /// `gen_ai.provider.name` on spans, when known.
     pub(crate) provider_name: Option<String>,
+    pub(crate) reasoning: Option<Effort>,
 }
 
 /// Where a run starts from: what is trusted, what it may spend, how deep it
@@ -106,6 +107,7 @@ impl Agent {
             // On by default when ENKEON_API_KEY is set; never in this crate's own tests.
             enkeon: if cfg!(test) { None } else { Enkeon::from_env().map(Arc::new) },
             provider_name: None,
+            reasoning: None,
         }
     }
 
@@ -154,6 +156,13 @@ impl Agent {
     /// No Enkeon, even with a key set.
     pub fn without_enkeon(mut self) -> Self {
         self.enkeon = None;
+        self
+    }
+
+    /// How hard the model thinks; its reasoning is kept for the provider
+    /// that wrote it and never shown as the answer.
+    pub fn reasoning(mut self, effort: Effort) -> Self {
+        self.reasoning = Some(effort);
         self
     }
 
@@ -254,7 +263,7 @@ impl Agent {
                 // in the file by an earlier run would only repeat it.
                 None => session.messages().iter().filter(|m| m.summary_of().is_none()).cloned().collect(),
             };
-            let request = ModelRequest { model: &self.model, system: &system, messages: &view, tools: specs };
+            let request = ModelRequest { model: &self.model, system: &system, messages: &view, tools: specs, reasoning: self.reasoning };
             let mut forward = |event: ProviderEvent| {
                 on_event(match event {
                     ProviderEvent::TextDelta(text) => Event::TextDelta(text),
@@ -848,5 +857,21 @@ mod tests {
         let resent = &p.seen()[1];
         assert_eq!(resent.len(), 2, "no extra message is added to continue");
         assert_eq!(resent[1].text(), "Searching");
+    }
+
+    #[tokio::test]
+    async fn the_reasoning_effort_reaches_every_model_call() {
+        struct Seen(std::sync::Mutex<Vec<Option<crate::provider::Effort>>>);
+        #[async_trait::async_trait]
+        impl Provider for Seen {
+            async fn complete(&self, request: ModelRequest<'_>) -> Result<crate::provider::ModelResponse> {
+                self.0.lock().unwrap().push(request.reasoning);
+                Ok(Scripted::text("ok"))
+            }
+        }
+        let seen = Arc::new(Seen(Default::default()));
+        let agent = Agent::with_provider(seen.clone(), "m").reasoning(crate::provider::Effort::High);
+        agent.run("think").await.unwrap();
+        assert_eq!(*seen.0.lock().unwrap(), vec![Some(crate::provider::Effort::High)]);
     }
 }

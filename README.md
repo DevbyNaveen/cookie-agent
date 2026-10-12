@@ -21,6 +21,11 @@ You always name the model (`provider:model`); there is no default.
 Keys are read from the environment and never enter the conversation.
 Every provider streams its replies.
 
+`.reasoning(Effort::High)` asks the model to think first (Anthropic adaptive
+thinking, OpenAI `reasoning_effort`, Gemini `thinkingLevel`, Bedrock
+`outputConfig.effort`). What it thinks is kept as the provider sent it and
+sent back only to that provider; it is never the answer and never trusted.
+
 ## Five concepts
 
 | | |

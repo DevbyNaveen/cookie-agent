@@ -28,11 +28,34 @@ pub enum StopReason {
     PauseTurn,
 }
 
+/// How hard the model should think before answering. Each provider maps it
+/// to its own setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+}
+
+impl Effort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+        }
+    }
+}
+
+#[derive(Default)]
 pub struct ModelRequest<'a> {
     pub model: &'a str,
     pub system: &'a str,
     pub messages: &'a [Message],
     pub tools: Vec<&'a ToolSpec>,
+    /// Reasoning effort; the provider's own default when `None`.
+    pub reasoning: Option<Effort>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
