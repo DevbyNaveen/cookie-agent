@@ -17,14 +17,14 @@ use crate::{
     provider::{ModelRequest, Provider, ProviderEvent, StopReason, Usage},
     providers,
     session::Session,
-    tool::{valid_tool_name, Tool},
+    tool::{valid_tool_name, Effect, Spend, Tool, ToolContext},
 };
 
 pub struct Agent {
     model: String,
     provider: Arc<dyn Provider>,
     instructions: String,
-    tools: Vec<Arc<dyn Tool>>,
+    pub(crate) tools: Vec<Arc<dyn Tool>>,
     policy: Policy,
     approver: Arc<dyn Approver>,
     budget: Budget,
@@ -32,6 +32,13 @@ pub struct Agent {
 }
 
 type Call = (String, String, Value);
+
+/// Where a run starts from: what is trusted, what it may spend, how deep it is.
+struct Start {
+    provenance: Provenance,
+    budget: Budget,
+    depth: usize,
+}
 
 /// What a run reports while it happens. New kinds of event may be added,
 /// so match with a `_` arm.
@@ -136,7 +143,9 @@ impl Agent {
         on_event: &mut (dyn FnMut(Event) + Send),
     ) -> Result<String> {
         let mut open = Vec::new();
-        let result = self.turns(session, input, control, on_event, &mut open).await;
+        let mut meter = Meter::default();
+        let start = Start { provenance: Provenance::default(), budget: self.budget, depth: 0 };
+        let result = self.turns(session, input, control, on_event, &mut open, start, &mut meter).await;
         if result.is_err() {
             for id in open {
                 on_event(Event::ToolFinished { id, is_error: true });
@@ -145,6 +154,26 @@ impl Agent {
         result
     }
 
+    /// Run as a sub-agent: a fresh context holding only the task, the
+    /// parent's provenance, at most the parent's remaining budget, and the
+    /// parent's cancellation. Returns what it spent either way.
+    pub(crate) async fn run_delegated(&self, task: &str, context: &ToolContext) -> (Result<String>, Spend) {
+        let mut session = Session::in_memory();
+        let control = RunControl { cancel: context.cancel.clone(), finish_turn: CancellationToken::new() };
+        let budget = Budget {
+            max_steps: self.budget.max_steps.min(context.budget.max_steps),
+            max_tokens: self.budget.max_tokens.min(context.budget.max_tokens),
+        };
+        let start = Start { provenance: context.provenance.clone(), budget, depth: context.depth + 1 };
+        let mut meter = Meter::default();
+        let mut open = Vec::new();
+        let result = self
+            .turns(&mut session, Message::delegated(task), &control, &mut |_| {}, &mut open, start, &mut meter)
+            .await;
+        (result, meter.spent())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn turns(
         &self,
         session: &mut Session,
@@ -152,28 +181,31 @@ impl Agent {
         control: &RunControl,
         on_event: &mut (dyn FnMut(Event) + Send),
         open: &mut Vec<String>,
+        start: Start,
+        meter: &mut Meter,
     ) -> Result<String> {
         let cancel = &control.cancel;
+        let budget = start.budget;
         self.check_tools()?;
         session.repair().await?;
         session.append(input).await?;
-        // The developer's instructions are not credited as the person's words:
-        // destinations they name belong in `Policy::allow`.
-        let mut provenance = Provenance::default();
+        // Starts from what the parent knew (empty at the top): the developer's
+        // instructions are not credited as the person's words, and a delegated
+        // task is the parent model's words, so neither is trusted here.
+        let mut provenance = start.provenance;
         session.messages().iter().for_each(|m| provenance.observe(m));
-        let mut meter = Meter::default();
         let mut loop_guard = LoopGuard::default();
 
         loop {
             if cancel.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            meter.check(&self.budget)?;
+            meter.check(&budget)?;
             let view = match &self.compaction {
                 Some(policy) => {
                     // A failed summary must not block the session: report it and
                     // send the full view (cancellation still stops the run).
-                    match self.compact(session, policy, &mut meter, cancel, on_event).await {
+                    match self.compact(session, policy, meter, &budget, cancel, on_event).await {
                         Ok(()) => {}
                         Err(Error::Cancelled) => return Err(Error::Cancelled),
                         Err(error) => on_event(Event::CompactionFailed { reason: error.to_string() }),
@@ -218,7 +250,16 @@ impl Agent {
                 return Ok(answer);
             }
 
-            let (results, cancelled) = self.run_calls(&calls, &provenance, &mut loop_guard, cancel, on_event).await?;
+            let context = ToolContext {
+                cancel: cancel.child_token(),
+                provenance: provenance.clone(),
+                budget: meter.remaining(&budget),
+                depth: start.depth,
+                spend: Default::default(),
+            };
+            let outcome = self.run_calls(&calls, &provenance, &mut loop_guard, &context, on_event).await;
+            meter.absorb(*context.spend.lock().expect("spend lock"));
+            let (results, cancelled) = outcome?;
             for result in &results {
                 if let Content::ToolResult { id, is_error, .. } = result {
                     open.retain(|open_id| open_id != id);
@@ -252,6 +293,22 @@ impl Agent {
                 return Err(Error::Tool(format!("two tools are called `{name}`; give one a prefix")));
             }
         }
+        // One writer per tree: this agent (if any of its own tools change
+        // things) and every writer sub-agent count; more than one is refused.
+        let own = self.tools.iter().any(|t| !t.is_subagent() && t.spec().effect != Effect::Read);
+        let writers: Vec<&str> = self
+            .tools
+            .iter()
+            .filter(|t| t.is_subagent() && t.spec().effect != Effect::Read)
+            .map(|t| t.spec().name.as_str())
+            .collect();
+        if usize::from(own) + writers.len() > 1 {
+            return Err(Error::Tool(format!(
+                "only one agent in a tree may change things; writers here: {}{}",
+                if own { "this agent, " } else { "" },
+                writers.join(", ")
+            )));
+        }
         Ok(())
     }
 
@@ -264,6 +321,7 @@ impl Agent {
         session: &mut Session,
         policy: &Compaction,
         meter: &mut Meter,
+        budget: &Budget,
         cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(Event) + Send),
     ) -> Result<()> {
@@ -292,7 +350,7 @@ impl Agent {
         };
         source.push(Message::user("Write the summary now."));
 
-        meter.check(&self.budget)?;
+        meter.check(budget)?;
         let request = ModelRequest { model: &self.model, system: SUMMARY_PROMPT, messages: &source, tools: Vec::new() };
         let reply = tokio::select! {
             reply = self.provider.complete(request) => reply?,
@@ -322,9 +380,10 @@ impl Agent {
         calls: &[Call],
         provenance: &Provenance,
         loop_guard: &mut LoopGuard,
-        cancel: &CancellationToken,
+        context: &ToolContext,
         on_event: &mut (dyn FnMut(Event) + Send),
     ) -> Result<(Vec<Content>, bool)> {
+        let cancel = &context.cancel;
         let mut outcomes: Vec<Option<(String, bool)>> = vec![None; calls.len()];
         let mut approved: Vec<(usize, Arc<dyn Tool>)> = Vec::new();
 
@@ -351,7 +410,7 @@ impl Agent {
 
         let run_one = |index: usize, tool: Arc<dyn Tool>| {
             let args = calls[index].2.clone();
-            async move { (index, tool.call(args).await) }
+            async move { (index, tool.call_in(args, context).await) }
         };
         let mut cancelled = false;
         if approved.iter().all(|(_, tool)| tool.spec().parallel_safe) {

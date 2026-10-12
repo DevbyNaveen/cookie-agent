@@ -15,6 +15,7 @@ pub mod provider;
 pub mod providers;
 pub mod session;
 pub mod skills;
+pub mod subagent;
 pub mod tool;
 
 pub use agent::{Agent, Event, RunControl};
@@ -32,3 +33,4 @@ pub use tool::{tool, Effect, FnTool, Tool, ToolSpec};
 pub use tokio_util::sync::CancellationToken;
 pub use mcp::{McpClient, McpServer, McpTools};
 pub use skills::{read_agents_md, Skills};
+pub use subagent::SubAgent;

@@ -48,6 +48,12 @@ impl Message {
         Self { role: Role::User, content: vec![Content::Text { text: text.into() }], origin: Origin::Untrusted(source), summary_of: None }
     }
 
+    /// A task written by another agent's model: followed as an instruction,
+    /// never credited as the person's words.
+    pub(crate) fn delegated(task: impl Into<String>) -> Self {
+        Self { role: Role::User, content: vec![Content::Text { text: task.into() }], origin: Origin::Model, summary_of: None }
+    }
+
     pub(crate) fn assistant(content: Vec<Content>) -> Self {
         Self { role: Role::Assistant, content, origin: Origin::Model, summary_of: None }
     }

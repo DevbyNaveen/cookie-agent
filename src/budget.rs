@@ -33,6 +33,24 @@ impl Meter {
         self.tokens += usage.input_tokens + usage.output_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
     }
 
+    /// What is left of `budget` after what this meter has counted.
+    pub(crate) fn remaining(&self, budget: &Budget) -> Budget {
+        Budget {
+            max_steps: budget.max_steps.saturating_sub(self.steps),
+            max_tokens: budget.max_tokens.saturating_sub(self.tokens),
+        }
+    }
+
+    /// Count what a sub-agent spent on this run's behalf.
+    pub(crate) fn absorb(&mut self, spend: crate::tool::Spend) {
+        self.steps += spend.steps;
+        self.tokens += spend.tokens;
+    }
+
+    pub(crate) fn spent(&self) -> crate::tool::Spend {
+        crate::tool::Spend { steps: self.steps, tokens: self.tokens }
+    }
+
     pub(crate) fn check(&self, budget: &Budget) -> Result<()> {
         if self.steps >= budget.max_steps {
             return Err(Error::Budget(format!("{} model calls (limit {})", self.steps, budget.max_steps)));

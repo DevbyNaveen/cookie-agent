@@ -67,6 +67,22 @@ you can pin it. Skills (`SKILL.md`) are offered through one `use_skill`
 tool and loaded on demand; `read_agents_md` gives you `AGENTS.md` to put in
 your instructions — nothing is added behind your back.
 
+## Several agents
+
+```rust
+let researcher = SubAgent::reader("research", "Looks things up", research_agent)?;
+let mailer = SubAgent::writer("mailer", "Sends email", mail_agent)?;
+let lead = Agent::new("anthropic:claude-sonnet-4-6")?.tool(researcher).tool(mailer);
+```
+
+A sub-agent is a tool: it runs in a fresh context that holds only its task,
+and its answer comes back as untrusted output. It inherits the parent's
+trust exactly — a recipient the parent couldn't use, the child can't use
+either, because the task is the parent model's words, not the person's.
+Readers hold only `Read` tools; one agent per tree may change things.
+Children spend from the parent's budget and stop when the parent is
+cancelled. Delegation goes at most 3 levels deep.
+
 ## Long sessions
 
 `.compaction(Compaction { clear_tool_results_after, summarize_above_tokens, keep_recent_turns })`
