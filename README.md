@@ -158,6 +158,45 @@ Readers hold only `Read` tools; one agent per tree may change things.
 Children spend from the parent's budget and stop when the parent is
 cancelled. Delegation goes at most 3 levels deep.
 
+## Shell commands, sandboxed
+
+```rust
+let sandbox = cookie_harness::sandbox::detect().expect("no sandbox here");
+let agent = Agent::new("anthropic:claude-sonnet-4-6")?.tool(command_tool("sh", sandbox, "./work")?);
+```
+
+`command_tool` runs `sh -c <command>` in one directory, the only place it may
+write; it has no network, a cleared environment (keys never reach it), a
+timeout (60 s, `.timeout(..)`), and stdout/stderr cut at 32 KB each, saying
+so. `detect()` picks macOS `sandbox-exec` (Seatbelt; Apple marks it
+deprecated, it still ships) or Linux `bwrap`, after trying it once; with
+neither it returns `None` and you choose `NoSandbox`, which confines nothing.
+The command is the model's choice, so it is a `Write` tool: after the run has
+read anything untrusted, a person is asked first, shown the command.
+Seatbelt does not stop a command asking another process (over XPC) to act
+for it; bubblewrap needs unprivileged user namespaces.
+
+## Other parties' agents (A2A)
+
+```rust
+let planner = A2aAgent::discover("https://planner.example.com").await?
+    .credential("bearer", &token)?;            // only if you have one; a scheme its card declares
+let agent = Agent::new("anthropic:claude-sonnet-4-6")?.tool(planner.tool("route_planner"));
+```
+
+`discover` reads `/.well-known/agent-card.json` (https, or plain http to this
+machine; no redirects; capped at 4 MB) and uses the first JSON-RPC A2A 1.x
+interface the card lists. The tool sends one text message (`SendMessage`),
+polls `GetTask` until the task ends, and cancels it (`CancelTask`) when the run
+is cancelled or `.timeout(..)` (300 s) passes. Sending a task to someone else
+is `Outbound`, so a person is always asked. What comes back is untrusted tool
+output and starts with the agent's name and host. A credential is sent only
+when you give one, the way the card's scheme says (HTTP auth, an API key in a
+header, or an OAuth/OpenID bearer token you obtained); none is ever made up.
+`AgentCard::new(..).jsonrpc(url).skill(..)` writes a card in the spec's JSON
+shape, for when a cookie agent is served. Streaming, push notifications,
+signed cards and the extended card are not used yet.
+
 ## Long sessions
 
 `.compaction(Compaction { clear_tool_results_after, summarize_above_tokens, keep_recent_turns, ..Compaction::default() })` (`.with_prompt(..)` replaces the summary instruction)

@@ -1,6 +1,7 @@
 //! Cookie Agent Harness: a tiny agent loop where text the model read can
 //! never, on its own, decide who gets sent what.
 
+pub mod a2a;
 pub mod agent;
 pub mod approval;
 mod artifacts;
@@ -20,6 +21,7 @@ pub mod provider;
 pub mod providers;
 pub mod quarantine;
 pub mod replay;
+pub mod sandbox;
 pub mod serve;
 pub mod session;
 pub mod skills;
@@ -51,3 +53,5 @@ pub use trust::EarnedTrust;
 pub use quarantine::{quarantine, Quarantined, QUARANTINE_PROMPT};
 pub use handoff::Handoff;
 pub use tool_search::ToolSearch;
+pub use sandbox::{command_tool, CommandTool, NoSandbox, Sandbox};
+pub use a2a::{A2aAgent, A2aTool, AgentCard};

@@ -20,6 +20,8 @@ pub enum Error {
     Tool(String),
     #[error("mcp: {0}")]
     Mcp(String),
+    #[error("a2a: {0}")]
+    A2a(String),
     #[error("skill: {0}")]
     Skill(String),
     #[error("session: {0}")]
