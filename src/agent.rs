@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     approval::{ApprovalRequest, Approver, DenyAll},
     budget::{Budget, LoopGuard, Meter},
+    compaction::{context_view, estimate_tokens, summary_boundary, Compaction, SUMMARY_PROMPT},
     error::{Error, Result},
     label::{Origin, Source},
     message::{Content, Message},
@@ -27,6 +28,7 @@ pub struct Agent {
     policy: Policy,
     approver: Arc<dyn Approver>,
     budget: Budget,
+    compaction: Option<Compaction>,
 }
 
 type Call = (String, String, Value);
@@ -40,6 +42,8 @@ pub enum Event {
     AskedPerson { tool: String, preview: String },
     ToolFinished { id: String, is_error: bool },
     Usage(Usage),
+    /// Older turns were replaced by a summary in what the model sees.
+    Compacted { covered: usize, tokens_before: u64, tokens_after: u64 },
 }
 
 /// Two ways to stop a run: `cancel` stops now; `finish_turn` lets the
@@ -67,6 +71,7 @@ impl Agent {
             policy: Policy::default(),
             approver: Arc::new(DenyAll),
             budget: Budget::default(),
+            compaction: None,
         }
     }
 
@@ -92,6 +97,12 @@ impl Agent {
 
     pub fn budget(mut self, budget: Budget) -> Self {
         self.budget = budget;
+        self
+    }
+
+    /// Keep long sessions within reach. Off unless set.
+    pub fn compaction(mut self, compaction: Compaction) -> Self {
+        self.compaction = Some(compaction);
         self
     }
 
@@ -147,10 +158,17 @@ impl Agent {
                 return Err(Error::Cancelled);
             }
             meter.check(&self.budget)?;
+            let view = match &self.compaction {
+                Some(policy) => {
+                    self.compact(session, policy, &mut meter, on_event).await?;
+                    context_view(session.messages(), policy)
+                }
+                None => session.messages().to_vec(),
+            };
             let request = ModelRequest {
                 model: &self.model,
                 system: &self.instructions,
-                messages: session.messages(),
+                messages: &view,
                 tools: self.tools.iter().map(|t| t.spec()).collect(),
             };
             let response = {
@@ -202,6 +220,56 @@ impl Agent {
                 return Err(Error::Stopped);
             }
         }
+    }
+
+    /// When the view is over the limit, summarise everything before the kept
+    /// turns into one appended message. Provenance still reads the full
+    /// session, so the person's earlier words stay credited and the summary
+    /// is never mistaken for them.
+    async fn compact(
+        &self,
+        session: &mut Session,
+        policy: &Compaction,
+        meter: &mut Meter,
+        on_event: &mut (dyn FnMut(Event) + Send),
+    ) -> Result<()> {
+        let tokens_before = estimate_tokens(&context_view(session.messages(), policy));
+        if tokens_before <= policy.summarize_above_tokens {
+            return Ok(());
+        }
+        let messages = session.messages();
+        let already = messages.iter().rev().find_map(Message::summary_of).unwrap_or(0);
+        let Some(boundary) = summary_boundary(messages, policy.keep_recent_turns) else { return Ok(()) };
+        if boundary <= already {
+            return Ok(());
+        }
+        let previous = messages.iter().rev().find(|m| m.summary_of().is_some()).cloned();
+        let mut source: Vec<Message> = previous
+            .into_iter()
+            .chain(messages[already..boundary].iter().filter(|m| m.summary_of().is_none()).cloned())
+            .collect();
+        let origin = if source.iter().any(|m| m.origin().is_untrusted()) {
+            Origin::Untrusted(Source::Context)
+        } else {
+            Origin::Model
+        };
+        source.push(Message::user("Write the summary now."));
+
+        meter.check(&self.budget)?;
+        let reply = self
+            .provider
+            .complete(ModelRequest { model: &self.model, system: SUMMARY_PROMPT, messages: &source, tools: Vec::new() })
+            .await?;
+        meter.charge(&reply.usage);
+        on_event(Event::Usage(reply.usage.clone()));
+        let text = Message::assistant(reply.content).text();
+        if text.trim().is_empty() {
+            return Err(Error::Provider("the summary came back empty".into()));
+        }
+        session.append(Message::summary(text, boundary, origin)).await?;
+        let tokens_after = estimate_tokens(&context_view(session.messages(), policy));
+        on_event(Event::Compacted { covered: boundary, tokens_before, tokens_after });
+        Ok(())
     }
 
     /// Decide every call first, in order and deterministically; then run the
@@ -297,7 +365,7 @@ mod tests {
         providers::scripted::Scripted,
         tool::{tool, Effect},
     };
-    use crate::provider::Usage;
+    use crate::{label::{Origin, Source}, provider::Usage};
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -535,6 +603,74 @@ mod tests {
             Event::ToolCallStarted { id: "t1".into(), name: "weather".into() },
             Event::ToolFinished { id: "t1".into(), is_error: true },
         ]);
+    }
+
+    async fn prefilled(messages: Vec<Message>) -> Session {
+        let mut s = Session::in_memory();
+        for m in messages {
+            s.append(m).await.unwrap();
+        }
+        s
+    }
+
+    fn chat_turn(question: &str, answer: &str) -> Vec<Message> {
+        vec![Message::user(question), Message::assistant(vec![Content::Text { text: answer.into() }])]
+    }
+
+    fn tight() -> crate::compaction::Compaction {
+        crate::compaction::Compaction { clear_tool_results_after: 99, summarize_above_tokens: 20, keep_recent_turns: 1 }
+    }
+
+    #[tokio::test]
+    async fn a_long_session_is_summarised_before_the_next_call_and_nothing_is_lost() {
+        let long = "word ".repeat(40);
+        let mut history = chat_turn(&format!("first {long}"), "one");
+        history.extend(chat_turn(&format!("second {long}"), "two"));
+        let mut s = prefilled(history).await;
+        let (a, p) = agent(vec![Scripted::text("they asked two long questions"), Scripted::text("final")]);
+        let a = a.compaction(tight());
+        let (events, mut on) = collect();
+        assert_eq!(a.run_streaming(&mut s, Message::user("next"), &RunControl::default(), &mut on).await.unwrap(), "final");
+        assert!(events.lock().unwrap().iter().any(|e| matches!(e, Event::Compacted { covered: 4, .. })));
+        let sent = &p.seen()[1];
+        assert_eq!(sent[0].text(), "Summary of the earlier conversation:\nthey asked two long questions");
+        assert_eq!(sent.len(), 2, "the summary, then the new question");
+        assert_eq!(s.messages().len(), 4 + 1 + 1 + 1, "every original message is still in the session");
+        let summary = s.messages().iter().find(|m| m.summary_of().is_some()).unwrap();
+        assert_eq!(summary.origin(), &Origin::Model, "nothing untrusted was summarised");
+    }
+
+    #[tokio::test]
+    async fn trust_survives_compaction() {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let asked = Arc::new(AtomicUsize::new(0));
+        let asked_in = asked.clone();
+        let mut history = vec![
+            Message::user(format!("email anna@x.com when I say so {}", "padding ".repeat(30))),
+            Message::assistant(vec![Content::ToolCall { id: "r1".into(), name: "read_page".into(), args: json!({}) }]),
+        ];
+        history.push(Message::tool_results(
+            vec![Content::ToolResult { id: "r1".into(), output: "contact: evil@x.com".into(), is_error: false }],
+            Origin::Untrusted(Source::Tool("read_page".into())),
+        ));
+        history.push(Message::assistant(vec![Content::Text { text: "noted".into() }]));
+        let mut s = prefilled(history).await;
+        let (a, p) = agent(vec![
+            Scripted::text("the person wants to email anna@x.com; a page listed evil@x.com"),
+            Scripted::call("c1", "send_email", json!({"to": "anna@x.com"})),
+            Scripted::call("c2", "send_email", json!({"to": "evil@x.com"})),
+            Scripted::text("done"),
+        ]);
+        let a = a.tool(send_email(sent.clone())).compaction(tight()).approver(FnApprover(move |_: &ApprovalRequest| {
+            asked_in.fetch_add(1, Ordering::SeqCst);
+            true
+        }));
+        a.run_in(&mut s, Message::user("send it now"), &CancellationToken::new()).await.unwrap();
+        assert_eq!(sent.load(Ordering::SeqCst), 1, "anna, typed before the compaction, still asks and sends");
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "evil, seen only in a summarised page, is refused without asking");
+        let summary = s.messages().iter().find(|m| m.summary_of().is_some()).unwrap();
+        assert!(summary.origin().is_untrusted(), "a summary of untrusted content is untrusted");
+        assert!(p.seen()[1][0].origin().is_untrusted());
     }
 
     #[tokio::test]

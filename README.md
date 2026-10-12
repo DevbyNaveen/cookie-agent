@@ -47,6 +47,14 @@ See `examples/outbound_gate.rs`: a web page tells the agent to email
 Prompt injection is not solved by this. It limits what an injected
 model can *do*.
 
+## Long sessions
+
+`.compaction(Compaction { clear_tool_results_after, summarize_above_tokens, keep_recent_turns })`
+clears old tool output from what the model sees and, past the token limit,
+replaces older turns with a summary (`SUMMARY_PROMPT`, public). The session
+file keeps every message. What the person wrote before a summary still
+counts as theirs; a summary of untrusted content stays untrusted.
+
 ## Licence
 
 MIT
