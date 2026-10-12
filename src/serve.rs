@@ -4,7 +4,7 @@
 //! client's `approve`, and no answer means no action.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -24,7 +24,9 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     agent::{Agent, RunControl},
     approval::{ApprovalRequest, Approver},
+    budget::Budget,
     error::Result,
+    mcp::McpServer,
     message::Message,
     policy::Policy,
     session::Session,
@@ -55,6 +57,82 @@ pub struct RunRequest {
     /// `false` turns Enkeon off for this run.
     #[serde(default)]
     pub enkeon: Option<bool>,
+    /// Limits for this run; a limit left out keeps its default.
+    #[serde(default)]
+    pub budget: Option<BudgetDecl>,
+    /// MCP servers connected for this run only.
+    #[serde(default)]
+    pub mcp: Vec<McpDecl>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BudgetDecl {
+    #[serde(default)]
+    pub max_steps: Option<usize>,
+    #[serde(default)]
+    pub max_tokens: Option<u64>,
+}
+
+/// An MCP server: a `command` to start (with `args`) or a `url` (with
+/// `headers`). Every tool asks a person unless `effects` lowers it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpDecl {
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Sent on every request; never echoed back.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    /// Tool name to effect (read, write, outbound, destroy).
+    #[serde(default)]
+    pub effects: BTreeMap<String, String>,
+    /// Tool name to the arguments to guard.
+    #[serde(default)]
+    pub guards: BTreeMap<String, Vec<String>>,
+    /// Refuse the server if its tool list no longer hashes to this.
+    #[serde(default)]
+    pub pin: Option<String>,
+    /// Name its tools `<prefix>__<name>`, to keep servers apart.
+    #[serde(default)]
+    pub prefix: Option<String>,
+}
+
+impl McpDecl {
+    fn server(&self) -> std::result::Result<McpServer, String> {
+        let mut server = match (&self.command, &self.url) {
+            (Some(command), None) => {
+                if !self.headers.is_empty() {
+                    return Err(format!("mcp `{command}`: headers are for a url"));
+                }
+                McpServer::stdio(command, &self.args.iter().map(String::as_str).collect::<Vec<_>>())
+            }
+            (None, Some(url)) => {
+                if !self.args.is_empty() {
+                    return Err("mcp: args are for a command".into());
+                }
+                self.headers.iter().fold(McpServer::http(url), |server, (name, value)| server.header(name, value))
+            }
+            _ => return Err("mcp: each server is a command or a url".into()),
+        };
+        for (tool, name) in &self.effects {
+            server = server.effect(tool, effect(name)?);
+        }
+        for (tool, args) in &self.guards {
+            server = args.iter().fold(server, |server, arg| server.guard(tool, arg));
+        }
+        if let Some(pin) = &self.pin {
+            server = server.pin(pin);
+        }
+        if let Some(prefix) = &self.prefix {
+            server = server.prefix(prefix);
+        }
+        Ok(server)
+    }
 }
 
 /// A tool the client runs itself.
@@ -167,8 +245,15 @@ fn effect(name: &str) -> std::result::Result<Effect, String> {
     serde_json::from_value(json!(name)).map_err(|_| format!("unknown effect `{name}` (read, write, outbound, destroy)"))
 }
 
-fn build(base: Agent, request: &RunRequest, wire: &Arc<Wire>) -> std::result::Result<Agent, String> {
+fn build(base: Agent, request: &RunRequest, wire: &Arc<Wire>) -> std::result::Result<(Agent, Vec<McpServer>), String> {
     let mut agent = base.approver(WireApprover(wire.clone()));
+    if let Some(limits) = &request.budget {
+        let default = Budget::default();
+        agent = agent.budget(Budget {
+            max_steps: limits.max_steps.unwrap_or(default.max_steps),
+            max_tokens: limits.max_tokens.unwrap_or(default.max_tokens),
+        });
+    }
     if let Some(instructions) = &request.instructions {
         agent = agent.instructions(instructions.clone());
     }
@@ -189,7 +274,9 @@ fn build(base: Agent, request: &RunRequest, wire: &Arc<Wire>) -> std::result::Re
         };
         agent = agent.tool(WireTool { spec, wire: wire.clone() });
     }
-    Ok(agent)
+    // Checked here, so a bad entry is refused before the run starts.
+    let servers = request.mcp.iter().map(McpDecl::server).collect::<std::result::Result<_, _>>()?;
+    Ok((agent, servers))
 }
 
 /// Serve runs over a line-delimited JSON stream until the input ends.
@@ -274,15 +361,15 @@ where
                     run: request.id.clone(),
                     cancel: control.cancel.clone(),
                 });
-                let agent = match make_agent(&request).map_err(|e| e.to_string()).and_then(|base| build(base, &request, &wire)) {
-                    Ok(agent) => agent,
+                let (agent, servers) = match make_agent(&request).map_err(|e| e.to_string()).and_then(|base| build(base, &request, &wire)) {
+                    Ok(built) => built,
                     Err(message) => {
                         let _ = out.send(json!({"type": "error", "run": request.id, "message": message}));
                         continue;
                     }
                 };
                 busy.store(true, Ordering::SeqCst);
-                let task = tokio::spawn(run_one(agent, request, control.clone(), out.clone(), busy.clone()));
+                let task = tokio::spawn(run_one(agent, servers, request, control.clone(), out.clone(), busy.clone()));
                 current = Some((control, task));
             }
             kind @ ("approve" | "tool_result") => {
@@ -330,11 +417,11 @@ where
     Ok(())
 }
 
-async fn run_one(agent: Agent, request: RunRequest, control: RunControl, out: Out, busy: Arc<std::sync::atomic::AtomicBool>) {
+async fn run_one(agent: Agent, servers: Vec<McpServer>, request: RunRequest, control: RunControl, out: Out, busy: Arc<std::sync::atomic::AtomicBool>) {
     use futures::FutureExt;
     let id = request.id.clone();
     // A panic inside the run still ends it with an `error` line.
-    let ended = std::panic::AssertUnwindSafe(run_inner(agent, request, control, out.clone())).catch_unwind().await;
+    let ended = std::panic::AssertUnwindSafe(run_inner(agent, servers, request, control, out.clone())).catch_unwind().await;
     let last = match ended {
         Ok(last) => last,
         Err(panic) => {
@@ -347,7 +434,19 @@ async fn run_one(agent: Agent, request: RunRequest, control: RunControl, out: Ou
 }
 
 /// The run itself; returns its last line (`done` or `error`).
-async fn run_inner(agent: Agent, request: RunRequest, control: RunControl, out: Out) -> Value {
+async fn run_inner(mut agent: Agent, servers: Vec<McpServer>, request: RunRequest, control: RunControl, out: Out) -> Value {
+    // Connected here, not in the read loop: a slow server holds up only its
+    // run, and `cancel` stops the wait. Disconnected when the run ends.
+    for server in servers {
+        let connected = tokio::select! {
+            connected = server.connect() => connected,
+            _ = control.cancel.cancelled() => Err(crate::Error::Cancelled),
+        };
+        match connected {
+            Ok(mcp) => agent = agent.tools(mcp.tools),
+            Err(e) => return json!({"type": "error", "run": request.id, "message": e.to_string()}),
+        }
+    }
     let mut session = match &request.session {
         Some(path) => match Session::open(path).await {
             Ok(session) => session,
@@ -602,5 +701,83 @@ mod tests {
         let end = c.next().await;
         assert_eq!((end["type"].as_str(), end["run"].as_str()), (Some("error"), Some("r1")));
         assert!(end["message"].as_str().unwrap().contains("provider bug"));
+    }
+
+    #[tokio::test]
+    async fn a_run_can_carry_its_own_budget() {
+        let tools = json!([{"name": "lookup", "description": "", "schema": {"type": "object"}, "effect": "read"}]);
+        let p = Arc::new(Scripted::new(vec![Scripted::call("c1", "lookup", json!({})), Scripted::text("never")]));
+        let mut c = start(p);
+        let mut message = run("look", tools);
+        message["budget"] = json!({"max_steps": 1});
+        c.send(message).await;
+        let call = c.next().await;
+        c.send(json!({"type": "tool_result", "id": call["id"], "output": "42"})).await;
+        let end = c.next().await;
+        assert_eq!((end["type"].as_str(), end["run"].as_str()), (Some("error"), Some("r1")));
+        assert!(end["message"].as_str().unwrap().contains("1 model calls (limit 1)"), "{end}");
+        c.send(json!({"type": "run", "id": "r2", "model": "x:m", "input": "hi", "budget": {"max_step": 3}})).await;
+        assert!(c.next().await["message"].as_str().unwrap().contains("max_step"), "a misspelled limit is refused");
+    }
+
+    fn with_mcp(id: &str, mcp: Value) -> Value {
+        json!({"type": "run", "id": id, "model": "x:m", "input": "use memory", "mcp": mcp})
+    }
+
+    #[tokio::test]
+    async fn mcp_servers_connect_for_the_run_and_ask_a_person_unless_lowered() {
+        let server = crate::mcp::fake_http::start(crate::mcp::fake_http::Mode::Normal).await;
+        let p = Arc::new(Scripted::new(vec![
+            Scripted::call("m1", "recall", json!({"q": "riga"})),
+            Scripted::call("m2", "remember", json!({"text": "x"})),
+            Scripted::text("done"),
+        ]));
+        let mut c = start(p.clone());
+        c.send(with_mcp("r1", json!([{"url": server.url, "headers": {"Authorization": "Bearer k"}, "effects": {"recall": "read"}}]))).await;
+        let ask = c.next().await;
+        assert_eq!((ask["type"].as_str(), ask["tool"].as_str()), (Some("approval"), Some("remember")), "recall ran without asking; remember asks");
+        c.send(json!({"type": "approve", "id": ask["id"], "allow": false})).await;
+        assert_eq!(c.next().await["answer"], "done");
+        let asked = p.seen();
+        let recalled = &asked[1].last().unwrap().content()[0];
+        assert!(matches!(recalled, crate::message::Content::ToolResult { output, is_error: false, .. } if output.contains("recall")), "{recalled:?}");
+        let seen = server.seen.lock().unwrap().clone();
+        assert!(seen.iter().any(|r| r.method == "tools/call" && r.auth.as_deref() == Some("Bearer k")));
+        assert_eq!(seen.iter().filter(|r| r.method == "tools/call").count(), 1, "the declined remember never reached the server");
+    }
+
+    #[tokio::test]
+    async fn a_server_that_fails_to_connect_or_its_pin_ends_only_that_run() {
+        let server = crate::mcp::fake_http::start(crate::mcp::fake_http::Mode::Normal).await;
+        let p = Arc::new(Scripted::new(vec![Scripted::text("fine")]));
+        let mut c = start(p);
+        c.send(with_mcp("r1", json!([{"url": server.url, "pin": "0000"}]))).await;
+        let end = c.next().await;
+        assert_eq!((end["type"].as_str(), end["run"].as_str()), (Some("error"), Some("r1")));
+        assert!(end["message"].as_str().unwrap().contains("pinned"), "{end}");
+        c.send(with_mcp("r2", json!([{"command": "/nonexistent/cookie-mcp", "args": ["x"]}]))).await;
+        let end = c.next().await;
+        assert_eq!((end["type"].as_str(), end["run"].as_str()), (Some("error"), Some("r2")));
+        c.send(json!({"type": "run", "id": "r3", "model": "x:m", "input": "hi"})).await;
+        assert_eq!(c.next().await["answer"], "fine");
+    }
+
+    #[tokio::test]
+    async fn an_mcp_entry_must_be_a_command_or_a_url_with_known_effects() {
+        let p = Arc::new(Scripted::new(vec![]));
+        let mut c = start(p);
+        for (bad, says) in [
+            (json!([{"command": "x", "url": "https://a"}]), "command or a url"),
+            (json!([{"args": ["x"]}]), "command or a url"),
+            (json!([{"url": "https://a", "args": ["x"]}]), "args"),
+            (json!([{"command": "x", "headers": {"a": "b"}}]), "headers"),
+            (json!([{"command": "x", "effects": {"t": "teleport"}}]), "teleport"),
+            (json!([{"command": "x", "efects": {}}]), "efects"),
+        ] {
+            c.send(with_mcp("r1", bad)).await;
+            let refused = c.next().await;
+            assert_eq!((refused["type"].as_str(), refused["run"].as_str()), (Some("error"), Some("r1")));
+            assert!(refused["message"].as_str().unwrap().contains(says), "{refused}");
+        }
     }
 }

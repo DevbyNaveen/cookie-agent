@@ -94,6 +94,24 @@ person (answer with `approve` — no answer means no), and `done` or `error`.
 `cancel` stops a run now, `finish_turn` after this turn. Your tools go
 through the same gates as Rust ones, and their results are untrusted.
 
+A `run` may also carry, besides `instructions`, `session` (a file to resume),
+`allow` (values the person approved in advance) and `enkeon: false`:
+
+```json
+"budget": {"max_steps": 10, "max_tokens": 50000},
+"mcp": [
+  {"command": "github-mcp", "args": [], "effects": {"search_issues": "read"},
+   "guards": {"create_issue": ["repo"]}, "pin": "3f2a…"},
+  {"url": "https://mcp.example.com/mcp", "headers": {"Authorization": "Bearer …"}, "prefix": "ex"}
+]
+```
+
+A limit left out keeps its default (25 model calls, 200,000 tokens). Each MCP
+server is connected for that run only and works as in Rust: every tool asks
+a person unless `effects` lowers it, and a `pin` refuses a server whose tool
+list changed. A server that can't be reached, or fails its pin, ends that
+run with an `error`. Unknown fields are refused, here as everywhere.
+
 ## Tracing
 
 Every run emits OpenTelemetry GenAI spans through `tracing`:
