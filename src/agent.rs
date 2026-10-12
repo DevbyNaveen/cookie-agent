@@ -105,13 +105,32 @@ impl Agent {
         self.run_streaming(session, input, &control, &mut |_| {}).await
     }
 
-    /// The loop, reporting each step to `on_event` as it happens.
+    /// The loop, reporting each step to `on_event` as it happens. Every
+    /// `ToolCallStarted` is matched by a `ToolFinished`, even when the run fails.
     pub async fn run_streaming(
         &self,
         session: &mut Session,
         input: Message,
         control: &RunControl,
         on_event: &mut (dyn FnMut(Event) + Send),
+    ) -> Result<String> {
+        let mut open = Vec::new();
+        let result = self.turns(session, input, control, on_event, &mut open).await;
+        if result.is_err() {
+            for id in open {
+                on_event(Event::ToolFinished { id, is_error: true });
+            }
+        }
+        result
+    }
+
+    async fn turns(
+        &self,
+        session: &mut Session,
+        input: Message,
+        control: &RunControl,
+        on_event: &mut (dyn FnMut(Event) + Send),
+        open: &mut Vec<String>,
     ) -> Result<String> {
         let cancel = &control.cancel;
         session.repair().await?;
@@ -138,7 +157,10 @@ impl Agent {
                 let mut forward = |event: ProviderEvent| {
                     on_event(match event {
                         ProviderEvent::TextDelta(text) => Event::TextDelta(text),
-                        ProviderEvent::ToolCallStarted { id, name } => Event::ToolCallStarted { id, name },
+                        ProviderEvent::ToolCallStarted { id, name } => {
+                            open.push(id.clone());
+                            Event::ToolCallStarted { id, name }
+                        }
                     })
                 };
                 tokio::select! {
@@ -164,6 +186,7 @@ impl Agent {
             let (results, cancelled) = self.run_calls(&calls, &provenance, &mut loop_guard, cancel, on_event).await?;
             for result in &results {
                 if let Content::ToolResult { id, is_error, .. } = result {
+                    open.retain(|open_id| open_id != id);
                     on_event(Event::ToolFinished { id: id.clone(), is_error: *is_error });
                 }
             }
@@ -481,6 +504,37 @@ mod tests {
         assert!(matches!(out, Err(Error::Stopped)));
         assert_eq!(p.seen().len(), 1, "no second model call");
         assert!(matches!(&s.messages().last().unwrap().content()[0], Content::ToolResult { id, is_error: false, .. } if id == "c1"));
+    }
+
+    /// Starts a tool call, then fails mid-stream.
+    struct StartsThenFails;
+
+    #[async_trait::async_trait]
+    impl Provider for StartsThenFails {
+        async fn complete(&self, _: ModelRequest<'_>) -> Result<crate::provider::ModelResponse> {
+            unreachable!()
+        }
+
+        async fn stream(
+            &self,
+            _: ModelRequest<'_>,
+            on: &mut (dyn FnMut(ProviderEvent) + Send),
+        ) -> Result<crate::provider::ModelResponse> {
+            on(ProviderEvent::ToolCallStarted { id: "t1".into(), name: "weather".into() });
+            Err(Error::Provider("overloaded".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn every_started_tool_call_is_finished_even_when_the_run_fails() {
+        let a = Agent::with_provider(Arc::new(StartsThenFails), "m").tool(weather());
+        let (events, mut on) = collect();
+        let mut s = Session::in_memory();
+        assert!(a.run_streaming(&mut s, Message::user("weather?"), &RunControl::default(), &mut on).await.is_err());
+        assert_eq!(*events.lock().unwrap(), vec![
+            Event::ToolCallStarted { id: "t1".into(), name: "weather".into() },
+            Event::ToolFinished { id: "t1".into(), is_error: true },
+        ]);
     }
 
     #[tokio::test]

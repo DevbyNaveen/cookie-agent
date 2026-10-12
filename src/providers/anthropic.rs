@@ -64,11 +64,21 @@ fn source_name(source: &Source) -> String {
     }
 }
 
-/// A tag no page can know in advance: closing it early needs this request's nonce.
-fn fence_tag() -> String {
-    use std::hash::BuildHasher;
-    let nonce = std::collections::hash_map::RandomState::new().hash_one(std::time::SystemTime::now());
-    format!("untrusted-{nonce:016x}")
+/// A tag no page can know in advance (a secret drawn once per process),
+/// but the same for every request in one conversation, so the prompt cache
+/// keeps hitting: it is keyed on the conversation's first message.
+fn fence_tag(messages: &[Message]) -> String {
+    use std::{
+        collections::hash_map::RandomState,
+        hash::{BuildHasher, Hash, Hasher},
+        sync::OnceLock,
+    };
+    static SECRET: OnceLock<RandomState> = OnceLock::new();
+    let mut hasher = SECRET.get_or_init(RandomState::new).build_hasher();
+    if let Some(first) = messages.first() {
+        serde_json::to_string(first).unwrap_or_default().hash(&mut hasher);
+    }
+    format!("untrusted-{:016x}", hasher.finish())
 }
 
 fn fence(text: &str, source: &Source, tag: &str) -> String {
@@ -104,7 +114,7 @@ fn block(content: &Content, origin: &Origin, tag: &str) -> Option<Value> {
 /// tool, and the last block of the conversation (so each turn reuses the
 /// prefix the previous turn wrote).
 pub fn request_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> Value {
-    let tag = fence_tag();
+    let tag = fence_tag(request.messages);
     let cache = json!({"type": "ephemeral"});
     let mut messages: Vec<Value> = request
         .messages
@@ -549,5 +559,23 @@ mod tests {
         let mut asm = SseAssembler::default();
         asm.feed(STREAM.split("event: message_delta").next().unwrap().as_bytes(), &mut |_| {}).unwrap();
         assert!(matches!(asm.finish(), Err(Error::Provider(_))));
+    }
+
+    #[test]
+    fn the_same_conversation_is_fenced_the_same_way_so_the_cache_can_hit() {
+        let history = vec![
+            Message::user("summarise the page"),
+            Message::untrusted("page text", Source::Web),
+            Message::tool_results(
+                vec![Content::ToolResult { id: "t1".into(), output: "9°C".into(), is_error: false }],
+                crate::label::Origin::Untrusted(Source::Tool("weather".into())),
+            ),
+        ];
+        let req = || ModelRequest { model: "m", system: "", messages: &history, tools: vec![] };
+        assert_eq!(request_body(&req(), 10, true)["messages"], request_body(&req(), 10, true)["messages"]);
+        let other = vec![Message::user("a different conversation"), Message::untrusted("page text", Source::Web)];
+        let other_req = ModelRequest { model: "m", system: "", messages: &other, tools: vec![] };
+        let tag_of = |body: &Value, i: usize| body["messages"][i]["content"][0]["text"].as_str().unwrap().split(' ').next().unwrap().to_string();
+        assert_ne!(tag_of(&request_body(&req(), 10, false), 1), tag_of(&request_body(&other_req, 10, false), 1));
     }
 }
