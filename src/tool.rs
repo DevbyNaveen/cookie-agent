@@ -80,6 +80,8 @@ pub struct ToolContext {
     /// How many delegations deep this call is.
     pub(crate) depth: usize,
     pub(crate) spend: Arc<Mutex<Spend>>,
+    /// The pools of the batches above this one (see `Meter`).
+    pub(crate) pools: Vec<crate::budget::Pool>,
     /// Events from sub-agents, handed to the caller when the call returns.
     pub(crate) events: Arc<Mutex<Vec<crate::agent::Event>>>,
     /// The run's own policy: a sub-agent allows only what this allows too.

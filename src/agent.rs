@@ -309,6 +309,7 @@ impl Agent {
                 // in the file by an earlier run would only repeat it.
                 None => session.messages().iter().filter(|m| m.summary_of().is_none()).cloned().collect(),
             };
+            meter.begin_call(&budget)?;
             let request = ModelRequest { model: &self.model, system: &system, messages: &view, tools: specs };
             let mut forward = |event: ProviderEvent| {
                 on_event(match event {
@@ -350,6 +351,7 @@ impl Agent {
                 budget: meter.remaining(&budget),
                 depth: start.depth,
                 spend: Default::default(),
+                pools: meter.pools(),
                 events: Default::default(),
                 policy: Some(policy.clone()),
                 approver: Some(approver.clone()),

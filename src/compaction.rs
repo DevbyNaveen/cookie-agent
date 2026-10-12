@@ -171,7 +171,7 @@ impl crate::agent::Agent {
         let origin = if source.iter().any(|m| m.origin().is_untrusted()) { Origin::Untrusted(Source::Context) } else { Origin::Model };
         source.push(Message::user("Write the summary now."));
 
-        meter.check(budget)?;
+        meter.begin_call(budget)?;
         let request = ModelRequest { model: &self.model, system: policy.prompt(), messages: &source, tools: Vec::new() };
         let span = crate::telemetry::chat_span(&self.model, self.provider_name.as_deref());
         let reply = tokio::select! {

@@ -99,18 +99,11 @@ impl Agent {
         input: crate::message::Message,
         context: &ToolContext,
     ) -> (Result<String>, Spend, Vec<Event>) {
-        use crate::{agent::{RunControl, Start}, budget::{Budget, Meter}, session::Session};
+        use crate::{agent::{RunControl, Start}, budget::Meter, session::Session};
         use tracing::Instrument;
         let mut session = Session::in_memory();
         let control = RunControl { cancel: context.cancel.clone(), finish_turn: tokio_util::sync::CancellationToken::new() };
-        let budget = Budget {
-            max_steps: self.budget.max_steps.min(context.budget.max_steps),
-            max_tokens: self.budget.max_tokens.min(context.budget.max_tokens),
-            max_dollars: match (self.budget.max_dollars, context.budget.max_dollars) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            },
-        };
+        let budget = self.budget.min(&context.budget);
         let mut events = Vec::new();
         let extra = match self.enkeon_tools(true, &context.cancel, &mut |e| events.push(e)).await {
             Ok(extra) => extra,
@@ -125,7 +118,8 @@ impl Agent {
             inherited_approver: context.approver.clone(),
         };
         // Charged live to the parent's batch, so siblings share what is left.
-        let mut meter = Meter::pooled(context.spend.clone(), context.budget);
+        let pools = context.pools.iter().cloned().chain([(context.spend.clone(), context.budget)]).collect();
+        let mut meter = Meter::pooled(pools);
         let mut open = Vec::new();
         let span = crate::telemetry::agent_span(Some(name), &self.model, self.provider_name.as_deref());
         let result = self
@@ -389,5 +383,39 @@ mod tests {
         let parent = parent.tool(SubAgent::writer("mailer", "x", child).unwrap()).approver(FnApprover(|_: &ApprovalRequest| true));
         parent.run("email anna@x.com").await.unwrap();
         assert_eq!(sent.load(Ordering::SeqCst), 1);
+    }
+
+    /// Yields before answering, so siblings really interleave.
+    struct Yielding(Arc<Scripted>);
+
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for Yielding {
+        async fn complete(&self, request: crate::provider::ModelRequest<'_>) -> crate::Result<crate::provider::ModelResponse> {
+            tokio::task::yield_now().await;
+            self.0.complete(request).await
+        }
+    }
+
+    #[tokio::test]
+    async fn grandchildren_of_parallel_siblings_share_what_the_top_has_left() {
+        let weather = || tool("weather", "w", json!({"type": "object"}), Effect::Read, |_| async move { Ok("9C".to_string()) }).parallel_safe();
+        let mut seen = Vec::new();
+        let mut child = |name: &str| {
+            let g = Arc::new(Scripted::new((1..=3).map(|i| Scripted::call(&format!("w{i}"), "weather", json!({"n": i}))).chain([Scripted::text("g")]).collect()));
+            seen.push(g.clone());
+            let grandchild = Agent::with_provider(Arc::new(Yielding(g)), "m").tool(weather());
+            let c = Arc::new(Scripted::new(vec![Scripted::call("g1", "deeper", json!({"task": "go"})), Scripted::text("c")]));
+            seen.push(c.clone());
+            SubAgent::reader(name, "x", Agent::with_provider(Arc::new(Yielding(c)), "m").tool(SubAgent::reader("deeper", "x", grandchild).unwrap())).unwrap()
+        };
+        let (a, b) = (child("a"), child("b"));
+        let (_, parent) = scripted(vec![
+            Scripted::call_many(&[("d1", "a", json!({"task": "go"})), ("d2", "b", json!({"task": "go"}))]),
+            Scripted::text("never"),
+        ]);
+        let parent = parent.budget(Budget { max_steps: 4, max_tokens: 1_000_000, max_dollars: None }).tool(a).tool(b);
+        let _ = parent.run("go").await;
+        let below: usize = seen.iter().map(|p| p.seen().len()).sum();
+        assert!(below <= 3, "the top had 3 calls left; everything below it made {below}");
     }
 }

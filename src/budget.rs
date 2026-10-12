@@ -18,6 +18,23 @@ pub struct Budget {
     pub max_dollars: Option<f64>,
 }
 
+impl Budget {
+    /// The stricter of two budgets, limit by limit.
+    pub fn min(&self, other: &Budget) -> Budget {
+        Budget {
+            max_steps: self.max_steps.min(other.max_steps),
+            max_tokens: self.max_tokens.min(other.max_tokens),
+            max_dollars: match (self.max_dollars, other.max_dollars) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            },
+        }
+    }
+}
+
+/// One budget a run draws from live: what has been spent against it, and its cap.
+pub(crate) type Pool = (std::sync::Arc<std::sync::Mutex<crate::tool::Spend>>, Budget);
+
 impl Default for Budget {
     fn default() -> Self {
         Self { max_steps: 25, max_tokens: 200_000, max_dollars: None }
@@ -55,33 +72,60 @@ pub(crate) struct Meter {
     steps: usize,
     tokens: u64,
     microdollars: u64,
-    /// A sub-agent's: the pool its parent's batch draws from, and that
-    /// pool's cap. Every charge lands there at once, so siblings running
-    /// side by side share what is left instead of each taking all of it.
-    pool: Option<(std::sync::Arc<std::sync::Mutex<crate::tool::Spend>>, Budget)>,
+    /// A sub-agent's: the pools of every batch above it, nearest last. Each
+    /// of its model calls is charged to all of them at once and checked
+    /// against all of them, so siblings — and their children — share what is
+    /// left at every level instead of each taking all of it.
+    pools: Vec<Pool>,
 }
 
 impl Meter {
-    pub(crate) fn pooled(pool: std::sync::Arc<std::sync::Mutex<crate::tool::Spend>>, cap: Budget) -> Self {
-        Self { pool: Some((pool, cap)), ..Self::default() }
+    pub(crate) fn pooled(pools: Vec<Pool>) -> Self {
+        Self { pools, ..Self::default() }
     }
 
+    /// The pools above this meter, for a batch of tool calls to extend.
+    pub(crate) fn pools(&self) -> Vec<Pool> {
+        self.pools.clone()
+    }
+
+    /// Check every limit and take one model call from this meter and every
+    /// pool above it in one step, so two siblings can't both take the last
+    /// call. Call it right before the model call it pays for.
+    /// ponytail: tokens and dollars are only known after the call, so calls
+    /// already in flight can overshoot those two caps; steps never overshoot.
+    pub(crate) fn begin_call(&mut self, budget: &Budget) -> Result<()> {
+        self.check(budget)?;
+        // Locked top-down, the same order everywhere, so no two meters deadlock.
+        let mut pools: Vec<_> = self.pools.iter().map(|(pool, cap)| (pool.lock().expect("pool lock"), cap)).collect();
+        if let Some((pool, cap)) = pools.iter().find(|(pool, cap)| pool.steps >= cap.max_steps) {
+            return Err(Error::Budget(format!("the parent's budget is spent ({} model calls, limit {})", pool.steps, cap.max_steps)));
+        }
+        for (pool, _) in pools.iter_mut() {
+            pool.steps += 1;
+        }
+        self.steps += 1;
+        Ok(())
+    }
+
+    /// The tokens and dollars of a call `begin_call` already counted.
     pub(crate) fn charge(&mut self, usage: &Usage, price: Option<&Price>) {
         let tokens = usage.input_tokens + usage.output_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
         let microdollars = price.map_or(0, |p| p.microdollars(usage));
-        self.add(crate::tool::Spend { steps: 1, tokens, microdollars });
-    }
-
-    fn add(&mut self, spend: crate::tool::Spend) {
-        self.steps += spend.steps;
-        self.tokens += spend.tokens;
-        self.microdollars += spend.microdollars;
-        if let Some((pool, _)) = &self.pool {
+        let spend = crate::tool::Spend { steps: 0, tokens, microdollars };
+        self.count(spend);
+        for (pool, _) in &self.pools {
             let mut pool = pool.lock().expect("pool lock");
             pool.steps += spend.steps;
             pool.tokens += spend.tokens;
             pool.microdollars += spend.microdollars;
         }
+    }
+
+    fn count(&mut self, spend: crate::tool::Spend) {
+        self.steps += spend.steps;
+        self.tokens += spend.tokens;
+        self.microdollars += spend.microdollars;
     }
 
     /// What is left of `budget` after what this meter has counted.
@@ -93,9 +137,10 @@ impl Meter {
         }
     }
 
-    /// Count what a sub-agent spent on this run's behalf.
+    /// Count what a sub-agent spent on this run's behalf. It already reached
+    /// every pool above this meter live, so only this meter counts it now.
     pub(crate) fn absorb(&mut self, spend: crate::tool::Spend) {
-        self.add(spend);
+        self.count(spend);
     }
 
     pub(crate) fn spent(&self) -> crate::tool::Spend {
@@ -103,7 +148,7 @@ impl Meter {
     }
 
     pub(crate) fn check(&self, budget: &Budget) -> Result<()> {
-        if let Some((pool, cap)) = &self.pool {
+        for (pool, cap) in &self.pools {
             let pool = pool.lock().expect("pool lock");
             let over_dollars = cap.max_dollars.is_some_and(|d| pool.microdollars >= cap_microdollars(d));
             if pool.steps >= cap.max_steps || pool.tokens >= cap.max_tokens || over_dollars {

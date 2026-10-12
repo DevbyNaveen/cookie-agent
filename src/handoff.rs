@@ -89,6 +89,8 @@ impl Agent {
                 Turn::HandOff(name, to) => {
                     on_event(Event::HandedOff { to: name });
                     let extra = to.enkeon_tools(depth > 0, &control.cancel, on_event).await?;
+                    // The next agent's own limits apply too: the stricter of each.
+                    let budget = budget.min(&to.budget);
                     start = Start { provenance, budget, depth, extra, ceiling, inherited_approver: approver };
                     next = Some(to);
                 }
@@ -164,5 +166,14 @@ mod tests {
         };
         let inner = ping().tool(Handoff::to("other", "x", ping().tool(Handoff::to("other", "x", ping().tool(Handoff::to("other", "x", ping().tool(Handoff::to("other", "x", ping().tool(Handoff::to("other", "x", ping().tool(Handoff::to("other", "x", ping()))))))))))));
         assert!(matches!(inner.run("go").await, Err(crate::Error::Loop(m)) if m.contains("handoff")));
+    }
+
+    #[tokio::test]
+    async fn the_next_agent_s_own_limits_apply() {
+        let (_, strict) = scripted(vec![Scripted::text("never")]);
+        let strict = strict.budget(crate::Budget { max_steps: 1, max_tokens: 1_000_000, max_dollars: None });
+        let (_, front) = scripted(vec![Scripted::call("h1", "strict", json!({}))]);
+        let front = front.tool(Handoff::to("strict", "x", strict));
+        assert!(matches!(front.run("go").await, Err(crate::Error::Budget(_))));
     }
 }
