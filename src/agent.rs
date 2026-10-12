@@ -55,6 +55,8 @@ pub enum Event {
     Compacted { covered: usize, tokens_before: u64, tokens_after: u64 },
     /// Summarising failed; the run goes on with the full view.
     CompactionFailed { reason: String },
+    /// Something that happened inside a sub-agent, reported after it finished.
+    SubAgent { name: String, event: Box<Event> },
 }
 
 /// Two ways to stop a run: `cancel` stops now; `finish_turn` lets the
@@ -157,7 +159,7 @@ impl Agent {
     /// Run as a sub-agent: a fresh context holding only the task, the
     /// parent's provenance, at most the parent's remaining budget, and the
     /// parent's cancellation. Returns what it spent either way.
-    pub(crate) async fn run_delegated(&self, task: &str, context: &ToolContext) -> (Result<String>, Spend) {
+    pub(crate) async fn run_delegated(&self, task: &str, context: &ToolContext) -> (Result<String>, Spend, Vec<Event>) {
         let mut session = Session::in_memory();
         let control = RunControl { cancel: context.cancel.clone(), finish_turn: CancellationToken::new() };
         let budget = Budget {
@@ -167,10 +169,11 @@ impl Agent {
         let start = Start { provenance: context.provenance.clone(), budget, depth: context.depth + 1 };
         let mut meter = Meter::default();
         let mut open = Vec::new();
+        let mut events = Vec::new();
         let result = self
-            .turns(&mut session, Message::delegated(task), &control, &mut |_| {}, &mut open, start, &mut meter)
+            .turns(&mut session, Message::delegated(task), &control, &mut |e| events.push(e), &mut open, start, &mut meter)
             .await;
-        (result, meter.spent())
+        (result, meter.spent(), events)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -256,9 +259,13 @@ impl Agent {
                 budget: meter.remaining(&budget),
                 depth: start.depth,
                 spend: Default::default(),
+                events: Default::default(),
             };
             let outcome = self.run_calls(&calls, &provenance, &mut loop_guard, &context, on_event).await;
             meter.absorb(*context.spend.lock().expect("spend lock"));
+            for event in context.events.lock().expect("events lock").drain(..) {
+                on_event(event);
+            }
             let (results, cancelled) = outcome?;
             for result in &results {
                 if let Content::ToolResult { id, is_error, .. } = result {
@@ -295,11 +302,11 @@ impl Agent {
         }
         // One writer per tree: this agent (if any of its own tools change
         // things) and every writer sub-agent count; more than one is refused.
-        let own = self.tools.iter().any(|t| !t.is_subagent() && t.spec().effect != Effect::Read);
+        let own = self.tools.iter().any(|t| !t.spec().delegates && t.spec().effect != Effect::Read);
         let writers: Vec<&str> = self
             .tools
             .iter()
-            .filter(|t| t.is_subagent() && t.spec().effect != Effect::Read)
+            .filter(|t| t.spec().delegates && t.spec().effect != Effect::Read)
             .map(|t| t.spec().name.as_str())
             .collect();
         if usize::from(own) + writers.len() > 1 {

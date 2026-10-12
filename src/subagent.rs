@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::{
-    agent::Agent,
+    agent::{Agent, Event},
     error::{Error, Result},
     tool::{Effect, Tool, ToolContext, ToolSpec},
 };
@@ -50,6 +50,7 @@ impl SubAgent {
                 guarded_args: Vec::new(),
                 // Readers have their own contexts and change nothing, so they can run side by side.
                 parallel_safe: effect == Effect::Read,
+                delegates: true,
             },
             agent,
         }
@@ -62,8 +63,10 @@ impl Tool for SubAgent {
         &self.spec
     }
 
-    async fn call(&self, args: Value) -> std::result::Result<String, String> {
-        self.call_in(args, &ToolContext::default()).await
+    /// Fails closed: outside a loop there is no parent trust, budget or
+    /// cancellation to inherit, and a blank start would trust too much.
+    async fn call(&self, _args: Value) -> std::result::Result<String, String> {
+        Err("a sub-agent runs only inside an agent's loop (add it with Agent::tool)".into())
     }
 
     async fn call_in(&self, args: Value, context: &ToolContext) -> std::result::Result<String, String> {
@@ -73,7 +76,12 @@ impl Tool for SubAgent {
         let Some(task) = args["task"].as_str().filter(|t| !t.trim().is_empty()) else {
             return Err("a sub-agent needs a `task`".into());
         };
-        let (result, spent) = self.agent.run_delegated(task, context).await;
+        let (result, spent, events) = self.agent.run_delegated(task, context).await;
+        context
+            .events
+            .lock()
+            .expect("events lock")
+            .extend(events.into_iter().map(|event| Event::SubAgent { name: self.spec.name.clone(), event: Box::new(event) }));
         // ponytail: sibling readers each get the whole remaining budget; the
         // parent is charged for all of them, so the cap can be overshot by one batch.
         let mut total = context.spend.lock().expect("spend lock");
@@ -82,9 +90,6 @@ impl Tool for SubAgent {
         result.map_err(|e| e.to_string())
     }
 
-    fn is_subagent(&self) -> bool {
-        true
-    }
 }
 
 #[cfg(test)]
@@ -231,5 +236,54 @@ mod tests {
         let sub = SubAgent::reader("deep", "x", child).unwrap();
         let ctx = crate::tool::ToolContext { depth: MAX_DEPTH, ..crate::tool::ToolContext::default() };
         assert!(sub.call_in(json!({"task": "go"}), &ctx).await.unwrap_err().contains("deep"));
+    }
+
+    #[tokio::test]
+    async fn calling_a_sub_agent_outside_a_loop_fails_closed() {
+        let (_, child) = scripted(vec![Scripted::text("x")]);
+        let sub = SubAgent::reader("r", "x", child).unwrap();
+        assert!(sub.call(json!({"task": "go"})).await.unwrap_err().contains("only inside"));
+    }
+
+    /// An app's wrapper that forwards the spec and call_in, nothing else.
+    struct Logged<T>(T);
+
+    #[async_trait::async_trait]
+    impl<T: Tool> Tool for Logged<T> {
+        fn spec(&self) -> &crate::tool::ToolSpec {
+            self.0.spec()
+        }
+        async fn call(&self, args: serde_json::Value) -> std::result::Result<String, String> {
+            self.0.call(args).await
+        }
+        async fn call_in(&self, args: serde_json::Value, ctx: &crate::tool::ToolContext) -> std::result::Result<String, String> {
+            self.0.call_in(args, ctx).await
+        }
+    }
+
+    #[tokio::test]
+    async fn wrapping_writers_does_not_hide_them_from_the_one_writer_rule() {
+        let writer = |n: &str| {
+            let (_, a) = scripted(vec![]);
+            Logged(SubAgent::writer(n, "x", a.tool(send_email(Arc::new(AtomicUsize::new(0))))).unwrap())
+        };
+        let (_, parent) = scripted(vec![Scripted::text("never")]);
+        let parent = parent.tool(writer("one")).tool(writer("two"));
+        assert!(matches!(parent.run("hi").await, Err(Error::Tool(m)) if m.contains("one") && m.contains("two")));
+    }
+
+    #[tokio::test]
+    async fn a_sub_agent_s_usage_reaches_the_caller() {
+        let (_, child) = scripted(vec![Scripted::text("x is 5")]);
+        let (_, parent) = scripted(vec![Scripted::call("c1", "research", json!({"task": "find x"})), Scripted::text("done")]);
+        let parent = parent.tool(SubAgent::reader("research", "x", child).unwrap());
+        let mut events = Vec::new();
+        let mut s = Session::in_memory();
+        parent
+            .run_streaming(&mut s, Message::user("x?"), &crate::RunControl::default(), &mut |e| events.push(e))
+            .await
+            .unwrap();
+        assert!(events.iter().any(|e| matches!(e, crate::Event::SubAgent { name, event }
+            if name == "research" && matches!(**event, crate::Event::Usage(_)))));
     }
 }

@@ -295,6 +295,7 @@ mod tests {
             effect: Effect::Read,
             guarded_args: vec![],
             parallel_safe: true,
+            delegates: false,
         };
         let req = ModelRequest { model: "eu.anthropic.claude-sonnet-4-6", system: "be brief", messages: &history, tools: vec![&spec] };
         let body = converse_body(&req, 2048, true);

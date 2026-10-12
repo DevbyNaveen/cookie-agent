@@ -52,6 +52,9 @@ pub struct ToolSpec {
     pub guarded_args: Vec<String>,
     /// Safe to run at the same time as other calls in one turn.
     pub parallel_safe: bool,
+    /// A sub-agent. With a non-`Read` effect it is a writer of its own, which
+    /// the one-writer-per-tree rule counts; part of the spec so wrappers keep it.
+    pub delegates: bool,
 }
 
 /// Model calls and tokens a tool spent on the run's behalf (a sub-agent's).
@@ -72,6 +75,8 @@ pub struct ToolContext {
     /// How many delegations deep this call is.
     pub(crate) depth: usize,
     pub(crate) spend: Arc<Mutex<Spend>>,
+    /// Events from sub-agents, handed to the caller when the call returns.
+    pub(crate) events: Arc<Mutex<Vec<crate::agent::Event>>>,
 }
 
 #[async_trait]
@@ -85,10 +90,6 @@ pub trait Tool: Send + Sync {
         self.call(args).await
     }
 
-    /// True for a sub-agent: used to keep one writer per tree.
-    fn is_subagent(&self) -> bool {
-        false
-    }
 
     /// What will actually happen, shown to a person before outbound or destroy.
     fn preview(&self, args: &Value) -> String {
@@ -119,6 +120,7 @@ where
             effect,
             guarded_args: Vec::new(),
             parallel_safe: false,
+            delegates: false,
         },
         f,
         preview: None,

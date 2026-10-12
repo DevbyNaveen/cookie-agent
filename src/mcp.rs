@@ -296,6 +296,7 @@ impl McpServer {
                     effect,
                     guarded_args: self.guards.iter().filter(|(tool, _)| *tool == info.name).map(|(_, arg)| arg.clone()).collect(),
                     parallel_safe: false,
+                    delegates: false,
                 };
                 Arc::new(McpTool { client: client.clone(), remote_name: info.name, spec }) as Arc<dyn Tool>
             })

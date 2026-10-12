@@ -161,6 +161,7 @@ mod tests {
             effect,
             guarded_args: guarded.iter().map(|s| s.to_string()).collect(),
             parallel_safe: false,
+            delegates: false,
         }
     }
 

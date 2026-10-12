@@ -361,6 +361,7 @@ mod tests {
             effect: Effect::Read,
             guarded_args: vec![],
             parallel_safe: true,
+            delegates: false,
         };
         let req = ModelRequest { model: "claude-sonnet-4-6", system: "be brief", messages: &history, tools: vec![&spec] };
         let body = request_body(&req, 1024, false);
@@ -429,6 +430,7 @@ mod tests {
             effect: Effect::Read,
             guarded_args: vec![],
             parallel_safe: true,
+            delegates: false,
         };
         let (a, b) = (spec("a"), spec("b"));
         let req = ModelRequest { model: "m", system: "rules", messages: &history, tools: vec![&a, &b] };

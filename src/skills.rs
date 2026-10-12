@@ -81,6 +81,7 @@ impl Skills {
                 effect: Effect::Read,
                 guarded_args: Vec::new(),
                 parallel_safe: true,
+                delegates: false,
             },
             skills: self.skills.clone(),
         }
