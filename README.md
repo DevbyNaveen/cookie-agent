@@ -74,8 +74,17 @@ your instructions — nothing is added behind your back.
 
 ```sh
 cookie run anthropic:claude-sonnet-4-6 "Weather in Riga?" --session riga.jsonl
+cookie chat anthropic:claude-sonnet-4-6 --session riga.jsonl   # one run per line
+cookie replay riga.jsonl   # run it again from the log: exit 0 if it reproduced
 cookie serve    # one JSON object per line on stdin/stdout
 ```
+
+`cookie chat` asks approvals on the same terminal it reads your lines from;
+Ctrl-C stops the answer being written, `/exit` or Ctrl-D leaves. `cookie
+replay` calls no model and runs no tool: each reply and each tool result
+comes from the file, so it shows whether the loop still does what it did, and
+names the first message that differs. In Rust, `Replay::from_session(&s)`
+gives the same, and `ReplayProvider` alone replays the model against new tools.
 
 `cookie serve` speaks a small protocol. You send
 `{"type":"run","id":"r1","model":"…","input":"…","tools":[{"name":"lookup","effect":"read","schema":{…}}]}`;

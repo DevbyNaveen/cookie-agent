@@ -204,7 +204,11 @@ impl Replay {
         for input in log.messages.iter().filter(|m| is_input(m)) {
             // A run that ends where its recording ended stops on the provider's
             // "no reply here"; one that went elsewhere differs in the session.
-            stopped = agent.run_in(&mut session, input.clone(), &CancellationToken::new()).await.err().map(|e| e.to_string());
+            stopped = match agent.run_in(&mut session, input.clone(), &CancellationToken::new()).await {
+                // The provider's own report says no more than the comparison below.
+                Ok(_) | Err(Error::Replay(_)) => None,
+                Err(error) => Some(error.to_string()),
+            };
             if let Some(error) = log.compare(session.messages(), session.messages().len()) {
                 return Err(with_reason(error, &stopped));
             }
