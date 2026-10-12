@@ -85,6 +85,11 @@ person (answer with `approve` — no answer means no), and `done` or `error`.
 `cancel` stops a run now, `finish_turn` after this turn. Your tools go
 through the same gates as Rust ones, and their results are untrusted.
 
+Clients that do this for you: `bindings/python` (`cookie_harness`, standard
+library only) and `bindings/typescript` (`@cookie-harness/client`, no runtime
+dependencies). `evals/agentdojo` runs AgentDojo through the Python one, with
+the trust layer on and off.
+
 ## Tracing
 
 Every run emits OpenTelemetry GenAI spans through `tracing`:
