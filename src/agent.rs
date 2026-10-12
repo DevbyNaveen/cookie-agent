@@ -2,55 +2,49 @@
 
 use std::sync::Arc;
 
-use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::{
-    approval::{ApprovalRequest, Approver, DenyAll},
+    approval::{Approver, DenyAll},
     budget::{Budget, LoopGuard, Meter},
-    compaction::{context_view, estimate_tokens, summary_boundary, Compaction, SUMMARY_PROMPT},
-    enkeon::{Enkeon, ENKEON_INSTRUCTIONS},
-    telemetry,
+    calls::Stop,
+    compaction::{context_view, Compaction},
+    enkeon::Enkeon,
     error::{Error, Result},
     label::{Origin, Source},
     message::{Content, Message},
     model_id::ModelId,
-    policy::{Decision, Policy, Provenance},
+    policy::{Policy, Provenance},
     provider::{ModelRequest, Provider, ProviderEvent, StopReason, Usage},
     providers,
     session::Session,
-    tool::{valid_tool_name, Effect, Spend, Tool, ToolContext},
+    telemetry,
+    tool::{Effect, Tool, ToolContext},
 };
 
 pub struct Agent {
-    model: String,
-    provider: Arc<dyn Provider>,
-    instructions: String,
+    pub(crate) model: String,
+    pub(crate) provider: Arc<dyn Provider>,
+    pub(crate) instructions: String,
     pub(crate) tools: Vec<Arc<dyn Tool>>,
-    policy: Policy,
-    approver: Arc<dyn Approver>,
-    budget: Budget,
-    compaction: Option<Compaction>,
-    enkeon: Option<Arc<Enkeon>>,
+    pub(crate) policy: Policy,
+    pub(crate) approver: Arc<dyn Approver>,
+    pub(crate) budget: Budget,
+    pub(crate) compaction: Option<Compaction>,
+    pub(crate) enkeon: Option<Arc<Enkeon>>,
     /// `gen_ai.provider.name` on spans, when known.
-    provider_name: Option<String>,
+    pub(crate) provider_name: Option<String>,
 }
-
-type Call = (String, String, Value);
-
-/// How long a run waits for Enkeon before going on without it.
-const ENKEON_CONNECT_TIMEOUT: std::time::Duration =
-    if cfg!(test) { std::time::Duration::from_millis(300) } else { std::time::Duration::from_secs(10) };
 
 /// Where a run starts from: what is trusted, what it may spend, how deep it
 /// is, and the Enkeon tools it gets (outside `Agent::tools`, so the
 /// one-writer rule counts only the developer's own).
-struct Start {
-    provenance: Provenance,
-    budget: Budget,
-    depth: usize,
-    extra: Vec<Arc<dyn Tool>>,
+pub(crate) struct Start {
+    pub(crate) provenance: Provenance,
+    pub(crate) budget: Budget,
+    pub(crate) depth: usize,
+    pub(crate) extra: Vec<Arc<dyn Tool>>,
 }
 
 /// What a run reports while it happens. New kinds of event may be added,
@@ -63,11 +57,12 @@ pub enum Event {
     ToolCallStarted { id: String, name: String },
     /// A person is being asked to approve; `preview` is what will happen.
     AskedPerson { tool: String, preview: String },
+    /// Sent once the call's result is written to the session.
     ToolFinished { id: String, is_error: bool },
     Usage(Usage),
     /// Older turns were replaced by a summary in what the model sees.
     Compacted { covered: usize, tokens_before: u64, tokens_after: u64 },
-    /// Summarising failed; the run goes on with the full view.
+    /// Summarising failed or found nothing to summarise; the run goes on with the full view.
     CompactionFailed { reason: String },
     /// Something that happened inside a sub-agent, reported after it finished.
     SubAgent { name: String, event: Box<Event> },
@@ -114,14 +109,19 @@ impl Agent {
         self
     }
 
-    pub fn tool(mut self, tool: impl Tool + 'static) -> Self {
-        self.tools.push(Arc::new(tool));
-        self
+    pub fn tool(self, tool: impl Tool + 'static) -> Self {
+        self.tools([Arc::new(tool) as Arc<dyn Tool>])
     }
 
     /// Add shared tools, e.g. `McpTools::tools` from an MCP server.
     pub fn tools(mut self, tools: impl IntoIterator<Item = Arc<dyn Tool>>) -> Self {
-        self.tools.extend(tools);
+        for tool in tools {
+            let spec = tool.spec();
+            if matches!(spec.effect, Effect::Outbound | Effect::Destroy) && spec.guarded_args.is_empty() && !spec.delegates {
+                tracing::warn!(tool = %spec.name, "a tool that sends or deletes has no guarded argument: who or what it acts on is not checked");
+            }
+            self.tools.push(tool);
+        }
         self
     }
 
@@ -181,20 +181,10 @@ impl Agent {
         let mut meter = Meter::default();
         let extra = self.enkeon_tools(false, &control.cancel, on_event).await?;
         let start = Start { provenance: Provenance::default(), budget: self.budget, depth: 0, extra };
-        let span = tracing::info_span!(
-            "invoke_agent",
-            "otel.name" = "invoke_agent",
-            "otel.kind" = "internal",
-            "gen_ai.operation.name" = "invoke_agent",
-            "gen_ai.provider.name" = self.provider_name.as_deref(),
-            "gen_ai.request.model" = %self.model,
-            "error.type" = tracing::field::Empty,
-        );
+        let span = telemetry::agent_span(None, &self.model, self.provider_name.as_deref());
         let result = self.turns(session, input, control, on_event, &mut open, start, &mut meter).instrument(span.clone()).await;
         if let Err(error) = &result {
             span.record("error.type", telemetry::error_type(error));
-        }
-        if result.is_err() {
             for id in open {
                 on_event(Event::ToolFinished { id, is_error: true });
             }
@@ -202,32 +192,8 @@ impl Agent {
         result
     }
 
-    /// Run as a sub-agent: a fresh context holding only the task, the
-    /// parent's provenance, at most the parent's remaining budget, and the
-    /// parent's cancellation. Returns what it spent either way.
-    pub(crate) async fn run_delegated(&self, task: &str, context: &ToolContext) -> (Result<String>, Spend, Vec<Event>) {
-        let mut session = Session::in_memory();
-        let control = RunControl { cancel: context.cancel.clone(), finish_turn: CancellationToken::new() };
-        let budget = Budget {
-            max_steps: self.budget.max_steps.min(context.budget.max_steps),
-            max_tokens: self.budget.max_tokens.min(context.budget.max_tokens),
-        };
-        let mut events = Vec::new();
-        let extra = match self.enkeon_tools(true, &context.cancel, &mut |e| events.push(e)).await {
-            Ok(extra) => extra,
-            Err(error) => return (Err(error), Spend::default(), events),
-        };
-        let start = Start { provenance: context.provenance.clone(), budget, depth: context.depth + 1, extra };
-        let mut meter = Meter::default();
-        let mut open = Vec::new();
-        let result = self
-            .turns(&mut session, Message::delegated(task), &control, &mut |e| events.push(e), &mut open, start, &mut meter)
-            .await;
-        (result, meter.spent(), events)
-    }
-
     #[allow(clippy::too_many_arguments)]
-    async fn turns(
+    pub(crate) async fn turns(
         &self,
         session: &mut Session,
         input: Message,
@@ -239,10 +205,11 @@ impl Agent {
     ) -> Result<String> {
         let cancel = &control.cancel;
         let budget = start.budget;
+        let delegated = start.depth > 0;
         let system = match (start.extra.is_empty(), self.instructions.is_empty()) {
             (true, _) => self.instructions.clone(),
-            (false, true) => ENKEON_INSTRUCTIONS.to_string(),
-            (false, false) => format!("{}\n\n{ENKEON_INSTRUCTIONS}", self.instructions),
+            (false, true) => crate::enkeon::instructions(delegated).to_string(),
+            (false, false) => format!("{}\n\n{}", self.instructions, crate::enkeon::instructions(delegated)),
         };
         let tools: Vec<Arc<dyn Tool>> = self.tools.iter().cloned().chain(start.extra).collect();
         self.check_tools(&tools)?;
@@ -260,69 +227,42 @@ impl Agent {
                 return Err(Error::Cancelled);
             }
             meter.check(&budget)?;
+            let specs: Vec<_> = tools.iter().map(|t| t.spec()).collect();
             let view = match &self.compaction {
                 Some(policy) => {
                     // A failed summary must not block the session: report it and
                     // send the full view (cancellation still stops the run).
-                    match self.compact(session, policy, meter, &budget, cancel, on_event).await {
+                    match self.compact(session, policy, &system, &specs, meter, &budget, cancel, on_event).await {
                         Ok(()) => {}
                         Err(Error::Cancelled) => return Err(Error::Cancelled),
                         Err(error) => on_event(Event::CompactionFailed { reason: error.to_string() }),
                     }
                     context_view(session.messages(), policy)
                 }
-                None => session.messages().to_vec(),
+                // Without compaction the whole history goes, and a summary left
+                // in the file by an earlier run would only repeat it.
+                None => session.messages().iter().filter(|m| m.summary_of().is_none()).cloned().collect(),
             };
-            let request = ModelRequest {
-                model: &self.model,
-                system: &system,
-                messages: &view,
-                tools: tools.iter().map(|t| t.spec()).collect(),
+            let request = ModelRequest { model: &self.model, system: &system, messages: &view, tools: specs };
+            let mut forward = |event: ProviderEvent| {
+                on_event(match event {
+                    ProviderEvent::TextDelta(text) => Event::TextDelta(text),
+                    ProviderEvent::ToolCallStarted { id, name } => {
+                        open.push(id.clone());
+                        Event::ToolCallStarted { id, name }
+                    }
+                })
             };
-            let response = {
-                let mut forward = |event: ProviderEvent| {
-                    on_event(match event {
-                        ProviderEvent::TextDelta(text) => Event::TextDelta(text),
-                        ProviderEvent::ToolCallStarted { id, name } => {
-                            open.push(id.clone());
-                            Event::ToolCallStarted { id, name }
-                        }
-                    })
-                };
-                let chat = tracing::info_span!(
-                    "chat",
-                    "otel.name" = %format!("chat {}", self.model),
-                    "otel.kind" = "client",
-                    "gen_ai.operation.name" = "chat",
-                    "gen_ai.provider.name" = self.provider_name.as_deref(),
-                    "gen_ai.request.model" = %self.model,
-                    "gen_ai.usage.input_tokens" = tracing::field::Empty,
-                    "gen_ai.usage.output_tokens" = tracing::field::Empty,
-                    "gen_ai.usage.cache_read.input_tokens" = tracing::field::Empty,
-                    "gen_ai.usage.cache_write.input_tokens" = tracing::field::Empty,
-                    "error.type" = tracing::field::Empty,
-                );
-                let response = tokio::select! {
-                    response = self.provider.stream(request, &mut forward).instrument(chat.clone()) => response,
-                    _ = cancel.cancelled() => return Err(Error::Cancelled),
-                };
-                match &response {
-                    Ok(r) => {
-                        // The convention's input count includes cached input; providers report it apart.
-                        chat.record(
-                            "gen_ai.usage.input_tokens",
-                            r.usage.input_tokens + r.usage.cache_read_tokens + r.usage.cache_write_tokens,
-                        );
-                        chat.record("gen_ai.usage.output_tokens", r.usage.output_tokens);
-                        chat.record("gen_ai.usage.cache_read.input_tokens", r.usage.cache_read_tokens);
-                        chat.record("gen_ai.usage.cache_write.input_tokens", r.usage.cache_write_tokens);
-                    }
-                    Err(error) => {
-                        chat.record("error.type", telemetry::error_type(error));
-                    }
+            let chat = telemetry::chat_span(&self.model, self.provider_name.as_deref());
+            let response = tokio::select! {
+                response = self.provider.stream(request, &mut forward).instrument(chat.clone()) => response,
+                _ = cancel.cancelled() => {
+                    chat.record("error.type", "Cancelled");
+                    return Err(Error::Cancelled);
                 }
-                response?
             };
+            telemetry::record_chat(&chat, &response);
+            let response = response?;
             meter.charge(&response.usage);
             on_event(Event::Usage(response.usage.clone()));
             // A cut-off reply is not an answer, and a cut-off tool call has broken arguments.
@@ -331,7 +271,7 @@ impl Agent {
             }
 
             let reply = Message::assistant(response.content);
-            let calls: Vec<Call> = reply.tool_calls().map(|(id, name, args)| (id.into(), name.into(), args.clone())).collect();
+            let calls: Vec<_> = reply.tool_calls().map(|(id, name, args)| (id.into(), name.into(), args.clone())).collect();
             let answer = reply.text();
             session.append(reply).await?;
             if calls.is_empty() {
@@ -346,260 +286,34 @@ impl Agent {
                 spend: Default::default(),
                 events: Default::default(),
             };
-            let outcome = self.run_calls(&tools, &calls, &provenance, &mut loop_guard, &context, on_event).await;
+            let (results, stop) = self.run_calls(&tools, &calls, &provenance, &mut loop_guard, &context, on_event).await;
             meter.absorb(*context.spend.lock().expect("spend lock"));
             for event in context.events.lock().expect("events lock").drain(..) {
                 on_event(event);
             }
-            let (results, cancelled) = outcome?;
-            for result in &results {
-                if let Content::ToolResult { id, is_error, .. } = result {
-                    open.retain(|open_id| open_id != id);
-                    on_event(Event::ToolFinished { id: id.clone(), is_error: *is_error });
-                }
-            }
+            let finished: Vec<(String, bool)> = results
+                .iter()
+                .filter_map(|r| match r {
+                    Content::ToolResult { id, is_error, .. } => Some((id.clone(), *is_error)),
+                    _ => None,
+                })
+                .collect();
             let names = calls.iter().map(|(_, name, _)| name.as_str()).collect::<Vec<_>>().join(",");
             let message = Message::tool_results(results, Origin::Untrusted(Source::Tool(names)));
             provenance.observe(&message);
             // Recorded before stopping, so a stopped run never forgets what already happened.
             session.append(message).await?;
-            if cancelled {
-                return Err(Error::Cancelled);
+            for (id, is_error) in finished {
+                open.retain(|open_id| *open_id != id);
+                on_event(Event::ToolFinished { id, is_error });
             }
-            if control.finish_turn.is_cancelled() {
-                return Err(Error::Stopped);
-            }
-        }
-    }
-
-    /// Enkeon's tools for this run: none without Enkeon; `recall` only for a
-    /// sub-agent, so readers stay readers; an unreachable Enkeon is reported.
-    /// Connecting is bounded by `ENKEON_CONNECT_TIMEOUT` and stops on cancel.
-    async fn enkeon_tools(
-        &self,
-        delegated: bool,
-        cancel: &CancellationToken,
-        on_event: &mut (dyn FnMut(Event) + Send),
-    ) -> Result<Vec<Arc<dyn Tool>>> {
-        let Some(enkeon) = &self.enkeon else { return Ok(Vec::new()) };
-        let connected = tokio::select! {
-            connected = tokio::time::timeout(ENKEON_CONNECT_TIMEOUT, enkeon.tools()) => connected,
-            _ = cancel.cancelled() => return Err(Error::Cancelled),
-        };
-        match connected {
-            Ok(Ok(tools)) => Ok(tools.into_iter().filter(|t| !delegated || t.spec().effect == Effect::Read).collect()),
-            Ok(Err(error)) => {
-                on_event(Event::EnkeonUnavailable { reason: error.to_string() });
-                Ok(Vec::new())
-            }
-            Err(_) => {
-                on_event(Event::EnkeonUnavailable { reason: format!("no answer in {}s", ENKEON_CONNECT_TIMEOUT.as_secs_f32()) });
-                Ok(Vec::new())
+            match stop {
+                Stop::Cancelled => return Err(Error::Cancelled),
+                Stop::Loop(name) => return Err(Error::Loop(name)),
+                Stop::No if control.finish_turn.is_cancelled() => return Err(Error::Stopped),
+                Stop::No => {}
             }
         }
-    }
-
-    /// Tool names must be unique (otherwise providers refuse the request, or
-    /// the wrong tool runs) and acceptable to every provider.
-    fn check_tools(&self, tools: &[Arc<dyn Tool>]) -> Result<()> {
-        let mut seen = std::collections::HashSet::new();
-        for tool in tools {
-            let name = &tool.spec().name;
-            if !valid_tool_name(name) {
-                return Err(Error::Tool(format!("`{name}` is not a valid tool name (letters, digits, _ and -, at most 64)")));
-            }
-            if !seen.insert(name.as_str()) {
-                return Err(Error::Tool(format!("two tools are called `{name}`; give one a prefix")));
-            }
-        }
-        // One writer per tree: this agent (if any of its own tools change
-        // things) and every writer sub-agent count; more than one is refused.
-        let own = self.tools.iter().any(|t| !t.spec().delegates && t.spec().effect != Effect::Read);
-        let writers: Vec<&str> = self
-            .tools
-            .iter()
-            .filter(|t| t.spec().delegates && t.spec().effect != Effect::Read)
-            .map(|t| t.spec().name.as_str())
-            .collect();
-        if usize::from(own) + writers.len() > 1 {
-            return Err(Error::Tool(format!(
-                "only one agent in a tree may change things; writers here: {}{}",
-                if own { "this agent, " } else { "" },
-                writers.join(", ")
-            )));
-        }
-        Ok(())
-    }
-
-    /// When the view is over the limit, summarise everything before the kept
-    /// turns into one appended message. Provenance still reads the full
-    /// session, so the person's earlier words stay credited and the summary
-    /// is never mistaken for them.
-    async fn compact(
-        &self,
-        session: &mut Session,
-        policy: &Compaction,
-        meter: &mut Meter,
-        budget: &Budget,
-        cancel: &CancellationToken,
-        on_event: &mut (dyn FnMut(Event) + Send),
-    ) -> Result<()> {
-        let tokens_before = estimate_tokens(&context_view(session.messages(), policy));
-        if tokens_before <= policy.summarize_above_tokens {
-            return Ok(());
-        }
-        let messages = session.messages();
-        let already = messages.iter().rev().find_map(Message::summary_of).unwrap_or(0);
-        let Some(boundary) = summary_boundary(messages, policy.keep_recent_turns) else { return Ok(()) };
-        if boundary <= already {
-            return Ok(());
-        }
-        let previous = messages.iter().rev().find(|m| m.summary_of().is_some()).cloned();
-        // Written out as plain text: a request that declares no tools may not
-        // carry tool blocks (Bedrock rejects it).
-        let mut source: Vec<Message> = previous
-            .iter()
-            .chain(messages[already..boundary].iter().filter(|m| m.summary_of().is_none()))
-            .filter_map(Message::as_plain_text)
-            .collect();
-        let origin = if source.iter().any(|m| m.origin().is_untrusted()) {
-            Origin::Untrusted(Source::Context)
-        } else {
-            Origin::Model
-        };
-        source.push(Message::user("Write the summary now."));
-
-        meter.check(budget)?;
-        let request = ModelRequest { model: &self.model, system: SUMMARY_PROMPT, messages: &source, tools: Vec::new() };
-        let reply = tokio::select! {
-            reply = self.provider.complete(request) => reply?,
-            _ = cancel.cancelled() => return Err(Error::Cancelled),
-        };
-        meter.charge(&reply.usage);
-        on_event(Event::Usage(reply.usage.clone()));
-        // A cut-off summary would silently drop what it failed to cover.
-        if reply.stop == StopReason::MaxTokens {
-            return Err(Error::MaxTokens);
-        }
-        let text = Message::assistant(reply.content).text();
-        if text.trim().is_empty() {
-            return Err(Error::Provider("the summary came back empty".into()));
-        }
-        session.append(Message::summary(text, boundary, origin)).await?;
-        let tokens_after = estimate_tokens(&context_view(session.messages(), policy));
-        on_event(Event::Compacted { covered: boundary, tokens_before, tokens_after });
-        Ok(())
-    }
-
-    /// Decide every call first, in order and deterministically; then run the
-    /// approved ones. Returns every call's result and whether the run was
-    /// cancelled; a call that finished keeps its real result either way.
-    async fn run_calls(
-        &self,
-        tools: &[Arc<dyn Tool>],
-        calls: &[Call],
-        provenance: &Provenance,
-        loop_guard: &mut LoopGuard,
-        context: &ToolContext,
-        on_event: &mut (dyn FnMut(Event) + Send),
-    ) -> Result<(Vec<Content>, bool)> {
-        let cancel = &context.cancel;
-        let mut outcomes: Vec<Option<(String, bool)>> = vec![None; calls.len()];
-        let mut approved: Vec<(usize, Arc<dyn Tool>)> = Vec::new();
-
-        for (index, (_, name, args)) in calls.iter().enumerate() {
-            loop_guard.see(name, args)?;
-            let Some(tool) = tools.iter().find(|t| t.spec().name == *name).cloned() else {
-                outcomes[index] = Some((format!("There is no tool called `{name}`."), true));
-                continue;
-            };
-            match self.policy.decide(tool.spec(), args, provenance, tool.preview(args)) {
-                Decision::Allow => approved.push((index, tool)),
-                // A cancelled run asks no one; a wait for a person stops on cancel.
-                Decision::Ask { .. } if cancel.is_cancelled() => {
-                    outcomes[index] = Some(("Not run: the run was cancelled first.".into(), true));
-                }
-                Decision::Ask { preview, reason } => {
-                    on_event(Event::AskedPerson { tool: name.clone(), preview: preview.clone() });
-                    let request = ApprovalRequest { tool: name.clone(), effect: tool.spec().effect, preview, reason };
-                    let yes = tokio::select! {
-                        yes = self.approver.approve(&request) => yes,
-                        _ = cancel.cancelled() => false,
-                    };
-                    if yes {
-                        approved.push((index, tool));
-                    } else {
-                        outcomes[index] = Some(("The person declined this action.".into(), true));
-                    }
-                }
-                Decision::Deny(reason) => outcomes[index] = Some((reason, true)),
-            }
-        }
-
-        let run_one = |index: usize, tool: Arc<dyn Tool>| {
-            let (id, name, args) = calls[index].clone();
-            let span = tracing::info_span!(
-                "execute_tool",
-                "otel.name" = %format!("execute_tool {name}"),
-                "otel.kind" = "internal",
-                "gen_ai.operation.name" = "execute_tool",
-                "gen_ai.tool.name" = %name,
-                "gen_ai.tool.call.id" = %id,
-                "error.type" = tracing::field::Empty,
-            );
-            let recorder = span.clone();
-            async move {
-                let output = tool.call_in(args, context).await;
-                if output.is_err() {
-                    recorder.record("error.type", "_OTHER");
-                }
-                (index, output)
-            }
-            .instrument(span)
-        };
-        let mut cancelled = false;
-        if approved.iter().all(|(_, tool)| tool.spec().parallel_safe) {
-            let running: Vec<usize> = approved.iter().map(|(index, _)| *index).collect();
-            let all = futures::future::join_all(approved.into_iter().map(|(i, t)| run_one(i, t)));
-            tokio::select! {
-                done = all => record(&mut outcomes, done),
-                _ = cancel.cancelled() => {
-                    cancelled = true;
-                    for index in running {
-                        outcomes[index] = Some(("Interrupted: this may or may not have run. Check before trying again.".into(), true));
-                    }
-                }
-            }
-        } else {
-            for (index, tool) in approved {
-                if cancel.is_cancelled() {
-                    cancelled = true;
-                    outcomes[index] = Some(("Not run: the run was cancelled first.".into(), true));
-                    continue;
-                }
-                record(&mut outcomes, vec![run_one(index, tool).await]);
-            }
-            cancelled |= cancel.is_cancelled();
-        }
-
-        let results = calls
-            .iter()
-            .zip(outcomes)
-            .map(|((id, _, _), outcome)| {
-                let (output, is_error) = outcome.expect("every call has an outcome");
-                Content::ToolResult { id: id.clone(), output, is_error }
-            })
-            .collect();
-        Ok((results, cancelled))
-    }
-}
-
-fn record(outcomes: &mut [Option<(String, bool)>], finished: Vec<(usize, std::result::Result<String, String>)>) {
-    for (index, result) in finished {
-        outcomes[index] = Some(match result {
-            Ok(output) => (output, false),
-            Err(error) => (error, true),
-        });
     }
 }
 
@@ -864,7 +578,7 @@ mod tests {
     }
 
     fn tight() -> crate::compaction::Compaction {
-        crate::compaction::Compaction { clear_tool_results_after: 99, summarize_above_tokens: 20, keep_recent_turns: 1 }
+        crate::compaction::Compaction { clear_tool_results_after: 99, summarize_above_tokens: 20, keep_recent_turns: 1, summary_prompt: None }
     }
 
     #[tokio::test]
@@ -1015,5 +729,95 @@ mod tests {
         let history = &p.seen()[0];
         let call_index = history.iter().position(|m| m.tool_calls().next().is_some()).unwrap();
         assert!(matches!(&history[call_index + 1].content()[0], Content::ToolResult { id, .. } if id == "c1"));
+    }
+
+    #[tokio::test]
+    async fn a_loop_detected_mid_batch_still_records_every_call() {
+        let same = || ("w", "weather", json!({"city": "Riga"}));
+        let (a, _) = agent(vec![Scripted::call_many(&[
+            ("c1", same().1, same().2.clone()),
+            ("c2", same().1, same().2.clone()),
+            ("c3", same().1, same().2.clone()),
+        ])]);
+        let a = a.tool(weather());
+        let mut s = Session::in_memory();
+        let out = a.run_in(&mut s, Message::user("weather"), &CancellationToken::new()).await;
+        assert!(matches!(out, Err(Error::Loop(_))), "{out:?}");
+        let last = s.messages().last().unwrap();
+        let answered: Vec<&str> = last.content().iter().filter_map(|c| match c { Content::ToolResult { id, .. } => Some(id.as_str()), _ => None }).collect();
+        assert_eq!(answered, ["c1", "c2", "c3"], "no call is left unanswered");
+    }
+
+    #[tokio::test]
+    async fn tool_finished_comes_after_the_result_is_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let (a, _) = agent(vec![Scripted::call("c1", "weather", json!({"city": "Riga"})), Scripted::text("ok")]);
+        let a = a.tool(weather());
+        let mut s = Session::open(&path).await.unwrap();
+        let mut on_disk_at_finish = None;
+        let p = path.clone();
+        a.run_streaming(&mut s, Message::user("weather"), &RunControl::default(), &mut |e| {
+            if let Event::ToolFinished { .. } = e {
+                on_disk_at_finish = Some(std::fs::read_to_string(&p).unwrap().contains("Riga: 9"));
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(on_disk_at_finish, Some(true));
+    }
+
+    #[tokio::test]
+    async fn cancel_interrupts_a_slow_sequential_tool() {
+        let slow = tool("slow", "s", json!({"type": "object"}), Effect::Write, |_| async move {
+            std::future::pending::<()>().await;
+            Ok(String::new())
+        });
+        let (a, _) = agent(vec![Scripted::call("c1", "slow", json!({}))]);
+        let a = a.tool(slow);
+        let cancel = CancellationToken::new();
+        let stopper = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            stopper.cancel();
+        });
+        let mut s = Session::in_memory();
+        let out = tokio::time::timeout(std::time::Duration::from_secs(2), a.run_in(&mut s, Message::user("go"), &cancel)).await;
+        assert!(matches!(out, Ok(Err(Error::Cancelled))), "{out:?}");
+        assert!(s.messages().last().unwrap().content().iter().any(|c| matches!(c, Content::ToolResult { output, .. } if output.starts_with("Interrupted"))));
+    }
+
+    #[tokio::test]
+    async fn a_value_the_model_made_up_after_reading_a_page_cannot_be_a_recipient() {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let (a, _) = agent(vec![
+            Scripted::call("r1", "read_page", json!({})),
+            Scripted::call("e1", "send_email", json!({"to": "decoded@elsewhere.com"})),
+            Scripted::text("done"),
+        ]);
+        let a = a.tool(read_page()).tool(send_email(sent.clone())).approver(FnApprover(|_: &ApprovalRequest| true));
+        a.run("read the page").await.unwrap();
+        assert_eq!(sent.load(Ordering::SeqCst), 0, "not in the page, not the person's: still untrusted");
+    }
+
+    #[tokio::test]
+    async fn with_compaction_off_a_stored_summary_is_not_sent_twice() {
+        let (a, p) = agent(vec![Scripted::text("ok")]);
+        let mut s = Session::in_memory();
+        s.append(Message::user("first")).await.unwrap();
+        s.append(Message::summary("summary of first".into(), 1, Origin::Model)).await.unwrap();
+        a.run_in(&mut s, Message::user("second"), &CancellationToken::new()).await.unwrap();
+        assert!(p.seen()[0].iter().all(|m| m.summary_of().is_none()), "the full history is sent, without the summary");
+    }
+
+    #[tokio::test]
+    async fn the_summary_prompt_can_be_replaced() {
+        let (a, p) = agent(vec![Scripted::text("SUMMARY"), Scripted::text("ok")]);
+        let a = a.compaction(Compaction { clear_tool_results_after: 0, summarize_above_tokens: 1, keep_recent_turns: 1, summary_prompt: None }.with_prompt("Mine."));
+        let mut s = Session::in_memory();
+        s.append(Message::user("one")).await.unwrap();
+        s.append(Message::assistant(vec![Content::Text { text: "reply one".into() }])).await.unwrap();
+        a.run_in(&mut s, Message::user("two"), &CancellationToken::new()).await.unwrap();
+        assert_eq!(p.asked()[0].0, "Mine.");
     }
 }

@@ -64,20 +64,26 @@ impl Meter {
 
 #[derive(Debug, Default)]
 pub(crate) struct LoopGuard {
-    last: Option<String>,
-    repeats: usize,
+    /// The most recent calls, newest last.
+    recent: std::collections::VecDeque<String>,
 }
+
+/// The same call three times in a row is a loop; so is one call coming back
+/// a fourth time among the last twelve (a cycle such as a, b, a, b, …).
+const IN_A_ROW: usize = 3;
+const WINDOW: usize = 12;
+const IN_WINDOW: usize = 4;
 
 impl LoopGuard {
     pub(crate) fn see(&mut self, name: &str, args: &Value) -> Result<()> {
         let key = format!("{name}{args}");
-        if self.last.as_deref() == Some(key.as_str()) {
-            self.repeats += 1;
-        } else {
-            self.last = Some(key);
-            self.repeats = 1;
+        if self.recent.len() == WINDOW {
+            self.recent.pop_front();
         }
-        if self.repeats >= 3 {
+        self.recent.push_back(key.clone());
+        let in_a_row = self.recent.iter().rev().take_while(|k| **k == key).count();
+        let in_window = self.recent.iter().filter(|k| **k == key).count();
+        if in_a_row >= IN_A_ROW || in_window >= IN_WINDOW {
             return Err(Error::Loop(name.to_string()));
         }
         Ok(())
@@ -93,5 +99,24 @@ mod tests {
         let mut meter = Meter::default();
         meter.charge(&Usage { input_tokens: 1, output_tokens: 1, cache_read_tokens: 500, cache_write_tokens: 500 });
         assert!(matches!(meter.check(&Budget { max_steps: 10, max_tokens: 1_000 }), Err(Error::Budget(_))));
+    }
+
+    #[test]
+    fn a_cycle_between_calls_is_a_loop_but_occasional_repeats_are_not() {
+        use serde_json::json;
+        let (a, b) = (json!({"x": 1}), json!({"x": 2}));
+        let mut guard = LoopGuard::default();
+        let mut out = Ok(());
+        for (name, args) in [("a", &a), ("b", &b), ("a", &a), ("b", &b), ("a", &a), ("b", &b), ("a", &a)] {
+            out = guard.see(name, args);
+            if out.is_err() {
+                break;
+            }
+        }
+        assert!(out.is_err(), "a,b,a,b,a,b,a is a loop");
+        let mut guard = LoopGuard::default();
+        for (i, name) in ["a", "c", "a", "d", "a", "e", "f"].iter().enumerate() {
+            assert!(guard.see(name, &json!({"x": if *name == "a" { 0 } else { i }})).is_ok(), "three a's spread out are fine");
+        }
     }
 }

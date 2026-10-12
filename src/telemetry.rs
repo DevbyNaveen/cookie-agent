@@ -11,6 +11,67 @@ pub(crate) fn provider_name(prefix: &str) -> String {
     }
 }
 
+/// `invoke_agent [{gen_ai.agent.name}]`, INTERNAL.
+pub(crate) fn agent_span(name: Option<&str>, model: &str, provider: Option<&str>) -> tracing::Span {
+    tracing::info_span!(
+        "invoke_agent",
+        "otel.name" = %name.map_or_else(|| "invoke_agent".to_string(), |n| format!("invoke_agent {n}")),
+        "otel.kind" = "internal",
+        "gen_ai.operation.name" = "invoke_agent",
+        "gen_ai.agent.name" = name,
+        "gen_ai.provider.name" = provider.unwrap_or("_OTHER"),
+        "gen_ai.request.model" = %model,
+        "error.type" = tracing::field::Empty,
+    )
+}
+
+/// `chat {gen_ai.request.model}`, CLIENT. Every request streams.
+pub(crate) fn chat_span(model: &str, provider: Option<&str>) -> tracing::Span {
+    tracing::info_span!(
+        "chat",
+        "otel.name" = %format!("chat {model}"),
+        "otel.kind" = "client",
+        "gen_ai.operation.name" = "chat",
+        "gen_ai.provider.name" = provider.unwrap_or("_OTHER"),
+        "gen_ai.request.model" = %model,
+        "gen_ai.request.stream" = true,
+        "gen_ai.usage.input_tokens" = tracing::field::Empty,
+        "gen_ai.usage.output_tokens" = tracing::field::Empty,
+        "gen_ai.usage.cache_read.input_tokens" = tracing::field::Empty,
+        "gen_ai.usage.cache_write.input_tokens" = tracing::field::Empty,
+        "error.type" = tracing::field::Empty,
+    )
+}
+
+/// Usage on success (input counts cached input, as the convention says;
+/// providers report it apart), `error.type` on failure.
+pub(crate) fn record_chat(span: &tracing::Span, response: &crate::Result<crate::provider::ModelResponse>) {
+    match response {
+        Ok(r) => {
+            span.record("gen_ai.usage.input_tokens", r.usage.input_tokens + r.usage.cache_read_tokens + r.usage.cache_write_tokens);
+            span.record("gen_ai.usage.output_tokens", r.usage.output_tokens);
+            span.record("gen_ai.usage.cache_read.input_tokens", r.usage.cache_read_tokens);
+            span.record("gen_ai.usage.cache_write.input_tokens", r.usage.cache_write_tokens);
+        }
+        Err(error) => {
+            span.record("error.type", error_type(error));
+        }
+    }
+}
+
+/// `execute_tool {gen_ai.tool.name}`, INTERNAL.
+pub(crate) fn tool_span(name: &str, id: &str) -> tracing::Span {
+    tracing::info_span!(
+        "execute_tool",
+        "otel.name" = %format!("execute_tool {name}"),
+        "otel.kind" = "internal",
+        "gen_ai.operation.name" = "execute_tool",
+        "gen_ai.tool.name" = %name,
+        "gen_ai.tool.call.id" = %id,
+        "error.type" = tracing::field::Empty,
+    )
+}
+
 /// `error.type`: the error's kind, e.g. `Budget`, `Cancelled`.
 pub(crate) fn error_type(error: &crate::Error) -> String {
     format!("{error:?}").split(['(', ' ', '{']).next().unwrap_or("_OTHER").to_string()

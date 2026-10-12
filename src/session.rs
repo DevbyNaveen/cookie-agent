@@ -14,11 +14,13 @@ use crate::{
 pub struct Session {
     path: Option<PathBuf>,
     messages: Vec<Message>,
+    /// Held while the session is open: one writer per file.
+    _lock: Option<std::fs::File>,
 }
 
 impl Session {
     pub fn in_memory() -> Self {
-        Self { path: None, messages: Vec::new() }
+        Self { path: None, messages: Vec::new(), _lock: None }
     }
 
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -27,6 +29,16 @@ impl Session {
             if !dir.as_os_str().is_empty() {
                 tokio::fs::create_dir_all(dir).await?;
             }
+        }
+        // An advisory lock on the file itself: a second process (or a second
+        // Session in this one) opening it to write is refused, not interleaved.
+        let lock = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(Error::Session(format!("{} is in use by another writer", path.display())));
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
         }
         let mut messages = Vec::new();
         match tokio::fs::read_to_string(&path).await {
@@ -53,7 +65,7 @@ impl Session {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
-        let mut session = Self { path: Some(path), messages };
+        let mut session = Self { path: Some(path), messages, _lock: Some(lock) };
         session.repair().await?;
         Ok(session)
     }
@@ -73,6 +85,8 @@ impl Session {
             let mut file = OpenOptions::new().create(true).append(true).open(path).await?;
             file.write_all(line.as_bytes()).await?;
             file.flush().await?;
+            // On disk before the run goes on: a power cut loses nothing it reported.
+            file.sync_data().await?;
         }
         self.messages.push(message);
         Ok(())
@@ -129,8 +143,10 @@ mod tests {
         let mut s = Session::open(&path).await.unwrap();
         s.append(Message::user("hi")).await.unwrap();
         s.append(Message::assistant(vec![Content::Text { text: "hello".into() }])).await.unwrap();
+        let before = s.messages().to_vec();
+        drop(s); // the writer is gone, as after the process exits
         let again = Session::open(&path).await.unwrap();
-        assert_eq!(again.messages(), s.messages());
+        assert_eq!(again.messages(), before.as_slice());
         assert_eq!(again.messages().len(), 2);
     }
 
@@ -143,6 +159,7 @@ mod tests {
         s.append(Message::assistant(vec![Content::ToolCall { id: "c1".into(), name: "weather".into(), args: json!({}) }]))
             .await
             .unwrap();
+        drop(s); // the crash
         let reopened = Session::open(&path).await.unwrap();
         let last = reopened.messages().last().unwrap();
         assert!(last.origin().is_untrusted());
@@ -158,6 +175,7 @@ mod tests {
         }
         let b = s.branch(2, dir.path().join("b.jsonl")).await.unwrap();
         assert_eq!(b.messages().len(), 2);
+        drop(b);
         assert_eq!(Session::open(dir.path().join("b.jsonl")).await.unwrap().messages().len(), 2);
         assert!(s.branch(1, dir.path().join("b.jsonl")).await.is_err(), "never overwrite an existing branch");
     }
@@ -168,6 +186,7 @@ mod tests {
         let path = dir.path().join("torn.jsonl");
         let mut s = Session::open(&path).await.unwrap();
         s.append(Message::user("hi")).await.unwrap();
+        drop(s); // the crash mid-write
         let mut text = tokio::fs::read_to_string(&path).await.unwrap();
         text.push_str("{\"role\":\"us");
         tokio::fs::write(&path, &text).await.unwrap();
@@ -182,5 +201,15 @@ mod tests {
         let path = dir.path().join("bad.jsonl");
         tokio::fs::write(&path, "not json\n").await.unwrap();
         assert!(matches!(Session::open(&path).await, Err(crate::Error::Session(_))));
+    }
+
+    #[tokio::test]
+    async fn a_session_file_has_one_writer_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let first = Session::open(&path).await.unwrap();
+        assert!(matches!(Session::open(&path).await, Err(Error::Session(m)) if m.contains("in use")));
+        drop(first);
+        assert!(Session::open(&path).await.is_ok(), "free again once the first is dropped");
     }
 }

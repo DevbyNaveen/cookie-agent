@@ -4,6 +4,7 @@
 pub mod agent;
 pub mod approval;
 pub mod budget;
+mod calls;
 pub mod compaction;
 pub mod enkeon;
 pub mod error;

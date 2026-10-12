@@ -130,7 +130,7 @@ cancelled. Delegation goes at most 3 levels deep.
 
 ## Long sessions
 
-`.compaction(Compaction { clear_tool_results_after, summarize_above_tokens, keep_recent_turns })`
+`.compaction(Compaction { clear_tool_results_after, summarize_above_tokens, keep_recent_turns, ..Compaction::default() })` (`.with_prompt(..)` replaces the summary instruction)
 clears old tool output from what the model sees and, past the token limit,
 replaces older turns with a summary (`SUMMARY_PROMPT`, public). The session
 file keeps every message. What the person wrote before a summary still

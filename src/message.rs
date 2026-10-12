@@ -119,10 +119,10 @@ impl Message {
     pub(crate) fn clear_tool_outputs(&mut self, turn: usize) {
         for content in &mut self.content {
             if let Content::ToolResult { output, .. } = content {
-                if !output.starts_with("[cleared:") {
-                    let size = output.chars().count();
-                    *output = format!("[cleared: tool output from turn {turn}, {size} characters — ask again if you need it]");
-                }
+                // Always replaced: the view is rebuilt from the full session each
+                // time, so an output that only looks cleared is cleared too.
+                let size = output.chars().count();
+                *output = format!("[cleared: tool output from turn {turn}, {size} characters — ask again if you need it]");
             }
         }
     }

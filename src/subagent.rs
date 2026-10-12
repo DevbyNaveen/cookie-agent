@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use crate::{
     agent::{Agent, Event},
     error::{Error, Result},
-    tool::{Effect, Tool, ToolContext, ToolSpec},
+    tool::{Effect, Spend, Tool, ToolContext, ToolSpec},
 };
 
 /// How many delegations deep a tree may go.
@@ -76,7 +76,7 @@ impl Tool for SubAgent {
         let Some(task) = args["task"].as_str().filter(|t| !t.trim().is_empty()) else {
             return Err("a sub-agent needs a `task`".into());
         };
-        let (result, spent, events) = self.agent.run_delegated(task, context).await;
+        let (result, spent, events) = self.agent.run_delegated(&self.spec.name, task, context).await;
         context
             .events
             .lock()
@@ -90,6 +90,39 @@ impl Tool for SubAgent {
         result.map_err(|e| e.to_string())
     }
 
+}
+
+impl Agent {
+    /// Run as a sub-agent: a fresh context holding only the task, the
+    /// parent's provenance, at most the parent's remaining budget, and the
+    /// parent's cancellation. Returns what it spent and reported either way.
+    pub(crate) async fn run_delegated(&self, name: &str, task: &str, context: &ToolContext) -> (Result<String>, Spend, Vec<Event>) {
+        use crate::{agent::{RunControl, Start}, budget::{Budget, Meter}, message::Message, session::Session};
+        use tracing::Instrument;
+        let mut session = Session::in_memory();
+        let control = RunControl { cancel: context.cancel.clone(), finish_turn: tokio_util::sync::CancellationToken::new() };
+        let budget = Budget {
+            max_steps: self.budget.max_steps.min(context.budget.max_steps),
+            max_tokens: self.budget.max_tokens.min(context.budget.max_tokens),
+        };
+        let mut events = Vec::new();
+        let extra = match self.enkeon_tools(true, &context.cancel, &mut |e| events.push(e)).await {
+            Ok(extra) => extra,
+            Err(error) => return (Err(error), Spend::default(), events),
+        };
+        let start = Start { provenance: context.provenance.clone(), budget, depth: context.depth + 1, extra };
+        let mut meter = Meter::default();
+        let mut open = Vec::new();
+        let span = crate::telemetry::agent_span(Some(name), &self.model, self.provider_name.as_deref());
+        let result = self
+            .turns(&mut session, Message::delegated(task), &control, &mut |e| events.push(e), &mut open, start, &mut meter)
+            .instrument(span.clone())
+            .await;
+        if let Err(error) = &result {
+            span.record("error.type", crate::telemetry::error_type(error));
+        }
+        (result, meter.spent(), events)
+    }
 }
 
 #[cfg(test)]
