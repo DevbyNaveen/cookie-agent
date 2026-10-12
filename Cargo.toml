@@ -6,8 +6,15 @@ rust-version = "1.80"
 license = "MIT"
 description = "A tiny agent loop where text the model read can never decide who gets sent what."
 
+[features]
+default = []
+# Amazon Bedrock (Converse API), signed with SigV4.
+bedrock = ["dep:aws-sigv4", "dep:aws-credential-types"]
+
 [dependencies]
 async-trait = "0.1"
+aws-credential-types = { version = "=1.2.13", optional = true }
+aws-sigv4 = { version = "=1.4.1", optional = true }
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }

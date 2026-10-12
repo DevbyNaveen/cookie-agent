@@ -10,6 +10,16 @@ println!("{}", agent.run("Weather in Riga?").await?);
 
 You always name the model (`provider:model`); there is no default.
 
+| Provider | Model id | Needs |
+|---|---|---|
+| Anthropic | `anthropic:claude-sonnet-4-6` | `ANTHROPIC_API_KEY` |
+| OpenAI | `openai:<model>` | `OPENAI_API_KEY` (`OPENAI_BASE_URL` for other compatible servers) |
+| Ollama | `ollama:qwen3` | a running Ollama (`OLLAMA_HOST`, default `localhost:11434`) |
+| Amazon Bedrock | `bedrock:eu.anthropic.claude-sonnet-4-6` | feature `bedrock`; `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` for ids without `eu.`/`us.` |
+
+Keys are read from the environment and never enter the conversation.
+Anthropic streams; OpenAI-compatible and Bedrock report each reply when it completes.
+
 ## Five concepts
 
 | | |
