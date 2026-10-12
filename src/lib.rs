@@ -23,6 +23,7 @@ pub mod skills;
 pub mod subagent;
 pub mod telemetry;
 pub mod tool;
+pub mod tool_search;
 pub mod trust;
 
 pub use agent::{Agent, Event, RunControl};
@@ -45,3 +46,4 @@ pub use enkeon::{Enkeon, ENKEON_INSTRUCTIONS};
 pub use trust::EarnedTrust;
 pub use quarantine::{quarantine, Quarantined, QUARANTINE_PROMPT};
 pub use handoff::Handoff;
+pub use tool_search::ToolSearch;

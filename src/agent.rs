@@ -21,6 +21,7 @@ use crate::{
     session::Session,
     telemetry,
     tool::{Effect, Tool, ToolContext},
+    tool_search::{Searcher, ToolSearch},
     trust::EarnedTrust,
 };
 
@@ -36,6 +37,7 @@ pub struct Agent {
     pub(crate) budget: Budget,
     pub(crate) price: Option<Price>,
     pub(crate) trust: Option<EarnedTrust>,
+    pub(crate) tool_search: Option<ToolSearch>,
     pub(crate) compaction: Option<Compaction>,
     pub(crate) enkeon: Option<Arc<Enkeon>>,
     /// `gen_ai.provider.name` on spans, when known.
@@ -118,6 +120,7 @@ impl Agent {
             budget: Budget::default(),
             price: None,
             trust: None,
+            tool_search: None,
             compaction: None,
             // On by default when ENKEON_API_KEY is set; never in this crate's own tests.
             enkeon: if cfg!(test) { None } else { Enkeon::from_env().map(Arc::new) },
@@ -166,6 +169,12 @@ impl Agent {
     /// Tools that send, delete or pay always ask.
     pub fn earned_trust(mut self, trust: EarnedTrust) -> Self {
         self.trust = Some(trust);
+        self
+    }
+
+    /// Past `after` tools, send a `search_tools` tool instead of them all.
+    pub fn tool_search(mut self, search: ToolSearch) -> Self {
+        self.tool_search = Some(search);
         self
     }
 
@@ -249,7 +258,9 @@ impl Agent {
             (false, true) => crate::enkeon::instructions(delegated).to_string(),
             (false, false) => format!("{}\n\n{}", self.instructions, crate::enkeon::instructions(delegated)),
         };
-        let tools: Vec<Arc<dyn Tool>> = self.tools.iter().cloned().chain(start.extra).collect();
+        let mut tools: Vec<Arc<dyn Tool>> = self.tools.iter().cloned().chain(start.extra).collect();
+        let searcher = self.tool_search.and_then(|config| Searcher::new(&tools, config));
+        tools.extend(searcher.as_ref().map(|s| s.tool.clone()));
         let policy = match &start.ceiling {
             Some(ceiling) => self.policy.within(ceiling),
             None => self.policy.clone(),
@@ -274,7 +285,10 @@ impl Agent {
                 return Err(Error::Cancelled);
             }
             meter.check(&budget)?;
-            let specs: Vec<_> = tools.iter().map(|t| t.spec()).collect();
+            let specs: Vec<_> = match &searcher {
+                Some(searcher) => searcher.offered(&tools),
+                None => tools.iter().map(|t| t.spec()).collect(),
+            };
             let view = match &self.compaction {
                 Some(policy) => {
                     // A failed summary must not block the session: report it and
