@@ -16,6 +16,12 @@ pub struct ApprovalRequest {
 #[async_trait]
 pub trait Approver: Send + Sync {
     async fn approve(&self, request: &ApprovalRequest) -> bool;
+
+    /// Whether a person answers (not a rule or a script). Only a person's
+    /// approvals can earn trust (see `EarnedTrust`).
+    fn is_person(&self) -> bool {
+        false
+    }
 }
 
 /// The default: nothing that needs a person runs until the app supplies one.
@@ -28,7 +34,27 @@ impl Approver for DenyAll {
     }
 }
 
+/// Answers with a function — a rule, a test, a script. Its yeses never earn
+/// trust; use `PersonApprover` when the function asks a person.
 pub struct FnApprover<F>(pub F);
+
+/// A function that shows the request to a person and returns their answer
+/// (your app's approval UI). Its approvals can earn trust.
+pub struct PersonApprover<F>(pub F);
+
+#[async_trait]
+impl<F> Approver for PersonApprover<F>
+where
+    F: Fn(&ApprovalRequest) -> bool + Send + Sync,
+{
+    async fn approve(&self, request: &ApprovalRequest) -> bool {
+        (self.0)(request)
+    }
+
+    fn is_person(&self) -> bool {
+        true
+    }
+}
 
 #[async_trait]
 impl<F> Approver for FnApprover<F>

@@ -32,7 +32,7 @@ pub mod tool_search;
 pub mod trust;
 
 pub use agent::{Agent, Event, RunControl};
-pub use approval::{ApprovalRequest, Approver, DenyAll, FnApprover};
+pub use approval::{ApprovalRequest, Approver, DenyAll, FnApprover, PersonApprover};
 pub use budget::{Budget, Price};
 pub use compaction::{Compaction, SUMMARY_PROMPT};
 pub use error::{Error, Result};

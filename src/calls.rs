@@ -67,7 +67,7 @@ impl Agent {
                 Decision::Allow => approved.push((index, tool)),
                 // A cancelled run asks no one; a wait for a person stops on cancel.
                 Decision::Ask { .. } if cancel.is_cancelled() => outcomes[index] = Some((NOT_RUN_CANCELLED.into(), true)),
-                Decision::Ask { .. } if self.trust.as_ref().is_some_and(|t| t.allows(name, tool.spec().effect)) => {
+                Decision::Ask { .. } if self.trust.as_ref().is_some_and(|t| t.allows(tool.spec())) => {
                     on_event(Event::RanOnEarnedTrust { tool: name.clone() });
                     approved.push((index, tool));
                 }
@@ -78,9 +78,9 @@ impl Agent {
                         yes = approver.approve(&request) => yes,
                         _ = cancel.cancelled() => false,
                     };
-                    // A cancelled wait is not a "no" from the person.
-                    if let (Some(trust), false) = (&self.trust, cancel.is_cancelled()) {
-                        if let Err(error) = trust.record(name, tool.spec().effect, yes) {
+                    // Only a person's answer counts, and a cancelled wait is no answer.
+                    if let (Some(trust), true, false) = (&self.trust, approver.is_person(), cancel.is_cancelled()) {
+                        if let Err(error) = trust.record(tool.spec(), yes) {
                             tracing::warn!(%error, "could not record the approval for earned trust");
                         }
                     }

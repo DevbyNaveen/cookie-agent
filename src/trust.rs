@@ -10,9 +10,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use sha2::{Digest, Sha256};
+
 use crate::{
     error::{Error, Result},
-    tool::Effect,
+    tool::{Effect, ToolSpec},
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -22,12 +24,26 @@ struct Rung {
     earned: bool,
 }
 
-/// Shared by every agent it is given to; cheap to clone.
+/// Shared by every agent it is given to; cheap to clone. Trust belongs to
+/// one tool definition (name, description and schema), so another tool that
+/// happens to share a name — say from an MCP server — earns nothing from it.
 #[derive(Debug, Clone)]
 pub struct EarnedTrust {
     after: usize,
     path: Option<PathBuf>,
     rungs: Arc<Mutex<BTreeMap<String, Rung>>>,
+}
+
+/// `name#` and the first 12 hex characters of SHA-256 over the description
+/// and schema.
+fn key(spec: &ToolSpec) -> String {
+    let digest = Sha256::digest(format!("{}\n{}", spec.description, spec.schema).as_bytes());
+    let short: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    format!("{}#{short}", spec.name)
+}
+
+fn name_of(key: &str) -> &str {
+    key.split('#').next().unwrap_or(key)
 }
 
 impl EarnedTrust {
@@ -36,38 +52,39 @@ impl EarnedTrust {
         Self { after: after.max(1), path: None, rungs: Arc::default() }
     }
 
-    /// Kept in a JSON file (written on every change, readable, deletable).
+    /// Kept in a JSON file, re-read on every check so a revoke from another
+    /// process stands, and written under a lock so writers don't lose each other.
     pub fn open(path: impl AsRef<Path>, after: usize) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        let rungs = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).map_err(|e| Error::Session(format!("{}: {e}", path.display())))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-            Err(e) => return Err(e.into()),
-        };
-        Ok(Self { after: after.max(1), path: Some(path), rungs: Arc::new(Mutex::new(rungs)) })
+        let trust = Self { after: after.max(1), path: Some(path.as_ref().to_path_buf()), rungs: Arc::default() };
+        trust.with_file(false, |_| ())?;
+        Ok(trust)
     }
 
+    /// Whether any tool called `tool` has been earned.
     pub fn earned(&self, tool: &str) -> bool {
-        self.rungs.lock().unwrap().get(tool).is_some_and(|r| r.earned)
+        self.snapshot().iter().any(|(key, rung)| name_of(key) == tool && rung.earned)
     }
 
-    /// Every tool that runs without asking.
+    /// The names of every tool that runs without asking.
     pub fn earned_tools(&self) -> Vec<String> {
-        self.rungs.lock().unwrap().iter().filter(|(_, r)| r.earned).map(|(name, _)| name.clone()).collect()
+        let mut names: Vec<String> = self.snapshot().iter().filter(|(_, r)| r.earned).map(|(k, _)| name_of(k).to_string()).collect();
+        names.dedup();
+        names
     }
 
-    /// Ask again from now on.
+    /// Ask again from now on, for every tool called `tool`.
     pub fn revoke(&self, tool: &str) -> Result<()> {
-        self.update(tool, |rung| *rung = Rung::default())
+        self.with_file(true, |rungs| rungs.retain(|key, _| name_of(key) != tool))
     }
 
-    /// A person's answer for `tool`. Only `write` climbs; a "no" resets.
-    pub(crate) fn record(&self, tool: &str, effect: Effect, approved: bool) -> Result<()> {
-        if effect != Effect::Write {
+    /// A person's answer for this tool. Only `write` climbs; a "no" resets.
+    pub(crate) fn record(&self, spec: &ToolSpec, approved: bool) -> Result<()> {
+        if spec.effect != Effect::Write {
             return Ok(());
         }
-        let after = self.after;
-        self.update(tool, |rung| {
+        let (after, key) = (self.after, key(spec));
+        self.with_file(true, |rungs| {
+            let rung = rungs.entry(key).or_default();
             if approved {
                 rung.streak += 1;
                 rung.earned |= rung.streak >= after;
@@ -77,16 +94,38 @@ impl EarnedTrust {
         })
     }
 
-    /// Whether a `write` call may run without asking.
-    pub(crate) fn allows(&self, tool: &str, effect: Effect) -> bool {
-        effect == Effect::Write && self.earned(tool)
+    /// Whether this `write` call may run without asking.
+    pub(crate) fn allows(&self, spec: &ToolSpec) -> bool {
+        spec.effect == Effect::Write && self.snapshot().get(&key(spec)).is_some_and(|r| r.earned)
     }
 
-    fn update(&self, tool: &str, change: impl FnOnce(&mut Rung)) -> Result<()> {
+    fn snapshot(&self) -> BTreeMap<String, Rung> {
+        match self.with_file(false, |_| ()) {
+            Ok(()) => self.rungs.lock().unwrap().clone(),
+            // An unreadable file earns nothing.
+            Err(_) => BTreeMap::new(),
+        }
+    }
+
+    /// Run `change` on the latest state: from the file (under its lock) when
+    /// there is one; written back when `write`.
+    fn with_file(&self, write: bool, change: impl FnOnce(&mut BTreeMap<String, Rung>)) -> Result<()> {
         let mut rungs = self.rungs.lock().unwrap();
-        change(rungs.entry(tool.to_string()).or_default());
-        if let Some(path) = &self.path {
-            let tmp = path.with_extension("tmp");
+        let Some(path) = &self.path else {
+            change(&mut rungs);
+            return Ok(());
+        };
+        let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path.with_extension("lock"))?;
+        if write { lock.lock()? } else { lock.lock_shared()? }
+        *rungs = match std::fs::read_to_string(path) {
+            Ok(text) if text.trim().is_empty() => BTreeMap::new(),
+            Ok(text) => serde_json::from_str(&text).map_err(|e| Error::Session(format!("{}: {e}", path.display())))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(e) => return Err(e.into()),
+        };
+        change(&mut rungs);
+        if write {
+            let tmp = path.with_extension(format!("tmp-{}-{:?}", std::process::id(), std::thread::current().id()));
             std::fs::write(&tmp, serde_json::to_vec_pretty(&*rungs)?)?;
             std::fs::rename(&tmp, path)?;
         }
@@ -99,9 +138,9 @@ mod tests {
     use super::*;
     use crate::{
         agent::{Agent, Event},
-        approval::{ApprovalRequest, FnApprover},
+        approval::{ApprovalRequest, FnApprover, PersonApprover},
         providers::scripted::Scripted,
-        tool::{tool, Effect},
+        tool::{tool, Effect, Tool},
         Message, RunControl, Session,
     };
     use serde_json::json;
@@ -125,7 +164,7 @@ mod tests {
             Scripted::call("n", "save_note", json!({"text": "x"})),
             Scripted::text("ok"),
         ]));
-        let agent = Agent::with_provider(p, "m").tool(page()).tool(note(effect)).earned_trust(trust.clone()).approver(FnApprover(
+        let agent = Agent::with_provider(p, "m").tool(page()).tool(note(effect)).earned_trust(trust.clone()).approver(PersonApprover(
             move |_: &ApprovalRequest| {
                 asked.fetch_add(1, Ordering::SeqCst);
                 answer
@@ -175,5 +214,53 @@ mod tests {
         assert!(reopened.earned("save_note"));
         reopened.revoke("save_note").unwrap();
         assert!(!EarnedTrust::open(&path, 2).unwrap().earned("save_note"));
+    }
+
+    #[tokio::test]
+    async fn a_rule_or_script_never_earns_trust() {
+        let trust = EarnedTrust::in_memory(2);
+        for _ in 0..4 {
+            let p = Arc::new(Scripted::new(vec![
+                Scripted::call("p", "read_page", json!({})),
+                Scripted::call("n", "save_note", json!({})),
+                Scripted::text("ok"),
+            ]));
+            let agent = Agent::with_provider(p, "m").tool(page()).tool(note(Effect::Write)).earned_trust(trust.clone()).approver(FnApprover(|_: &ApprovalRequest| true));
+            agent.run("go").await.unwrap();
+        }
+        assert!(!trust.earned("save_note"), "only a person's approvals count");
+    }
+
+    #[test]
+    fn trust_belongs_to_one_tool_definition_not_its_name() {
+        let trust = EarnedTrust::in_memory(1);
+        let mine = note(Effect::Write);
+        let theirs = tool("save_note", "a CRM tool from an MCP server", json!({"type": "object"}), Effect::Write, |_| async move { Ok(String::new()) });
+        trust.record(mine.spec(), true).unwrap();
+        assert!(trust.allows(mine.spec()));
+        assert!(!trust.allows(theirs.spec()), "same name, different tool");
+    }
+
+    #[test]
+    fn a_revoke_from_another_process_stands_and_writers_do_not_lose_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trust.json");
+        let a = EarnedTrust::open(&path, 1).unwrap();
+        let b = EarnedTrust::open(&path, 1).unwrap();
+        let spec = note(Effect::Write).spec().clone();
+        a.record(&spec, true).unwrap();
+        b.revoke("save_note").unwrap();
+        assert!(!a.allows(&spec), "a re-reads the file: b's revoke stands");
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let t = EarnedTrust::open(&path, 1).unwrap();
+                let mut s = spec.clone();
+                s.name = format!("t{i}");
+                std::thread::spawn(move || t.record(&s, true).unwrap())
+            })
+            .collect();
+        handles.into_iter().for_each(|h| h.join().unwrap());
+        let all = EarnedTrust::open(&path, 1).unwrap().earned_tools();
+        assert_eq!(all.len(), 8, "{all:?}");
     }
 }

@@ -47,6 +47,10 @@ impl<R: AsyncBufRead + Unpin + Send> Approver for LineApprover<R> {
         let _ = self.input.lock().await.read_line(&mut answer).await;
         matches!(answer.trim(), "y" | "Y" | "yes")
     }
+
+    fn is_person(&self) -> bool {
+        self.present
+    }
 }
 
 /// Run each line of `input` on `session` until `/exit` or the input ends,

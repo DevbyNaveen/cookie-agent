@@ -186,8 +186,13 @@ let agent = agent.earned_trust(EarnedTrust::open("trust.json", 5)?);
 ```
 
 After a person approves the same `write` tool 5 times in a row, it runs
-without asking, and `Event::RanOnEarnedTrust` says so. One "no" resets it;
-`revoke` takes it back. Tools that send, delete or pay are never earned.
+without asking, and `Event::RanOnEarnedTrust` says so. Only a person counts:
+the approver must be a `PersonApprover` (your UI) or the terminal — a rule
+or script (`FnApprover`) never earns trust. Trust belongs to one tool
+definition, so another tool with the same name earns nothing. One "no"
+resets it; `revoke` takes it back, and the file is re-read on every check, so
+a revoke from another process stands. Tools that send, delete or pay are
+never earned.
 
 ## Reading untrusted text through a quarantine
 
