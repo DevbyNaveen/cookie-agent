@@ -98,7 +98,8 @@ A `run` may also carry, besides `instructions`, `session` (a file to resume),
 `allow` (values the person approved in advance) and `enkeon: false`:
 
 ```json
-"budget": {"max_steps": 10, "max_tokens": 50000},
+"budget": {"max_steps": 10, "max_tokens": 50000, "max_dollars": 0.50},
+"prices": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
 "mcp": [
   {"command": "github-mcp", "args": [], "effects": {"search_issues": "read"},
    "guards": {"create_issue": ["repo"]}, "pin": "3f2a…"},
@@ -106,11 +107,17 @@ A `run` may also carry, besides `instructions`, `session` (a file to resume),
 ]
 ```
 
-A limit left out keeps its default (25 model calls, 200,000 tokens). Each MCP
+A limit left out keeps its default (25 model calls, 200,000 tokens, no dollar
+cap); a dollar cap needs `prices` (dollars per million tokens — you supply them). Each MCP
 server is connected for that run only and works as in Rust: every tool asks
 a person unless `effects` lowers it, and a `pin` refuses a server whose tool
 list changed. A server that can't be reached, or fails its pin, ends that
 run with an `error`. Unknown fields are refused, here as everywhere.
+
+Clients that do this for you: `bindings/python` (`cookie_harness`, standard
+library only) and `bindings/typescript` (`@cookie-harness/client`, no runtime
+dependencies). `evals/agentdojo` runs AgentDojo through the Python one, with
+the trust layer on and off.
 
 ## Tracing
 
