@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::{error::{Error, Result}, model_id::ModelId, provider::Provider};
 
 pub mod anthropic;
+mod fence;
 pub mod scripted;
 
 pub fn resolve(id: &ModelId) -> Result<Arc<dyn Provider>> {
