@@ -79,6 +79,14 @@ pub enum Event {
     /// A `write` call ran without asking because a person approved it enough
     /// times in a row.
     RanOnEarnedTrust { tool: String },
+    /// The conversation moved to another agent (`Handoff`).
+    HandedOff { to: String },
+}
+
+/// How one agent's turns ended.
+pub(crate) enum Turn {
+    Answer(String),
+    HandOff(String, Arc<Agent>),
 }
 
 /// Two ways to stop a run: `cancel` stops now; `finish_turn` lets the
@@ -209,7 +217,7 @@ impl Agent {
         let extra = self.enkeon_tools(false, &control.cancel, on_event).await?;
         let start = Start { provenance: Provenance::default(), budget: self.budget, depth: 0, extra, ceiling: None, inherited_approver: None };
         let span = telemetry::agent_span(None, &self.model, self.provider_name.as_deref());
-        let result = self.turns(session, input, control, on_event, &mut open, start, &mut meter).instrument(span.clone()).await;
+        let result = self.drive(session, input, control, on_event, &mut open, start, &mut meter).instrument(span.clone()).await;
         if let Err(error) = &result {
             span.record("error.type", telemetry::error_type(error));
             for id in open {
@@ -223,13 +231,13 @@ impl Agent {
     pub(crate) async fn turns(
         &self,
         session: &mut Session,
-        input: Message,
+        input: Option<Message>,
         control: &RunControl,
         on_event: &mut (dyn FnMut(Event) + Send),
         open: &mut Vec<String>,
         start: Start,
         meter: &mut Meter,
-    ) -> Result<String> {
+    ) -> Result<Turn> {
         let cancel = &control.cancel;
         let budget = start.budget;
         if budget.max_dollars.is_some() && self.price.is_none() {
@@ -250,7 +258,10 @@ impl Agent {
             self.approver.clone().or(start.inherited_approver).unwrap_or_else(|| Arc::new(DenyAll));
         self.check_tools(&tools)?;
         session.repair().await?;
-        session.append(input).await?;
+        // `None` when a handoff continues the conversation as it stands.
+        if let Some(input) = input {
+            session.append(input).await?;
+        }
         // Starts from what the parent knew (empty at the top): the developer's
         // instructions are not credited as the person's words, and a delegated
         // task is the parent model's words, so neither is trusted here.
@@ -311,7 +322,7 @@ impl Agent {
             let answer = reply.text();
             session.append(reply).await?;
             if calls.is_empty() {
-                return Ok(answer);
+                return Ok(Turn::Answer(answer));
             }
 
             let context = ToolContext {
@@ -323,6 +334,7 @@ impl Agent {
                 events: Default::default(),
                 policy: Some(policy.clone()),
                 approver: Some(approver.clone()),
+                handoff: Default::default(),
             };
             let (results, stop) = self
                 .run_calls(&tools, &calls, &provenance, &policy, approver.as_ref(), &mut loop_guard, &context, on_event)
@@ -352,6 +364,10 @@ impl Agent {
                 Stop::Loop(name) => return Err(Error::Loop(name)),
                 Stop::No if control.finish_turn.is_cancelled() => return Err(Error::Stopped),
                 Stop::No => {}
+            }
+            let handed = context.handoff.lock().expect("handoff lock").take();
+            if let Some((name, to)) = handed {
+                return Ok(Turn::HandOff(name, to));
             }
         }
     }

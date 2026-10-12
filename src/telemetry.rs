@@ -127,6 +127,8 @@ mod tests {
     async fn a_run_emits_agent_chat_and_tool_spans_without_content() {
         let spans: Spans = Arc::default();
         let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(Capture(spans.clone())));
+        // Spans other tests already hit were cached as unwanted (no subscriber then).
+        tracing::callsite::rebuild_interest_cache();
         let mut cached = Scripted::text("9C");
         cached.usage.cache_read_tokens = 4;
         cached.usage.cache_write_tokens = 3;

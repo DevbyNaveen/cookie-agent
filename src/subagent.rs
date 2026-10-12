@@ -99,7 +99,7 @@ impl Agent {
         input: crate::message::Message,
         context: &ToolContext,
     ) -> (Result<String>, Spend, Vec<Event>) {
-        use crate::{agent::{RunControl, Start}, budget::{Budget, Meter}, message::Message, session::Session};
+        use crate::{agent::{RunControl, Start}, budget::{Budget, Meter}, session::Session};
         use tracing::Instrument;
         let mut session = Session::in_memory();
         let control = RunControl { cancel: context.cancel.clone(), finish_turn: tokio_util::sync::CancellationToken::new() };
@@ -129,7 +129,7 @@ impl Agent {
         let mut open = Vec::new();
         let span = crate::telemetry::agent_span(Some(name), &self.model, self.provider_name.as_deref());
         let result = self
-            .turns(&mut session, input, &control, &mut |e| events.push(e), &mut open, start, &mut meter)
+            .drive(&mut session, input, &control, &mut |e| events.push(e), &mut open, start, &mut meter)
             .instrument(span.clone())
             .await;
         if let Err(error) = &result {

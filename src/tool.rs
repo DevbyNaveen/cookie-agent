@@ -83,6 +83,8 @@ pub struct ToolContext {
     pub(crate) policy: Option<crate::policy::Policy>,
     /// Who the run asks: a sub-agent with no approver of its own asks them.
     pub(crate) approver: Option<Arc<dyn crate::approval::Approver>>,
+    /// Set by a `Handoff` tool: the agent that takes the conversation next.
+    pub(crate) handoff: Arc<Mutex<Option<(String, Arc<crate::agent::Agent>)>>>,
 }
 
 impl std::fmt::Debug for ToolContext {
