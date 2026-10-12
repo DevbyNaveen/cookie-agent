@@ -76,7 +76,7 @@ impl Tool for SubAgent {
         let Some(task) = args["task"].as_str().filter(|t| !t.trim().is_empty()) else {
             return Err("a sub-agent needs a `task`".into());
         };
-        let (result, spent, events) = self.agent.run_delegated(&self.spec.name, task, context).await;
+        let (result, spent, events) = self.agent.run_delegated(&self.spec.name, crate::message::Message::delegated(task), context).await;
         context
             .events
             .lock()
@@ -93,7 +93,12 @@ impl Agent {
     /// Run as a sub-agent: a fresh context holding only the task, the
     /// parent's provenance, at most the parent's remaining budget, and the
     /// parent's cancellation. Returns what it spent and reported either way.
-    pub(crate) async fn run_delegated(&self, name: &str, task: &str, context: &ToolContext) -> (Result<String>, Spend, Vec<Event>) {
+    pub(crate) async fn run_delegated(
+        &self,
+        name: &str,
+        input: crate::message::Message,
+        context: &ToolContext,
+    ) -> (Result<String>, Spend, Vec<Event>) {
         use crate::{agent::{RunControl, Start}, budget::{Budget, Meter}, message::Message, session::Session};
         use tracing::Instrument;
         let mut session = Session::in_memory();
@@ -124,7 +129,7 @@ impl Agent {
         let mut open = Vec::new();
         let span = crate::telemetry::agent_span(Some(name), &self.model, self.provider_name.as_deref());
         let result = self
-            .turns(&mut session, Message::delegated(task), &control, &mut |e| events.push(e), &mut open, start, &mut meter)
+            .turns(&mut session, input, &control, &mut |e| events.push(e), &mut open, start, &mut meter)
             .instrument(span.clone())
             .await;
         if let Err(error) = &result {
