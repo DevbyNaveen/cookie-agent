@@ -84,8 +84,9 @@ impl Agent {
     pub async fn run_in(&self, session: &mut Session, input: Message, cancel: &CancellationToken) -> Result<String> {
         session.repair().await?;
         session.append(input).await?;
+        // The developer's instructions are not credited as the person's words:
+        // destinations they name belong in `Policy::allow`.
         let mut provenance = Provenance::default();
-        provenance.trust(&self.instructions);
         session.messages().iter().for_each(|m| provenance.observe(m));
         let mut meter = Meter::default();
         let mut loop_guard = LoopGuard::default();
@@ -115,22 +116,28 @@ impl Agent {
                 return Ok(answer);
             }
 
-            let results = self.run_calls(&calls, &provenance, &mut loop_guard, cancel).await?;
+            let (results, cancelled) = self.run_calls(&calls, &provenance, &mut loop_guard, cancel).await?;
             let names = calls.iter().map(|(_, name, _)| name.as_str()).collect::<Vec<_>>().join(",");
             let message = Message::tool_results(results, Origin::Untrusted(Source::Tool(names)));
             provenance.observe(&message);
+            // Recorded before stopping, so a cancelled run never forgets what already happened.
             session.append(message).await?;
+            if cancelled {
+                return Err(Error::Cancelled);
+            }
         }
     }
 
-    /// Decide every call first, in order and deterministically; then run the approved ones.
+    /// Decide every call first, in order and deterministically; then run the
+    /// approved ones. Returns every call's result and whether the run was
+    /// cancelled; a call that finished keeps its real result either way.
     async fn run_calls(
         &self,
         calls: &[Call],
         provenance: &Provenance,
         loop_guard: &mut LoopGuard,
         cancel: &CancellationToken,
-    ) -> Result<Vec<Content>> {
+    ) -> Result<(Vec<Content>, bool)> {
         let mut outcomes: Vec<Option<(String, bool)>> = vec![None; calls.len()];
         let mut approved: Vec<(usize, Arc<dyn Tool>)> = Vec::new();
 
@@ -158,37 +165,49 @@ impl Agent {
             let args = calls[index].2.clone();
             async move { (index, tool.call(args).await) }
         };
-        let finished = if approved.iter().all(|(_, tool)| tool.spec().parallel_safe) {
+        let mut cancelled = false;
+        if approved.iter().all(|(_, tool)| tool.spec().parallel_safe) {
+            let running: Vec<usize> = approved.iter().map(|(index, _)| *index).collect();
             let all = futures::future::join_all(approved.into_iter().map(|(i, t)| run_one(i, t)));
             tokio::select! {
-                done = all => done,
-                _ = cancel.cancelled() => return Err(Error::Cancelled),
+                done = all => record(&mut outcomes, done),
+                _ = cancel.cancelled() => {
+                    cancelled = true;
+                    for index in running {
+                        outcomes[index] = Some(("Interrupted: this may or may not have run. Check before trying again.".into(), true));
+                    }
+                }
             }
         } else {
-            let mut done = Vec::new();
             for (index, tool) in approved {
                 if cancel.is_cancelled() {
-                    return Err(Error::Cancelled);
+                    cancelled = true;
+                    outcomes[index] = Some(("Not run: the run was cancelled first.".into(), true));
+                    continue;
                 }
-                done.push(run_one(index, tool).await);
+                record(&mut outcomes, vec![run_one(index, tool).await]);
             }
-            done
-        };
-        for (index, result) in finished {
-            outcomes[index] = Some(match result {
-                Ok(output) => (output, false),
-                Err(error) => (error, true),
-            });
+            cancelled |= cancel.is_cancelled();
         }
 
-        Ok(calls
+        let results = calls
             .iter()
             .zip(outcomes)
             .map(|((id, _, _), outcome)| {
                 let (output, is_error) = outcome.expect("every call has an outcome");
                 Content::ToolResult { id: id.clone(), output, is_error }
             })
-            .collect())
+            .collect();
+        Ok((results, cancelled))
+    }
+}
+
+fn record(outcomes: &mut [Option<(String, bool)>], finished: Vec<(usize, std::result::Result<String, String>)>) {
+    for (index, result) in finished {
+        outcomes[index] = Some(match result {
+            Ok(output) => (output, false),
+            Err(error) => (error, true),
+        });
     }
 }
 
@@ -323,6 +342,39 @@ mod tests {
         cancel.cancel();
         let mut s = Session::in_memory();
         assert!(matches!(a.run_in(&mut s, Message::user("hi"), &cancel).await, Err(Error::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn cancelling_after_a_send_records_that_it_was_sent_so_it_is_never_resent() {
+        let cancel = CancellationToken::new();
+        let cancel_in = cancel.clone();
+        let sent = Arc::new(AtomicUsize::new(0));
+        let sent_in = sent.clone();
+        let send = tool("send_email", "Send", json!({"type": "object"}), Effect::Outbound, move |_| {
+            let (cancel, sent) = (cancel_in.clone(), sent_in.clone());
+            async move {
+                sent.fetch_add(1, Ordering::SeqCst);
+                cancel.cancel();
+                Ok("sent".to_string())
+            }
+        })
+        .guard("to");
+        let (a, _) = agent(vec![crate::provider::ModelResponse {
+            content: vec![
+                Content::ToolCall { id: "c1".into(), name: "send_email".into(), args: json!({"to": "anna@x.com"}) },
+                Content::ToolCall { id: "c2".into(), name: "send_email".into(), args: json!({"to": "bob@x.com"}) },
+            ],
+            stop: crate::provider::StopReason::ToolUse,
+            usage: crate::provider::Usage::default(),
+        }]);
+        let a = a.tool(send).approver(FnApprover(|_: &ApprovalRequest| true));
+        let mut s = Session::in_memory();
+        let out = a.run_in(&mut s, Message::user("email anna@x.com and bob@x.com"), &cancel).await;
+        assert!(matches!(out, Err(Error::Cancelled)));
+        assert_eq!(sent.load(Ordering::SeqCst), 1);
+        let results = s.messages().last().unwrap().content().to_vec();
+        assert!(matches!(&results[0], Content::ToolResult { id, output, is_error: false } if id == "c1" && output == "sent"));
+        assert!(matches!(&results[1], Content::ToolResult { id, is_error: true, .. } if id == "c2"));
     }
 
     #[tokio::test]

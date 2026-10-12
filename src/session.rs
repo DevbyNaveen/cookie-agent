@@ -31,13 +31,23 @@ impl Session {
         let mut messages = Vec::new();
         match tokio::fs::read_to_string(&path).await {
             Ok(text) => {
-                for (index, line) in text.lines().enumerate() {
+                let lines: Vec<&str> = text.lines().collect();
+                for (index, line) in lines.iter().enumerate() {
                     if line.trim().is_empty() {
                         continue;
                     }
-                    let message = serde_json::from_str(line)
-                        .map_err(|e| Error::Session(format!("{} line {}: {e}", path.display(), index + 1)))?;
-                    messages.push(message);
+                    match Message::decode(line) {
+                        Ok(message) => messages.push(message),
+                        // A crash mid-write leaves a torn last line with no newline:
+                        // those bytes were never a whole message, so cut them off.
+                        Err(_) if index + 1 == lines.len() && !text.ends_with('\n') => {
+                            let file = OpenOptions::new().write(true).open(&path).await?;
+                            file.set_len((text.len() - line.len()) as u64).await?;
+                        }
+                        Err(e) => {
+                            return Err(Error::Session(format!("{} line {}: {e}", path.display(), index + 1)));
+                        }
+                    }
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -84,7 +94,7 @@ impl Session {
             .iter()
             .map(|(id, _)| Content::ToolResult {
                 id: id.clone(),
-                output: "Interrupted before this tool finished.".into(),
+                output: "Interrupted: this may or may not have run. Check before trying again.".into(),
                 is_error: true,
             })
             .collect();
@@ -150,6 +160,20 @@ mod tests {
         assert_eq!(b.messages().len(), 2);
         assert_eq!(Session::open(dir.path().join("b.jsonl")).await.unwrap().messages().len(), 2);
         assert!(s.branch(1, dir.path().join("b.jsonl")).await.is_err(), "never overwrite an existing branch");
+    }
+
+    #[tokio::test]
+    async fn a_torn_last_line_from_a_crash_mid_write_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("torn.jsonl");
+        let mut s = Session::open(&path).await.unwrap();
+        s.append(Message::user("hi")).await.unwrap();
+        let mut text = tokio::fs::read_to_string(&path).await.unwrap();
+        text.push_str("{\"role\":\"us");
+        tokio::fs::write(&path, &text).await.unwrap();
+        let reopened = Session::open(&path).await.unwrap();
+        assert_eq!(reopened.messages().len(), 1);
+        assert!(tokio::fs::read_to_string(&path).await.unwrap().ends_with('\n'), "the torn bytes are gone from the file");
     }
 
     #[tokio::test]

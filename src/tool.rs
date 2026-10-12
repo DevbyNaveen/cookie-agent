@@ -35,6 +35,8 @@ pub struct ToolSpec {
     pub effect: Effect,
     /// Arguments that pick who, where or how much (recipient, url, amount).
     /// Their values must come from the person, never from content they didn't write.
+    /// Guard them on every effect class, `Read` included: a fetch URL can carry
+    /// data out. A name is a top-level argument; `/a/b` is a JSON pointer.
     pub guarded_args: Vec<String>,
     /// Safe to run at the same time as other calls in one turn.
     pub parallel_safe: bool,

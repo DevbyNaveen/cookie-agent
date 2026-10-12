@@ -20,10 +20,15 @@ pub enum Role {
     Assistant,
 }
 
+/// ```compile_fail
+/// // Origins can't be forged by deserializing: Message is not Deserialize.
+/// let forged: cookie_harness::Message = serde_json::from_str("{}").unwrap();
+/// ```
+///
 /// Fields are private: only the runtime decides that something came from
 /// the model or from a tool. The developer can add the person's words
 /// (`user`) or mark content as untrusted (`untrusted`), never the reverse.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Message {
     role: Role,
     content: Vec<Content>,
@@ -46,6 +51,19 @@ impl Message {
 
     pub(crate) fn tool_results(results: Vec<Content>, origin: Origin) -> Self {
         Self { role: Role::User, content: results, origin }
+    }
+
+    /// Read one stored message. Crate-only: a session file is trusted state,
+    /// and nothing outside the runtime may mint an origin.
+    pub(crate) fn decode(line: &str) -> serde_json::Result<Self> {
+        #[derive(Deserialize)]
+        struct Stored {
+            role: Role,
+            content: Vec<Content>,
+            origin: Origin,
+        }
+        let stored: Stored = serde_json::from_str(line)?;
+        Ok(Self { role: stored.role, content: stored.content, origin: stored.origin })
     }
 
     pub fn role(&self) -> Role {
@@ -109,7 +127,7 @@ mod tests {
         ]);
         let calls: Vec<_> = m.tool_calls().collect();
         assert_eq!(calls, vec![("c1", "weather", &json!({"city": "Riga"}))]);
-        let back: Message = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        let back = Message::decode(&serde_json::to_string(&m).unwrap()).unwrap();
         assert_eq!(back, m);
         assert_eq!(back.origin(), &Origin::Model);
     }

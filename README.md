@@ -25,7 +25,9 @@ You always name the model (`provider:model`); there is no default.
 Every message is labelled by the runtime: the person's words, the
 developer's instructions, the model, or **untrusted** (tool output, web,
 files, screens, other agents). Arguments that pick who, where or how much
-(`.guard("to")`) must come from the person or an allow-list. `Outbound`
+(`.guard("to")`, or a JSON pointer like `.guard("/message/to")`) must be
+words the person actually wrote, or on an allow-list. Guard them on every
+effect class, `Read` included: a fetch URL can carry data out. `Outbound`
 and `Destroy` always ask an `Approver` with a preview of what will
 actually happen; the default approver says no.
 
