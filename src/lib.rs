@@ -5,8 +5,10 @@ pub mod error;
 pub mod label;
 pub mod message;
 pub mod model_id;
+pub mod tool;
 
 pub use error::{Error, Result};
 pub use label::{Origin, Source};
 pub use message::{Content, Message, Role};
 pub use model_id::ModelId;
+pub use tool::{tool, Effect, FnTool, Tool, ToolSpec};
