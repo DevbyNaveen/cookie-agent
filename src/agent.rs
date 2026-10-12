@@ -55,7 +55,8 @@ struct Start {
 
 /// What a run reports while it happens. New kinds of event may be added,
 /// so match with a `_` arm.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Event {
     TextDelta(String),

@@ -14,6 +14,7 @@ pub mod model_id;
 pub mod policy;
 pub mod provider;
 pub mod providers;
+pub mod serve;
 pub mod session;
 pub mod skills;
 pub mod subagent;
