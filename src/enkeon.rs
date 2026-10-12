@@ -89,12 +89,37 @@ impl Enkeon {
         self
     }
 
-    /// `ENKEON_API_KEY` (and `ENKEON_URL`, if set). `None` without a key.
+    /// `ENKEON_API_KEY` (and `ENKEON_URL`, if set); otherwise the project
+    /// the Enkeon CLI is signed in to (`enkeon connect`, `~/.thinkingroot/config.json`,
+    /// project chosen by `ENKEON_PROJECT` or the CLI's current one). `None` if neither.
     pub fn from_env() -> Option<Self> {
-        let key = std::env::var("ENKEON_API_KEY").ok().filter(|k| !k.trim().is_empty())?;
-        let enkeon = Self::new(key.trim());
-        Some(match std::env::var("ENKEON_URL") {
-            Ok(url) if !url.trim().is_empty() => enkeon.url(url.trim()),
+        let url = std::env::var("ENKEON_URL").ok().filter(|u| !u.trim().is_empty());
+        let from_key = std::env::var("ENKEON_API_KEY").ok().filter(|k| !k.trim().is_empty()).map(|key| Self::new(key.trim()));
+        let enkeon = from_key.or_else(|| {
+            let dir = ["ENKEON_CONFIG_DIR", "THINKINGROOT_CONFIG_DIR"]
+                .iter()
+                .find_map(|v| std::env::var(v).ok())
+                .map(std::path::PathBuf::from)
+                .or_else(|| std::env::var("HOME").ok().map(|home| std::path::Path::new(&home).join(".thinkingroot")))?;
+            Self::from_signed_in(&dir, std::env::var("ENKEON_PROJECT").ok().as_deref())
+        })?;
+        Some(match url {
+            Some(url) => enkeon.url(url.trim()),
+            None => enkeon,
+        })
+    }
+
+    /// The key the Enkeon CLI saved in `<dir>/config.json` for `project` (or
+    /// its current project), with its gateway's MCP address.
+    pub fn from_signed_in(dir: &std::path::Path, project: Option<&str>) -> Option<Self> {
+        let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).ok()?).ok()?;
+        let project = project.map(str::to_string).or_else(|| {
+            ["projectId", "project"].iter().find_map(|k| config[*k].as_str().filter(|p| !p.is_empty()).map(str::to_string))
+        })?;
+        let key = config["projects"][&project]["engineKey"].as_str().filter(|k| !k.is_empty())?;
+        let enkeon = Self::new(key);
+        Some(match config["gatewayUrl"].as_str() {
+            Some(gateway) if !gateway.is_empty() => enkeon.url(&format!("{}/mcp", gateway.trim_end_matches('/'))),
             _ => enkeon,
         })
     }
@@ -292,5 +317,21 @@ mod tests {
     #[test]
     fn a_key_in_the_url_is_never_printed() {
         assert!(!format!("{:?}", Enkeon::new("k").url("https://api.example.com/mcp?key=tr_sk_secret")).contains("secret"));
+    }
+
+    #[test]
+    fn a_signed_in_cli_supplies_the_key_and_gateway() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"gatewayUrl": "https://api.example.com/", "projectId": "p1",
+                "projects": {"p1": {"engineKey": "tr_sk_one"}, "p2": {"engineKey": "tr_sk_two"}}}"#,
+        )
+        .unwrap();
+        let current = Enkeon::from_signed_in(dir.path(), None).unwrap();
+        assert_eq!((current.key.as_str(), current.url.as_str()), ("tr_sk_one", "https://api.example.com/mcp"));
+        assert_eq!(Enkeon::from_signed_in(dir.path(), Some("p2")).unwrap().key, "tr_sk_two");
+        assert!(Enkeon::from_signed_in(dir.path(), Some("nope")).is_none());
+        assert!(Enkeon::from_signed_in(&dir.path().join("missing"), None).is_none());
     }
 }
