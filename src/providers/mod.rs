@@ -24,6 +24,19 @@ pub fn resolve(id: &ModelId) -> Result<Arc<dyn Provider>> {
     }
 }
 
+/// The HTTP client every provider uses. A server that connects but goes
+/// quiet fails after the read timeout instead of hanging the run; requests
+/// never follow a redirect, so a key header can't be carried elsewhere.
+pub(crate) fn http_client() -> reqwest::Client {
+    let read = if cfg!(test) { std::time::Duration::from_secs(1) } else { std::time::Duration::from_secs(120) };
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .read_timeout(read)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("a TLS backend is compiled in")
+}
+
 /// An HTTP failure, keeping the status even when the body isn't JSON.
 pub fn http_error(status: u16, body: &str) -> Error {
     let detail: String = body.chars().take(500).collect();

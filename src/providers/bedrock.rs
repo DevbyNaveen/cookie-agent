@@ -34,7 +34,7 @@ pub struct BedrockProvider {
 
 impl BedrockProvider {
     pub fn new(credentials: Credentials, region: Option<String>) -> Self {
-        Self { credentials, region, max_tokens: 4096, caching: true, client: reqwest::Client::new() }
+        Self { credentials, region, max_tokens: 4096, caching: true, client: super::http_client() }
     }
 
     /// `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`,
@@ -82,10 +82,33 @@ pub fn converse_url(region: &str, model: &str) -> String {
 /// a refusal (validation, access) is not.
 pub fn retriable(status: Option<u16>, text: &str) -> bool {
     let text = text.to_lowercase();
-    matches!(status, None | Some(429 | 500 | 502 | 503 | 504))
+    matches!(status, None | Some(408 | 429 | 500 | 502 | 503 | 504))
         || text.contains("throttlingexception")
         || text.contains("serviceunavailable")
         || text.contains("modelnotready")
+}
+
+/// A call that timed out may still be running at the provider: sending it
+/// again could pay twice and wait twice as long. Connection errors retry.
+pub fn retry_send_error(timed_out: bool) -> bool {
+    !timed_out
+}
+
+/// "Full jitter": a random wait up to 1 s, then 2 s, so callers throttled
+/// together don't retry together.
+pub fn backoff(attempt: u32) -> Duration {
+    let cap = Duration::from_secs(1 << (attempt.saturating_sub(1)).min(5));
+    let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    cap.mul_f64(f64::from(nanos % 1_000_000) / 1_000_000.0)
+}
+
+/// Converse needs the conversation to open with the person's turn; say so
+/// here instead of after a round trip.
+pub fn check_first_turn(body: &Value) -> Result<()> {
+    match body["messages"][0]["role"].as_str() {
+        Some("user") | None => Ok(()),
+        Some(other) => Err(Error::Provider(format!("Bedrock needs the first turn to be the person's, but it is `{other}`"))),
+    }
 }
 
 fn block(content: &Content, origin: &Origin, tag: &str) -> Option<Value> {
@@ -230,17 +253,18 @@ impl Provider for BedrockProvider {
     async fn complete(&self, request: ModelRequest<'_>) -> Result<ModelResponse> {
         let region = region_for_model(self.region.as_deref(), request.model)?;
         let url = converse_url(&region, request.model);
-        let body = serde_json::to_vec(&converse_body(&request, self.max_tokens, self.caching))?;
+        let body = converse_body(&request, self.max_tokens, self.caching);
+        check_first_turn(&body)?;
+        let body = serde_json::to_vec(&body)?;
         let mut last_error = String::new();
         for attempt in 0..3u32 {
             if attempt > 0 {
-                tokio::time::sleep(Duration::from_secs(1 << (attempt - 1))).await;
+                tokio::time::sleep(backoff(attempt)).await;
             }
             let mut call = self
                 .client
                 .post(&url)
                 .header("content-type", "application/json")
-                .timeout(Duration::from_secs(120))
                 .body(body.clone());
             for (name, value) in sign(&self.credentials, &region, &url, &body, SystemTime::now())? {
                 call = call.header(name, value);
@@ -248,6 +272,9 @@ impl Provider for BedrockProvider {
             let response = match call.send().await {
                 Ok(response) => response,
                 Err(e) => {
+                    if !retry_send_error(e.is_timeout()) {
+                        return Err(Error::Provider(format!("bedrock did not answer in time: {e}")));
+                    }
                     last_error = e.to_string();
                     continue;
                 }
@@ -392,5 +419,24 @@ mod tests {
         }
         let full = json!({"output": {"message": {"content": [{"text": "The ans"}]}}, "stopReason": "model_context_window_exceeded"});
         assert_eq!(parse_response(&full).unwrap().stop, StopReason::MaxTokens);
+    }
+
+    #[test]
+    fn retries_408_waits_with_jitter_and_never_retries_a_timeout() {
+        assert!(retriable(Some(408), ""));
+        assert!(!retry_send_error(true), "a timed-out call may still be running: not sent again");
+        assert!(retry_send_error(false));
+        for attempt in 1..3 {
+            let wait = backoff(attempt);
+            let cap = Duration::from_secs(1 << (attempt - 1));
+            assert!(wait <= cap, "{wait:?} > {cap:?}");
+        }
+    }
+
+    #[test]
+    fn a_history_that_starts_with_the_model_is_refused_here() {
+        let history = vec![Message::user("   "), Message::assistant(vec![Content::Text { text: "hello".into() }])];
+        let request = ModelRequest { model: "m", system: "", messages: &history, tools: vec![] };
+        assert!(matches!(check_first_turn(&converse_body(&request, 100, false)), Err(Error::Provider(m)) if m.contains("first")));
     }
 }

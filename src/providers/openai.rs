@@ -35,7 +35,7 @@ pub fn ollama_base(host: Option<String>) -> String {
 impl OpenAiProvider {
     /// Any OpenAI-compatible server: `base_url` ends at the API root, e.g. `…/v1`.
     pub fn new(base_url: impl Into<String>, api_key: Option<String>) -> Self {
-        Self { base_url: base_url.into(), api_key, max_tokens: None, max_tokens_field: "max_tokens", client: reqwest::Client::new() }
+        Self { base_url: base_url.into(), api_key, max_tokens: None, max_tokens_field: "max_tokens", client: super::http_client() }
     }
 
     pub fn openai_from_env() -> Result<Self> {
@@ -95,10 +95,15 @@ pub fn request_body(request: &ModelRequest, max_tokens: Option<(&str, u32)>) -> 
                         Content::Text { text } if !text.trim().is_empty() => messages.push(
                             json!({"role": "user", "content": untrusted_or_plain(text, message.origin(), &tag)}),
                         ),
-                        Content::ToolResult { id, output, .. } => messages.push(json!({
+                        // The tool message has no error flag: say it in the text.
+                        Content::ToolResult { id, output, is_error } => messages.push(json!({
                             "role": "tool",
                             "tool_call_id": id,
-                            "content": untrusted_or_plain(output, message.origin(), &tag),
+                            "content": format!(
+                                "{}{}",
+                                if *is_error { "Error: " } else { "" },
+                                untrusted_or_plain(output, message.origin(), &tag)
+                            ),
                         })),
                         _ => {}
                     }
@@ -299,5 +304,35 @@ mod tests {
         assert!(matches!(parse_response(&filtered), Err(Error::Provider(m)) if m.contains("content_filter")));
         let refused = json!({"choices": [{"message": {"content": null, "refusal": "I can't help with that."}, "finish_reason": "stop"}]});
         assert!(matches!(parse_response(&refused), Err(Error::Provider(m)) if m.contains("can't help")));
+    }
+
+    #[test]
+    fn a_failed_tool_says_so_in_its_message() {
+        let history = vec![
+            Message::user("weather?"),
+            Message::assistant(vec![Content::ToolCall { id: "c1".into(), name: "w".into(), args: json!({}) }]),
+            Message::tool_results(vec![Content::ToolResult { id: "c1".into(), output: "no such city".into(), is_error: true }], Origin::Untrusted(Source::Tool("w".into()))),
+        ];
+        let body = request_body(&ModelRequest { model: "m", system: "", messages: &history, tools: vec![] }, None);
+        let tool = body["messages"].as_array().unwrap().iter().find(|m| m["role"] == "tool").unwrap().clone();
+        assert!(tool["content"].as_str().unwrap().starts_with("Error: "));
+    }
+
+    #[tokio::test]
+    async fn a_server_that_stops_answering_fails_instead_of_hanging() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        });
+        let provider = OpenAiProvider::new(format!("http://{addr}/v1"), None);
+        let history = vec![Message::user("hi")];
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.complete(ModelRequest { model: "m", system: "", messages: &history, tools: vec![] }),
+        )
+        .await;
+        assert!(matches!(out, Ok(Err(Error::Provider(_)))), "{out:?}");
     }
 }

@@ -30,7 +30,7 @@ impl AnthropicProvider {
             base_url: "https://api.anthropic.com".into(),
             max_tokens: 4096,
             caching: true,
-            client: reqwest::Client::new(),
+            client: super::http_client(),
         }
     }
 
@@ -167,7 +167,9 @@ pub fn parse_response(raw: &Value) -> Result<ModelResponse> {
 
 enum Partial {
     Text(String),
-    Tool { id: String, name: String, json: String },
+    /// `start` is the input given at block start: complete when a proxy sends
+    /// it whole there, `{}` when the API streams it in deltas.
+    Tool { id: String, name: String, json: String, start: Value },
     Other,
 }
 
@@ -185,17 +187,34 @@ pub struct SseAssembler {
 impl SseAssembler {
     pub fn feed(&mut self, chunk: &[u8], on: &mut (dyn FnMut(ProviderEvent) + Send)) -> Result<()> {
         self.pending.extend_from_slice(chunk);
+        normalize_newlines(&mut self.pending);
         // An event ends at a blank line; complete events are whole UTF-8.
-        while let Some(end) = find_event_end(&self.pending) {
-            let raw: Vec<u8> = self.pending.drain(..end).collect();
-            let text = String::from_utf8(raw).map_err(|e| Error::Provider(format!("stream is not UTF-8: {e}")))?;
-            for line in text.lines() {
-                if let Some(data) = line.strip_prefix("data:") {
-                    self.event(&serde_json::from_str(data.trim())?, on)?;
-                }
-            }
+        while let Some(at) = self.pending.windows(2).position(|w| w == b"\n\n") {
+            let raw: Vec<u8> = self.pending.drain(..at + 2).collect();
+            self.dispatch(&raw, on)?;
         }
         Ok(())
+    }
+
+    /// The stream closed: a last event without its blank line still counts.
+    pub fn end(&mut self, on: &mut (dyn FnMut(ProviderEvent) + Send)) -> Result<()> {
+        let raw = std::mem::take(&mut self.pending);
+        self.dispatch(&raw, on)
+    }
+
+    /// One event: its `data:` lines joined by newlines, as SSE defines.
+    fn dispatch(&mut self, raw: &[u8], on: &mut (dyn FnMut(ProviderEvent) + Send)) -> Result<()> {
+        let text = std::str::from_utf8(raw).map_err(|e| Error::Provider(format!("stream is not UTF-8: {e}")))?;
+        let data: Vec<&str> = text
+            .split('\n')
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(|d| d.strip_prefix(' ').unwrap_or(d).trim_end_matches('\r'))
+            .collect();
+        let data = data.join("\n");
+        if data.trim().is_empty() {
+            return Ok(());
+        }
+        self.event(&serde_json::from_str(&data)?, on)
     }
 
     fn event(&mut self, event: &Value, on: &mut (dyn FnMut(ProviderEvent) + Send)) -> Result<()> {
@@ -216,7 +235,7 @@ impl SseAssembler {
                             return Err(Error::Provider(format!("tool_use block without an id or name: {block}")));
                         };
                         on(ProviderEvent::ToolCallStarted { id: id.into(), name: name.into() });
-                        Partial::Tool { id: id.into(), name: name.into(), json: String::new() }
+                        Partial::Tool { id: id.into(), name: name.into(), json: String::new(), start: block["input"].clone() }
                     }
                     _ => Partial::Other,
                 };
@@ -263,8 +282,19 @@ impl SseAssembler {
         for block in self.blocks {
             match block {
                 Partial::Text(text) if !text.is_empty() => content.push(Content::Text { text }),
-                Partial::Tool { id, name, json } => {
-                    let args = if json.trim().is_empty() { json!({}) } else { serde_json::from_str(&json)? };
+                Partial::Tool { id, name, json, start } => {
+                    let args = if !json.trim().is_empty() {
+                        match serde_json::from_str(&json) {
+                            Ok(args) => args,
+                            // Cut off mid-call: the arguments are incomplete, not malformed.
+                            Err(_) if self.stop == Some(StopReason::MaxTokens) => return Err(Error::MaxTokens),
+                            Err(e) => return Err(e.into()),
+                        }
+                    } else if start.is_object() {
+                        start
+                    } else {
+                        json!({})
+                    };
                     content.push(Content::ToolCall { id, name, args });
                 }
                 _ => {}
@@ -274,13 +304,26 @@ impl SseAssembler {
     }
 }
 
-fn find_event_end(bytes: &[u8]) -> Option<usize> {
-    let lf = bytes.windows(2).position(|w| w == b"\n\n").map(|i| i + 2);
-    let crlf = bytes.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4);
-    match (lf, crlf) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
+/// SSE lines end in CRLF, LF or a lone CR; make them all LF. A CR at the very
+/// end is kept, since its LF may arrive in the next chunk.
+fn normalize_newlines(bytes: &mut Vec<u8>) {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' if i + 1 == bytes.len() => {
+                out.push(b'\r');
+            }
+            b'\r' if bytes[i + 1] == b'\n' => {
+                out.push(b'\n');
+                i += 1;
+            }
+            b'\r' => out.push(b'\n'),
+            other => out.push(other),
+        }
+        i += 1;
     }
+    *bytes = out;
 }
 
 #[async_trait]
@@ -329,6 +372,7 @@ impl Provider for AnthropicProvider {
         while let Some(chunk) = bytes.next().await {
             assembler.feed(&chunk.map_err(|e| Error::Provider(e.to_string()))?, on)?;
         }
+        assembler.end(on)?;
         assembler.finish()
     }
 }
@@ -561,5 +605,41 @@ mod tests {
             Ok(()) => asm.finish().unwrap_err(),
         };
         assert!(matches!(error, Error::Provider(m) if m.contains("refusal")));
+    }
+
+    fn run(raw: &str) -> Result<ModelResponse> {
+        let mut sse = SseAssembler::default();
+        sse.feed(raw.as_bytes(), &mut |_| {})?;
+        sse.end(&mut |_| {})?;
+        sse.finish()
+    }
+
+    const START: &str = "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n";
+    const STOP: &str = "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\ndata: {\"type\":\"message_stop\"}";
+
+    #[test]
+    fn sse_edge_cases_are_read() {
+        // Data split over two lines, a bare `data:`, CR line endings, and a last event with no blank line.
+        let text = "data: {\"type\":\"content_block_start\",\"index\":0,\r\ndata: \"content_block\":{\"type\":\"text\",\"text\":\"\"}}\r\r\
+data:\n\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\r\r";
+        let reply = run(&format!("{START}{text}{STOP}")).unwrap();
+        assert_eq!(reply.content, vec![Content::Text { text: "hi".into() }]);
+    }
+
+    #[test]
+    fn a_tool_input_sent_whole_at_block_start_is_kept() {
+        let block = "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"w\",\"input\":{\"city\":\"Riga\"}}}\n\n";
+        let stop = STOP.replace("end_turn", "tool_use");
+        let reply = run(&format!("{START}{block}{stop}")).unwrap();
+        assert_eq!(reply.content, vec![Content::ToolCall { id: "t1".into(), name: "w".into(), args: json!({"city": "Riga"}) }]);
+    }
+
+    #[test]
+    fn a_reply_cut_off_inside_a_tool_call_is_max_tokens() {
+        let block = "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"w\",\"input\":{}}}\n\n\
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\": \\\"Ri\"}}\n\n";
+        let stop = STOP.replace("end_turn", "max_tokens");
+        assert!(matches!(run(&format!("{START}{block}{stop}")), Err(Error::MaxTokens)));
     }
 }
