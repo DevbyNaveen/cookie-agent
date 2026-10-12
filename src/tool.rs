@@ -62,6 +62,8 @@ pub struct ToolSpec {
 pub struct Spend {
     pub steps: usize,
     pub tokens: u64,
+    /// Millionths of a dollar, when the agent has prices.
+    pub microdollars: u64,
 }
 
 /// What a tool call knows about the run it belongs to. Ordinary tools

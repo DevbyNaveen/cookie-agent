@@ -101,6 +101,10 @@ impl Agent {
         let budget = Budget {
             max_steps: self.budget.max_steps.min(context.budget.max_steps),
             max_tokens: self.budget.max_tokens.min(context.budget.max_tokens),
+            max_dollars: match (self.budget.max_dollars, context.budget.max_dollars) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            },
         };
         let mut events = Vec::new();
         let extra = match self.enkeon_tools(true, &context.cancel, &mut |e| events.push(e)).await {
@@ -237,7 +241,7 @@ mod tests {
         ]);
         let child = child.tool(weather());
         let (parent_p, parent) = scripted(vec![Scripted::call("d1", "forecaster", json!({"task": "weather"})), Scripted::text("never")]);
-        let parent = parent.budget(Budget { max_steps: 3, max_tokens: 1_000_000 }).tool(SubAgent::reader("forecaster", "x", child).unwrap());
+        let parent = parent.budget(Budget { max_steps: 3, max_tokens: 1_000_000, max_dollars: None }).tool(SubAgent::reader("forecaster", "x", child).unwrap());
         assert!(matches!(parent.run("weather?").await, Err(Error::Budget(_))));
         assert_eq!(child_p.seen().len(), 2, "the child got the 2 calls the parent had left");
         assert_eq!(parent_p.seen().len(), 1, "the parent was charged and stopped");
@@ -344,7 +348,7 @@ mod tests {
             Scripted::text("never"),
         ]);
         let parent = parent
-            .budget(Budget { max_steps: 4, max_tokens: 1_000_000 })
+            .budget(Budget { max_steps: 4, max_tokens: 1_000_000, max_dollars: None })
             .tool(SubAgent::reader("a", "x", a).unwrap())
             .tool(SubAgent::reader("b", "x", b).unwrap());
         let _ = parent.run("go").await;

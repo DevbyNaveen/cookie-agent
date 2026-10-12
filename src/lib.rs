@@ -24,7 +24,7 @@ pub mod tool;
 
 pub use agent::{Agent, Event, RunControl};
 pub use approval::{ApprovalRequest, Approver, DenyAll, FnApprover};
-pub use budget::Budget;
+pub use budget::{Budget, Price};
 pub use compaction::{Compaction, SUMMARY_PROMPT};
 pub use error::{Error, Result};
 pub use label::{Origin, Source};

@@ -7,7 +7,7 @@ use tracing::Instrument;
 
 use crate::{
     approval::{Approver, DenyAll},
-    budget::{Budget, LoopGuard, Meter},
+    budget::{Budget, LoopGuard, Meter, Price},
     calls::Stop,
     compaction::{context_view, Compaction},
     enkeon::Enkeon,
@@ -33,6 +33,7 @@ pub struct Agent {
     /// top-level run declines everything that needs a person.
     pub(crate) approver: Option<Arc<dyn Approver>>,
     pub(crate) budget: Budget,
+    pub(crate) price: Option<Price>,
     pub(crate) compaction: Option<Compaction>,
     pub(crate) enkeon: Option<Arc<Enkeon>>,
     /// `gen_ai.provider.name` on spans, when known.
@@ -102,6 +103,7 @@ impl Agent {
             policy: Policy::default(),
             approver: None,
             budget: Budget::default(),
+            price: None,
             compaction: None,
             // On by default when ENKEON_API_KEY is set; never in this crate's own tests.
             enkeon: if cfg!(test) { None } else { Enkeon::from_env().map(Arc::new) },
@@ -142,6 +144,12 @@ impl Agent {
 
     pub fn budget(mut self, budget: Budget) -> Self {
         self.budget = budget;
+        self
+    }
+
+    /// What this agent's model costs, so `Budget::max_dollars` can be enforced.
+    pub fn prices(mut self, price: Price) -> Self {
+        self.price = Some(price);
         self
     }
 
@@ -210,6 +218,9 @@ impl Agent {
     ) -> Result<String> {
         let cancel = &control.cancel;
         let budget = start.budget;
+        if budget.max_dollars.is_some() && self.price.is_none() {
+            return Err(Error::Budget("a dollar cap needs Agent::prices for this agent's model".into()));
+        }
         let delegated = start.depth > 0;
         let system = match (start.extra.is_empty(), self.instructions.is_empty()) {
             (true, _) => self.instructions.clone(),
@@ -274,7 +285,7 @@ impl Agent {
             };
             telemetry::record_chat(&chat, &response);
             let response = response?;
-            meter.charge(&response.usage);
+            meter.charge(&response.usage, self.price.as_ref());
             on_event(Event::Usage(response.usage.clone()));
             // A cut-off reply is not an answer, and a cut-off tool call has broken arguments.
             if response.stop == StopReason::MaxTokens {
@@ -446,7 +457,7 @@ mod tests {
     #[tokio::test]
     async fn the_step_budget_is_a_hard_stop() {
         let (a, _) = agent(vec![Scripted::call("c1", "weather", json!({"city": "Riga"})), Scripted::text("x")]);
-        let a = a.tool(weather()).budget(Budget { max_steps: 1, max_tokens: 1_000 });
+        let a = a.tool(weather()).budget(Budget { max_steps: 1, max_tokens: 1_000, max_dollars: None });
         assert!(matches!(a.run("weather").await, Err(Error::Budget(_))));
     }
 
@@ -834,5 +845,18 @@ mod tests {
         s.append(Message::assistant(vec![Content::Text { text: "reply one".into() }])).await.unwrap();
         a.run_in(&mut s, Message::user("two"), &CancellationToken::new()).await.unwrap();
         assert_eq!(p.asked()[0].0, "Mine.");
+    }
+
+    #[tokio::test]
+    async fn a_dollar_cap_stops_the_run_and_needs_prices() {
+        let (a, _) = agent(vec![Scripted::call("c1", "weather", json!({"city": "Riga"})), Scripted::call("c2", "weather", json!({"city": "Oslo"})), Scripted::text("ok")]);
+        let capped = Budget { max_dollars: Some(0.0001), ..Budget::default() };
+        let a = a.tool(weather()).budget(capped);
+        assert!(matches!(a.run("weather").await, Err(Error::Budget(m)) if m.contains("prices")), "a dollar cap without prices is refused");
+        let (a, p) = agent(vec![Scripted::call("c1", "weather", json!({"city": "Riga"})), Scripted::call("c2", "weather", json!({"city": "Oslo"})), Scripted::text("ok")]);
+        // 10 input + 5 output tokens per call at $3/$15 per million = $0.000105 per call.
+        let a = a.tool(weather()).budget(capped).prices(crate::Price { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 });
+        assert!(matches!(a.run("weather").await, Err(Error::Budget(m)) if m.contains('$')));
+        assert_eq!(p.seen().len(), 1, "stopped after the first call went over");
     }
 }

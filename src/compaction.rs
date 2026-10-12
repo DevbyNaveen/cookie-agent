@@ -183,7 +183,7 @@ impl crate::agent::Agent {
         };
         crate::telemetry::record_chat(&span, &reply);
         let reply = reply?;
-        meter.charge(&reply.usage);
+        meter.charge(&reply.usage, self.price.as_ref());
         on_event(Event::Usage(reply.usage.clone()));
         // A cut-off summary would silently drop what it failed to cover.
         if reply.stop == StopReason::MaxTokens {

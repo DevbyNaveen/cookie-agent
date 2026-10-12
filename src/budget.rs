@@ -7,24 +7,53 @@ use crate::{
     provider::Usage,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Budget {
     /// Model calls per run.
     pub max_steps: usize,
     /// Input, output and cached tokens per run.
     pub max_tokens: u64,
+    /// Dollars per run, priced with `Agent::prices`. A cap with no prices is
+    /// refused rather than ignored.
+    pub max_dollars: Option<f64>,
 }
 
 impl Default for Budget {
     fn default() -> Self {
-        Self { max_steps: 25, max_tokens: 200_000 }
+        Self { max_steps: 25, max_tokens: 200_000, max_dollars: None }
     }
+}
+
+/// What a model costs, in dollars per million tokens. You supply it: the
+/// harness ships no price table, because prices change and a stale one lies.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Price {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+}
+
+impl Price {
+    /// Millionths of a dollar for this usage, rounded up.
+    pub fn microdollars(&self, usage: &Usage) -> u64 {
+        let micro = usage.input_tokens as f64 * self.input
+            + usage.output_tokens as f64 * self.output
+            + usage.cache_read_tokens as f64 * self.cache_read
+            + usage.cache_write_tokens as f64 * self.cache_write;
+        micro.ceil() as u64
+    }
+}
+
+fn cap_microdollars(dollars: f64) -> u64 {
+    (dollars * 1_000_000.0).floor() as u64
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct Meter {
     steps: usize,
     tokens: u64,
+    microdollars: u64,
     /// A sub-agent's: the pool its parent's batch draws from, and that
     /// pool's cap. Every charge lands there at once, so siblings running
     /// side by side share what is left instead of each taking all of it.
@@ -36,18 +65,21 @@ impl Meter {
         Self { pool: Some((pool, cap)), ..Self::default() }
     }
 
-    pub(crate) fn charge(&mut self, usage: &Usage) {
+    pub(crate) fn charge(&mut self, usage: &Usage, price: Option<&Price>) {
         let tokens = usage.input_tokens + usage.output_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
-        self.add(crate::tool::Spend { steps: 1, tokens });
+        let microdollars = price.map_or(0, |p| p.microdollars(usage));
+        self.add(crate::tool::Spend { steps: 1, tokens, microdollars });
     }
 
     fn add(&mut self, spend: crate::tool::Spend) {
         self.steps += spend.steps;
         self.tokens += spend.tokens;
+        self.microdollars += spend.microdollars;
         if let Some((pool, _)) = &self.pool {
             let mut pool = pool.lock().expect("pool lock");
             pool.steps += spend.steps;
             pool.tokens += spend.tokens;
+            pool.microdollars += spend.microdollars;
         }
     }
 
@@ -56,6 +88,7 @@ impl Meter {
         Budget {
             max_steps: budget.max_steps.saturating_sub(self.steps),
             max_tokens: budget.max_tokens.saturating_sub(self.tokens),
+            max_dollars: budget.max_dollars.map(|d| (d - self.microdollars as f64 / 1_000_000.0).max(0.0)),
         }
     }
 
@@ -65,13 +98,14 @@ impl Meter {
     }
 
     pub(crate) fn spent(&self) -> crate::tool::Spend {
-        crate::tool::Spend { steps: self.steps, tokens: self.tokens }
+        crate::tool::Spend { steps: self.steps, tokens: self.tokens, microdollars: self.microdollars }
     }
 
     pub(crate) fn check(&self, budget: &Budget) -> Result<()> {
         if let Some((pool, cap)) = &self.pool {
             let pool = pool.lock().expect("pool lock");
-            if pool.steps >= cap.max_steps || pool.tokens >= cap.max_tokens {
+            let over_dollars = cap.max_dollars.is_some_and(|d| pool.microdollars >= cap_microdollars(d));
+            if pool.steps >= cap.max_steps || pool.tokens >= cap.max_tokens || over_dollars {
                 return Err(Error::Budget(format!("the parent's budget is spent ({} model calls, {} tokens)", pool.steps, pool.tokens)));
             }
         }
@@ -80,6 +114,14 @@ impl Meter {
         }
         if self.tokens >= budget.max_tokens {
             return Err(Error::Budget(format!("{} tokens (limit {})", self.tokens, budget.max_tokens)));
+        }
+        if let Some(dollars) = budget.max_dollars {
+            if self.microdollars >= cap_microdollars(dollars) {
+                return Err(Error::Budget(format!(
+                    "${:.6} spent (limit ${dollars:.6})",
+                    self.microdollars as f64 / 1_000_000.0
+                )));
+            }
         }
         Ok(())
     }
@@ -120,8 +162,8 @@ mod tests {
     #[test]
     fn cached_tokens_count_against_the_budget() {
         let mut meter = Meter::default();
-        meter.charge(&Usage { input_tokens: 1, output_tokens: 1, cache_read_tokens: 500, cache_write_tokens: 500 });
-        assert!(matches!(meter.check(&Budget { max_steps: 10, max_tokens: 1_000 }), Err(Error::Budget(_))));
+        meter.charge(&Usage { input_tokens: 1, output_tokens: 1, cache_read_tokens: 500, cache_write_tokens: 500 }, None);
+        assert!(matches!(meter.check(&Budget { max_steps: 10, max_tokens: 1_000, max_dollars: None }), Err(Error::Budget(_))));
     }
 
     #[test]
