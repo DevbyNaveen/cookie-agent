@@ -1,0 +1,18 @@
+{
+  "name": "@cookie-harness/client",
+  "version": "0.1.0",
+  "description": "TypeScript client for the Cookie Agent Harness (`cookie serve`)",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}
