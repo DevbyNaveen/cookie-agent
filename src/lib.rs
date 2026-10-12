@@ -14,7 +14,7 @@ pub mod providers;
 pub mod session;
 pub mod tool;
 
-pub use agent::Agent;
+pub use agent::{Agent, Event, RunControl};
 pub use approval::{ApprovalRequest, Approver, DenyAll, FnApprover};
 pub use budget::Budget;
 pub use error::{Error, Result};

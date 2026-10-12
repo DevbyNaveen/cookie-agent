@@ -1,6 +1,9 @@
 //! cargo run --example hello   (needs ANTHROPIC_API_KEY; name any model you like)
+//! Prints the answer as it streams.
 
-use cookie_harness::{tool, Agent, Effect};
+use std::io::Write;
+
+use cookie_harness::{tool, Agent, Effect, Event, Message, RunControl, Session};
 use serde_json::json;
 
 #[tokio::main]
@@ -13,6 +16,16 @@ async fn main() -> cookie_harness::Result<()> {
         |args| async move { Ok(format!("{}: 9°C, cloudy", args["city"].as_str().unwrap_or("?"))) },
     );
     let agent = Agent::new("anthropic:claude-sonnet-4-6")?.tool(weather);
-    println!("{}", agent.run("What's the weather in Riga?").await?);
+    let mut session = Session::in_memory();
+    let mut on_event = |event: Event| {
+        if let Event::TextDelta(text) = event {
+            print!("{text}");
+            let _ = std::io::stdout().flush();
+        }
+    };
+    agent
+        .run_streaming(&mut session, Message::user("What's the weather in Riga?"), &RunControl::default(), &mut on_event)
+        .await?;
+    println!();
     Ok(())
 }

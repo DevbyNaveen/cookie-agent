@@ -12,6 +12,8 @@ pub enum Error {
     MaxTokens,
     #[error("cancelled")]
     Cancelled,
+    #[error("stopped after the turn finished, as asked")]
+    Stopped,
     #[error("stopped a loop: `{0}` was called with the same arguments three times in a row")]
     Loop(String),
     #[error("session: {0}")]

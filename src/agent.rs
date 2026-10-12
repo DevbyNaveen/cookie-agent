@@ -13,7 +13,7 @@ use crate::{
     message::{Content, Message},
     model_id::ModelId,
     policy::{Decision, Policy, Provenance},
-    provider::{ModelRequest, Provider, StopReason},
+    provider::{ModelRequest, Provider, ProviderEvent, StopReason, Usage},
     providers,
     session::Session,
     tool::Tool,
@@ -30,6 +30,25 @@ pub struct Agent {
 }
 
 type Call = (String, String, Value);
+
+/// What a run reports while it happens.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    TextDelta(String),
+    ToolCallStarted { id: String, name: String },
+    /// A person is being asked to approve; `preview` is what will happen.
+    AskedPerson { tool: String, preview: String },
+    ToolFinished { id: String, is_error: bool },
+    Usage(Usage),
+}
+
+/// Two ways to stop a run: `cancel` stops now; `finish_turn` lets the
+/// current turn's tools finish and be recorded, then stops.
+#[derive(Debug, Clone, Default)]
+pub struct RunControl {
+    pub cancel: CancellationToken,
+    pub finish_turn: CancellationToken,
+}
 
 impl Agent {
     /// `provider:model`, e.g. "anthropic:claude-sonnet-4-6". There is no default.
@@ -82,6 +101,19 @@ impl Agent {
     }
 
     pub async fn run_in(&self, session: &mut Session, input: Message, cancel: &CancellationToken) -> Result<String> {
+        let control = RunControl { cancel: cancel.clone(), finish_turn: CancellationToken::new() };
+        self.run_streaming(session, input, &control, &mut |_| {}).await
+    }
+
+    /// The loop, reporting each step to `on_event` as it happens.
+    pub async fn run_streaming(
+        &self,
+        session: &mut Session,
+        input: Message,
+        control: &RunControl,
+        on_event: &mut (dyn FnMut(Event) + Send),
+    ) -> Result<String> {
+        let cancel = &control.cancel;
         session.repair().await?;
         session.append(input).await?;
         // The developer's instructions are not credited as the person's words:
@@ -102,11 +134,20 @@ impl Agent {
                 messages: session.messages(),
                 tools: self.tools.iter().map(|t| t.spec()).collect(),
             };
-            let response = tokio::select! {
-                response = self.provider.complete(request) => response?,
-                _ = cancel.cancelled() => return Err(Error::Cancelled),
+            let response = {
+                let mut forward = |event: ProviderEvent| {
+                    on_event(match event {
+                        ProviderEvent::TextDelta(text) => Event::TextDelta(text),
+                        ProviderEvent::ToolCallStarted { id, name } => Event::ToolCallStarted { id, name },
+                    })
+                };
+                tokio::select! {
+                    response = self.provider.stream(request, &mut forward) => response?,
+                    _ = cancel.cancelled() => return Err(Error::Cancelled),
+                }
             };
             meter.charge(&response.usage);
+            on_event(Event::Usage(response.usage.clone()));
             // A cut-off reply is not an answer, and a cut-off tool call has broken arguments.
             if response.stop == StopReason::MaxTokens {
                 return Err(Error::MaxTokens);
@@ -120,14 +161,22 @@ impl Agent {
                 return Ok(answer);
             }
 
-            let (results, cancelled) = self.run_calls(&calls, &provenance, &mut loop_guard, cancel).await?;
+            let (results, cancelled) = self.run_calls(&calls, &provenance, &mut loop_guard, cancel, on_event).await?;
+            for result in &results {
+                if let Content::ToolResult { id, is_error, .. } = result {
+                    on_event(Event::ToolFinished { id: id.clone(), is_error: *is_error });
+                }
+            }
             let names = calls.iter().map(|(_, name, _)| name.as_str()).collect::<Vec<_>>().join(",");
             let message = Message::tool_results(results, Origin::Untrusted(Source::Tool(names)));
             provenance.observe(&message);
-            // Recorded before stopping, so a cancelled run never forgets what already happened.
+            // Recorded before stopping, so a stopped run never forgets what already happened.
             session.append(message).await?;
             if cancelled {
                 return Err(Error::Cancelled);
+            }
+            if control.finish_turn.is_cancelled() {
+                return Err(Error::Stopped);
             }
         }
     }
@@ -141,6 +190,7 @@ impl Agent {
         provenance: &Provenance,
         loop_guard: &mut LoopGuard,
         cancel: &CancellationToken,
+        on_event: &mut (dyn FnMut(Event) + Send),
     ) -> Result<(Vec<Content>, bool)> {
         let mut outcomes: Vec<Option<(String, bool)>> = vec![None; calls.len()];
         let mut approved: Vec<(usize, Arc<dyn Tool>)> = Vec::new();
@@ -154,6 +204,7 @@ impl Agent {
             match self.policy.decide(tool.spec(), args, provenance, tool.preview(args)) {
                 Decision::Allow => approved.push((index, tool)),
                 Decision::Ask { preview, reason } => {
+                    on_event(Event::AskedPerson { tool: name.clone(), preview: preview.clone() });
                     let request = ApprovalRequest { tool: name.clone(), effect: tool.spec().effect, preview, reason };
                     if self.approver.approve(&request).await {
                         approved.push((index, tool));
@@ -223,6 +274,7 @@ mod tests {
         providers::scripted::Scripted,
         tool::{tool, Effect},
     };
+    use crate::provider::Usage;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -379,6 +431,56 @@ mod tests {
         let results = s.messages().last().unwrap().content().to_vec();
         assert!(matches!(&results[0], Content::ToolResult { id, output, is_error: false } if id == "c1" && output == "sent"));
         assert!(matches!(&results[1], Content::ToolResult { id, is_error: true, .. } if id == "c2"));
+    }
+
+    fn collect() -> (Arc<std::sync::Mutex<Vec<Event>>>, impl FnMut(Event) + Send) {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = events.clone();
+        (events, move |e: Event| sink.lock().unwrap().push(e))
+    }
+
+    #[tokio::test]
+    async fn a_run_reports_what_happens_in_order() {
+        let (a, _) = agent(vec![Scripted::call("c1", "weather", json!({"city": "Riga"})), Scripted::text("done")]);
+        let a = a.tool(weather());
+        let (events, mut on) = collect();
+        let mut s = Session::in_memory();
+        a.run_streaming(&mut s, Message::user("weather?"), &RunControl::default(), &mut on).await.unwrap();
+        let usage = Usage { input_tokens: 10, output_tokens: 5, ..Usage::default() };
+        assert_eq!(*events.lock().unwrap(), vec![
+            Event::ToolCallStarted { id: "c1".into(), name: "weather".into() },
+            Event::Usage(usage.clone()),
+            Event::ToolFinished { id: "c1".into(), is_error: false },
+            Event::TextDelta("done".into()),
+            Event::Usage(usage),
+        ]);
+    }
+
+    #[tokio::test]
+    async fn asking_a_person_is_reported_before_the_result() {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let (a, _) = agent(vec![Scripted::call("c1", "send_email", json!({"to": "anna@x.com"})), Scripted::text("ok")]);
+        let a = a.tool(send_email(sent)).approver(FnApprover(|_: &ApprovalRequest| true));
+        let (events, mut on) = collect();
+        let mut s = Session::in_memory();
+        a.run_streaming(&mut s, Message::user("email anna@x.com"), &RunControl::default(), &mut on).await.unwrap();
+        let events = events.lock().unwrap();
+        let asked = events.iter().position(|e| matches!(e, Event::AskedPerson { tool, .. } if tool == "send_email")).unwrap();
+        let finished = events.iter().position(|e| matches!(e, Event::ToolFinished { id, .. } if id == "c1")).unwrap();
+        assert!(asked < finished);
+    }
+
+    #[tokio::test]
+    async fn finish_turn_stops_after_the_turn_is_recorded() {
+        let (a, p) = agent(vec![Scripted::call("c1", "weather", json!({"city": "Riga"})), Scripted::text("never")]);
+        let a = a.tool(weather());
+        let control = RunControl::default();
+        control.finish_turn.cancel();
+        let mut s = Session::in_memory();
+        let out = a.run_streaming(&mut s, Message::user("weather?"), &control, &mut |_| {}).await;
+        assert!(matches!(out, Err(Error::Stopped)));
+        assert_eq!(p.seen().len(), 1, "no second model call");
+        assert!(matches!(&s.messages().last().unwrap().content()[0], Content::ToolResult { id, is_error: false, .. } if id == "c1"));
     }
 
     #[tokio::test]
