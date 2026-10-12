@@ -40,32 +40,33 @@ impl Session {
             }
             Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
         }
-        let mut messages = Vec::new();
-        match tokio::fs::read_to_string(&path).await {
+        let messages = match tokio::fs::read_to_string(&path).await {
             Ok(text) => {
-                let lines: Vec<&str> = text.lines().collect();
-                for (index, line) in lines.iter().enumerate() {
-                    if line.trim().is_empty() {
-                        continue;
-                    }
-                    match Message::decode(line) {
-                        Ok(message) => messages.push(message),
-                        // A crash mid-write leaves a torn last line with no newline:
-                        // those bytes were never a whole message, so cut them off.
-                        Err(_) if index + 1 == lines.len() && !text.ends_with('\n') => {
-                            let file = OpenOptions::new().write(true).open(&path).await?;
-                            file.set_len((text.len() - line.len()) as u64).await?;
-                        }
-                        Err(e) => {
-                            return Err(Error::Session(format!("{} line {}: {e}", path.display(), index + 1)));
-                        }
-                    }
+                let (messages, torn) = parse(&text, &path)?;
+                // A crash mid-write leaves a torn last line with no newline:
+                // those bytes were never a whole message, so cut them off.
+                if let Some(torn) = torn {
+                    let file = OpenOptions::new().write(true).open(&path).await?;
+                    file.set_len((text.len() - torn) as u64).await?;
                 }
+                messages
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e.into()),
-        }
+        };
         let mut session = Self { path: Some(path), messages, _lock: Some(lock) };
+        session.repair().await?;
+        Ok(session)
+    }
+
+    /// Read a session without opening it for writing: no lock, nothing
+    /// written, a missing file is an error. A stop between a tool call and its
+    /// result is repaired in memory, as `open` would.
+    pub async fn load(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let text = tokio::fs::read_to_string(path).await?;
+        let (messages, _) = parse(&text, path)?;
+        let mut session = Self { messages, ..Self::in_memory() };
         session.repair().await?;
         Ok(session)
     }
@@ -128,6 +129,24 @@ impl Session {
         branch.repair().await?;
         Ok(branch)
     }
+}
+
+/// The messages in a session file, and the length of a torn last line if
+/// there is one.
+fn parse(text: &str, path: &Path) -> Result<(Vec<Message>, Option<usize>)> {
+    let mut messages = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match Message::decode(line) {
+            Ok(message) => messages.push(message),
+            Err(_) if index + 1 == lines.len() && !text.ends_with('\n') => return Ok((messages, Some(line.len()))),
+            Err(e) => return Err(Error::Session(format!("{} line {}: {e}", path.display(), index + 1))),
+        }
+    }
+    Ok((messages, None))
 }
 
 #[cfg(test)]
@@ -201,6 +220,23 @@ mod tests {
         let path = dir.path().join("bad.jsonl");
         tokio::fs::write(&path, "not json\n").await.unwrap();
         assert!(matches!(Session::open(&path).await, Err(crate::Error::Session(_))));
+    }
+
+    #[tokio::test]
+    async fn loading_reads_without_writing_or_locking() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("l.jsonl");
+        assert!(Session::load(&path).await.is_err(), "a missing file is an error, not a new session");
+        let mut s = Session::open(&path).await.unwrap();
+        s.append(Message::user("weather?")).await.unwrap();
+        s.append(Message::assistant(vec![Content::ToolCall { id: "c1".into(), name: "weather".into(), args: json!({}) }]))
+            .await
+            .unwrap();
+        let before = tokio::fs::read_to_string(&path).await.unwrap();
+        let loaded = Session::load(&path).await.unwrap();
+        assert_eq!(loaded.messages().len(), 3, "repaired in memory");
+        assert_eq!(loaded.path(), None);
+        assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), before, "nothing written");
     }
 
     #[tokio::test]

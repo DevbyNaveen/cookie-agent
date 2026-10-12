@@ -24,6 +24,8 @@ pub enum Error {
     Skill(String),
     #[error("session: {0}")]
     Session(String),
+    #[error("replay {0}")]
+    Replay(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
