@@ -58,7 +58,7 @@ let github = McpServer::stdio("github-mcp", &[])
     .await?;
 let agent = Agent::new("anthropic:claude-sonnet-4-6")?
     .tools(github.tools)
-    .tool(Skills::from_dir("skills")?.tool());
+    .tools(Skills::from_dir("skills")?.into_tools());
 ```
 
 Every MCP tool asks a person unless you lower it; a server's own hints can

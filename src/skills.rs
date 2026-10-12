@@ -31,18 +31,45 @@ pub struct Skills {
 /// `---` frontmatter of `key: value` lines (values may be quoted), then the body.
 fn parse(text: &str, path: &Path) -> Result<Skill> {
     let fail = |why: &str| Error::Skill(format!("{}: {why}", path.display()));
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text).replace("\r\n", "\n");
     let rest = text.strip_prefix("---").ok_or_else(|| fail("must start with --- frontmatter"))?;
     let end = rest.find("\n---").ok_or_else(|| fail("frontmatter is not closed with ---"))?;
     let (front, body) = (&rest[..end], &rest[end + 4..]);
-    let field = |key: &str| {
-        front.lines().find_map(|line| {
-            let (k, v) = line.split_once(':')?;
-            (k.trim() == key).then(|| v.trim().trim_matches('"').trim_matches('\'').to_string())
-        })
-    };
-    let name = field("name").filter(|n| !n.is_empty()).ok_or_else(|| fail("frontmatter needs a name"))?;
-    let description = field("description").filter(|d| !d.is_empty()).ok_or_else(|| fail("frontmatter needs a description"))?;
+    let fields = top_level_fields(front);
+    let field = |key: &str| fields.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()).filter(|v| !v.is_empty());
+    let name = field("name").ok_or_else(|| fail("frontmatter needs a name"))?;
+    let description = field("description").ok_or_else(|| fail("frontmatter needs a description"))?;
     Ok(Skill { name, description, path: path.to_path_buf(), body: body.trim().to_string() })
+}
+
+/// The frontmatter's top-level `key: value` pairs. Indented lines belong to
+/// the key above them (nested maps are skipped); `>` folds a block into one
+/// line, `|` keeps its lines; quotes around a value are removed.
+fn top_level_fields(front: &str) -> Vec<(String, String)> {
+    let lines: Vec<&str> = front.lines().collect();
+    let mut fields = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        i += 1;
+        if line.starts_with([' ', '\t']) || line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else { continue };
+        let value = value.trim();
+        let mut block = Vec::new();
+        while i < lines.len() && (lines[i].starts_with([' ', '\t']) || lines[i].trim().is_empty()) {
+            block.push(lines[i].trim());
+            i += 1;
+        }
+        let value = match value.chars().next() {
+            Some('>') => block.iter().filter(|l| !l.is_empty()).copied().collect::<Vec<_>>().join(" "),
+            Some('|') => block.join("\n").trim_end().to_string(),
+            _ => value.trim_matches('"').trim_matches('\'').to_string(),
+        };
+        fields.push((key.trim().to_string(), value));
+    }
+    fields
 }
 
 impl Skills {
@@ -70,10 +97,21 @@ impl Skills {
 
     /// The `use_skill` tool: its description lists every skill; calling it
     /// returns one skill's instructions.
-    pub fn tool(&self) -> SkillTool {
+    /// The skills as tools for `Agent::tools`: one `use_skill`, or none when
+    /// there are no skills.
+    pub fn into_tools(self) -> Vec<std::sync::Arc<dyn Tool>> {
+        self.tool().map(|t| std::sync::Arc::new(t) as std::sync::Arc<dyn Tool>).into_iter().collect()
+    }
+
+    /// `None` when there are no skills: a tool with nothing to choose from
+    /// would only confuse the model (and an empty `enum` is refused).
+    pub fn tool(&self) -> Option<SkillTool> {
+        if self.skills.is_empty() {
+            return None;
+        }
         let listing: Vec<String> = self.skills.iter().map(|s| format!("- {}: {}", s.name, s.description)).collect();
         let names: Vec<&str> = self.skills.iter().map(|s| s.name.as_str()).collect();
-        SkillTool {
+        Some(SkillTool {
             spec: ToolSpec {
                 name: "use_skill".into(),
                 description: format!("Load a skill's full instructions when the task needs it. Available skills:\n{}", listing.join("\n")),
@@ -84,7 +122,7 @@ impl Skills {
                 delegates: false,
             },
             skills: self.skills.clone(),
-        }
+        })
     }
 }
 
@@ -137,7 +175,7 @@ mod tests {
         write(dir.path(), "brand", "---\nname: brand-voice\ndescription: Write in the company's voice\nlicense: MIT\n---\nShort sentences.\n");
         std::fs::create_dir_all(dir.path().join("empty")).unwrap();
         let skills = Skills::from_dir(dir.path()).unwrap();
-        let tool = skills.tool();
+        let tool = skills.tool().expect("two skills");
         assert_eq!(tool.spec().name, "use_skill");
         assert_eq!(tool.spec().effect, Effect::Read);
         assert!(tool.spec().description.contains("- brand-voice: Write in the company's voice"));
@@ -171,5 +209,27 @@ mod tests {
         assert_eq!(read_agents_md(dir.path()).unwrap(), None);
         std::fs::write(dir.path().join("AGENTS.md"), "Run tests with cargo test.").unwrap();
         assert_eq!(read_agents_md(dir.path()).unwrap().as_deref(), Some("Run tests with cargo test."));
+    }
+
+    #[test]
+    fn frontmatter_with_a_bom_nested_keys_and_block_values_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("pdf")).unwrap();
+        std::fs::write(
+            dir.path().join("pdf/SKILL.md"),
+            "\u{feff}---\nmetadata:\n  name: wrong\nname: pdf\ndescription: >\n  Fill PDF forms\n  and read them.\nnotes: |\n  kept\n---\nBody.",
+        )
+        .unwrap();
+        let skills = Skills::from_dir(dir.path()).unwrap();
+        assert_eq!(skills.list()[0].name, "pdf");
+        assert_eq!(skills.list()[0].description, "Fill PDF forms and read them.");
+    }
+
+    #[test]
+    fn no_skills_means_no_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills = Skills::from_dir(dir.path()).unwrap();
+        assert!(skills.tool().is_none());
+        assert!(skills.into_tools().is_empty());
     }
 }

@@ -26,6 +26,9 @@ use crate::{
 };
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
+/// Versions whose tool calls this client speaks; a server answering with any
+/// other is refused, as the spec asks.
+const SUPPORTED_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// The longest message accepted from a server; a longer line means the
 /// server is broken or hostile, and the connection is dropped.
@@ -49,6 +52,8 @@ pub struct McpToolInfo {
 pub struct McpClient {
     transport: Transport,
     next_id: AtomicU64,
+    /// How long one request may wait for its answer.
+    timeout: Duration,
 }
 
 enum Transport {
@@ -56,6 +61,8 @@ enum Transport {
         writer: Writer,
         pending: Pending,
         reader: tokio::task::JoinHandle<()>,
+        /// Set when the server's output ends: later calls fail at once.
+        closed: Arc<std::sync::atomic::AtomicBool>,
         _child: Option<tokio::process::Child>,
     },
     Http(Http),
@@ -73,8 +80,21 @@ struct Http {
 
 impl Drop for McpClient {
     fn drop(&mut self) {
-        if let Transport::Stream { reader, .. } = &self.transport {
-            reader.abort();
+        match &self.transport {
+            Transport::Stream { reader, .. } => reader.abort(),
+            // Tell the server the session is over (best effort, as the spec allows).
+            Transport::Http(http) => {
+                let session = http.session.lock().unwrap().clone();
+                if let (Some(session), Ok(runtime)) = (session, tokio::runtime::Handle::try_current()) {
+                    let mut request = http.client.delete(&http.url).header("Mcp-Session-Id", session);
+                    for (name, value) in &http.headers {
+                        request = request.header(name, value);
+                    }
+                    runtime.spawn(async move {
+                        let _ = request.send().await;
+                    });
+                }
+            }
         }
     }
 }
@@ -120,9 +140,17 @@ impl McpClient {
                 session: Mutex::new(None),
             }),
             next_id: AtomicU64::new(1),
+            timeout: REQUEST_TIMEOUT,
         };
         client.handshake().await?;
         Ok(client)
+    }
+
+    /// How long each request may wait (default 120 s). A request that runs
+    /// out is cancelled at the server with `notifications/cancelled`.
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// Talk to a server over any pair of streams, then run the MCP handshake.
@@ -140,8 +168,13 @@ impl McpClient {
     ) -> Result<Self> {
         let writer: Writer = Arc::new(AsyncMutex::new(Box::new(writer)));
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
-        let reader = tokio::spawn(read_loop(reader, writer.clone(), pending.clone()));
-        let client = Self { transport: Transport::Stream { writer, pending, reader, _child: child }, next_id: AtomicU64::new(1) };
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = tokio::spawn(read_loop(reader, writer.clone(), pending.clone(), closed.clone()));
+        let client = Self {
+            transport: Transport::Stream { writer, pending, reader, closed, _child: child },
+            next_id: AtomicU64::new(1),
+            timeout: REQUEST_TIMEOUT,
+        };
         client.handshake().await?;
         Ok(client)
     }
@@ -149,7 +182,11 @@ impl McpClient {
     async fn handshake(&self) -> Result<()> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let message = initialize(id);
-        self.request("initialize", message["params"].clone()).await?;
+        let result = self.request("initialize", message["params"].clone()).await?;
+        let version = result["protocolVersion"].as_str().unwrap_or_default();
+        if !SUPPORTED_VERSIONS.contains(&version) {
+            return Err(Error::Mcp(format!("the server speaks MCP `{version}`; this client speaks {}", SUPPORTED_VERSIONS.join(", "))));
+        }
         let initialized = initialized();
         match &self.transport {
             Transport::Stream { writer, .. } => send(writer, &initialized).await,
@@ -160,10 +197,17 @@ impl McpClient {
     async fn request(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let message = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        let (writer, pending) = match &self.transport {
-            Transport::Stream { writer, pending, .. } => (writer, pending),
+        let (writer, pending, closed) = match &self.transport {
+            Transport::Stream { writer, pending, closed, .. } => (writer, pending, closed),
             Transport::Http(http) => {
-                let reply = match http.post(&message).await {
+                let reply = match tokio::time::timeout(self.timeout, http.post(&message)).await {
+                    Ok(reply) => reply,
+                    Err(_) => {
+                        let _ = http.post(&cancelled(id)).await;
+                        return Err(Error::Mcp(format!("{method}: no answer in {}s", self.timeout.as_secs_f32())));
+                    }
+                };
+                let reply = match reply {
                     // The server dropped the session: open a new one, then retry once.
                     Err(Error::Mcp(m)) if m == SESSION_GONE => {
                         *http.session.lock().unwrap() = None;
@@ -183,15 +227,27 @@ impl McpClient {
             }
         };
         let (tx, rx) = oneshot::channel();
-        pending.lock().unwrap().insert(id, tx);
-        send(writer, &message).await?;
-        match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
+        {
+            // Checked under the same lock the reader clears on exit, so a call
+            // never waits on a server that has already gone.
+            let mut waiting = pending.lock().unwrap();
+            if closed.load(Ordering::SeqCst) {
+                return Err(Error::Mcp(format!("{method}: the server closed the connection")));
+            }
+            waiting.insert(id, tx);
+        }
+        if let Err(error) = send(writer, &message).await {
+            pending.lock().unwrap().remove(&id);
+            return Err(error);
+        }
+        match tokio::time::timeout(self.timeout, rx).await {
             Ok(Ok(Ok(result))) => Ok(result),
             Ok(Ok(Err(error))) => Err(Error::Mcp(format!("{method}: {error}"))),
             Ok(Err(_)) => Err(Error::Mcp(format!("{method}: the server closed the connection"))),
             Err(_) => {
                 pending.lock().unwrap().remove(&id);
-                Err(Error::Mcp(format!("{method}: no answer in {}s", REQUEST_TIMEOUT.as_secs())))
+                let _ = send(writer, &cancelled(id)).await;
+                Err(Error::Mcp(format!("{method}: no answer in {}s", self.timeout.as_secs_f32())))
             }
         }
     }
@@ -265,6 +321,24 @@ fn initialize(id: u64) -> Value {
     })
 }
 
+fn cancelled(id: u64) -> Value {
+    json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": id, "reason": "timed out"}})
+}
+
+/// A server's request: `ping` is answered; nothing else is offered.
+fn answer_server_request(id: &Value, method: &str) -> Value {
+    if method == "ping" {
+        json!({"jsonrpc": "2.0", "id": id, "result": {}})
+    } else {
+        json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": format!("{method} is not supported")}})
+    }
+}
+
+/// A response id: ours are numbers, but some servers echo them as strings.
+fn response_id(id: &Value) -> Option<u64> {
+    id.as_u64().or_else(|| id.as_str()?.parse().ok())
+}
+
 fn initialized() -> Value {
     json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
 }
@@ -284,6 +358,18 @@ fn sse_events(text: &str) -> Vec<Value> {
 }
 
 impl Http {
+    /// Send our answer to a server request; its reply body is not needed.
+    async fn respond(&self, message: &Value) {
+        let mut request = self.client.post(&self.url).header("Content-Type", "application/json").header("Accept", "application/json, text/event-stream");
+        for (name, value) in &self.headers {
+            request = request.header(name, value);
+        }
+        if let Some(session) = self.session.lock().unwrap().clone() {
+            request = request.header("Mcp-Session-Id", session);
+        }
+        let _ = request.body(serde_json::to_vec(message).unwrap_or_default()).send().await;
+    }
+
     /// POST one message. Returns the JSON-RPC response to it, or `None` for a
     /// notification (no body).
     async fn post(&self, message: &Value) -> Result<Option<Value>> {
@@ -317,7 +403,11 @@ impl Http {
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v.starts_with("text/event-stream"));
-        let ours = |r: &Value| r.get("id") == message.get("id") && (r.get("result").is_some() || r.get("error").is_some());
+        let our_id = message.get("id").and_then(response_id);
+        let ours = |r: &Value| {
+            our_id.is_some() && r.get("id").and_then(response_id) == our_id && (r.get("result").is_some() || r.get("error").is_some())
+        };
+        let mut answered = std::collections::HashSet::new();
         let mut body = Vec::new();
         let mut chunks = response.bytes_stream();
         while let Some(chunk) = chunks.next().await {
@@ -327,8 +417,16 @@ impl Http {
             }
             // A server may keep the stream open after answering: stop at our answer.
             if sse {
-                if let Some(reply) = sse_events(&String::from_utf8_lossy(&body)).into_iter().find(ours) {
-                    return Ok(Some(reply));
+                for event in sse_events(&String::from_utf8_lossy(&body)) {
+                    if ours(&event) {
+                        return Ok(Some(event));
+                    }
+                    // The server asking us something (a ping) on this stream.
+                    if let (Some(id), Some(method)) = (event.get("id"), event["method"].as_str()) {
+                        if answered.insert(id.to_string()) {
+                            self.respond(&answer_server_request(id, method)).await;
+                        }
+                    }
                 }
             }
         }
@@ -358,6 +456,7 @@ pub struct McpServer {
     effects: HashMap<String, Effect>,
     guards: Vec<(String, String)>,
     prefix: Option<String>,
+    timeout: Duration,
 }
 
 /// The server's tools, ready for `Agent::tools`, and the hash of its tool
@@ -390,7 +489,20 @@ impl McpServer {
             effects: HashMap::new(),
             guards: Vec::new(),
             prefix: None,
+            timeout: REQUEST_TIMEOUT,
         }
+    }
+
+    /// The server's name in messages: the command, or the URL without its
+    /// query string (which may carry a key).
+    fn name(&self) -> &str {
+        self.command.split('?').next().unwrap_or_default()
+    }
+
+    /// How long each tool call may take (default 120 s).
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// Refuse the server if its tool list no longer hashes to this.
@@ -435,7 +547,8 @@ impl McpServer {
         } else {
             let args: Vec<&str> = self.args.iter().map(String::as_str).collect();
             McpClient::spawn(&self.command, &args).await?
-        };
+        }
+        .timeout(self.timeout);
         self.tools_from(client).await
     }
 
@@ -447,14 +560,14 @@ impl McpServer {
             if pin != &hash {
                 return Err(Error::Mcp(format!(
                     "`{}`: the tool list changed since it was pinned (pinned {pin}, now {hash}); review it before trusting it again",
-                    self.command
+                    self.name()
                 )));
             }
         }
         let known = |name: &str| listed.iter().any(|t| t.name == name);
         for name in self.effects.keys().chain(self.guards.iter().map(|(tool, _)| tool)) {
             if !known(name) {
-                return Err(Error::Mcp(format!("`{}` has no tool called `{name}`", self.command)));
+                return Err(Error::Mcp(format!("`{}` has no tool called `{name}`", self.name())));
             }
         }
         let name_of = |name: &str| match &self.prefix {
@@ -464,7 +577,7 @@ impl McpServer {
         if let Some(bad) = listed.iter().map(|t| name_of(&t.name)).find(|n| !valid_tool_name(n)) {
             return Err(Error::Mcp(format!(
                 "`{}` offers a tool named `{bad}`, which providers reject (letters, digits, _ and -, at most 64)",
-                self.command
+                self.name()
             )));
         }
         let client = Arc::new(client);
@@ -472,7 +585,12 @@ impl McpServer {
             .into_iter()
             .map(|info| {
                 let mut effect = self.effects.get(&info.name).copied().unwrap_or(Effect::Outbound);
-                if info.annotations["destructiveHint"] == true {
+                // Hints only tighten. The spec's default for destructiveHint is
+                // true, and it applies to a tool that says it is not read-only.
+                let hints = &info.annotations;
+                let destructive = hints["destructiveHint"] == true
+                    || (hints["readOnlyHint"] == false && hints.get("destructiveHint").is_none());
+                if destructive {
                     effect = Effect::Destroy;
                 }
                 let spec = ToolSpec {
@@ -514,7 +632,7 @@ impl Tool for McpTool {
 
 /// Routes responses to their callers; answers `ping`; refuses any other
 /// server request (sampling, elicitation, roots), which this client doesn't offer.
-async fn read_loop(reader: impl AsyncRead + Send + Unpin, writer: Writer, pending: Pending) {
+async fn read_loop(reader: impl AsyncRead + Send + Unpin, writer: Writer, pending: Pending, closed: Arc<std::sync::atomic::AtomicBool>) {
     let mut reader = BufReader::new(reader);
     let mut line = Vec::new();
     loop {
@@ -528,17 +646,16 @@ async fn read_loop(reader: impl AsyncRead + Send + Unpin, writer: Writer, pendin
         let Ok(message) = serde_json::from_slice::<Value>(&line) else { continue };
         match (message.get("id"), message["method"].as_str()) {
             (Some(id), Some(method)) => {
-                let reply = if method == "ping" {
-                    json!({"jsonrpc": "2.0", "id": id, "result": {}})
-                } else {
-                    json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": format!("{method} is not supported")}})
-                };
-                if send(&writer, &reply).await.is_err() {
+                if send(&writer, &answer_server_request(id, method)).await.is_err() {
                     break;
                 }
             }
             (Some(id), None) => {
-                let Some(id) = id.as_u64() else { continue };
+                let Some(id) = response_id(id) else {
+                    // An error with a null id (a parse error) can't be matched to a call.
+                    tracing::warn!(error = %message["error"], "the MCP server sent an error for no request");
+                    continue;
+                };
                 let Some(caller) = pending.lock().unwrap().remove(&id) else { continue };
                 let outcome = match message.get("error") {
                     Some(error) => Err(error["message"].as_str().unwrap_or("error").to_string()),
@@ -549,8 +666,11 @@ async fn read_loop(reader: impl AsyncRead + Send + Unpin, writer: Writer, pendin
             _ => {} // notifications
         }
     }
-    // The server is gone: every waiting caller gets an error, none hangs.
-    pending.lock().unwrap().clear();
+    // The server is gone: every waiting caller gets an error, none hangs, and
+    // no later call starts waiting.
+    let mut waiting = pending.lock().unwrap();
+    closed.store(true, Ordering::SeqCst);
+    waiting.clear();
 }
 
 #[cfg(test)]
@@ -818,6 +938,119 @@ mod tests {
         let client = McpClient::http(&server.url, &[]).await.unwrap();
         assert!(client.call_tool("recall", json!({})).await.unwrap().0.starts_with("recall"));
     }
+
+    type ServerWrite = tokio::io::WriteHalf<tokio::io::DuplexStream>;
+
+    /// A hand-driven server: it answers the handshake, then forwards every
+    /// line it reads to `rx`. The handle yields its write half once the
+    /// handshake is done, so a test can close it.
+    fn raw_server(version: &str) -> (tokio::io::DuplexStream, tokio::sync::mpsc::UnboundedReceiver<Value>, tokio::task::JoinHandle<ServerWrite>) {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (read, mut write) = tokio::io::split(server_io);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let version = version.to_string();
+        let handle = tokio::spawn(async move {
+            let mut lines = BufReader::new(read).lines();
+            let init: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            write.write_all(format!("{}\n", json!({"jsonrpc": "2.0", "id": init["id"], "result": {"protocolVersion": version, "capabilities": {}}})).as_bytes()).await.unwrap();
+            tokio::spawn(async move {
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let _ = tx.send(serde_json::from_str::<Value>(&line).unwrap());
+                }
+            });
+            write
+        });
+        (client_io, rx, handle)
+    }
+
+    #[tokio::test]
+    async fn a_protocol_version_this_client_cannot_speak_is_refused() {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(serve(server_io, |method, _| (method == "initialize").then(|| json!({"protocolVersion": "1999-01-01", "capabilities": {}}))));
+        let (r, w) = tokio::io::split(client_io);
+        assert!(matches!(McpClient::over(r, w).await, Err(Error::Mcp(m)) if m.contains("1999-01-01")));
+    }
+
+    #[tokio::test]
+    async fn a_reply_whose_id_comes_back_as_a_string_is_still_matched() {
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let (read, mut write) = tokio::io::split(server_io);
+            let mut lines = BufReader::new(read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let msg: Value = serde_json::from_str(&line).unwrap();
+                let Some(id) = msg["id"].as_u64() else { continue };
+                let result = if msg["method"] == "initialize" { json!({"protocolVersion": "2025-06-18", "capabilities": {}}) } else { json!({"tools": []}) };
+                write.write_all(format!("{}\n", json!({"jsonrpc": "2.0", "id": id.to_string(), "result": result})).as_bytes()).await.unwrap();
+            }
+        });
+        let (r, w) = tokio::io::split(client_io);
+        let client = tokio::time::timeout(std::time::Duration::from_secs(2), McpClient::over(r, w)).await.expect("not stuck").unwrap();
+        assert!(client.list_tools().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn after_the_server_stops_talking_calls_fail_at_once_and_leave_nothing_waiting() {
+        let (client_io, mut rx, server) = raw_server("2025-06-18");
+        let (r, w) = tokio::io::split(client_io);
+        let client = McpClient::over(r, w).await.unwrap();
+        let mut write = server.await.unwrap();
+        let _initialized = rx.recv().await;
+        write.shutdown().await.unwrap(); // stdout closed, stdin still read
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let out = tokio::time::timeout(std::time::Duration::from_secs(1), client.list_tools()).await;
+        assert!(matches!(out, Ok(Err(Error::Mcp(_)))), "{out:?}");
+        if let Transport::Stream { pending, .. } = &client.transport {
+            assert!(pending.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_call_that_takes_too_long_is_cancelled_at_the_server() {
+        let (client_io, mut rx, server) = raw_server("2025-06-18");
+        let (r, w) = tokio::io::split(client_io);
+        let client = McpClient::over(r, w).await.unwrap().timeout(std::time::Duration::from_millis(100));
+        let _write = server.await.unwrap();
+        let _initialized = rx.recv().await;
+        let out = client.call_tool("slow", json!({})).await;
+        assert!(matches!(&out, Err(Error::Mcp(m)) if m.contains("no answer")), "{out:?}");
+        let call = rx.recv().await.unwrap();
+        let cancelled = rx.recv().await.unwrap();
+        assert_eq!(cancelled["method"], "notifications/cancelled");
+        assert_eq!(cancelled["params"]["requestId"], call["id"]);
+    }
+
+    #[tokio::test]
+    async fn a_tool_that_says_it_is_not_read_only_and_omits_destructive_is_destructive() {
+        let client = server_with(vec![annotated("w", json!({"readOnlyHint": false})), tool("q")]).await;
+        let tools = McpServer::stdio("x", &[]).effect("q", Effect::Read).tools_from(client).await.unwrap();
+        assert_eq!(effect_of(&tools, "w"), Effect::Destroy, "the spec's default for destructiveHint");
+        assert_eq!(effect_of(&tools, "q"), Effect::Read, "no hints at all: the developer's choice stands");
+    }
+
+    #[tokio::test]
+    async fn a_key_in_a_server_url_never_appears_in_errors() {
+        let client = server_with(vec![tool("a")]).await;
+        let out = McpServer::http("https://example.com/mcp?key=tr_sk_secret").effect("nope", Effect::Read).tools_from(client).await;
+        assert!(matches!(&out, Err(Error::Mcp(m)) if !m.contains("secret") && m.contains("example.com")), "{:?}", out.err());
+    }
+
+    #[tokio::test]
+    async fn a_server_ping_inside_an_http_reply_is_answered() {
+        let server = fake_http::start(fake_http::Mode::PingFirst).await;
+        let client = McpClient::http(&server.url, &[]).await.unwrap();
+        assert!(client.call_tool("recall", json!({})).await.unwrap().0.starts_with("recall"));
+        assert!(server.seen.lock().unwrap().iter().any(|r| r.id == json!("srv-1") && r.method.is_empty()), "the ping got a reply");
+    }
+
+    #[tokio::test]
+    async fn dropping_an_http_client_ends_its_session() {
+        let server = fake_http::start(fake_http::Mode::Normal).await;
+        let client = McpClient::http(&server.url, &[]).await.unwrap();
+        drop(client);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(server.seen.lock().unwrap().iter().any(|r| r.verb == "DELETE" && r.session.as_deref() == Some("s-1")));
+    }
 }
 
 /// A tiny Streamable HTTP MCP server for tests: one session `s-1`, three
@@ -834,6 +1067,8 @@ pub(crate) mod fake_http {
 
     #[derive(Debug, Clone)]
     pub struct Seen {
+        pub verb: String,
+        pub id: Value,
         pub method: String,
         pub session: Option<String>,
         pub auth: Option<String>,
@@ -857,6 +1092,10 @@ pub(crate) mod fake_http {
         Crlf,
         /// Never answers anything.
         Hang,
+        /// `tools/call` answers on SSE after first sending a ping request.
+        PingFirst,
+        /// No `remember` tool.
+        NoRemember,
     }
 
     pub async fn start(mode: Mode) -> Server {
@@ -908,7 +1147,8 @@ pub(crate) mod fake_http {
                     };
                     let body: Value = serde_json::from_slice(&buf[head_end..head_end + length]).unwrap_or(Value::Null);
                     let method = body["method"].as_str().unwrap_or_default().to_string();
-                    log.lock().unwrap().push(Seen { method: method.clone(), session: header("mcp-session-id"), auth: header("authorization") });
+                    let verb = head.split_whitespace().next().unwrap_or_default().to_string();
+                    log.lock().unwrap().push(Seen { verb, id: body["id"].clone(), method: method.clone(), session: header("mcp-session-id"), auth: header("authorization") });
                     let id = body["id"].clone();
                     let reply = |result: Value| json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
                     let session = header("mcp-session-id");
@@ -928,6 +1168,9 @@ pub(crate) mod fake_http {
                             ("200 OK", if n == 1 { "Mcp-Session-Id: s-1\r\n" } else { "Mcp-Session-Id: s-2\r\n" }, "application/json", reply(json!({"protocolVersion": "2025-06-18", "capabilities": {}})))
                         }
                         "tools/list" if mode == Mode::Huge => ("200 OK", "", "application/json", "x".repeat(super::MAX_LINE + 10)),
+                        "tools/list" if mode == Mode::NoRemember => ("200 OK", "", "application/json", reply(json!({"tools": [
+                            {"name": "recall", "description": "Search memory", "inputSchema": {"type": "object"}},
+                        ]}))),
                         "tools/list" => ("200 OK", "", "application/json", reply(json!({"tools": [
                             {"name": "recall", "description": "Search memory", "inputSchema": {"type": "object"}, "annotations": {"readOnlyHint": true}},
                             {"name": "remember", "description": "Store", "inputSchema": {"type": "object"}},
@@ -936,7 +1179,9 @@ pub(crate) mod fake_http {
                         "tools/call" => {
                             let text = format!("{}: {}", body["params"]["name"].as_str().unwrap_or_default(), body["params"]["arguments"]);
                             let answer = reply(json!({"content": [{"type": "text", "text": text}]}));
-                            let body = if mode == Mode::Crlf {
+                            let body = if mode == Mode::PingFirst {
+                                format!("event: message\ndata: {}\n\nevent: message\ndata: {answer}\n\n", json!({"jsonrpc": "2.0", "id": "srv-1", "method": "ping"}))
+                            } else if mode == Mode::Crlf {
                                 format!("event: message\r\ndata: {}\r\n\r\nevent: message\r\ndata: {answer}\r\n\r\n", json!({"jsonrpc": "2.0", "method": "notifications/progress", "params": {}}))
                             } else {
                                 format!("event: message\ndata: {answer}\n\n")

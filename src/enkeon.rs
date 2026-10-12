@@ -73,7 +73,9 @@ pub struct Enkeon {
 
 impl fmt::Debug for Enkeon {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Enkeon").field("url", &self.url).field("key", &"[hidden]").finish()
+        // The query string may carry a key too.
+        let url = self.url.split('?').next().unwrap_or_default();
+        f.debug_struct("Enkeon").field("url", &url).field("key", &"[hidden]").finish()
     }
 }
 
@@ -104,12 +106,18 @@ impl Enkeon {
         }
         self.tools
             .get_or_try_init(|| async {
-                let connected = McpServer::http(&self.url)
-                    .header("Authorization", &format!("Bearer {}", self.key))
-                    .effect("recall", Effect::Read)
-                    .effect("remember", Effect::Write)
-                    .connect()
-                    .await?;
+                let auth = format!("Bearer {}", self.key);
+                let client = crate::mcp::McpClient::http(&self.url, &[("Authorization", &auth)]).await?;
+                // Effects only for the tools this server has: one without
+                // `remember` still gives `recall`.
+                let present: Vec<String> = client.list_tools().await?.into_iter().map(|t| t.name).collect();
+                let mut server = McpServer::http(&self.url);
+                for (name, effect) in [("recall", Effect::Read), ("remember", Effect::Write)] {
+                    if present.iter().any(|p| p == name) {
+                        server = server.effect(name, effect);
+                    }
+                }
+                let connected = server.tools_from(client).await?;
                 Ok::<_, crate::Error>(connected.tools.into_iter().filter(|t| OFFERED.contains(&t.spec().name.as_str())).collect())
             })
             .await
@@ -272,5 +280,17 @@ mod tests {
         let (out, events) = run(&agent, "hi").await;
         assert_eq!(out.unwrap(), "answered");
         assert!(events.iter().any(|e| matches!(e, Event::EnkeonUnavailable { reason } if reason.contains("https"))));
+    }
+
+    #[tokio::test]
+    async fn a_server_without_remember_still_gives_recall() {
+        let server = fake_http::start(fake_http::Mode::NoRemember).await;
+        let tools = Enkeon::new("k").url(&server.url).tools().await.unwrap();
+        assert_eq!(tools.iter().map(|t| t.spec().name.clone()).collect::<Vec<_>>(), ["recall"]);
+    }
+
+    #[test]
+    fn a_key_in_the_url_is_never_printed() {
+        assert!(!format!("{:?}", Enkeon::new("k").url("https://api.example.com/mcp?key=tr_sk_secret")).contains("secret"));
     }
 }
