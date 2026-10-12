@@ -165,7 +165,9 @@ class Agent:
 
     def __init__(self, model: str, tools: Iterable[Tool] = (), instructions: Optional[str] = None,
                  allow: Optional[Iterable[str]] = None, enkeon: Optional[bool] = None,
-                 approver: Optional[Approver] = None, cookie_bin: Optional[str] = None):
+                 approver: Optional[Approver] = None, cookie_bin: Optional[str] = None,
+                 session: Optional[str] = None, budget: Optional[dict] = None,
+                 prices: Optional[dict] = None, mcp: Optional[list] = None):
         self.model = model
         self.tools: dict[str, Tool] = {}
         for t in tools:
@@ -177,6 +179,10 @@ class Agent:
         self.instructions = instructions
         self.allow = list(allow) if allow is not None else None
         self.enkeon = enkeon
+        # Passed through to the run as given: `session` (a JSONL file to resume),
+        # `budget` ({max_steps, max_tokens, max_dollars}), `prices` (dollars per
+        # million tokens: {input, output, cache_read, cache_write}), `mcp` (servers).
+        self.extra = {k: v for k, v in {"session": session, "budget": budget, "prices": prices, "mcp": mcp}.items() if v is not None}
         # No approver means every request is declined.
         self.approver: Approver = approver or _deny
         self.cookie_bin = cookie_bin
@@ -246,6 +252,7 @@ class Agent:
             message["allow"] = self.allow
         if self.enkeon is not None:
             message["enkeon"] = self.enkeon
+        message.update(self.extra)
         self._run_id = run_id
         self._send(message)
         ended = False

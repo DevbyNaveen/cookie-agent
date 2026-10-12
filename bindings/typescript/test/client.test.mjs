@@ -84,6 +84,22 @@ test("run sends the declared run and returns the answer", async (t) => {
   ]);
 });
 
+test("session, budget, prices and mcp are passed through", async (t) => {
+  const [a, f] = agent(t, [{ read: "run" }, done("ok")], {
+    session: "s.jsonl",
+    budget: { max_steps: 5, max_dollars: 0.5 },
+    prices: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 },
+    mcp: [{ command: "github-mcp", effects: { search: "read" } }],
+  });
+  await a.run("hi");
+  await a.close();
+  const [run] = f.sent("run");
+  assert.equal(run.session, "s.jsonl");
+  assert.deepEqual(run.budget, { max_steps: 5, max_dollars: 0.5 });
+  assert.equal(run.prices.output, 15);
+  assert.deepEqual(run.mcp, [{ command: "github-mcp", effects: { search: "read" } }]);
+});
+
 test("unset options are left out of the run", async (t) => {
   const [a, f] = agent(t, [{ read: "run" }, done("ok")]);
   await a.run("hi");

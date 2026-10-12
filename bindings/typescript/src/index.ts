@@ -58,6 +58,14 @@ export interface AgentOptions {
   approver?: Approver;
   /** The `cookie` binary; else `COOKIE_BIN`, else `cookie` on PATH. */
   cookieBin?: string;
+  /** A JSONL session file to resume and append to. */
+  session?: string;
+  /** Limits for each run; a limit left out keeps its default. */
+  budget?: { max_steps?: number; max_tokens?: number; max_dollars?: number };
+  /** Dollars per million tokens, needed for `max_dollars`. */
+  prices?: { input: number; output: number; cache_read: number; cache_write: number };
+  /** MCP servers for each run (see the protocol in the README). */
+  mcp?: Record<string, unknown>[];
 }
 
 /** A streamed event (`text_delta`, `tool_call_started`, `usage`, …), or the last one: `done`. */
@@ -162,6 +170,9 @@ export class Agent {
       if (instructions !== undefined) run.instructions = instructions;
       if (allow !== undefined) run.allow = allow;
       if (enkeon !== undefined) run.enkeon = enkeon;
+      for (const key of ["session", "budget", "prices", "mcp"] as const) {
+        if (this.options[key] !== undefined) run[key] = this.options[key];
+      }
       run.tools = [...this.#tools.values()].map(({ name, description, effect, schema, guard }) => ({
         name,
         description: description ?? "",

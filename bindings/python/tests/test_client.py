@@ -115,6 +115,22 @@ class ClientTest(unittest.TestCase):
             },
         )
 
+    def test_session_budget_prices_and_mcp_are_passed_through(self):
+        agent, fake = self.agent(
+            [{"read": "run"}, done("ok")],
+            session="s.jsonl",
+            budget={"max_steps": 5, "max_dollars": 0.5},
+            prices={"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
+            mcp=[{"command": "github-mcp", "effects": {"search": "read"}}],
+        )
+        agent.run("hi")
+        agent.close()
+        [run] = fake.sent("run")
+        self.assertEqual(run["session"], "s.jsonl")
+        self.assertEqual(run["budget"], {"max_steps": 5, "max_dollars": 0.5})
+        self.assertEqual(run["prices"]["output"], 15.0)
+        self.assertEqual(run["mcp"], [{"command": "github-mcp", "effects": {"search": "read"}}])
+
     def test_unset_options_are_left_out_of_the_run(self):
         agent, fake = self.agent([{"read": "run"}, done("ok")])
         agent.run("hi")
