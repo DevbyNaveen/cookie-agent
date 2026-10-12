@@ -67,6 +67,24 @@ you can pin it. Skills (`SKILL.md`) are offered through one `use_skill`
 tool and loaded on demand; `read_agents_md` gives you `AGENTS.md` to put in
 your instructions — nothing is added behind your back.
 
+## Enkeon (on when you have a key)
+
+Set `ENKEON_API_KEY` and every agent gets the person's context from
+[Enkeon](https://enkeon.com): a `recall` tool to look things up and a
+`remember` tool to save what lands. The system prompt gains one paragraph,
+`ENKEON_INSTRUCTIONS` — read it in `src/enkeon.rs`; nothing else is added.
+
+```rust
+let agent = Agent::new("anthropic:claude-sonnet-4-6")?;                 // with ENKEON_API_KEY set: on
+let agent = Agent::new("anthropic:claude-sonnet-4-6")?.without_enkeon(); // off
+```
+
+What `recall` returns is tool output: untrusted, so a stored memory can't
+choose who gets sent what. Saving after the run read untrusted content asks
+a person. Sub-agents can recall but not save. If Enkeon can't be reached
+the run still answers and you get `Event::EnkeonUnavailable`. No key, no
+connection. Remote MCP servers work the same way: `McpServer::http(url)`.
+
 ## Several agents
 
 ```rust

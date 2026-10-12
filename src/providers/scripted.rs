@@ -14,11 +14,13 @@ use crate::{
 pub struct Scripted {
     replies: Mutex<VecDeque<ModelResponse>>,
     seen: Mutex<Vec<Vec<Message>>>,
+    /// The system prompt and tool names of each request.
+    asked: Mutex<Vec<(String, Vec<String>)>>,
 }
 
 impl Scripted {
     pub fn new(replies: Vec<ModelResponse>) -> Self {
-        Self { replies: Mutex::new(replies.into()), seen: Mutex::new(Vec::new()) }
+        Self { replies: Mutex::new(replies.into()), seen: Mutex::new(Vec::new()), asked: Mutex::new(Vec::new()) }
     }
 
     pub fn text(text: &str) -> ModelResponse {
@@ -38,6 +40,10 @@ impl Scripted {
     }
 
     /// Every message history the provider was called with, in order.
+    pub fn asked(&self) -> Vec<(String, Vec<String>)> {
+        self.asked.lock().unwrap().clone()
+    }
+
     pub fn seen(&self) -> Vec<Vec<Message>> {
         self.seen.lock().unwrap().clone()
     }
@@ -47,6 +53,7 @@ impl Scripted {
 impl Provider for Scripted {
     async fn complete(&self, request: ModelRequest<'_>) -> Result<ModelResponse> {
         self.seen.lock().unwrap().push(request.messages.to_vec());
+        self.asked.lock().unwrap().push((request.system.to_string(), request.tools.iter().map(|t| t.name.clone()).collect()));
         self.replies.lock().unwrap().pop_front().ok_or_else(|| Error::Provider("script exhausted".into()))
     }
 }

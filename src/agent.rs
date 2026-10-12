@@ -9,6 +9,7 @@ use crate::{
     approval::{ApprovalRequest, Approver, DenyAll},
     budget::{Budget, LoopGuard, Meter},
     compaction::{context_view, estimate_tokens, summary_boundary, Compaction, SUMMARY_PROMPT},
+    enkeon::{Enkeon, ENKEON_INSTRUCTIONS},
     error::{Error, Result},
     label::{Origin, Source},
     message::{Content, Message},
@@ -29,15 +30,19 @@ pub struct Agent {
     approver: Arc<dyn Approver>,
     budget: Budget,
     compaction: Option<Compaction>,
+    enkeon: Option<Arc<Enkeon>>,
 }
 
 type Call = (String, String, Value);
 
-/// Where a run starts from: what is trusted, what it may spend, how deep it is.
+/// Where a run starts from: what is trusted, what it may spend, how deep it
+/// is, and the Enkeon tools it gets (outside `Agent::tools`, so the
+/// one-writer rule counts only the developer's own).
 struct Start {
     provenance: Provenance,
     budget: Budget,
     depth: usize,
+    extra: Vec<Arc<dyn Tool>>,
 }
 
 /// What a run reports while it happens. New kinds of event may be added,
@@ -57,6 +62,8 @@ pub enum Event {
     CompactionFailed { reason: String },
     /// Something that happened inside a sub-agent, reported after it finished.
     SubAgent { name: String, event: Box<Event> },
+    /// Enkeon is set up but could not be reached; this run goes on without it.
+    EnkeonUnavailable { reason: String },
 }
 
 /// Two ways to stop a run: `cancel` stops now; `finish_turn` lets the
@@ -85,6 +92,8 @@ impl Agent {
             approver: Arc::new(DenyAll),
             budget: Budget::default(),
             compaction: None,
+            // On by default when ENKEON_API_KEY is set; never in this crate's own tests.
+            enkeon: if cfg!(test) { None } else { Enkeon::from_env().map(Arc::new) },
         }
     }
 
@@ -119,6 +128,18 @@ impl Agent {
         self
     }
 
+    /// Use this Enkeon account instead of `ENKEON_API_KEY`.
+    pub fn enkeon(mut self, enkeon: Enkeon) -> Self {
+        self.enkeon = Some(Arc::new(enkeon));
+        self
+    }
+
+    /// No Enkeon, even with a key set.
+    pub fn without_enkeon(mut self) -> Self {
+        self.enkeon = None;
+        self
+    }
+
     /// Keep long sessions within reach. Off unless set.
     pub fn compaction(mut self, compaction: Compaction) -> Self {
         self.compaction = Some(compaction);
@@ -146,7 +167,8 @@ impl Agent {
     ) -> Result<String> {
         let mut open = Vec::new();
         let mut meter = Meter::default();
-        let start = Start { provenance: Provenance::default(), budget: self.budget, depth: 0 };
+        let extra = self.enkeon_tools(false, on_event).await;
+        let start = Start { provenance: Provenance::default(), budget: self.budget, depth: 0, extra };
         let result = self.turns(session, input, control, on_event, &mut open, start, &mut meter).await;
         if result.is_err() {
             for id in open {
@@ -166,10 +188,11 @@ impl Agent {
             max_steps: self.budget.max_steps.min(context.budget.max_steps),
             max_tokens: self.budget.max_tokens.min(context.budget.max_tokens),
         };
-        let start = Start { provenance: context.provenance.clone(), budget, depth: context.depth + 1 };
+        let mut events = Vec::new();
+        let extra = self.enkeon_tools(true, &mut |e| events.push(e)).await;
+        let start = Start { provenance: context.provenance.clone(), budget, depth: context.depth + 1, extra };
         let mut meter = Meter::default();
         let mut open = Vec::new();
-        let mut events = Vec::new();
         let result = self
             .turns(&mut session, Message::delegated(task), &control, &mut |e| events.push(e), &mut open, start, &mut meter)
             .await;
@@ -189,7 +212,13 @@ impl Agent {
     ) -> Result<String> {
         let cancel = &control.cancel;
         let budget = start.budget;
-        self.check_tools()?;
+        let system = match (start.extra.is_empty(), self.instructions.is_empty()) {
+            (true, _) => self.instructions.clone(),
+            (false, true) => ENKEON_INSTRUCTIONS.to_string(),
+            (false, false) => format!("{}\n\n{ENKEON_INSTRUCTIONS}", self.instructions),
+        };
+        let tools: Vec<Arc<dyn Tool>> = self.tools.iter().cloned().chain(start.extra).collect();
+        self.check_tools(&tools)?;
         session.repair().await?;
         session.append(input).await?;
         // Starts from what the parent knew (empty at the top): the developer's
@@ -219,9 +248,9 @@ impl Agent {
             };
             let request = ModelRequest {
                 model: &self.model,
-                system: &self.instructions,
+                system: &system,
                 messages: &view,
-                tools: self.tools.iter().map(|t| t.spec()).collect(),
+                tools: tools.iter().map(|t| t.spec()).collect(),
             };
             let response = {
                 let mut forward = |event: ProviderEvent| {
@@ -261,7 +290,7 @@ impl Agent {
                 spend: Default::default(),
                 events: Default::default(),
             };
-            let outcome = self.run_calls(&calls, &provenance, &mut loop_guard, &context, on_event).await;
+            let outcome = self.run_calls(&tools, &calls, &provenance, &mut loop_guard, &context, on_event).await;
             meter.absorb(*context.spend.lock().expect("spend lock"));
             for event in context.events.lock().expect("events lock").drain(..) {
                 on_event(event);
@@ -287,11 +316,24 @@ impl Agent {
         }
     }
 
+    /// Enkeon's tools for this run: none without Enkeon; `recall` only for a
+    /// sub-agent, so readers stay readers; an unreachable Enkeon is reported.
+    async fn enkeon_tools(&self, delegated: bool, on_event: &mut (dyn FnMut(Event) + Send)) -> Vec<Arc<dyn Tool>> {
+        let Some(enkeon) = &self.enkeon else { return Vec::new() };
+        match enkeon.tools().await {
+            Ok(tools) => tools.into_iter().filter(|t| !delegated || t.spec().effect == Effect::Read).collect(),
+            Err(error) => {
+                on_event(Event::EnkeonUnavailable { reason: error.to_string() });
+                Vec::new()
+            }
+        }
+    }
+
     /// Tool names must be unique (otherwise providers refuse the request, or
     /// the wrong tool runs) and acceptable to every provider.
-    fn check_tools(&self) -> Result<()> {
+    fn check_tools(&self, tools: &[Arc<dyn Tool>]) -> Result<()> {
         let mut seen = std::collections::HashSet::new();
-        for tool in &self.tools {
+        for tool in tools {
             let name = &tool.spec().name;
             if !valid_tool_name(name) {
                 return Err(Error::Tool(format!("`{name}` is not a valid tool name (letters, digits, _ and -, at most 64)")));
@@ -384,6 +426,7 @@ impl Agent {
     /// cancelled; a call that finished keeps its real result either way.
     async fn run_calls(
         &self,
+        tools: &[Arc<dyn Tool>],
         calls: &[Call],
         provenance: &Provenance,
         loop_guard: &mut LoopGuard,
@@ -396,7 +439,7 @@ impl Agent {
 
         for (index, (_, name, args)) in calls.iter().enumerate() {
             loop_guard.see(name, args)?;
-            let Some(tool) = self.tools.iter().find(|t| t.spec().name == *name).cloned() else {
+            let Some(tool) = tools.iter().find(|t| t.spec().name == *name).cloned() else {
                 outcomes[index] = Some((format!("There is no tool called `{name}`."), true));
                 continue;
             };
