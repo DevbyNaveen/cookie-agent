@@ -249,17 +249,23 @@ impl McpClient {
             }
             waiting.insert(id, tx);
         }
-        if let Err(error) = send(writer, &message).await {
-            pending.lock().unwrap().remove(&id);
-            return Err(error);
-        }
-        match tokio::time::timeout(self.timeout, rx).await {
+        // The write is inside the timeout too: a server that stops reading
+        // fills the pipe, and the call must still end.
+        let exchange = async {
+            send(writer, &message).await?;
+            rx.await.map_err(|_| Error::Mcp(format!("{method}: the server closed the connection")))
+        };
+        match tokio::time::timeout(self.timeout, exchange).await {
             Ok(Ok(Ok(result))) => Ok(result),
             Ok(Ok(Err(error))) => Err(Error::Mcp(format!("{method}: {error}"))),
-            Ok(Err(_)) => Err(Error::Mcp(format!("{method}: the server closed the connection"))),
+            Ok(Err(error)) => {
+                pending.lock().unwrap().remove(&id);
+                Err(error)
+            }
             Err(_) => {
                 pending.lock().unwrap().remove(&id);
-                let _ = send(writer, &cancelled(id)).await;
+                // Best effort, and bounded: the server may not be reading at all.
+                let _ = tokio::time::timeout(Duration::from_secs(1), send(writer, &cancelled(id))).await;
                 Err(Error::Mcp(format!("{method}: no answer in {}s", self.timeout.as_secs_f32())))
             }
         }
@@ -1102,6 +1108,25 @@ mod tests {
         let client = server_with(vec![json!({"name": "a", "description": "x".repeat(50_000), "inputSchema": {"type": "object"}})]).await;
         let mcp = McpServer::stdio("x", &[]).tools_from(client).await.unwrap();
         assert!(mcp.tools[0].spec().description.chars().count() <= FOREIGN_DESCRIPTION_MAX + 1);
+    }
+
+    #[tokio::test]
+    async fn a_server_that_stops_reading_cannot_hang_a_call() {
+        // A tiny pipe the server never reads after the handshake: the write blocks.
+        let (client_io, server_io) = tokio::io::duplex(256);
+        let (read, mut write) = tokio::io::split(server_io);
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(read).lines();
+            let init: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            write.write_all(format!("{}\n", json!({"jsonrpc": "2.0", "id": init["id"], "result": {"protocolVersion": "2025-06-18", "capabilities": {}}})).as_bytes()).await.unwrap();
+            let _initialized = lines.next_line().await;
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            drop(lines);
+        });
+        let (r, w) = tokio::io::split(client_io);
+        let client = McpClient::over(r, w).await.unwrap().timeout(std::time::Duration::from_millis(200));
+        let out = tokio::time::timeout(std::time::Duration::from_secs(3), client.call_tool("x", json!({"big": "y".repeat(10_000)}))).await;
+        assert!(matches!(out, Ok(Err(Error::Mcp(_)))), "{out:?}");
     }
 }
 

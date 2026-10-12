@@ -16,11 +16,13 @@ pub struct Session {
     messages: Vec<Message>,
     /// Held while the session is open: one writer per file.
     _lock: Option<std::fs::File>,
+    /// Tests only: make the next write stop after this many bytes and fail.
+    pub(crate) fail_after_bytes: Option<usize>,
 }
 
 impl Session {
     pub fn in_memory() -> Self {
-        Self { path: None, messages: Vec::new(), _lock: None }
+        Self { path: None, messages: Vec::new(), _lock: None, fail_after_bytes: None }
     }
 
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -54,7 +56,7 @@ impl Session {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e.into()),
         };
-        let mut session = Self { path: Some(path), messages, _lock: Some(lock) };
+        let mut session = Self { path: Some(path), messages, _lock: Some(lock), fail_after_bytes: None };
         session.repair().await?;
         Ok(session)
     }
@@ -84,10 +86,26 @@ impl Session {
             let mut line = serde_json::to_string(&message)?;
             line.push('\n');
             let mut file = OpenOptions::new().create(true).append(true).open(path).await?;
-            file.write_all(line.as_bytes()).await?;
-            file.flush().await?;
-            // On disk before the run goes on: a power cut loses nothing it reported.
-            file.sync_data().await?;
+            let before = file.metadata().await?.len();
+            let fail_after = self.fail_after_bytes;
+            let written = async {
+                if let Some(n) = fail_after {
+                    file.write_all(&line.as_bytes()[..n.min(line.len())]).await?;
+                    return Err(std::io::Error::other("the write stopped part way"));
+                }
+                file.write_all(line.as_bytes()).await?;
+                file.flush().await?;
+                // On disk before the run goes on (F_FULLFSYNC on macOS): a power cut
+                // loses nothing the run reported.
+                file.sync_all().await
+            }
+            .await;
+            // A half-written line would glue onto the next one and break the file:
+            // cut it off again.
+            if let Err(error) = written {
+                let _ = file.set_len(before).await;
+                return Err(error.into());
+            }
         }
         self.messages.push(message);
         Ok(())
@@ -119,6 +137,10 @@ impl Session {
 
     /// A new session holding the first `keep` messages. Refuses a non-empty target.
     pub async fn branch(&self, keep: usize, path: impl AsRef<Path>) -> Result<Session> {
+        // Checked before opening: opening repairs a file, and this one isn't ours.
+        if tokio::fs::metadata(path.as_ref()).await.is_ok_and(|m| m.len() > 0) {
+            return Err(Error::Session("branch target already has messages".into()));
+        }
         let mut branch = Session::open(path).await?;
         if !branch.messages.is_empty() {
             return Err(Error::Session("branch target already has messages".into()));
@@ -247,5 +269,35 @@ mod tests {
         assert!(matches!(Session::open(&path).await, Err(Error::Session(m)) if m.contains("in use")));
         drop(first);
         assert!(Session::open(&path).await.is_ok(), "free again once the first is dropped");
+    }
+
+    #[tokio::test]
+    async fn a_write_that_fails_halfway_leaves_the_file_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        let mut s = Session::open(&path).await.unwrap();
+        s.append(Message::user("one")).await.unwrap();
+        s.fail_after_bytes = Some(5);
+        assert!(s.append(Message::user("two")).await.is_err());
+        s.fail_after_bytes = None;
+        s.append(Message::user("three")).await.unwrap();
+        drop(s);
+        let texts: Vec<String> = Session::open(&path).await.unwrap().messages().iter().map(Message::text).collect();
+        assert_eq!(texts, ["one", "three"]);
+    }
+
+    #[tokio::test]
+    async fn branching_onto_someone_else_s_session_leaves_it_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let theirs = dir.path().join("theirs.jsonl");
+        let mut t = Session::open(&theirs).await.unwrap();
+        t.append(Message::user("weather?")).await.unwrap();
+        t.append(Message::assistant(vec![Content::ToolCall { id: "c1".into(), name: "w".into(), args: json!({}) }])).await.unwrap();
+        drop(t);
+        let before = std::fs::read(&theirs).unwrap();
+        let mut mine = Session::open(dir.path().join("mine.jsonl")).await.unwrap();
+        mine.append(Message::user("hi")).await.unwrap();
+        assert!(mine.branch(1, &theirs).await.is_err());
+        assert_eq!(std::fs::read(&theirs).unwrap(), before, "not repaired, not touched");
     }
 }

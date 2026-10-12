@@ -174,6 +174,12 @@ impl AgentCard {
     }
 }
 
+/// `scheme://host:port` of a URL, the part a credential is bound to.
+fn origin(url: &str) -> Option<String> {
+    let url = reqwest::Url::parse(url).ok()?;
+    Some(format!("{}://{}:{}", url.scheme(), url.host_str()?, url.port_or_known_default()?))
+}
+
 fn a2a(message: impl std::fmt::Display) -> Error {
     Error::A2a(message.to_string())
 }
@@ -183,6 +189,8 @@ fn a2a(message: impl std::fmt::Display) -> Error {
 pub struct A2aAgent {
     card: AgentCard,
     endpoint: String,
+    /// The endpoint is on the site you discovered, or you confirmed it.
+    endpoint_confirmed: bool,
     tenant: String,
     /// Header name and value, only when the developer gave a credential.
     auth: Option<(String, String)>,
@@ -231,10 +239,10 @@ impl A2aAgent {
         }
         let card: AgentCard = serde_json::from_slice(&read_capped(response).await?)
             .map_err(|e| a2a(format!("not an agent card: {e}")))?;
-        Self::from_card(card, client)
+        Self::from_card(card, client, base_url)
     }
 
-    fn from_card(card: AgentCard, client: reqwest::Client) -> Result<Self> {
+    fn from_card(card: AgentCard, client: reqwest::Client, base_url: &str) -> Result<Self> {
         if card.name.trim().is_empty() {
             return Err(a2a("the agent card has no name"));
         }
@@ -249,7 +257,11 @@ impl A2aAgent {
         if !crate::enkeon::safe_for_a_key(&interface.url) {
             return Err(a2a(format!("`{}` answers at a URL that is not https", card.name)));
         }
+        // A card on one site may name an endpoint on another; a credential
+        // goes there only once the developer confirms that endpoint.
+        let endpoint_confirmed = origin(&interface.url).is_some() && origin(&interface.url) == origin(base_url);
         Ok(Self {
+            endpoint_confirmed,
             endpoint: interface.url.clone(),
             tenant: interface.tenant.clone(),
             card,
@@ -270,6 +282,13 @@ impl A2aAgent {
     /// bearer token you obtained. Keys in queries or cookies, and mutual TLS,
     /// are refused.
     pub fn credential(mut self, scheme: &str, secret: &str) -> Result<Self> {
+        if !self.endpoint_confirmed {
+            return Err(a2a(format!(
+                "`{}` sends requests to {}, not the site you discovered; confirm it with allow_endpoint(..) before giving it a credential",
+                self.card.name,
+                origin(&self.endpoint).unwrap_or_default()
+            )));
+        }
         let Some(declared) = self.card.security_schemes.get(scheme) else {
             let names: Vec<&String> = self.card.security_schemes.keys().collect();
             return Err(a2a(format!("`{}` declares no scheme `{scheme}` (it declares: {names:?})", self.card.name)));
@@ -289,6 +308,16 @@ impl A2aAgent {
         };
         reqwest::header::HeaderValue::from_str(&auth.1).map_err(|_| a2a("the credential is not a valid header value"))?;
         self.auth = Some(auth);
+        Ok(self)
+    }
+
+    /// Confirm the endpoint the card names when it is on another site than
+    /// the one you discovered; `endpoint` must match it exactly.
+    pub fn allow_endpoint(mut self, endpoint: &str) -> Result<Self> {
+        if endpoint != self.endpoint {
+            return Err(a2a(format!("the card's endpoint is {}, not {endpoint}", self.endpoint)));
+        }
+        self.endpoint_confirmed = true;
         Ok(self)
     }
 
@@ -736,7 +765,7 @@ mod tests {
         let error = A2aAgent::discover("http://agent.example.com").await.unwrap_err().to_string();
         assert!(error.contains("https"), "{error}");
         let card = AgentCard::new("x", "y", "1").jsonrpc("http://agent.example.com/rpc");
-        let error = A2aAgent::from_card(card, reqwest::Client::new()).unwrap_err().to_string();
+        let error = A2aAgent::from_card(card, reqwest::Client::new(), "https://agent.example.com").unwrap_err().to_string();
         assert!(error.contains("not https"), "{error}");
     }
 
@@ -786,5 +815,15 @@ mod tests {
         });
         let card: AgentCard = serde_json::from_value(sample.clone()).unwrap();
         assert_eq!(serde_json::to_value(&card).unwrap(), sample);
+    }
+
+    #[test]
+    fn a_credential_goes_to_another_site_only_once_confirmed() {
+        let mut card = AgentCard::new("partner", "x", "1").jsonrpc("https://elsewhere.example.net/a2a");
+        card.security_schemes.insert("bearer".into(), json!({"httpAuthSecurityScheme": {"scheme": "Bearer"}}));
+        let agent = A2aAgent::from_card(card.clone(), reqwest::Client::new(), "https://partner.example.com").unwrap();
+        assert!(matches!(agent.credential("bearer", "s3cret"), Err(Error::A2a(m)) if m.contains("allow_endpoint")));
+        let agent = A2aAgent::from_card(card, reqwest::Client::new(), "https://partner.example.com").unwrap();
+        assert!(agent.allow_endpoint("https://elsewhere.example.net/a2a").unwrap().credential("bearer", "s3cret").is_ok());
     }
 }
