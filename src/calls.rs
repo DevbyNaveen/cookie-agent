@@ -8,11 +8,11 @@ use tracing::Instrument;
 
 use crate::{
     agent::{Agent, Event},
-    approval::ApprovalRequest,
+    approval::{ApprovalRequest, Approver},
     budget::LoopGuard,
     error::{Error, Result},
     message::Content,
-    policy::{Decision, Provenance},
+    policy::{Decision, Policy, Provenance},
     telemetry,
     tool::{valid_tool_name, Effect, Tool, ToolContext},
 };
@@ -32,11 +32,14 @@ const INTERRUPTED: &str = "Interrupted: this may or may not have run. Check befo
 impl Agent {
     /// Returns every call's result (in order) and whether the run must stop.
     /// A call that finished keeps its real result either way.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_calls(
         &self,
         tools: &[Arc<dyn Tool>],
         calls: &[Call],
         provenance: &Provenance,
+        policy: &Policy,
+        approver: &dyn Approver,
         loop_guard: &mut LoopGuard,
         context: &ToolContext,
         on_event: &mut (dyn FnMut(Event) + Send),
@@ -60,7 +63,7 @@ impl Agent {
                 outcomes[index] = Some((format!("There is no tool called `{name}`."), true));
                 continue;
             };
-            match self.policy.decide(tool.spec(), args, provenance, tool.preview(args)) {
+            match policy.decide(tool.spec(), args, provenance, tool.preview(args)) {
                 Decision::Allow => approved.push((index, tool)),
                 // A cancelled run asks no one; a wait for a person stops on cancel.
                 Decision::Ask { .. } if cancel.is_cancelled() => outcomes[index] = Some((NOT_RUN_CANCELLED.into(), true)),
@@ -68,7 +71,7 @@ impl Agent {
                     on_event(Event::AskedPerson { tool: name.clone(), preview: preview.clone() });
                     let request = ApprovalRequest { tool: name.clone(), effect: tool.spec().effect, preview, reason };
                     let yes = tokio::select! {
-                        yes = self.approver.approve(&request) => yes,
+                        yes = approver.approve(&request) => yes,
                         _ = cancel.cancelled() => false,
                     };
                     if yes {

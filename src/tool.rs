@@ -66,7 +66,7 @@ pub struct Spend {
 
 /// What a tool call knows about the run it belongs to. Ordinary tools
 /// ignore it; a sub-agent uses it to inherit trust, budget and cancellation.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ToolContext {
     pub(crate) cancel: CancellationToken,
     pub(crate) provenance: Provenance,
@@ -77,6 +77,16 @@ pub struct ToolContext {
     pub(crate) spend: Arc<Mutex<Spend>>,
     /// Events from sub-agents, handed to the caller when the call returns.
     pub(crate) events: Arc<Mutex<Vec<crate::agent::Event>>>,
+    /// The run's own policy: a sub-agent allows only what this allows too.
+    pub(crate) policy: Option<crate::policy::Policy>,
+    /// Who the run asks: a sub-agent with no approver of its own asks them.
+    pub(crate) approver: Option<Arc<dyn crate::approval::Approver>>,
+}
+
+impl std::fmt::Debug for ToolContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolContext").field("depth", &self.depth).field("budget", &self.budget).finish_non_exhaustive()
+    }
 }
 
 #[async_trait]

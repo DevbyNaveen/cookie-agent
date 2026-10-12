@@ -29,7 +29,9 @@ pub struct Agent {
     pub(crate) instructions: String,
     pub(crate) tools: Vec<Arc<dyn Tool>>,
     pub(crate) policy: Policy,
-    pub(crate) approver: Arc<dyn Approver>,
+    /// `None` until set: a sub-agent then asks whoever its parent asks, and a
+    /// top-level run declines everything that needs a person.
+    pub(crate) approver: Option<Arc<dyn Approver>>,
     pub(crate) budget: Budget,
     pub(crate) compaction: Option<Compaction>,
     pub(crate) enkeon: Option<Arc<Enkeon>>,
@@ -45,6 +47,9 @@ pub(crate) struct Start {
     pub(crate) budget: Budget,
     pub(crate) depth: usize,
     pub(crate) extra: Vec<Arc<dyn Tool>>,
+    /// A sub-agent's parent policy and approver.
+    pub(crate) ceiling: Option<Policy>,
+    pub(crate) inherited_approver: Option<Arc<dyn Approver>>,
 }
 
 /// What a run reports while it happens. New kinds of event may be added,
@@ -95,7 +100,7 @@ impl Agent {
             instructions: String::new(),
             tools: Vec::new(),
             policy: Policy::default(),
-            approver: Arc::new(DenyAll),
+            approver: None,
             budget: Budget::default(),
             compaction: None,
             // On by default when ENKEON_API_KEY is set; never in this crate's own tests.
@@ -131,7 +136,7 @@ impl Agent {
     }
 
     pub fn approver(mut self, approver: impl Approver + 'static) -> Self {
-        self.approver = Arc::new(approver);
+        self.approver = Some(Arc::new(approver));
         self
     }
 
@@ -180,7 +185,7 @@ impl Agent {
         let mut open = Vec::new();
         let mut meter = Meter::default();
         let extra = self.enkeon_tools(false, &control.cancel, on_event).await?;
-        let start = Start { provenance: Provenance::default(), budget: self.budget, depth: 0, extra };
+        let start = Start { provenance: Provenance::default(), budget: self.budget, depth: 0, extra, ceiling: None, inherited_approver: None };
         let span = telemetry::agent_span(None, &self.model, self.provider_name.as_deref());
         let result = self.turns(session, input, control, on_event, &mut open, start, &mut meter).instrument(span.clone()).await;
         if let Err(error) = &result {
@@ -212,6 +217,12 @@ impl Agent {
             (false, false) => format!("{}\n\n{}", self.instructions, crate::enkeon::instructions(delegated)),
         };
         let tools: Vec<Arc<dyn Tool>> = self.tools.iter().cloned().chain(start.extra).collect();
+        let policy = match &start.ceiling {
+            Some(ceiling) => self.policy.within(ceiling),
+            None => self.policy.clone(),
+        };
+        let approver: Arc<dyn Approver> =
+            self.approver.clone().or(start.inherited_approver).unwrap_or_else(|| Arc::new(DenyAll));
         self.check_tools(&tools)?;
         session.repair().await?;
         session.append(input).await?;
@@ -285,8 +296,12 @@ impl Agent {
                 depth: start.depth,
                 spend: Default::default(),
                 events: Default::default(),
+                policy: Some(policy.clone()),
+                approver: Some(approver.clone()),
             };
-            let (results, stop) = self.run_calls(&tools, &calls, &provenance, &mut loop_guard, &context, on_event).await;
+            let (results, stop) = self
+                .run_calls(&tools, &calls, &provenance, &policy, approver.as_ref(), &mut loop_guard, &context, on_event)
+                .await;
             meter.absorb(*context.spend.lock().expect("spend lock"));
             for event in context.events.lock().expect("events lock").drain(..) {
                 on_event(event);

@@ -25,12 +25,30 @@ impl Default for Budget {
 pub(crate) struct Meter {
     steps: usize,
     tokens: u64,
+    /// A sub-agent's: the pool its parent's batch draws from, and that
+    /// pool's cap. Every charge lands there at once, so siblings running
+    /// side by side share what is left instead of each taking all of it.
+    pool: Option<(std::sync::Arc<std::sync::Mutex<crate::tool::Spend>>, Budget)>,
 }
 
 impl Meter {
+    pub(crate) fn pooled(pool: std::sync::Arc<std::sync::Mutex<crate::tool::Spend>>, cap: Budget) -> Self {
+        Self { pool: Some((pool, cap)), ..Self::default() }
+    }
+
     pub(crate) fn charge(&mut self, usage: &Usage) {
-        self.steps += 1;
-        self.tokens += usage.input_tokens + usage.output_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
+        let tokens = usage.input_tokens + usage.output_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
+        self.add(crate::tool::Spend { steps: 1, tokens });
+    }
+
+    fn add(&mut self, spend: crate::tool::Spend) {
+        self.steps += spend.steps;
+        self.tokens += spend.tokens;
+        if let Some((pool, _)) = &self.pool {
+            let mut pool = pool.lock().expect("pool lock");
+            pool.steps += spend.steps;
+            pool.tokens += spend.tokens;
+        }
     }
 
     /// What is left of `budget` after what this meter has counted.
@@ -43,8 +61,7 @@ impl Meter {
 
     /// Count what a sub-agent spent on this run's behalf.
     pub(crate) fn absorb(&mut self, spend: crate::tool::Spend) {
-        self.steps += spend.steps;
-        self.tokens += spend.tokens;
+        self.add(spend);
     }
 
     pub(crate) fn spent(&self) -> crate::tool::Spend {
@@ -52,6 +69,12 @@ impl Meter {
     }
 
     pub(crate) fn check(&self, budget: &Budget) -> Result<()> {
+        if let Some((pool, cap)) = &self.pool {
+            let pool = pool.lock().expect("pool lock");
+            if pool.steps >= cap.max_steps || pool.tokens >= cap.max_tokens {
+                return Err(Error::Budget(format!("the parent's budget is spent ({} model calls, {} tokens)", pool.steps, pool.tokens)));
+            }
+        }
         if self.steps >= budget.max_steps {
             return Err(Error::Budget(format!("{} model calls (limit {})", self.steps, budget.max_steps)));
         }

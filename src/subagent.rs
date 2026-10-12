@@ -82,11 +82,8 @@ impl Tool for SubAgent {
             .lock()
             .expect("events lock")
             .extend(events.into_iter().map(|event| Event::SubAgent { name: self.spec.name.clone(), event: Box::new(event) }));
-        // ponytail: sibling readers each get the whole remaining budget; the
-        // parent is charged for all of them, so the cap can be overshot by one batch.
-        let mut total = context.spend.lock().expect("spend lock");
-        total.steps += spent.steps;
-        total.tokens += spent.tokens;
+        // `spent` is already in the parent's pool: the child charged it live.
+        let _ = spent;
         result.map_err(|e| e.to_string())
     }
 
@@ -110,8 +107,16 @@ impl Agent {
             Ok(extra) => extra,
             Err(error) => return (Err(error), Spend::default(), events),
         };
-        let start = Start { provenance: context.provenance.clone(), budget, depth: context.depth + 1, extra };
-        let mut meter = Meter::default();
+        let start = Start {
+            provenance: context.provenance.clone(),
+            budget,
+            depth: context.depth + 1,
+            extra,
+            ceiling: context.policy.clone(),
+            inherited_approver: context.approver.clone(),
+        };
+        // Charged live to the parent's batch, so siblings share what is left.
+        let mut meter = Meter::pooled(context.spend.clone(), context.budget);
         let mut open = Vec::new();
         let span = crate::telemetry::agent_span(Some(name), &self.model, self.provider_name.as_deref());
         let result = self
@@ -318,5 +323,62 @@ mod tests {
             .unwrap();
         assert!(events.iter().any(|e| matches!(e, crate::Event::SubAgent { name, event }
             if name == "research" && matches!(**event, crate::Event::Usage(_)))));
+    }
+
+    #[tokio::test]
+    async fn parallel_readers_share_what_is_left_instead_of_each_taking_all_of_it() {
+        let weather = || tool("weather", "w", json!({"type": "object"}), Effect::Read, |_| async move { Ok("9C".to_string()) }).parallel_safe();
+        let busy = |_: usize| {
+            let p = Arc::new(Scripted::new(vec![
+                Scripted::call("w1", "weather", json!({"n": 1})),
+                Scripted::call("w2", "weather", json!({"n": 2})),
+                Scripted::call("w3", "weather", json!({"n": 3})),
+                Scripted::text("done"),
+            ]));
+            (p.clone(), Agent::with_provider(p, "m").tool(weather()))
+        };
+        let (a_p, a) = busy(0);
+        let (b_p, b) = busy(1);
+        let (_, parent) = scripted(vec![
+            Scripted::call_many(&[("d1", "a", json!({"task": "go"})), ("d2", "b", json!({"task": "go"}))]),
+            Scripted::text("never"),
+        ]);
+        let parent = parent
+            .budget(Budget { max_steps: 4, max_tokens: 1_000_000 })
+            .tool(SubAgent::reader("a", "x", a).unwrap())
+            .tool(SubAgent::reader("b", "x", b).unwrap());
+        let _ = parent.run("go").await;
+        let children = a_p.seen().len() + b_p.seen().len();
+        assert!(children <= 3, "the parent had 3 calls left; its children made {children}");
+    }
+
+    #[tokio::test]
+    async fn a_child_cannot_allow_what_its_parent_does_not() {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let (_, child) = scripted(vec![
+            Scripted::call("p1", "read_page", json!({})),
+            Scripted::call("e1", "send_email", json!({"to": "evil@x.com"})),
+            Scripted::text("done"),
+        ]);
+        let child = child
+            .tool(read_page())
+            .tool(send_email(sent.clone()))
+            .policy(crate::Policy::default().allow("evil@x.com"))
+            .approver(FnApprover(|_: &ApprovalRequest| true));
+        let (_, parent) = scripted(vec![Scripted::call("d1", "mailer", json!({"task": "send it"})), Scripted::text("ok")]);
+        let parent = parent.tool(SubAgent::writer("mailer", "x", child).unwrap());
+        parent.run("send it").await.unwrap();
+        assert_eq!(sent.load(Ordering::SeqCst), 0, "the parent allows no one, so the child can't either");
+    }
+
+    #[tokio::test]
+    async fn a_child_without_its_own_approver_asks_through_the_parent() {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let (_, child) = scripted(vec![Scripted::call("e1", "send_email", json!({"to": "anna@x.com"})), Scripted::text("done")]);
+        let child = child.tool(send_email(sent.clone()));
+        let (_, parent) = scripted(vec![Scripted::call("d1", "mailer", json!({"task": "email anna@x.com"})), Scripted::text("ok")]);
+        let parent = parent.tool(SubAgent::writer("mailer", "x", child).unwrap()).approver(FnApprover(|_: &ApprovalRequest| true));
+        parent.run("email anna@x.com").await.unwrap();
+        assert_eq!(sent.load(Ordering::SeqCst), 1);
     }
 }

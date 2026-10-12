@@ -111,6 +111,12 @@ impl Policy {
         self
     }
 
+    /// This policy, allowing only what `ceiling` also allows: a sub-agent can
+    /// never allow a destination its parent doesn't.
+    pub(crate) fn within(&self, ceiling: &Policy) -> Policy {
+        Policy { allowed: self.allowed.iter().filter(|v| ceiling.allowed.contains(v)).cloned().collect() }
+    }
+
     pub fn decide(&self, spec: &ToolSpec, args: &Value, provenance: &Provenance, preview: String) -> Decision {
         for arg in &spec.guarded_args {
             // "to" names a top-level argument; "/message/to" is a JSON pointer.
