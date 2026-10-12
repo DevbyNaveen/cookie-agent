@@ -1098,6 +1098,43 @@ pub(crate) mod fake_http {
         NoRemember,
     }
 
+    /// One HTTP/1.1 request: its head (request line and headers) and body.
+    pub async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<(String, Vec<u8>)> {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let (head_end, length) = loop {
+            let n = socket.read(&mut chunk).await.unwrap_or(0);
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
+                let length = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                    .unwrap_or(0);
+                break (end + 4, length);
+            }
+        };
+        while buf.len() < head_end + length {
+            let n = socket.read(&mut chunk).await.unwrap_or(0);
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        Some((String::from_utf8_lossy(&buf[..head_end]).to_string(), buf[head_end..head_end + length].to_vec()))
+    }
+
+    /// A header's value from a request head, any case.
+    pub fn header(head: &str, name: &str) -> Option<String> {
+        head.lines().find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.eq_ignore_ascii_case(name).then(|| v.trim().to_string())
+        })
+    }
+
     pub async fn start(mode: Mode) -> Server {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/mcp", listener.local_addr().unwrap());
@@ -1114,38 +1151,9 @@ pub(crate) mod fake_http {
                         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                         return;
                     }
-                    let mut buf = Vec::new();
-                    let mut chunk = [0u8; 4096];
-                    let (head_end, length) = loop {
-                        let n = socket.read(&mut chunk).await.unwrap_or(0);
-                        if n == 0 {
-                            return;
-                        }
-                        buf.extend_from_slice(&chunk[..n]);
-                        if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                            let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
-                            let length = head
-                                .lines()
-                                .find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
-                                .unwrap_or(0);
-                            break (end + 4, length);
-                        }
-                    };
-                    while buf.len() < head_end + length {
-                        let n = socket.read(&mut chunk).await.unwrap_or(0);
-                        if n == 0 {
-                            return;
-                        }
-                        buf.extend_from_slice(&chunk[..n]);
-                    }
-                    let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
-                    let header = |name: &str| {
-                        head.lines().find_map(|l| {
-                            let (k, v) = l.split_once(':')?;
-                            k.eq_ignore_ascii_case(name).then(|| v.trim().to_string())
-                        })
-                    };
-                    let body: Value = serde_json::from_slice(&buf[head_end..head_end + length]).unwrap_or(Value::Null);
+                    let Some((head, body)) = read_request(&mut socket).await else { return };
+                    let header = |name: &str| header(&head, name);
+                    let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
                     let method = body["method"].as_str().unwrap_or_default().to_string();
                     let verb = head.split_whitespace().next().unwrap_or_default().to_string();
                     log.lock().unwrap().push(Seen { verb, id: body["id"].clone(), method: method.clone(), session: header("mcp-session-id"), auth: header("authorization") });

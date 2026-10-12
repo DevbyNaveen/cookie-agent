@@ -1,6 +1,7 @@
 //! Cookie Agent Harness: a tiny agent loop where text the model read can
 //! never, on its own, decide who gets sent what.
 
+pub mod a2a;
 pub mod agent;
 pub mod approval;
 pub mod budget;
@@ -41,3 +42,4 @@ pub use skills::{read_agents_md, Skills};
 pub use subagent::SubAgent;
 pub use enkeon::{Enkeon, ENKEON_INSTRUCTIONS};
 pub use sandbox::{command_tool, CommandTool, NoSandbox, Sandbox};
+pub use a2a::{A2aAgent, A2aTool, AgentCard};

@@ -126,7 +126,7 @@ impl Enkeon {
 }
 
 /// https anywhere, or plain http only to this machine.
-fn safe_for_a_key(url: &str) -> bool {
+pub(crate) fn safe_for_a_key(url: &str) -> bool {
     match reqwest::Url::parse(url) {
         Ok(url) if url.scheme() == "https" => true,
         Ok(url) if url.scheme() == "http" => match url.host() {
