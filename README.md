@@ -80,10 +80,14 @@ let agent = Agent::new("anthropic:claude-sonnet-4-6")?.without_enkeon(); // off
 ```
 
 What `recall` returns is tool output: untrusted, so a stored memory can't
-choose who gets sent what. Saving after the run read untrusted content asks
-a person. Sub-agents can recall but not save. If Enkeon can't be reached
-the run still answers and you get `Event::EnkeonUnavailable`. No key, no
-connection. Remote MCP servers work the same way: `McpServer::http(url)`.
+choose who gets sent what. A memory may hold text from a web page, so once a
+run has recalled or read anything, `remember` asks a person first — set an
+`approver`, or the default declines and nothing is saved. Sub-agents can
+recall but not save. If Enkeon can't be reached within 10 s the run still
+answers and you get `Event::EnkeonUnavailable`. The key is only sent over
+https (or to this machine) and never follows a redirect. No key, no
+connection — and since the key comes from the environment, call
+`.without_enkeon()` in tests that assert on prompts or tools. Remote MCP servers work the same way: `McpServer::http(url)`.
 
 ## Several agents
 

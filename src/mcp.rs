@@ -109,7 +109,12 @@ impl McpClient {
     pub async fn http(url: &str, headers: &[(&str, &str)]) -> Result<Self> {
         let client = Self {
             transport: Transport::Http(Http {
-                client: reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build().map_err(|e| Error::Mcp(e.to_string()))?,
+                // No redirects: an MCP endpoint has no reason to move, and a redirect
+                // could carry the headers somewhere else.
+                client: reqwest::Client::builder()
+                    .timeout(REQUEST_TIMEOUT)
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build().map_err(|e| Error::Mcp(e.to_string()))?,
                 url: url.to_string(),
                 headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
                 session: Mutex::new(None),
@@ -142,16 +147,10 @@ impl McpClient {
     }
 
     async fn handshake(&self) -> Result<()> {
-        self.request(
-                "initialize",
-                json!({
-                    "protocolVersion": PROTOCOL_VERSION,
-                    "capabilities": {},
-                    "clientInfo": {"name": "cookie-harness", "version": env!("CARGO_PKG_VERSION")},
-                }),
-            )
-            .await?;
-        let initialized = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let message = initialize(id);
+        self.request("initialize", message["params"].clone()).await?;
+        let initialized = initialized();
         match &self.transport {
             Transport::Stream { writer, .. } => send(writer, &initialized).await,
             Transport::Http(http) => http.post(&initialized).await.map(drop),
@@ -164,7 +163,18 @@ impl McpClient {
         let (writer, pending) = match &self.transport {
             Transport::Stream { writer, pending, .. } => (writer, pending),
             Transport::Http(http) => {
-                let reply = http.post(&message).await.map_err(|e| Error::Mcp(format!("{method}: {e}")))?;
+                let reply = match http.post(&message).await {
+                    // The server dropped the session: open a new one, then retry once.
+                    Err(Error::Mcp(m)) if m == SESSION_GONE => {
+                        *http.session.lock().unwrap() = None;
+                        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+                        http.post(&initialize(id)).await.map_err(|e| Error::Mcp(format!("{method}: re-initialize: {e}")))?;
+                        http.post(&initialized()).await.map_err(|e| Error::Mcp(format!("{method}: re-initialize: {e}")))?;
+                        http.post(&message).await
+                    }
+                    other => other,
+                }
+                .map_err(|e| Error::Mcp(format!("{method}: {e}")))?;
                 return match reply {
                     Some(reply) if reply.get("error").is_some() => Err(Error::Mcp(format!("{method}: {}", reply["error"]))),
                     Some(reply) => Ok(reply["result"].clone()),
@@ -240,6 +250,39 @@ impl McpClient {
     }
 }
 
+const SESSION_GONE: &str = "the server ended this session";
+
+fn initialize(id: u64) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "cookie-harness", "version": env!("CARGO_PKG_VERSION")},
+        },
+    })
+}
+
+fn initialized() -> Value {
+    json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
+}
+
+/// Complete SSE events in `text` (CRLF or LF), each event's `data:` lines joined.
+fn sse_events(text: &str) -> Vec<Value> {
+    let text = text.replace("\r\n", "\n");
+    let mut events: Vec<&str> = text.split("\n\n").collect();
+    events.pop(); // the part after the last blank line is not complete yet
+    events
+        .into_iter()
+        .filter_map(|event| {
+            let data: Vec<&str> = event.lines().filter_map(|l| l.strip_prefix("data:")).map(str::trim_start).collect();
+            serde_json::from_str(&data.join("\n")).ok()
+        })
+        .collect()
+}
+
 impl Http {
     /// POST one message. Returns the JSON-RPC response to it, or `None` for a
     /// notification (no body).
@@ -259,13 +302,22 @@ impl Http {
         }
         // Errors are built from the status and reqwest's message, never the headers.
         let response = request.body(serde_json::to_vec(message)?).send().await.map_err(|e| Error::Mcp(e.without_url().to_string()))?;
-        if let Some(session) = response.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()) {
-            *self.session.lock().unwrap() = Some(session.to_string());
-        }
         let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND && self.session.lock().unwrap().is_some() {
+            return Err(Error::Mcp(SESSION_GONE.into()));
+        }
         if !status.is_success() {
             return Err(Error::Mcp(format!("HTTP {status}")));
         }
+        if let Some(session) = response.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()) {
+            *self.session.lock().unwrap() = Some(session.to_string());
+        }
+        let sse = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("text/event-stream"));
+        let ours = |r: &Value| r.get("id") == message.get("id") && (r.get("result").is_some() || r.get("error").is_some());
         let mut body = Vec::new();
         let mut chunks = response.bytes_stream();
         while let Some(chunk) = chunks.next().await {
@@ -273,23 +325,22 @@ impl Http {
             if body.len() > MAX_LINE {
                 return Err(Error::Mcp(format!("the reply is too large (over {MAX_LINE} bytes)")));
             }
+            // A server may keep the stream open after answering: stop at our answer.
+            if sse {
+                if let Some(reply) = sse_events(&String::from_utf8_lossy(&body)).into_iter().find(ours) {
+                    return Ok(Some(reply));
+                }
+            }
         }
         let text = String::from_utf8_lossy(&body);
         if text.trim().is_empty() {
             return Ok(None);
         }
-        // SSE: each event's `data:` lines joined; the response is the one with our id.
-        let replies: Vec<Value> = if text.trim_start().starts_with('{') {
-            vec![serde_json::from_str(&text)?]
-        } else {
-            text.split("\n\n")
-                .filter_map(|event| {
-                    let data: Vec<&str> = event.lines().filter_map(|l| l.strip_prefix("data:")).map(str::trim_start).collect();
-                    serde_json::from_str(&data.join("\n")).ok()
-                })
-                .collect()
-        };
-        Ok(replies.into_iter().find(|r| r.get("id") == message.get("id") && (r.get("result").is_some() || r.get("error").is_some())))
+        if sse {
+            return Ok(sse_events(&format!("{text}\n\n")).into_iter().find(ours));
+        }
+        let reply: Value = serde_json::from_str(&text)?;
+        Ok(ours(&reply).then_some(reply))
     }
 }
 
@@ -723,7 +774,7 @@ mod tests {
 
     #[tokio::test]
     async fn speaks_streamable_http_with_a_session_and_sse_or_json_replies() {
-        let server = fake_http::start(false).await;
+        let server = fake_http::start(fake_http::Mode::Normal).await;
         let client = McpClient::http(&server.url, &[("Authorization", "Bearer k")]).await.unwrap();
         let tools = client.list_tools().await.unwrap();
         assert_eq!(tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["recall", "remember", "forget"]);
@@ -738,9 +789,34 @@ mod tests {
 
     #[tokio::test]
     async fn an_oversized_http_reply_is_refused() {
-        let server = fake_http::start(true).await;
+        let server = fake_http::start(fake_http::Mode::Huge).await;
         let client = McpClient::http(&server.url, &[]).await.unwrap();
         assert!(matches!(client.list_tools().await, Err(Error::Mcp(m)) if m.contains("too large")));
+    }
+
+    #[tokio::test]
+    async fn an_expired_session_is_opened_again_once() {
+        let server = fake_http::start(fake_http::Mode::ExpireOnce).await;
+        let client = McpClient::http(&server.url, &[]).await.unwrap();
+        let (text, _) = client.call_tool("recall", json!({})).await.unwrap();
+        assert!(text.starts_with("recall"));
+        let seen = server.seen.lock().unwrap().clone();
+        assert_eq!(seen.last().unwrap().session.as_deref(), Some("s-2"));
+    }
+
+    #[tokio::test]
+    async fn an_sse_reply_left_open_returns_as_soon_as_the_answer_arrives() {
+        let server = fake_http::start(fake_http::Mode::KeepOpen).await;
+        let client = McpClient::http(&server.url, &[]).await.unwrap();
+        let out = tokio::time::timeout(std::time::Duration::from_secs(3), client.call_tool("recall", json!({}))).await;
+        assert!(matches!(&out, Ok(Ok((t, false))) if t == "open"), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn crlf_sse_with_a_notification_first_is_read() {
+        let server = fake_http::start(fake_http::Mode::Crlf).await;
+        let client = McpClient::http(&server.url, &[]).await.unwrap();
+        assert!(client.call_tool("recall", json!({})).await.unwrap().0.starts_with("recall"));
     }
 }
 
@@ -768,16 +844,37 @@ pub(crate) mod fake_http {
         pub seen: Arc<Mutex<Vec<Seen>>>,
     }
 
-    pub async fn start(huge: bool) -> Server {
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum Mode {
+        Normal,
+        /// `tools/list` is too big.
+        Huge,
+        /// The first `tools/call` gets 404 (session gone); initialize again mints `s-2`.
+        ExpireOnce,
+        /// `tools/call` answers on an SSE stream that stays open.
+        KeepOpen,
+        /// `tools/call` answers in CRLF SSE, after a notification event.
+        Crlf,
+        /// Never answers anything.
+        Hang,
+    }
+
+    pub async fn start(mode: Mode) -> Server {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/mcp", listener.local_addr().unwrap());
         let seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
         let log = seen.clone();
+        let inits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         tokio::spawn(async move {
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else { return };
                 let log = log.clone();
+                let inits = inits.clone();
                 tokio::spawn(async move {
+                    if mode == Mode::Hang {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        return;
+                    }
                     let mut buf = Vec::new();
                     let mut chunk = [0u8; 4096];
                     let (head_end, length) = loop {
@@ -814,9 +911,23 @@ pub(crate) mod fake_http {
                     log.lock().unwrap().push(Seen { method: method.clone(), session: header("mcp-session-id"), auth: header("authorization") });
                     let id = body["id"].clone();
                     let reply = |result: Value| json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
+                    let session = header("mcp-session-id");
+                    if mode == Mode::ExpireOnce && method == "tools/call" && session.as_deref() == Some("s-1") {
+                        let _ = socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+                        return;
+                    }
+                    if mode == Mode::KeepOpen && method == "tools/call" {
+                        let event = format!("event: message\ndata: {}\n\n", reply(json!({"content": [{"type": "text", "text": "open"}]})));
+                        let _ = socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n{event}").as_bytes()).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        return;
+                    }
                     let (status, extra, content_type, payload) = match method.as_str() {
-                        "initialize" => ("200 OK", "Mcp-Session-Id: s-1\r\n", "application/json", reply(json!({"protocolVersion": "2025-06-18", "capabilities": {}}))),
-                        "tools/list" if huge => ("200 OK", "", "application/json", "x".repeat(super::MAX_LINE + 10)),
+                        "initialize" => {
+                            let n = inits.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                            ("200 OK", if n == 1 { "Mcp-Session-Id: s-1\r\n" } else { "Mcp-Session-Id: s-2\r\n" }, "application/json", reply(json!({"protocolVersion": "2025-06-18", "capabilities": {}})))
+                        }
+                        "tools/list" if mode == Mode::Huge => ("200 OK", "", "application/json", "x".repeat(super::MAX_LINE + 10)),
                         "tools/list" => ("200 OK", "", "application/json", reply(json!({"tools": [
                             {"name": "recall", "description": "Search memory", "inputSchema": {"type": "object"}, "annotations": {"readOnlyHint": true}},
                             {"name": "remember", "description": "Store", "inputSchema": {"type": "object"}},
@@ -824,7 +935,13 @@ pub(crate) mod fake_http {
                         ]}))),
                         "tools/call" => {
                             let text = format!("{}: {}", body["params"]["name"].as_str().unwrap_or_default(), body["params"]["arguments"]);
-                            ("200 OK", "", "text/event-stream", format!("event: message\ndata: {}\n\n", reply(json!({"content": [{"type": "text", "text": text}]}))))
+                            let answer = reply(json!({"content": [{"type": "text", "text": text}]}));
+                            let body = if mode == Mode::Crlf {
+                                format!("event: message\r\ndata: {}\r\n\r\nevent: message\r\ndata: {answer}\r\n\r\n", json!({"jsonrpc": "2.0", "method": "notifications/progress", "params": {}}))
+                            } else {
+                                format!("event: message\ndata: {answer}\n\n")
+                            };
+                            ("200 OK", "", "text/event-stream", body)
                         }
                         _ => ("202 Accepted", "", "application/json", String::new()),
                     };

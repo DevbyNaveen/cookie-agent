@@ -21,7 +21,9 @@ async fn main() -> cookie_harness::Result<()> {
     })
     .guard("to");
 
+    // A scripted demo: keep it the same on a machine with ENKEON_API_KEY set.
     let agent = Agent::with_provider(provider.clone(), "scripted")
+        .without_enkeon()
         .tool(read_page)
         .tool(send_email)
         .approver(FnApprover(|r: &ApprovalRequest| {

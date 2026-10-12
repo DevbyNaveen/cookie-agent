@@ -35,6 +35,10 @@ pub struct Agent {
 
 type Call = (String, String, Value);
 
+/// How long a run waits for Enkeon before going on without it.
+const ENKEON_CONNECT_TIMEOUT: std::time::Duration =
+    if cfg!(test) { std::time::Duration::from_millis(300) } else { std::time::Duration::from_secs(10) };
+
 /// Where a run starts from: what is trusted, what it may spend, how deep it
 /// is, and the Enkeon tools it gets (outside `Agent::tools`, so the
 /// one-writer rule counts only the developer's own).
@@ -167,7 +171,7 @@ impl Agent {
     ) -> Result<String> {
         let mut open = Vec::new();
         let mut meter = Meter::default();
-        let extra = self.enkeon_tools(false, on_event).await;
+        let extra = self.enkeon_tools(false, &control.cancel, on_event).await?;
         let start = Start { provenance: Provenance::default(), budget: self.budget, depth: 0, extra };
         let result = self.turns(session, input, control, on_event, &mut open, start, &mut meter).await;
         if result.is_err() {
@@ -189,7 +193,10 @@ impl Agent {
             max_tokens: self.budget.max_tokens.min(context.budget.max_tokens),
         };
         let mut events = Vec::new();
-        let extra = self.enkeon_tools(true, &mut |e| events.push(e)).await;
+        let extra = match self.enkeon_tools(true, &context.cancel, &mut |e| events.push(e)).await {
+            Ok(extra) => extra,
+            Err(error) => return (Err(error), Spend::default(), events),
+        };
         let start = Start { provenance: context.provenance.clone(), budget, depth: context.depth + 1, extra };
         let mut meter = Meter::default();
         let mut open = Vec::new();
@@ -318,13 +325,27 @@ impl Agent {
 
     /// Enkeon's tools for this run: none without Enkeon; `recall` only for a
     /// sub-agent, so readers stay readers; an unreachable Enkeon is reported.
-    async fn enkeon_tools(&self, delegated: bool, on_event: &mut (dyn FnMut(Event) + Send)) -> Vec<Arc<dyn Tool>> {
-        let Some(enkeon) = &self.enkeon else { return Vec::new() };
-        match enkeon.tools().await {
-            Ok(tools) => tools.into_iter().filter(|t| !delegated || t.spec().effect == Effect::Read).collect(),
-            Err(error) => {
+    /// Connecting is bounded by `ENKEON_CONNECT_TIMEOUT` and stops on cancel.
+    async fn enkeon_tools(
+        &self,
+        delegated: bool,
+        cancel: &CancellationToken,
+        on_event: &mut (dyn FnMut(Event) + Send),
+    ) -> Result<Vec<Arc<dyn Tool>>> {
+        let Some(enkeon) = &self.enkeon else { return Ok(Vec::new()) };
+        let connected = tokio::select! {
+            connected = tokio::time::timeout(ENKEON_CONNECT_TIMEOUT, enkeon.tools()) => connected,
+            _ = cancel.cancelled() => return Err(Error::Cancelled),
+        };
+        match connected {
+            Ok(Ok(tools)) => Ok(tools.into_iter().filter(|t| !delegated || t.spec().effect == Effect::Read).collect()),
+            Ok(Err(error)) => {
                 on_event(Event::EnkeonUnavailable { reason: error.to_string() });
-                Vec::new()
+                Ok(Vec::new())
+            }
+            Err(_) => {
+                on_event(Event::EnkeonUnavailable { reason: format!("no answer in {}s", ENKEON_CONNECT_TIMEOUT.as_secs_f32()) });
+                Ok(Vec::new())
             }
         }
     }
