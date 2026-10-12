@@ -14,11 +14,22 @@ You always name the model (`provider:model`); there is no default.
 |---|---|---|
 | Anthropic | `anthropic:claude-sonnet-4-6` | `ANTHROPIC_API_KEY` |
 | OpenAI | `openai:<model>` | `OPENAI_API_KEY` (`OPENAI_BASE_URL` for other compatible servers) |
+| Google Gemini | `gemini:gemini-3.8-flash` | `GEMINI_API_KEY` |
 | Ollama | `ollama:qwen3` | a running Ollama (`OLLAMA_HOST`, default `localhost:11434`) |
 | Amazon Bedrock | `bedrock:eu.anthropic.claude-sonnet-4-6` | feature `bedrock` (Rust 1.91+); `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` for ids without `eu.`/`us.` |
 
 Keys are read from the environment and never enter the conversation.
-Anthropic streams; OpenAI-compatible and Bedrock report each reply when it completes.
+Every provider streams its replies.
+
+`.reasoning(Effort::High)` asks the model to think first (Anthropic adaptive
+thinking, OpenAI `reasoning_effort`, Gemini `thinkingLevel`, Bedrock
+`outputConfig.effort`). What it thinks is kept as the provider sent it and
+sent back only to that provider; it is never the answer and never trusted.
+
+`.output_schema(json!({…}))` makes the final answer JSON following that
+schema, through each provider's own structured-output setting. The answer is
+checked before it is returned (valid JSON, an object where the schema says
+so, every `required` key); one that fails is an error.
 
 ## Five concepts
 
@@ -278,6 +289,10 @@ clears old tool output from what the model sees and, past the token limit,
 replaces older turns with a summary (`SUMMARY_PROMPT`, public). The session
 file keeps every message. What the person wrote before a summary still
 counts as theirs; a summary of untrusted content stays untrusted.
+
+On Anthropic, the server can clear old tool results instead (beta):
+`Agent::with_provider(Arc::new(AnthropicProvider::from_env()?.context_editing(ClearToolUses::default())), model)`.
+What it cleared is reported as a `tracing` event.
 
 ## Licence
 

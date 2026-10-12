@@ -53,6 +53,7 @@ pub fn estimate_tokens(messages: &[Message]) -> u64 {
             Content::Text { text } => text.chars().count(),
             Content::ToolCall { name, args, .. } => name.len() + args.to_string().len(),
             Content::ToolResult { output, .. } => output.chars().count(),
+            Content::Reasoning { data, .. } => data.to_string().len(),
         })
         .sum();
     (chars as u64).div_ceil(4)
@@ -172,7 +173,7 @@ impl crate::agent::Agent {
         source.push(Message::user("Write the summary now."));
 
         meter.begin_call(budget)?;
-        let request = ModelRequest { model: &self.model, system: policy.prompt(), messages: &source, tools: Vec::new() };
+        let request = ModelRequest { model: &self.model, system: policy.prompt(), messages: &source, tools: Vec::new(), ..Default::default() };
         let span = crate::telemetry::chat_span(&self.model, self.provider_name.as_deref());
         let reply = tokio::select! {
             reply = tracing::Instrument::instrument(self.provider.complete(request), span.clone()) => reply,

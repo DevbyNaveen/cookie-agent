@@ -77,7 +77,7 @@ mod tests {
     async fn replays_its_script_and_records_what_it_saw() {
         let p = Scripted::new(vec![Scripted::call("c1", "weather", json!({"city": "Riga"})), Scripted::text("9°C")]);
         let history = vec![Message::user("weather?")];
-        let req = || ModelRequest { model: "m", system: "", messages: &history, tools: vec![] };
+        let req = || ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() };
         assert_eq!(p.complete(req()).await.unwrap().stop, StopReason::ToolUse);
         assert_eq!(p.complete(req()).await.unwrap().stop, StopReason::EndTurn);
         assert!(p.complete(req()).await.is_err(), "an exhausted script is an error");
@@ -102,7 +102,7 @@ mod tests {
         }]);
         let history = vec![Message::user("weather?")];
         let mut events = Vec::new();
-        p.stream(ModelRequest { model: "m", system: "", messages: &history, tools: vec![] }, &mut |e| events.push(e))
+        p.stream(ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() }, &mut |e| events.push(e))
             .await
             .unwrap();
         assert_eq!(events, vec![

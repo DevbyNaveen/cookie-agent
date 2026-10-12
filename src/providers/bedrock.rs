@@ -5,6 +5,7 @@
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde_json::{json, Value};
 
 use super::{
@@ -15,8 +16,11 @@ use crate::{
     error::{Error, Result},
     label::Origin,
     message::{Content, Role},
-    provider::{ModelRequest, ModelResponse, Provider, StopReason, Usage},
+    provider::{ModelRequest, ModelResponse, Provider, ProviderEvent, StopReason, Usage},
 };
+
+/// The `provider` of the reasoning blocks this provider stores.
+const PROVIDER: &str = "bedrock";
 
 pub struct Credentials {
     pub access_key: String,
@@ -78,6 +82,10 @@ pub fn converse_url(region: &str, model: &str) -> String {
     format!("https://bedrock-runtime.{region}.amazonaws.com/model/{}/converse", model.replace(':', "%3A"))
 }
 
+pub fn converse_stream_url(region: &str, model: &str) -> String {
+    format!("{}-stream", converse_url(region, model))
+}
+
 /// Throttling, server errors and dropped connections are worth another try;
 /// a refusal (validation, access) is not.
 pub fn retriable(status: Option<u16>, text: &str) -> bool {
@@ -118,6 +126,9 @@ fn block(content: &Content, origin: &Origin, tag: &str) -> Option<Value> {
     };
     Some(match content {
         Content::Text { text } if text.trim().is_empty() => return None,
+        // Reasoning goes back exactly as received, and only to Bedrock.
+        Content::Reasoning { provider, data } if provider == PROVIDER => data.clone(),
+        Content::Reasoning { .. } => return None,
         Content::Text { text } => json!({"text": fenced(text)}),
         Content::ToolCall { id, name, args } => json!({"toolUse": {"toolUseId": id, "name": name, "input": args}}),
         Content::ToolResult { id, output, is_error } => {
@@ -155,6 +166,13 @@ pub fn converse_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> 
         }
     }
     let mut body = json!({"messages": messages, "inferenceConfig": {"maxTokens": max_tokens}});
+    if let Some(effort) = request.reasoning {
+        body["outputConfig"]["effort"] = json!(effort.as_str());
+    }
+    // Converse takes the schema as a JSON string.
+    if let Some(schema) = request.output_schema {
+        body["outputConfig"]["textFormat"] = json!({"type": "json_schema", "structure": {"jsonSchema": {"schema": schema.to_string(), "name": "answer"}}});
+    }
     if !request.system.is_empty() {
         let mut system = vec![json!({"text": request.system})];
         if caching {
@@ -190,9 +208,15 @@ pub fn parse_response(raw: &Value) -> Result<ModelResponse> {
                 return Err(Error::Provider(format!("toolUse without an id or name: {tool}")));
             };
             content.push(Content::ToolCall { id: id.into(), name: name.into(), args: tool["input"].clone() });
+        } else if b.get("reasoningContent").is_some() {
+            content.push(Content::Reasoning { provider: PROVIDER.into(), data: b.clone() });
         }
     }
-    let stop = match raw["stopReason"].as_str() {
+    Ok(ModelResponse { content, stop: stop_reason(raw["stopReason"].as_str())?, usage: usage(&raw["usage"]) })
+}
+
+fn stop_reason(reason: Option<&str>) -> Result<StopReason> {
+    Ok(match reason {
         Some("tool_use") => StopReason::ToolUse,
         Some("max_tokens" | "model_context_window_exceeded") => StopReason::MaxTokens,
         // Blocked, filtered or broken: whatever text came back is not an answer.
@@ -200,19 +224,149 @@ pub fn parse_response(raw: &Value) -> Result<ModelResponse> {
             return Err(Error::Provider(format!("the model stopped without an answer: {reason}")));
         }
         _ => StopReason::EndTurn,
-    };
-    // `inputTokens` excludes cached tokens; Bedrock reports reads and writes separately.
-    let usage = |key: &str| raw["usage"][key].as_u64().unwrap_or(0);
-    Ok(ModelResponse {
-        content,
-        stop,
-        usage: Usage {
-            input_tokens: usage("inputTokens"),
-            output_tokens: usage("outputTokens"),
-            cache_read_tokens: usage("cacheReadInputTokens"),
-            cache_write_tokens: usage("cacheWriteInputTokens"),
-        },
     })
+}
+
+/// `inputTokens` excludes cached tokens; Bedrock reports reads and writes separately.
+fn usage(raw: &Value) -> Usage {
+    let count = |key: &str| raw[key].as_u64().unwrap_or(0);
+    Usage {
+        input_tokens: count("inputTokens"),
+        output_tokens: count("outputTokens"),
+        cache_read_tokens: count("cacheReadInputTokens"),
+        cache_write_tokens: count("cacheWriteInputTokens"),
+    }
+}
+
+enum Partial {
+    Text(String),
+    Tool { id: String, name: String, json: String },
+    /// A `reasoningContent` block, built from its deltas.
+    Reasoning(Value),
+}
+
+/// Turns a ConverseStream reply (event-stream frames) into progress events
+/// and the final reply. Blocks are kept in `contentBlockIndex` order.
+#[derive(Default)]
+pub struct StreamAssembler {
+    frames: super::eventstream::Decoder,
+    blocks: Vec<(u64, Partial)>,
+    stop: Option<StopReason>,
+    usage: Option<Usage>,
+}
+
+impl StreamAssembler {
+    pub fn feed(&mut self, chunk: &[u8], on: &mut (dyn FnMut(ProviderEvent) + Send)) -> Result<()> {
+        for frame in self.frames.feed(chunk)? {
+            match frame.header(":message-type") {
+                Some("event") => {}
+                Some("exception") => {
+                    let kind = frame.header(":exception-type").unwrap_or("unknown");
+                    let detail: String = String::from_utf8_lossy(&frame.payload).chars().take(500).collect();
+                    return Err(Error::Provider(format!("bedrock stream error: {kind}: {detail}")));
+                }
+                other => {
+                    let code = frame.header(":error-code").unwrap_or(other.unwrap_or("unknown"));
+                    let message = frame.header(":error-message").unwrap_or_default();
+                    return Err(Error::Provider(format!("bedrock stream error: {code}: {message}")));
+                }
+            }
+            let event: Value = serde_json::from_slice(&frame.payload)?;
+            self.event(frame.header(":event-type").unwrap_or_default(), &event, on)?;
+        }
+        Ok(())
+    }
+
+    fn event(&mut self, kind: &str, event: &Value, on: &mut (dyn FnMut(ProviderEvent) + Send)) -> Result<()> {
+        let index = event["contentBlockIndex"].as_u64().unwrap_or(0);
+        match kind {
+            "contentBlockStart" => {
+                if let Some(tool) = event["start"].get("toolUse") {
+                    let (Some(id), Some(name)) = (tool["toolUseId"].as_str(), tool["name"].as_str()) else {
+                        return Err(Error::Provider(format!("toolUse without an id or name: {tool}")));
+                    };
+                    on(ProviderEvent::ToolCallStarted { id: id.into(), name: name.into() });
+                    self.blocks.push((index, Partial::Tool { id: id.into(), name: name.into(), json: String::new() }));
+                }
+            }
+            "contentBlockDelta" => {
+                let delta = &event["delta"];
+                let at = self.blocks.iter().position(|(i, _)| *i == index);
+                if let Some(text) = delta["text"].as_str() {
+                    // Text blocks have no start event: the first delta opens one.
+                    match at.map(|at| &mut self.blocks[at].1) {
+                        Some(Partial::Text(sofar)) => sofar.push_str(text),
+                        Some(_) => return Err(Error::Provider(format!("text inside block {index}, which is not text"))),
+                        None => self.blocks.push((index, Partial::Text(text.to_string()))),
+                    }
+                    if !text.is_empty() {
+                        on(ProviderEvent::TextDelta(text.to_string()));
+                    }
+                } else if let Some(piece) = delta.get("reasoningContent") {
+                    // Like text, a reasoning block opens with its first delta.
+                    if at.is_none() {
+                        self.blocks.push((index, Partial::Reasoning(json!({"reasoningContent": {}}))));
+                    }
+                    let at = at.unwrap_or(self.blocks.len() - 1);
+                    let Partial::Reasoning(block) = &mut self.blocks[at].1 else {
+                        return Err(Error::Provider(format!("reasoning inside block {index}, which is not reasoning")));
+                    };
+                    let content = &mut block["reasoningContent"];
+                    if let Some(text) = piece["text"].as_str() {
+                        let joined = format!("{}{text}", content["reasoningText"]["text"].as_str().unwrap_or_default());
+                        content["reasoningText"]["text"] = json!(joined);
+                    }
+                    if let Some(signature) = piece.get("signature") {
+                        content["reasoningText"]["signature"] = signature.clone();
+                    }
+                    if let Some(redacted) = piece.get("redactedContent") {
+                        content["redactedContent"] = redacted.clone();
+                    }
+                } else if let Some(input) = delta["toolUse"]["input"].as_str() {
+                    match at.map(|at| &mut self.blocks[at].1) {
+                        Some(Partial::Tool { json, .. }) => json.push_str(input),
+                        _ => return Err(Error::Provider(format!("tool input for block {index}, which is not a tool call"))),
+                    }
+                }
+            }
+            "messageStop" => self.stop = Some(stop_reason(event["stopReason"].as_str())?),
+            "metadata" => self.usage = Some(usage(&event["usage"])),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// The whole reply. A stream that ended before `messageStop` and its
+    /// `metadata` was cut off.
+    pub fn finish(mut self) -> Result<ModelResponse> {
+        self.frames.end()?;
+        let (Some(stop), Some(usage)) = (self.stop, self.usage) else {
+            return Err(Error::Provider("the stream ended before the reply was complete".into()));
+        };
+        self.blocks.sort_by_key(|(index, _)| *index);
+        let mut content = Vec::new();
+        for (_, block) in self.blocks {
+            match block {
+                Partial::Text(text) if !text.is_empty() => content.push(Content::Text { text }),
+                Partial::Text(_) => {}
+                Partial::Reasoning(data) => content.push(Content::Reasoning { provider: PROVIDER.into(), data }),
+                Partial::Tool { id, name, json } => {
+                    let args = if json.trim().is_empty() {
+                        json!({})
+                    } else {
+                        match serde_json::from_str(&json) {
+                            Ok(args) => args,
+                            // Cut off mid-call: the arguments are incomplete, not malformed.
+                            Err(_) if stop == StopReason::MaxTokens => return Err(Error::MaxTokens),
+                            Err(e) => return Err(e.into()),
+                        }
+                    };
+                    content.push(Content::ToolCall { id, name, args });
+                }
+            }
+        }
+        Ok(ModelResponse { content, stop, usage })
+    }
 }
 
 /// SigV4 headers for one Converse call: the official signing crate over our
@@ -248,25 +402,17 @@ pub fn sign(credentials: &Credentials, region: &str, url: &str, body: &[u8], tim
     Ok(instructions.headers().map(|(name, value)| (name.to_string(), value.to_string())).collect())
 }
 
-#[async_trait]
-impl Provider for BedrockProvider {
-    async fn complete(&self, request: ModelRequest<'_>) -> Result<ModelResponse> {
-        let region = region_for_model(self.region.as_deref(), request.model)?;
-        let url = converse_url(&region, request.model);
-        let body = converse_body(&request, self.max_tokens, self.caching);
-        check_first_turn(&body)?;
-        let body = serde_json::to_vec(&body)?;
+impl BedrockProvider {
+    /// Sends one signed request, retrying throttling, server errors and
+    /// dropped connections; a successful response is returned unread.
+    async fn send(&self, url: &str, region: &str, body: &[u8]) -> Result<reqwest::Response> {
         let mut last_error = String::new();
         for attempt in 0..3u32 {
             if attempt > 0 {
                 tokio::time::sleep(backoff(attempt)).await;
             }
-            let mut call = self
-                .client
-                .post(&url)
-                .header("content-type", "application/json")
-                .body(body.clone());
-            for (name, value) in sign(&self.credentials, &region, &url, &body, SystemTime::now())? {
+            let mut call = self.client.post(url).header("content-type", "application/json").body(body.to_vec());
+            for (name, value) in sign(&self.credentials, region, url, body, SystemTime::now())? {
                 call = call.header(name, value);
             }
             let response = match call.send().await {
@@ -280,16 +426,48 @@ impl Provider for BedrockProvider {
                 }
             };
             let status = response.status();
-            let text = response.text().await.map_err(|e| Error::Provider(e.to_string()))?;
             if status.is_success() {
-                return parse_response(&serde_json::from_str(&text)?);
+                return Ok(response);
             }
+            let text = response.text().await.map_err(|e| Error::Provider(e.to_string()))?;
             if !retriable(Some(status.as_u16()), &text) {
                 return Err(http_error(status.as_u16(), &text));
             }
             last_error = format!("HTTP {status}: {}", text.chars().take(300).collect::<String>());
         }
         Err(Error::Provider(format!("bedrock gave up after 3 attempts: {last_error}")))
+    }
+
+    fn prepare(&self, request: &ModelRequest) -> Result<(String, Vec<u8>)> {
+        let region = region_for_model(self.region.as_deref(), request.model)?;
+        let body = converse_body(request, self.max_tokens, self.caching);
+        check_first_turn(&body)?;
+        Ok((region, serde_json::to_vec(&body)?))
+    }
+}
+
+#[async_trait]
+impl Provider for BedrockProvider {
+    async fn complete(&self, request: ModelRequest<'_>) -> Result<ModelResponse> {
+        let (region, body) = self.prepare(&request)?;
+        let response = self.send(&converse_url(&region, request.model), &region, &body).await?;
+        let text = response.text().await.map_err(|e| Error::Provider(e.to_string()))?;
+        parse_response(&serde_json::from_str(&text)?)
+    }
+
+    async fn stream(
+        &self,
+        request: ModelRequest<'_>,
+        on: &mut (dyn FnMut(ProviderEvent) + Send),
+    ) -> Result<ModelResponse> {
+        let (region, body) = self.prepare(&request)?;
+        let response = self.send(&converse_stream_url(&region, request.model), &region, &body).await?;
+        let mut assembler = StreamAssembler::default();
+        let mut bytes = response.bytes_stream();
+        while let Some(chunk) = bytes.next().await {
+            assembler.feed(&chunk.map_err(|e| Error::Provider(e.to_string()))?, on)?;
+        }
+        assembler.finish()
     }
 }
 
@@ -325,7 +503,7 @@ mod tests {
             delegates: false,
             foreign: false,
         };
-        let req = ModelRequest { model: "eu.anthropic.claude-sonnet-4-6", system: "be brief", messages: &history, tools: vec![&spec] };
+        let req = ModelRequest { model: "eu.anthropic.claude-sonnet-4-6", system: "be brief", messages: &history, tools: vec![&spec], ..Default::default() };
         let body = converse_body(&req, 2048, true);
         assert_eq!(body["system"], json!([{"text": "be brief"}, {"cachePoint": {"type": "default"}}]));
         assert_eq!(body["inferenceConfig"]["maxTokens"], 2048);
@@ -348,7 +526,7 @@ mod tests {
     #[test]
     fn leaves_out_empty_system_and_tools() {
         let history = vec![Message::user("hi")];
-        let req = ModelRequest { model: "m", system: "", messages: &history, tools: vec![] };
+        let req = ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() };
         let body = converse_body(&req, 10, true);
         assert!(body.get("system").is_none() && body.get("toolConfig").is_none());
     }
@@ -437,7 +615,147 @@ mod tests {
     #[test]
     fn a_history_that_starts_with_the_model_is_refused_here() {
         let history = vec![Message::user("   "), Message::assistant(vec![Content::Text { text: "hello".into() }])];
-        let request = ModelRequest { model: "m", system: "", messages: &history, tools: vec![] };
+        let request = ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() };
         assert!(matches!(check_first_turn(&converse_body(&request, 100, false)), Err(Error::Provider(m)) if m.contains("first")));
+    }
+
+    fn event(kind: &str, payload: Value) -> Vec<u8> {
+        crate::providers::eventstream::tests::frame(
+            &[(":event-type", kind), (":content-type", "application/json"), (":message-type", "event")],
+            payload.to_string().as_bytes(),
+        )
+    }
+
+    fn stream_bytes(stop: &str, with_metadata: bool) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend(event("messageStart", json!({"role": "assistant"})));
+        out.extend(event("contentBlockDelta", json!({"contentBlockIndex": 0, "delta": {"text": "It is 9"}})));
+        out.extend(event("contentBlockDelta", json!({"contentBlockIndex": 0, "delta": {"text": "°C."}})));
+        out.extend(event("contentBlockStop", json!({"contentBlockIndex": 0})));
+        out.extend(event("contentBlockStart", json!({"contentBlockIndex": 1, "start": {"toolUse": {"toolUseId": "t1", "name": "weather"}}})));
+        out.extend(event("contentBlockDelta", json!({"contentBlockIndex": 1, "delta": {"toolUse": {"input": "{\"city\": \"Ri"}}})));
+        out.extend(event("contentBlockDelta", json!({"contentBlockIndex": 1, "delta": {"toolUse": {"input": "ga\"}"}}})));
+        out.extend(event("contentBlockStop", json!({"contentBlockIndex": 1})));
+        out.extend(event("messageStop", json!({"stopReason": stop})));
+        if with_metadata {
+            out.extend(event("metadata", json!({
+                "usage": {"inputTokens": 30, "outputTokens": 8, "totalTokens": 38, "cacheReadInputTokens": 900, "cacheWriteInputTokens": 50},
+                "metrics": {"latencyMs": 120}
+            })));
+        }
+        out
+    }
+
+    fn run_stream(bytes: &[u8], piece: usize) -> (Result<ModelResponse>, Vec<ProviderEvent>) {
+        let mut events = Vec::new();
+        let mut on = |e: ProviderEvent| events.push(e);
+        let mut asm = StreamAssembler::default();
+        let mut out = Ok(());
+        for chunk in bytes.chunks(piece) {
+            out = out.and_then(|_| asm.feed(chunk, &mut on));
+        }
+        (out.and_then(|_| asm.finish()), events)
+    }
+
+    #[test]
+    fn assembles_a_converse_stream_fed_in_awkward_pieces() {
+        let (r, events) = run_stream(&stream_bytes("tool_use", true), 7);
+        let r = r.unwrap();
+        assert_eq!(events, vec![
+            ProviderEvent::TextDelta("It is 9".into()),
+            ProviderEvent::TextDelta("°C.".into()),
+            ProviderEvent::ToolCallStarted { id: "t1".into(), name: "weather".into() },
+        ]);
+        assert_eq!(r.content, vec![
+            Content::Text { text: "It is 9°C.".into() },
+            Content::ToolCall { id: "t1".into(), name: "weather".into(), args: json!({"city": "Riga"}) },
+        ]);
+        assert_eq!(r.stop, StopReason::ToolUse);
+        assert_eq!(r.usage, Usage { input_tokens: 30, output_tokens: 8, cache_read_tokens: 900, cache_write_tokens: 50 });
+    }
+
+    #[test]
+    fn a_stream_error_a_block_or_a_cut_off_is_an_error() {
+        let mut thrown = stream_bytes("tool_use", false);
+        thrown.extend(crate::providers::eventstream::tests::frame(
+            &[(":exception-type", "throttlingException"), (":content-type", "application/json"), (":message-type", "exception")],
+            b"{\"message\":\"Too many requests\"}",
+        ));
+        assert!(matches!(run_stream(&thrown, 64).0, Err(Error::Provider(m)) if m.contains("throttlingException") && m.contains("Too many")));
+        let mut unmodeled = stream_bytes("tool_use", false);
+        unmodeled.extend(crate::providers::eventstream::tests::frame(
+            &[(":error-code", "InternalFailure"), (":error-message", "boom"), (":message-type", "error")],
+            b"",
+        ));
+        assert!(matches!(run_stream(&unmodeled, 64).0, Err(Error::Provider(m)) if m.contains("InternalFailure") && m.contains("boom")));
+        assert!(matches!(run_stream(&stream_bytes("guardrail_intervened", true), 64).0, Err(Error::Provider(m)) if m.contains("guardrail")));
+        assert!(matches!(run_stream(&stream_bytes("tool_use", false), 64).0, Err(Error::Provider(_))), "no metadata: cut off");
+        let mut corrupt = stream_bytes("tool_use", true);
+        let last = corrupt.len() - 1;
+        corrupt[last] ^= 1;
+        assert!(run_stream(&corrupt, 64).0.is_err());
+    }
+
+    #[test]
+    fn a_stream_cut_off_inside_a_tool_call_is_max_tokens() {
+        let mut bytes = Vec::new();
+        bytes.extend(event("contentBlockStart", json!({"contentBlockIndex": 0, "start": {"toolUse": {"toolUseId": "t1", "name": "w"}}})));
+        bytes.extend(event("contentBlockDelta", json!({"contentBlockIndex": 0, "delta": {"toolUse": {"input": "{\"city\": \"Ri"}}})));
+        bytes.extend(event("messageStop", json!({"stopReason": "max_tokens"})));
+        bytes.extend(event("metadata", json!({"usage": {"inputTokens": 1, "outputTokens": 1}, "metrics": {}})));
+        assert!(matches!(run_stream(&bytes, 64).0, Err(Error::MaxTokens)));
+    }
+
+    #[test]
+    fn the_stream_url_escapes_the_model_id() {
+        assert_eq!(converse_stream_url("eu-central-1", "anthropic.claude-3-haiku-20240307-v1:0"),
+            "https://bedrock-runtime.eu-central-1.amazonaws.com/model/anthropic.claude-3-haiku-20240307-v1%3A0/converse-stream");
+    }
+
+    #[test]
+    fn reasoning_sets_the_effort_and_reasoning_blocks_go_back_unchanged() {
+        let history = vec![Message::user("hi")];
+        let req = ModelRequest { model: "m", system: "", messages: &history, reasoning: Some(crate::provider::Effort::High), ..Default::default() };
+        assert_eq!(converse_body(&req, 10, false)["outputConfig"], json!({"effort": "high"}));
+        assert!(converse_body(&ModelRequest { model: "m", system: "", messages: &history, ..Default::default() }, 10, false).get("outputConfig").is_none());
+
+        let reasoning = json!({"reasoningContent": {"reasoningText": {"text": "Riga.", "signature": "sig"}}});
+        let raw = json!({"output": {"message": {"content": [reasoning, {"text": "9°C"}]}}, "stopReason": "end_turn", "usage": {}});
+        let r = parse_response(&raw).unwrap();
+        assert_eq!(r.content[0], Content::Reasoning { provider: "bedrock".into(), data: reasoning.clone() });
+        let turn = Message::assistant(r.content);
+        assert_eq!(turn.text(), "9°C");
+        let history = vec![Message::user("weather?"), turn];
+        let body = converse_body(&ModelRequest { model: "m", system: "", messages: &history, ..Default::default() }, 10, false);
+        assert_eq!(body["messages"][1]["content"][0], reasoning);
+    }
+
+    #[test]
+    fn streamed_reasoning_is_assembled_and_never_shown() {
+        let mut bytes = Vec::new();
+        bytes.extend(event("contentBlockDelta", json!({"contentBlockIndex": 0, "delta": {"reasoningContent": {"text": "Riga, "}}})));
+        bytes.extend(event("contentBlockDelta", json!({"contentBlockIndex": 0, "delta": {"reasoningContent": {"text": "so weather."}}})));
+        bytes.extend(event("contentBlockDelta", json!({"contentBlockIndex": 0, "delta": {"reasoningContent": {"signature": "sig"}}})));
+        bytes.extend(event("contentBlockDelta", json!({"contentBlockIndex": 1, "delta": {"reasoningContent": {"redactedContent": "AAEC"}}})));
+        bytes.extend(event("contentBlockDelta", json!({"contentBlockIndex": 2, "delta": {"text": "9°C"}})));
+        bytes.extend(event("messageStop", json!({"stopReason": "end_turn"})));
+        bytes.extend(event("metadata", json!({"usage": {"inputTokens": 1, "outputTokens": 1}, "metrics": {}})));
+        let (r, events) = run_stream(&bytes, 9);
+        assert_eq!(events, vec![ProviderEvent::TextDelta("9°C".into())]);
+        assert_eq!(r.unwrap().content, vec![
+            Content::Reasoning { provider: "bedrock".into(), data: json!({"reasoningContent": {"reasoningText": {"text": "Riga, so weather.", "signature": "sig"}}}) },
+            Content::Reasoning { provider: "bedrock".into(), data: json!({"reasoningContent": {"redactedContent": "AAEC"}}) },
+            Content::Text { text: "9°C".into() },
+        ]);
+    }
+
+    #[test]
+    fn an_output_schema_is_sent_as_a_text_format() {
+        let history = vec![Message::user("hi")];
+        let schema = json!({"type": "object", "required": ["city"]});
+        let req = ModelRequest { model: "m", system: "", messages: &history, output_schema: Some(&schema), ..Default::default() };
+        assert_eq!(converse_body(&req, 10, false)["outputConfig"], json!({"textFormat": {
+            "type": "json_schema", "structure": {"jsonSchema": {"schema": schema.to_string(), "name": "answer"}},
+        }}));
     }
 }

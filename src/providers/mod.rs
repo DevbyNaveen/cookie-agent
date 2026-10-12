@@ -7,14 +7,19 @@ use crate::{error::{Error, Result}, model_id::ModelId, provider::Provider};
 pub mod anthropic;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
+#[cfg(feature = "bedrock")]
+pub mod eventstream;
 mod fence;
+pub mod gemini;
 pub mod openai;
 pub mod scripted;
+mod sse;
 
 pub fn resolve(id: &ModelId) -> Result<Arc<dyn Provider>> {
     match id.provider.as_str() {
         "anthropic" => Ok(Arc::new(anthropic::AnthropicProvider::from_env()?)),
         "openai" => Ok(Arc::new(openai::OpenAiProvider::openai_from_env()?)),
+        "gemini" => Ok(Arc::new(gemini::GeminiProvider::from_env()?)),
         "ollama" => Ok(Arc::new(openai::OpenAiProvider::ollama_from_env())),
         #[cfg(feature = "bedrock")]
         "bedrock" => Ok(Arc::new(bedrock::BedrockProvider::from_env()?)),
@@ -45,6 +50,16 @@ pub fn http_error(status: u16, body: &str) -> Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gemini_is_a_known_provider_that_needs_its_key() {
+        let id = crate::model_id::ModelId::parse("gemini:gemini-3.8-flash").unwrap();
+        match super::resolve(&id) {
+            Ok(_) => assert!(std::env::var("GEMINI_API_KEY").is_ok()),
+            Err(crate::Error::Provider(m)) => assert!(m.contains("GEMINI_API_KEY"), "{m}"),
+            Err(other) => panic!("{other}"),
+        }
+    }
+
     #[cfg(not(feature = "bedrock"))]
     #[test]
     fn bedrock_without_the_feature_says_which_feature_to_enable() {

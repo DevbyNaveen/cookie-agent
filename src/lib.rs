@@ -40,7 +40,7 @@ pub use label::{Origin, Source};
 pub use message::{Content, Message, Role};
 pub use model_id::ModelId;
 pub use policy::{Decision, Policy, Provenance};
-pub use provider::{ModelRequest, ModelResponse, Provider, ProviderEvent, StopReason, Usage};
+pub use provider::{Effort, ModelRequest, ModelResponse, Provider, ProviderEvent, StopReason, Usage};
 pub use session::Session;
 pub use tool::{tool, Effect, FnTool, Tool, ToolSpec};
 pub use tokio_util::sync::CancellationToken;
