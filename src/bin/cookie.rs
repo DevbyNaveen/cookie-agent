@@ -5,15 +5,19 @@ use std::io::{IsTerminal, Write};
 
 use async_trait::async_trait;
 use cookie_harness::{serve::serve, Agent, ApprovalRequest, Approver, Event, Message, RunControl, Session};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader, Stdin},
+    sync::Mutex,
+};
 
 const USAGE: &str = "usage:
-  cookie run <provider:model> <prompt> [--session FILE] [--instructions TEXT] [--no-enkeon]
+  cookie run <provider:model> <prompt> [--session FILE] [--instructions TEXT] [--no-enkeon] [-- <prompt starting with ->]
   cookie serve
   cookie --version";
 
-/// Asks on the terminal. With no terminal there is no person, so: no.
-struct Terminal;
+/// Asks on the terminal. With no terminal there is no person, so: no. One
+/// reader for the whole run, so an answer typed early is not lost.
+struct Terminal(Mutex<BufReader<Stdin>>);
 
 #[async_trait]
 impl Approver for Terminal {
@@ -25,25 +29,40 @@ impl Approver for Terminal {
         eprint!("\n{}\n{}\nAllow? [y/N] ", request.reason, request.preview);
         let _ = std::io::stderr().flush();
         let mut answer = String::new();
-        let _ = BufReader::new(tokio::io::stdin()).read_line(&mut answer).await;
+        let _ = self.0.lock().await.read_line(&mut answer).await;
         matches!(answer.trim(), "y" | "Y" | "yes")
     }
 }
 
-async fn run(args: &[String]) -> Result<(), String> {
+enum Failure {
+    /// The command line was wrong: print usage, exit 2.
+    Usage(String),
+    /// The run failed: exit 1.
+    Run(String),
+}
+
+async fn run(args: &[String]) -> Result<(), Failure> {
     let (mut positional, mut session, mut instructions, mut enkeon) = (Vec::new(), None, None, true);
     let mut args = args.iter();
+    let mut flags = true;
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--session" => session = Some(args.next().ok_or("--session needs a file")?.clone()),
-            "--instructions" => instructions = Some(args.next().ok_or("--instructions needs text")?.clone()),
-            "--no-enkeon" => enkeon = false,
-            flag if flag.starts_with("--") => return Err(format!("unknown flag `{flag}`")),
+            // Everything after `--` is a value, even if it starts with dashes.
+            "--" if flags => flags = false,
+            "--session" if flags => session = Some(args.next().ok_or(Failure::Usage("--session needs a file".into()))?.clone()),
+            "--instructions" if flags => {
+                instructions = Some(args.next().ok_or(Failure::Usage("--instructions needs text".into()))?.clone())
+            }
+            "--no-enkeon" if flags => enkeon = false,
+            flag if flags && flag.starts_with("--") => return Err(Failure::Usage(format!("unknown flag `{flag}`"))),
             value => positional.push(value.to_string()),
         }
     }
-    let [model, prompt] = <[String; 2]>::try_from(positional).map_err(|_| "cookie run <provider:model> <prompt>".to_string())?;
-    let mut agent = Agent::new(&model).map_err(|e| e.to_string())?.approver(Terminal);
+    let [model, prompt] = <[String; 2]>::try_from(positional)
+        .map_err(|_| Failure::Usage("cookie run needs a model and a prompt".into()))?;
+    let mut agent = Agent::new(&model)
+        .map_err(|e| Failure::Run(e.to_string()))?
+        .approver(Terminal(Mutex::new(BufReader::new(tokio::io::stdin()))));
     if let Some(text) = instructions {
         agent = agent.instructions(text);
     }
@@ -51,12 +70,20 @@ async fn run(args: &[String]) -> Result<(), String> {
         agent = agent.without_enkeon();
     }
     let mut session = match session {
-        Some(path) => Session::open(path).await.map_err(|e| e.to_string())?,
+        Some(path) => Session::open(path).await.map_err(|e| Failure::Run(e.to_string()))?,
         None => Session::in_memory(),
     };
+    // Ctrl-C cancels the run; what already happened stays in the session.
+    let control = RunControl::default();
+    let cancel = control.cancel.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            cancel.cancel();
+        }
+    });
     let mut streamed = false;
     let answer = agent
-        .run_streaming(&mut session, Message::user(&prompt), &RunControl::default(), &mut |event| match event {
+        .run_streaming(&mut session, Message::user(&prompt), &control, &mut |event| match event {
             Event::TextDelta(text) => {
                 streamed = true;
                 print!("{text}");
@@ -66,7 +93,7 @@ async fn run(args: &[String]) -> Result<(), String> {
             _ => {}
         })
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| Failure::Run(e.to_string()))?;
     if streamed {
         println!();
     } else {
@@ -89,11 +116,11 @@ async fn main() {
         }
         Some("run") => match run(&args[1..]).await {
             Ok(()) => 0,
-            Err(message) if message.starts_with("cookie run") => {
-                eprintln!("{USAGE}");
+            Err(Failure::Usage(message)) => {
+                eprintln!("cookie: {message}\n{USAGE}");
                 2
             }
-            Err(message) => {
+            Err(Failure::Run(message)) => {
                 eprintln!("cookie: {message}");
                 1
             }

@@ -42,3 +42,16 @@ fn version_prints_the_crate_version() {
     let out = Command::new(COOKIE).arg("--version").output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), format!("cookie {}", env!("CARGO_PKG_VERSION")));
 }
+
+#[test]
+fn a_prompt_that_starts_with_dashes_goes_after_a_double_dash() {
+    let out = Command::new(COOKIE)
+        .args(["run", "anthropic:claude-sonnet-4-6", "--no-enkeon", "--", "--why is this a flag?"])
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("ENKEON_API_KEY")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(!stderr.contains("unknown flag") && stderr.contains("ANTHROPIC_API_KEY"), "{stderr}");
+}

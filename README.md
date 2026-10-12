@@ -62,7 +62,10 @@ let agent = Agent::new("anthropic:claude-sonnet-4-6")?
 ```
 
 Every MCP tool asks a person unless you lower it; a server's own hints can
-only make a tool stricter. `connect()` returns the tool list's SHA-256 so
+only make a tool stricter. The first connection is trust-on-first-use: `connect()` returns
+the tool list's SHA-256, and `pin` refuses a server whose tools changed since —
+it cannot catch a server that changes what a tool does behind the same
+description, which is why tool output is always untrusted. `connect()` returns the tool list's SHA-256 so
 you can pin it. Skills (`SKILL.md`) are offered through one `use_skill`
 tool and loaded on demand; `read_agents_md` gives you `AGENTS.md` to put in
 your instructions — nothing is added behind your back.

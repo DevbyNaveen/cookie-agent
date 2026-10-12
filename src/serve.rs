@@ -31,9 +31,14 @@ use crate::{
     tool::{Effect, Tool, ToolSpec},
 };
 
-/// A `run` message.
+/// A `run` message. Unknown fields are refused: a misspelled `allow` must
+/// not silently become no allow-list.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunRequest {
+    #[serde(rename = "type")]
+    #[allow(dead_code)]
+    kind: String,
     pub id: String,
     pub model: String,
     pub input: String,
@@ -54,6 +59,7 @@ pub struct RunRequest {
 
 /// A tool the client runs itself.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolDecl {
     pub name: String,
     #[serde(default)]
@@ -68,8 +74,11 @@ pub struct ToolDecl {
 }
 
 type Out = mpsc::UnboundedSender<Value>;
-/// Calls waiting for the client's answer, by the id sent with them.
-type Waiting = Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>;
+/// Calls waiting for the client's answer, by the id sent with them, with the
+/// run they belong to.
+type Waiting = Arc<Mutex<HashMap<String, (String, oneshot::Sender<Value>)>>>;
+/// The longest line read from the client.
+const MAX_LINE: usize = 16 * 1024 * 1024;
 
 struct Wire {
     out: Out,
@@ -99,7 +108,7 @@ impl Wire {
         }
         let id = format!("{prefix}{}", self.next.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
-        self.waiting.lock().unwrap().insert(id.clone(), tx);
+        self.waiting.lock().unwrap().insert(id.clone(), (self.run.clone(), tx));
         let _unwait = Unwait(&self.waiting, id.clone());
         message["id"] = json!(id);
         message["run"] = json!(self.run);
@@ -206,10 +215,32 @@ where
     });
     let waiting: Waiting = Arc::default();
     let next = Arc::new(AtomicU64::new(1));
+    // Cleared by the run itself just before it sends `done` or `error`, so a
+    // client that starts the next run on reading `done` is never refused.
+    let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut current: Option<(RunControl, tokio::task::JoinHandle<()>)> = None;
-    let mut lines = input.lines();
+    let mut input = input;
+    let mut raw = Vec::new();
 
-    while let Some(line) = lines.next_line().await? {
+    loop {
+        raw.clear();
+        // Bounded: one line may not exceed MAX_LINE bytes.
+        let read = tokio::io::AsyncReadExt::take(&mut input, MAX_LINE as u64 + 1).read_until(b'\n', &mut raw).await?;
+        if read == 0 {
+            break;
+        }
+        if raw.len() > MAX_LINE {
+            let _ = out.send(json!({"type": "error", "message": format!("a line over {MAX_LINE} bytes was refused")}));
+            // Skip the rest of that line.
+            while !raw.ends_with(b"\n") {
+                raw.clear();
+                if tokio::io::AsyncReadExt::take(&mut input, MAX_LINE as u64).read_until(b'\n', &mut raw).await? == 0 {
+                    break;
+                }
+            }
+            continue;
+        }
+        let line = String::from_utf8_lossy(&raw).to_string();
         if line.trim().is_empty() {
             continue;
         }
@@ -220,17 +251,18 @@ where
                 continue;
             }
         };
-        let running = current.as_ref().is_some_and(|(_, task)| !task.is_finished());
+        let running = busy.load(Ordering::SeqCst);
+        let named = message["id"].clone();
         match message["type"].as_str().unwrap_or_default() {
             "run" => {
                 if running {
-                    let _ = out.send(json!({"type": "error", "message": "a run is already going; cancel it or wait for `done`"}));
+                    let _ = out.send(json!({"type": "error", "run": named, "message": "a run is already going; cancel it or wait for `done`"}));
                     continue;
                 }
                 let request: RunRequest = match serde_json::from_value(message) {
                     Ok(request) => request,
                     Err(e) => {
-                        let _ = out.send(json!({"type": "error", "message": format!("bad run: {e}")}));
+                        let _ = out.send(json!({"type": "error", "run": named, "message": format!("bad run: {e}")}));
                         continue;
                     }
                 };
@@ -249,14 +281,23 @@ where
                         continue;
                     }
                 };
-                let task = tokio::spawn(run_one(agent, request, control.clone(), out.clone()));
+                busy.store(true, Ordering::SeqCst);
+                let task = tokio::spawn(run_one(agent, request, control.clone(), out.clone(), busy.clone()));
                 current = Some((control, task));
             }
-            "approve" | "tool_result" => {
+            kind @ ("approve" | "tool_result") => {
                 let id = message["id"].as_str().unwrap_or_default().to_string();
-                match waiting.lock().unwrap().remove(&id) {
-                    Some(reply) => {
-                        let _ = reply.send(message);
+                // `a…` ids wait for an `approve`, `t…` ids for a `tool_result`.
+                let expected = if kind == "approve" { 'a' } else { 't' };
+                let mut waiting_now = waiting.lock().unwrap();
+                match waiting_now.get(&id).map(|(run, _)| run.clone()) {
+                    Some(run) if id.starts_with(expected) => {
+                        if let Some((_, reply)) = waiting_now.remove(&id) {
+                            let _ = reply.send(message);
+                        }
+                    }
+                    Some(run) => {
+                        let _ = out.send(json!({"type": "error", "run": run, "message": format!("`{id}` is not waiting for a `{kind}`")}));
                     }
                     None => {
                         let _ = out.send(json!({"type": "error", "message": format!("nothing is waiting for `{id}`")}));
@@ -274,7 +315,7 @@ where
                 }
             }
             other => {
-                let _ = out.send(json!({"type": "error", "message": format!("unknown message type `{other}`")}));
+                let _ = out.send(json!({"type": "error", "run": named, "message": format!("unknown message type `{other}`")}));
             }
         }
     }
@@ -289,14 +330,28 @@ where
     Ok(())
 }
 
-async fn run_one(agent: Agent, request: RunRequest, control: RunControl, out: Out) {
+async fn run_one(agent: Agent, request: RunRequest, control: RunControl, out: Out, busy: Arc<std::sync::atomic::AtomicBool>) {
+    use futures::FutureExt;
+    let id = request.id.clone();
+    // A panic inside the run still ends it with an `error` line.
+    let ended = std::panic::AssertUnwindSafe(run_inner(agent, request, control, out.clone())).catch_unwind().await;
+    let last = match ended {
+        Ok(last) => last,
+        Err(panic) => {
+            let why = panic.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| panic.downcast_ref::<String>().cloned()).unwrap_or_default();
+            json!({"type": "error", "run": id, "message": format!("the run crashed: {why}")})
+        }
+    };
+    busy.store(false, Ordering::SeqCst);
+    let _ = out.send(last);
+}
+
+/// The run itself; returns its last line (`done` or `error`).
+async fn run_inner(agent: Agent, request: RunRequest, control: RunControl, out: Out) -> Value {
     let mut session = match &request.session {
         Some(path) => match Session::open(path).await {
             Ok(session) => session,
-            Err(e) => {
-                let _ = out.send(json!({"type": "error", "run": request.id, "message": e.to_string()}));
-                return;
-            }
+            Err(e) => return json!({"type": "error", "run": request.id, "message": e.to_string()}),
         },
         None => Session::in_memory(),
     };
@@ -307,10 +362,10 @@ async fn run_one(agent: Agent, request: RunRequest, control: RunControl, out: Ou
             let _ = events.send(json!({"type": "event", "run": run, "event": event}));
         })
         .await;
-    let _ = out.send(match result {
+    match result {
         Ok(answer) => json!({"type": "done", "run": request.id, "answer": answer}),
         Err(e) => json!({"type": "error", "run": request.id, "message": e.to_string()}),
-    });
+    }
 }
 
 #[cfg(test)]
@@ -495,5 +550,57 @@ mod tests {
         assert!(c.next().await["message"].as_str().unwrap().contains("teleport"));
         c.send(run("hi", json!([]))).await;
         assert_eq!(c.next().await["answer"], "still here");
+    }
+
+    #[tokio::test]
+    async fn an_answer_of_the_wrong_kind_is_refused_and_the_wait_goes_on() {
+        let tools = json!([{"name": "lookup", "description": "", "schema": {"type": "object"}, "effect": "read"}]);
+        let p = Arc::new(Scripted::new(vec![Scripted::call("c1", "lookup", json!({})), Scripted::text("done")]));
+        let mut c = start(p);
+        c.send(run("look", tools)).await;
+        let call = c.next().await;
+        c.send(json!({"type": "approve", "id": call["id"], "allow": true})).await;
+        let refused = c.next().await;
+        assert_eq!((refused["type"].as_str(), refused["run"].as_str()), (Some("error"), Some("r1")));
+        c.send(json!({"type": "tool_result", "id": call["id"], "output": "42"})).await;
+        assert_eq!(c.next().await["answer"], "done");
+    }
+
+    #[tokio::test]
+    async fn a_run_sent_the_moment_done_arrives_is_accepted() {
+        let p = Arc::new(Scripted::new(vec![Scripted::text("one"), Scripted::text("two")]));
+        let mut c = start(p);
+        c.send(run("first", json!([]))).await;
+        assert_eq!(c.next().await["answer"], "one");
+        c.send(json!({"type": "run", "id": "r2", "model": "x:m", "input": "second"})).await;
+        assert_eq!(c.next().await["answer"], "two");
+    }
+
+    #[tokio::test]
+    async fn a_misspelled_field_is_refused_and_errors_name_their_run() {
+        let p = Arc::new(Scripted::new(vec![Scripted::text("never")]));
+        let mut c = start(p);
+        c.send(json!({"type": "run", "id": "r9", "model": "x:m", "input": "hi", "allows": ["a@x.com"]})).await;
+        let refused = c.next().await;
+        assert_eq!(refused["run"], "r9");
+        assert!(refused["message"].as_str().unwrap().contains("allows"));
+    }
+
+    struct Panics;
+
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for Panics {
+        async fn complete(&self, _: crate::provider::ModelRequest<'_>) -> crate::Result<crate::provider::ModelResponse> {
+            panic!("provider bug")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_that_panics_still_ends_with_an_error_line() {
+        let mut c = start(Arc::new(Panics));
+        c.send(run("hi", json!([]))).await;
+        let end = c.next().await;
+        assert_eq!((end["type"].as_str(), end["run"].as_str()), (Some("error"), Some("r1")));
+        assert!(end["message"].as_str().unwrap().contains("provider bug"));
     }
 }
