@@ -6,6 +6,7 @@ pub mod agent;
 pub mod approval;
 mod artifacts;
 pub mod budget;
+mod builder;
 pub mod chat;
 mod calls;
 pub mod compaction;
