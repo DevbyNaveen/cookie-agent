@@ -66,7 +66,10 @@ mod tests {
     async fn a_run_emits_agent_chat_and_tool_spans_without_content() {
         let spans: Spans = Arc::default();
         let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(Capture(spans.clone())));
-        let p = Arc::new(Scripted::new(vec![Scripted::call("w1", "weather", json!({"city": "Riga"})), Scripted::text("9C")]));
+        let mut cached = Scripted::text("9C");
+        cached.usage.cache_read_tokens = 4;
+        cached.usage.cache_write_tokens = 3;
+        let p = Arc::new(Scripted::new(vec![Scripted::call("w1", "weather", json!({"city": "Riga"})), cached]));
         let weather = tool("weather", "w", json!({"type": "object"}), Effect::Read, |_| async move { Ok("9C".to_string()) });
         let agent = Agent::with_provider(p, "m").tool(weather);
         agent.run("my secret question").await.unwrap();
@@ -80,7 +83,10 @@ mod tests {
         assert_eq!(chat["otel.kind"], "client");
         assert_eq!(chat["gen_ai.operation.name"], "chat");
         assert_eq!(chat["gen_ai.request.model"], "m");
-        assert!(chat.contains_key("gen_ai.usage.input_tokens") && chat.contains_key("gen_ai.usage.output_tokens"));
+        assert!(chat.contains_key("gen_ai.usage.output_tokens"));
+        // The convention counts cached input in input_tokens; providers report it apart.
+        let cached = spans.iter().map(|(_, f)| f).filter(|f| f.get("otel.name").map(String::as_str) == Some("chat m")).nth(1).unwrap();
+        assert_eq!(cached["gen_ai.usage.input_tokens"], "17", "10 uncached + 4 read + 3 written");
         let exec = named("execute_tool weather").expect("execute_tool span");
         assert_eq!(exec["gen_ai.tool.name"], "weather");
         assert_eq!(exec["gen_ai.tool.call.id"], "w1");

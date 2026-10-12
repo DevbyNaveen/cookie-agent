@@ -19,6 +19,7 @@ use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt},
     sync::{mpsc, oneshot},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     agent::{Agent, RunControl},
@@ -73,21 +74,40 @@ type Waiting = Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>;
 struct Wire {
     out: Out,
     waiting: Waiting,
-    next: AtomicU64,
+    /// One counter for the whole server: an id is never reused, so a late
+    /// answer from an earlier run can't be taken for a later run's.
+    next: Arc<AtomicU64>,
     run: String,
+    cancel: CancellationToken,
+}
+
+/// Takes an id off the waiting list however its wait ends.
+struct Unwait<'a>(&'a Waiting, String);
+
+impl Drop for Unwait<'_> {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().remove(&self.1);
+    }
 }
 
 impl Wire {
     /// Send `message` with a fresh id and wait for the client's reply to it.
-    /// `None` if the client went away without answering.
+    /// `None` if the run is cancelled or the client goes away first.
     async fn ask(&self, prefix: &str, mut message: Value) -> Option<Value> {
+        if self.cancel.is_cancelled() {
+            return None;
+        }
         let id = format!("{prefix}{}", self.next.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
         self.waiting.lock().unwrap().insert(id.clone(), tx);
+        let _unwait = Unwait(&self.waiting, id.clone());
         message["id"] = json!(id);
         message["run"] = json!(self.run);
         let _ = self.out.send(message);
-        rx.await.ok()
+        tokio::select! {
+            reply = rx => reply.ok(),
+            _ = self.cancel.cancelled() => None,
+        }
     }
 }
 
@@ -185,6 +205,7 @@ where
         }
     });
     let waiting: Waiting = Arc::default();
+    let next = Arc::new(AtomicU64::new(1));
     let mut current: Option<(RunControl, tokio::task::JoinHandle<()>)> = None;
     let mut lines = input.lines();
 
@@ -213,7 +234,14 @@ where
                         continue;
                     }
                 };
-                let wire = Arc::new(Wire { out: out.clone(), waiting: waiting.clone(), next: AtomicU64::new(1), run: request.id.clone() });
+                let control = RunControl::default();
+                let wire = Arc::new(Wire {
+                    out: out.clone(),
+                    waiting: waiting.clone(),
+                    next: next.clone(),
+                    run: request.id.clone(),
+                    cancel: control.cancel.clone(),
+                });
                 let agent = match make_agent(&request).map_err(|e| e.to_string()).and_then(|base| build(base, &request, &wire)) {
                     Ok(agent) => agent,
                     Err(message) => {
@@ -221,7 +249,6 @@ where
                         continue;
                     }
                 };
-                let control = RunControl::default();
                 let task = tokio::spawn(run_one(agent, request, control.clone(), out.clone()));
                 current = Some((control, task));
             }
@@ -316,11 +343,70 @@ mod tests {
     }
 
     fn start(provider: Arc<dyn crate::provider::Provider>) -> Client {
+        start_with_handle(provider).0
+    }
+
+    fn start_with_handle(provider: Arc<dyn crate::provider::Provider>) -> (Client, tokio::task::JoinHandle<crate::Result<()>>) {
         let (client, server) = tokio::io::duplex(64 * 1024);
         let (server_read, server_write) = tokio::io::split(server);
-        tokio::spawn(serve(BufReader::new(server_read), server_write, move |_: &RunRequest| Ok(Agent::with_provider(provider.clone(), "m"))));
+        let handle = tokio::spawn(serve(BufReader::new(server_read), server_write, move |_: &RunRequest| Ok(Agent::with_provider(provider.clone(), "m"))));
         let (read, write) = tokio::io::split(client);
-        Client { tx: write, rx: BufReader::new(read).lines() }
+        (Client { tx: write, rx: BufReader::new(read).lines() }, handle)
+    }
+
+    fn email_tools() -> Value {
+        json!([{"name": "send_email", "description": "Send", "schema": {"type": "object"}, "effect": "outbound", "guard": ["to"]}])
+    }
+
+    #[tokio::test]
+    async fn closing_the_input_while_approvals_wait_ends_serve_and_runs_nothing() {
+        let p = Arc::new(Scripted::new(vec![
+            Scripted::call_many(&[("e1", "send_email", json!({"to": "anna@x.com"})), ("e2", "send_email", json!({"to": "ben@x.com"}))]),
+            Scripted::text("ok"),
+        ]));
+        let (mut c, handle) = start_with_handle(p);
+        c.send(run("email anna@x.com and ben@x.com", email_tools())).await;
+        assert_eq!(c.next().await["type"], "approval");
+        c.tx.shutdown().await.unwrap(); // end of input
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(3), handle).await;
+        assert!(ended.is_ok(), "serve hung after the input closed");
+        let mut rest = Vec::new();
+        while let Ok(Some(line)) = c.rx.next_line().await {
+            rest.push(serde_json::from_str::<Value>(&line).unwrap());
+        }
+        assert!(rest.iter().all(|m| m["type"] != "tool_call"), "nothing ran: {rest:?}");
+    }
+
+    #[tokio::test]
+    async fn cancel_stops_a_run_waiting_for_the_client_and_the_next_run_starts() {
+        let p = Arc::new(Scripted::new(vec![Scripted::call("e1", "send_email", json!({"to": "anna@x.com"})), Scripted::text("second")]));
+        let mut c = start(p);
+        c.send(run("email anna@x.com", email_tools())).await;
+        assert_eq!(c.next().await["type"], "approval");
+        c.send(json!({"type": "cancel"})).await;
+        let end = c.next().await;
+        assert_eq!((end["type"].as_str(), end["run"].as_str()), (Some("error"), Some("r1")));
+        c.send(json!({"type": "run", "id": "r2", "model": "x:m", "input": "hi"})).await;
+        assert_eq!(c.next().await["answer"], "second");
+    }
+
+    #[tokio::test]
+    async fn a_late_answer_from_a_cancelled_run_never_reaches_the_next_one() {
+        let tools = json!([{"name": "lookup", "description": "", "schema": {"type": "object"}, "effect": "read", "parallel_safe": true}]);
+        let p = Arc::new(Scripted::new(vec![Scripted::call("c1", "lookup", json!({})), Scripted::call("c2", "lookup", json!({})), Scripted::text("done")]));
+        let mut c = start(p);
+        c.send(run("look", tools.clone())).await;
+        let first = c.next().await;
+        c.send(json!({"type": "cancel"})).await;
+        assert_eq!(c.next().await["type"], "error");
+        c.send(json!({"type": "run", "id": "r2", "model": "x:m", "input": "look", "tools": tools})).await;
+        let second = c.next().await;
+        assert_eq!(second["type"], "tool_call");
+        assert_ne!(first["id"], second["id"], "ids are never reused");
+        c.send(json!({"type": "tool_result", "id": first["id"], "output": "stale"})).await;
+        assert!(c.next().await["message"].as_str().unwrap().contains("nothing is waiting"));
+        c.send(json!({"type": "tool_result", "id": second["id"], "output": "fresh"})).await;
+        assert_eq!(c.next().await["answer"], "done");
     }
 
     fn run(input: &str, tools: Value) -> Value {

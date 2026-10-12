@@ -23,6 +23,15 @@ impl Scripted {
         Self { replies: Mutex::new(replies.into()), seen: Mutex::new(Vec::new()), asked: Mutex::new(Vec::new()) }
     }
 
+    /// Several tool calls in one turn.
+    pub fn call_many(calls: &[(&str, &str, Value)]) -> ModelResponse {
+        ModelResponse {
+            content: calls.iter().map(|(id, name, input)| Content::ToolCall { id: id.to_string(), name: name.to_string(), args: input.clone() }).collect(),
+            stop: StopReason::ToolUse,
+            usage: Usage { input_tokens: 10, output_tokens: 5, ..Usage::default() },
+        }
+    }
+
     pub fn text(text: &str) -> ModelResponse {
         ModelResponse {
             content: vec![Content::Text { text: text.to_string() }],

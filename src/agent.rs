@@ -308,7 +308,11 @@ impl Agent {
                 };
                 match &response {
                     Ok(r) => {
-                        chat.record("gen_ai.usage.input_tokens", r.usage.input_tokens);
+                        // The convention's input count includes cached input; providers report it apart.
+                        chat.record(
+                            "gen_ai.usage.input_tokens",
+                            r.usage.input_tokens + r.usage.cache_read_tokens + r.usage.cache_write_tokens,
+                        );
                         chat.record("gen_ai.usage.output_tokens", r.usage.output_tokens);
                         chat.record("gen_ai.usage.cache_read.input_tokens", r.usage.cache_read_tokens);
                         chat.record("gen_ai.usage.cache_write.input_tokens", r.usage.cache_write_tokens);
@@ -511,10 +515,18 @@ impl Agent {
             };
             match self.policy.decide(tool.spec(), args, provenance, tool.preview(args)) {
                 Decision::Allow => approved.push((index, tool)),
+                // A cancelled run asks no one; a wait for a person stops on cancel.
+                Decision::Ask { .. } if cancel.is_cancelled() => {
+                    outcomes[index] = Some(("Not run: the run was cancelled first.".into(), true));
+                }
                 Decision::Ask { preview, reason } => {
                     on_event(Event::AskedPerson { tool: name.clone(), preview: preview.clone() });
                     let request = ApprovalRequest { tool: name.clone(), effect: tool.spec().effect, preview, reason };
-                    if self.approver.approve(&request).await {
+                    let yes = tokio::select! {
+                        yes = self.approver.approve(&request) => yes,
+                        _ = cancel.cancelled() => false,
+                    };
+                    if yes {
                         approved.push((index, tool));
                     } else {
                         outcomes[index] = Some(("The person declined this action.".into(), true));
