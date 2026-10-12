@@ -31,6 +31,12 @@ pub trait Sandbox: Send + Sync {
     /// The program and arguments that run `program args` with no network,
     /// writing only inside `writable` (a canonical path).
     fn wrap(&self, program: &str, args: &[String], writable: &Path) -> (String, Vec<String>);
+
+    /// Whether this actually confines the command. With no sandbox, the
+    /// command can send anything anywhere, so every run asks a person.
+    fn confines(&self) -> bool {
+        true
+    }
 }
 
 /// No sandbox at all. **Unsafe**: the command can read, write and send
@@ -42,6 +48,10 @@ impl Sandbox for NoSandbox {
         "no sandbox"
     }
 
+    fn confines(&self) -> bool {
+        false
+    }
+
     fn wrap(&self, program: &str, args: &[String], _writable: &Path) -> (String, Vec<String>) {
         (program.to_string(), args.to_vec())
     }
@@ -50,21 +60,52 @@ impl Sandbox for NoSandbox {
 /// macOS `sandbox-exec` (Seatbelt). Apple marks the tool deprecated, but it
 /// ships with macOS and is what Codex uses. Only `/usr/bin/sandbox-exec` is
 /// used, never one found on `PATH`.
-pub struct Seatbelt;
+#[derive(Debug, Clone, Default)]
+pub struct Seatbelt {
+    /// Whose credentials to hide; `$HOME` when `None`.
+    home: Option<PathBuf>,
+}
 
 pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
-/// Everything is allowed except the network and writes outside
-/// `WRITABLE_ROOT` (the same shape as Apple's own `com.apple.writeconfig.sb`:
-/// allow default, then deny). Not covered: asking another process over
-/// Mach/XPC to act for the command (e.g. `cfprefsd` writing preferences).
-pub const SEATBELT_PROFILE: &str = r#"(version 1)
-(allow default)
-(deny network*)
-(deny file-write*)
-(allow file-write* (subpath (param "WRITABLE_ROOT")))
-(allow file-write-data (require-all (path "/dev/null") (vnode-type CHARACTER-DEVICE)))
-"#;
+/// Credentials under the home directory that a command can never read.
+pub const SECRET_PATHS: &[&str] = &[
+    ".ssh", ".aws", ".gnupg", ".netrc", ".npmrc", ".pypirc", ".docker", ".kube",
+    ".config/gcloud", ".thinkingroot", "Library/Keychains",
+];
+
+/// Codex's deny-by-default policy (processes, sysctls and a few services a
+/// shell needs), unmodified — see THIRD_PARTY_NOTICES.md.
+const SEATBELT_BASE: &str = include_str!("seatbelt_base_policy.sbpl");
+
+/// The whole profile. Deny by default, so nothing not listed is allowed:
+/// no network, no Apple Events, no LaunchServices (`open`), no XPC
+/// services. Reads anywhere except `SECRET_PATHS`; writes only in
+/// `WRITABLE_ROOT` (and xcrun's own cache file in /tmp).
+pub fn seatbelt_profile() -> String {
+    let mut profile = format!("{SEATBELT_BASE}\n(allow file-read*)\n");
+    for i in 0..SECRET_PATHS.len() {
+        profile.push_str(&format!("(deny file-read* (subpath (param \"SECRET_{i}\")))\n"));
+    }
+    profile.push_str(concat!(
+        "(allow file-write* (subpath (param \"WRITABLE_ROOT\")))\n",
+        "(allow file-write* (regex #\"^/private/tmp/xcrun_db-\"))\n",
+        "(deny mach-lookup (xpc-service-name-prefix \"\"))\n",
+        "(deny system-fcntl (fcntl-command 80 110))\n",
+    ));
+    profile
+}
+
+impl Seatbelt {
+    /// Hide the credentials under `home` instead of `$HOME`.
+    pub fn with_home(home: impl Into<PathBuf>) -> Self {
+        Self { home: Some(home.into()) }
+    }
+}
+
+fn home(configured: &Option<PathBuf>) -> PathBuf {
+    configured.clone().or_else(|| std::env::var_os("HOME").map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("/var/empty"))
+}
 
 impl Sandbox for Seatbelt {
     fn name(&self) -> &'static str {
@@ -72,22 +113,38 @@ impl Sandbox for Seatbelt {
     }
 
     fn wrap(&self, program: &str, args: &[String], writable: &Path) -> (String, Vec<String>) {
-        let mut argv = vec![
-            "-p".to_string(),
-            SEATBELT_PROFILE.to_string(),
-            format!("-DWRITABLE_ROOT={}", writable.display()),
-            "--".to_string(),
-            program.to_string(),
-        ];
+        let home = home(&self.home);
+        let mut argv = vec!["-p".to_string(), seatbelt_profile(), format!("-DWRITABLE_ROOT={}", writable.display())];
+        for (i, secret) in SECRET_PATHS.iter().enumerate() {
+            argv.push(format!("-DSECRET_{i}={}", home.join(secret).display()));
+        }
+        argv.push("--".to_string());
+        argv.push(program.to_string());
         argv.extend_from_slice(args);
         (SANDBOX_EXEC.to_string(), argv)
     }
 }
 
 /// Linux bubblewrap: the root read-only, `writable` read-write, a private
-/// `/tmp`, and every namespace unshared (the network included). Needs
-/// unprivileged user namespaces, or a setuid `bwrap`.
-pub struct Bubblewrap;
+/// `/tmp`, credentials hidden, and every namespace unshared (the network
+/// included). Needs unprivileged user namespaces, or a setuid `bwrap`.
+#[derive(Debug, Clone, Default)]
+pub struct Bubblewrap {
+    home: Option<PathBuf>,
+}
+
+/// Only these, never one found on `PATH`.
+const BWRAP_PATHS: &[&str] = &["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap"];
+
+fn bwrap() -> &'static str {
+    BWRAP_PATHS.iter().copied().find(|p| Path::new(p).exists()).unwrap_or(BWRAP_PATHS[0])
+}
+
+impl Bubblewrap {
+    pub fn with_home(home: impl Into<PathBuf>) -> Self {
+        Self { home: Some(home.into()) }
+    }
+}
 
 impl Sandbox for Bubblewrap {
     fn name(&self) -> &'static str {
@@ -96,25 +153,26 @@ impl Sandbox for Bubblewrap {
 
     fn wrap(&self, program: &str, args: &[String], writable: &Path) -> (String, Vec<String>) {
         let dir = writable.display().to_string();
-        let mut argv: Vec<String> = [
-            "--ro-bind", "/", "/",
-            "--dev", "/dev",
-            "--proc", "/proc",
-            "--tmpfs", "/tmp",
-            // After the read-only root and /tmp: later mounts win.
-            "--bind", &dir, &dir,
-            "--chdir", &dir,
-            "--unshare-all",
-            "--die-with-parent",
-            "--new-session",
-            "--",
-            program,
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+        let mut argv: Vec<String> =
+            ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"].iter().map(|s| s.to_string()).collect();
+        // Credentials: an empty directory over a directory, /dev/null over a file.
+        let home = home(&self.home);
+        for secret in SECRET_PATHS {
+            let path = home.join(secret).display().to_string();
+            if Path::new(&path).is_dir() {
+                argv.extend(["--tmpfs".to_string(), path]);
+            } else if Path::new(&path).exists() {
+                argv.extend(["--ro-bind".to_string(), "/dev/null".to_string(), path]);
+            }
+        }
+        // After the read-only root and /tmp: later mounts win.
+        argv.extend(
+            ["--bind", &dir, &dir, "--chdir", &dir, "--unshare-all", "--die-with-parent", "--new-session", "--", program]
+                .iter()
+                .map(|s| s.to_string()),
+        );
         argv.extend_from_slice(args);
-        ("bwrap".to_string(), argv)
+        (bwrap().to_string(), argv)
     }
 }
 
@@ -131,10 +189,10 @@ pub fn detect() -> Option<Arc<dyn Sandbox>> {
             .is_ok_and(|s| s.success())
     };
     if cfg!(target_os = "macos") && works(SANDBOX_EXEC, &["-p", "(version 1)(allow default)", "--", "/usr/bin/true"]) {
-        return Some(Arc::new(Seatbelt));
+        return Some(Arc::new(Seatbelt::default()));
     }
-    if cfg!(target_os = "linux") && works("bwrap", &["--ro-bind", "/", "/", "--unshare-all", "--die-with-parent", "--", "/bin/true"]) {
-        return Some(Arc::new(Bubblewrap));
+    if cfg!(target_os = "linux") && works(bwrap(), &["--ro-bind", "/", "/", "--unshare-all", "--die-with-parent", "--", "/bin/true"]) {
+        return Some(Arc::new(Bubblewrap::default()));
     }
     None
 }
@@ -165,18 +223,28 @@ pub fn command_tool(name: &str, sandbox: Arc<dyn Sandbox>, workdir: impl AsRef<P
     Ok(CommandTool {
         spec: ToolSpec {
             name: name.to_string(),
-            description: format!(
-                "Run a shell command (sh -c) in {}. It may write only there and has no network. \
-                 Returns the exit code, stdout and stderr (each cut at {} KB).",
-                workdir.display(),
-                OUTPUT_CAP / 1024
-            ),
+            description: if sandbox.confines() {
+                format!(
+                    "Run a shell command (sh -c) in {}. It may write only there; it has no network and cannot \
+                     ask other apps to act. Returns the exit code, stdout and stderr (each cut at {} KB).",
+                    workdir.display(),
+                    OUTPUT_CAP / 1024
+                )
+            } else {
+                format!(
+                    "Run a shell command (sh -c) in {}, with no sandbox: a person approves every command. \
+                     Returns the exit code, stdout and stderr (each cut at {} KB).",
+                    workdir.display(),
+                    OUTPUT_CAP / 1024
+                )
+            },
             schema: json!({
                 "type": "object",
                 "properties": {"command": {"type": "string", "description": "The shell command."}},
                 "required": ["command"],
             }),
-            effect: Effect::Write,
+            // Unconfined, a command can send or delete anything: it always asks.
+            effect: if sandbox.confines() { Effect::Write } else { Effect::Outbound },
             guarded_args: Vec::new(),
             parallel_safe: false,
             delegates: false,
@@ -339,24 +407,31 @@ mod tests {
     }
 
     #[test]
-    fn seatbelt_runs_the_command_under_the_profile_with_the_directory_as_a_parameter() {
-        let (program, argv) = Seatbelt.wrap("/bin/sh", &["-c".into(), "ls".into()], Path::new("/private/tmp/w"));
+    fn seatbelt_denies_by_default_and_passes_the_directory_and_secrets_as_parameters() {
+        let (program, argv) = Seatbelt::with_home("/Users/a").wrap("/bin/sh", &["-c".into(), "ls".into()], Path::new("/private/tmp/w"));
         assert_eq!(program, "/usr/bin/sandbox-exec");
-        assert_eq!(strings(&argv), ["-p", SEATBELT_PROFILE, "-DWRITABLE_ROOT=/private/tmp/w", "--", "/bin/sh", "-c", "ls"]);
-        for rule in ["(deny network*)", "(deny file-write*)", "(allow file-write* (subpath (param \"WRITABLE_ROOT\")))"] {
-            assert!(SEATBELT_PROFILE.contains(rule), "{rule}");
-        }
-        assert!(!SEATBELT_PROFILE.contains("(allow network"), "no network rule is ever allowed");
+        let profile = seatbelt_profile();
+        assert_eq!(argv[..3], ["-p".to_string(), profile.clone(), "-DWRITABLE_ROOT=/private/tmp/w".to_string()]);
+        assert!(argv.contains(&"-DSECRET_0=/Users/a/.ssh".to_string()));
+        assert_eq!(strings(&argv[argv.len() - 4..]), ["--", "/bin/sh", "-c", "ls"]);
+        assert!(profile.contains("(deny default)") && !profile.contains("(allow default)"), "closed by default");
+        assert!(!profile.contains("(allow network") && !profile.contains("appleevent") && !profile.contains("lsopen"));
     }
 
     #[test]
     fn bubblewrap_binds_the_directory_after_the_read_only_root_and_unshares_the_network() {
-        let (program, argv) = Bubblewrap.wrap("/bin/sh", &["-c".into(), "ls".into()], Path::new("/home/a/w"));
-        assert_eq!(program, "bwrap");
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".ssh")).unwrap();
+        std::fs::write(home.path().join(".netrc"), "secret").unwrap();
+        let (program, argv) = Bubblewrap::with_home(home.path()).wrap("/bin/sh", &["-c".into(), "ls".into()], Path::new("/home/a/w"));
+        assert!(BWRAP_PATHS.contains(&program.as_str()), "never from PATH: {program}");
+        let ssh = home.path().join(".ssh").display().to_string();
+        let netrc = home.path().join(".netrc").display().to_string();
         assert_eq!(
             strings(&argv),
             [
                 "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
+                "--tmpfs", &ssh, "--ro-bind", "/dev/null", &netrc,
                 "--bind", "/home/a/w", "/home/a/w", "--chdir", "/home/a/w",
                 "--unshare-all", "--die-with-parent", "--new-session", "--", "/bin/sh", "-c", "ls",
             ]
@@ -377,7 +452,7 @@ mod tests {
     async fn a_command_is_a_write_tool_that_reports_its_exit_code_and_both_streams() {
         let dir = tempfile::tempdir().unwrap();
         let t = unconfined(dir.path());
-        assert_eq!(t.spec().effect, Effect::Write);
+        assert_eq!(t.spec().effect, Effect::Outbound, "with no sandbox every command asks a person");
         assert!(!t.spec().parallel_safe);
         let out = t.call(json!({"command": "echo out; echo err >&2; pwd; exit 3"})).await.unwrap();
         let workdir = std::fs::canonicalize(dir.path()).unwrap();
@@ -493,5 +568,37 @@ mod tests {
         assert!(confined.contains("outside=1") && !blocked.exists(), "{confined}");
         // Its own empty network namespace: the host's loopback is not there.
         assert!(confined.contains("connect=1"), "{confined}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn seatbelt_blocks_apple_events_launch_services_and_reading_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".ssh")).unwrap();
+        std::fs::write(home.path().join(".ssh/id_test"), "PRIVATE KEY").unwrap();
+        let tool = command_tool("sh", Arc::new(Seatbelt::with_home(std::fs::canonicalize(home.path()).unwrap())), dir.path()).unwrap();
+        assert_eq!(tool.spec().effect, Effect::Write);
+        let key = std::fs::canonicalize(home.path()).unwrap().join(".ssh/id_test");
+        let out = tool
+            .call(json!({"command": format!(
+                "cat {}; echo \"read=$?\"; /usr/bin/osascript -e 'tell application \"System Events\" to get count of processes'; echo \"event=$?\"; /usr/bin/open -g -a TextEdit; echo \"open=$?\"",
+                key.display()
+            )}))
+            .await
+            .unwrap();
+        assert!(!out.contains("PRIVATE KEY") && out.contains("read=1"), "{out}");
+        assert!(out.contains("event=1"), "an Apple Event is refused: {out}");
+        assert!(!out.contains("open=0"), "LaunchServices is refused: {out}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn everyday_tools_still_work_inside_seatbelt() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = command_tool("sh", Arc::new(Seatbelt::default()), dir.path()).unwrap();
+        let out = tool.call(json!({"command": "ls / >/dev/null && id -un >/dev/null && git --version && echo hi > f && cat f"})).await.unwrap();
+        assert!(out.starts_with("exit code: 0") && out.contains("git version") && out.contains("hi"), "{out}");
+        assert!(!out.contains("couldn't create cache file"), "xcrun can write its cache: {out}");
     }
 }

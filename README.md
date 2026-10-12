@@ -224,15 +224,23 @@ let agent = Agent::new("anthropic:claude-sonnet-4-6")?.tool(command_tool("sh", s
 ```
 
 `command_tool` runs `sh -c <command>` in one directory, the only place it may
-write; it has no network, a cleared environment (keys never reach it), a
-timeout (60 s, `.timeout(..)`), and stdout/stderr cut at 32 KB each, saying
-so. `detect()` picks macOS `sandbox-exec` (Seatbelt; Apple marks it
-deprecated, it still ships) or Linux `bwrap`, after trying it once; with
-neither it returns `None` and you choose `NoSandbox`, which confines nothing.
-The command is the model's choice, so it is a `Write` tool: after the run has
-read anything untrusted, a person is asked first, shown the command.
-Seatbelt does not stop a command asking another process (over XPC) to act
-for it; bubblewrap needs unprivileged user namespaces.
+write. Inside a sandbox it has no network and cannot ask other apps to act
+(no Apple Events, no `open`, no XPC services), cannot read credentials
+(`~/.ssh`, `~/.aws`, keychains and the like — `SECRET_PATHS`), runs with a
+cleared environment (keys never reach it), a timeout (60 s, `.timeout(..)`),
+and stdout/stderr cut at 32 KB each, saying so.
+
+`detect()` picks macOS `sandbox-exec` or Linux `bwrap`, after trying it once.
+On macOS the profile is closed by default — OpenAI Codex's base policy
+(Apache-2.0, see THIRD_PARTY_NOTICES.md) plus the rules above — and is tested
+here against Apple Events, `open`, credential reads, the network and writes
+outside the directory. bubblewrap needs unprivileged user namespaces and is
+not yet tested on a Linux machine. With neither, `detect()` returns `None`;
+`NoSandbox` confines nothing, so every command then asks a person.
+
+The command is the model's choice, so inside a sandbox it is a `Write` tool:
+after the run has read anything untrusted, a person is asked first, shown the
+command.
 
 ## Other parties' agents (A2A)
 
