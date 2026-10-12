@@ -86,6 +86,29 @@ impl Message {
         self.summary_of
     }
 
+    /// The same turn as plain text (tool calls and results written out), for
+    /// requests that declare no tools, such as a summary. Keeps the label.
+    pub(crate) fn as_plain_text(&self) -> Option<Message> {
+        let text = self
+            .content
+            .iter()
+            .map(|c| match c {
+                Content::Text { text } => text.clone(),
+                Content::ToolCall { name, args, .. } => format!("[called {name} with {args}]"),
+                Content::ToolResult { output, is_error: true, .. } => format!("[tool error: {output}]"),
+                Content::ToolResult { output, .. } => format!("[tool result: {output}]"),
+            })
+            .filter(|t| !t.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        (!text.trim().is_empty()).then(|| Message {
+            role: self.role,
+            content: vec![Content::Text { text }],
+            origin: self.origin.clone(),
+            summary_of: None,
+        })
+    }
+
     /// Replace tool output with a short note, keeping ids and labels.
     pub(crate) fn clear_tool_outputs(&mut self, turn: usize) {
         for content in &mut self.content {

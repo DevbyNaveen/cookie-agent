@@ -33,8 +33,10 @@ pub struct Agent {
 
 type Call = (String, String, Value);
 
-/// What a run reports while it happens.
+/// What a run reports while it happens. New kinds of event may be added,
+/// so match with a `_` arm.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Event {
     TextDelta(String),
     ToolCallStarted { id: String, name: String },
@@ -44,6 +46,8 @@ pub enum Event {
     Usage(Usage),
     /// Older turns were replaced by a summary in what the model sees.
     Compacted { covered: usize, tokens_before: u64, tokens_after: u64 },
+    /// Summarising failed; the run goes on with the full view.
+    CompactionFailed { reason: String },
 }
 
 /// Two ways to stop a run: `cancel` stops now; `finish_turn` lets the
@@ -160,7 +164,13 @@ impl Agent {
             meter.check(&self.budget)?;
             let view = match &self.compaction {
                 Some(policy) => {
-                    self.compact(session, policy, &mut meter, on_event).await?;
+                    // A failed summary must not block the session: report it and
+                    // send the full view (cancellation still stops the run).
+                    match self.compact(session, policy, &mut meter, cancel, on_event).await {
+                        Ok(()) => {}
+                        Err(Error::Cancelled) => return Err(Error::Cancelled),
+                        Err(error) => on_event(Event::CompactionFailed { reason: error.to_string() }),
+                    }
                     context_view(session.messages(), policy)
                 }
                 None => session.messages().to_vec(),
@@ -231,6 +241,7 @@ impl Agent {
         session: &mut Session,
         policy: &Compaction,
         meter: &mut Meter,
+        cancel: &CancellationToken,
         on_event: &mut (dyn FnMut(Event) + Send),
     ) -> Result<()> {
         let tokens_before = estimate_tokens(&context_view(session.messages(), policy));
@@ -244,9 +255,12 @@ impl Agent {
             return Ok(());
         }
         let previous = messages.iter().rev().find(|m| m.summary_of().is_some()).cloned();
+        // Written out as plain text: a request that declares no tools may not
+        // carry tool blocks (Bedrock rejects it).
         let mut source: Vec<Message> = previous
-            .into_iter()
-            .chain(messages[already..boundary].iter().filter(|m| m.summary_of().is_none()).cloned())
+            .iter()
+            .chain(messages[already..boundary].iter().filter(|m| m.summary_of().is_none()))
+            .filter_map(Message::as_plain_text)
             .collect();
         let origin = if source.iter().any(|m| m.origin().is_untrusted()) {
             Origin::Untrusted(Source::Context)
@@ -256,12 +270,17 @@ impl Agent {
         source.push(Message::user("Write the summary now."));
 
         meter.check(&self.budget)?;
-        let reply = self
-            .provider
-            .complete(ModelRequest { model: &self.model, system: SUMMARY_PROMPT, messages: &source, tools: Vec::new() })
-            .await?;
+        let request = ModelRequest { model: &self.model, system: SUMMARY_PROMPT, messages: &source, tools: Vec::new() };
+        let reply = tokio::select! {
+            reply = self.provider.complete(request) => reply?,
+            _ = cancel.cancelled() => return Err(Error::Cancelled),
+        };
         meter.charge(&reply.usage);
         on_event(Event::Usage(reply.usage.clone()));
+        // A cut-off summary would silently drop what it failed to cover.
+        if reply.stop == StopReason::MaxTokens {
+            return Err(Error::MaxTokens);
+        }
         let text = Message::assistant(reply.content).text();
         if text.trim().is_empty() {
             return Err(Error::Provider("the summary came back empty".into()));
@@ -671,6 +690,66 @@ mod tests {
         let summary = s.messages().iter().find(|m| m.summary_of().is_some()).unwrap();
         assert!(summary.origin().is_untrusted(), "a summary of untrusted content is untrusted");
         assert!(p.seen()[1][0].origin().is_untrusted());
+    }
+
+    fn tool_history() -> Vec<Message> {
+        vec![
+            Message::user(format!("read the page {}", "padding ".repeat(30))),
+            Message::assistant(vec![Content::ToolCall { id: "r1".into(), name: "read_page".into(), args: json!({}) }]),
+            Message::tool_results(
+                vec![Content::ToolResult { id: "r1".into(), output: "page text".into(), is_error: false }],
+                Origin::Untrusted(Source::Tool("read_page".into())),
+            ),
+            Message::assistant(vec![Content::Text { text: "read it".into() }]),
+        ]
+    }
+
+    #[tokio::test]
+    async fn the_summary_request_carries_no_tool_blocks() {
+        let mut s = prefilled(tool_history()).await;
+        let (a, p) = agent(vec![Scripted::text("they read a page"), Scripted::text("final")]);
+        a.compaction(tight()).run_in(&mut s, Message::user("next"), &CancellationToken::new()).await.unwrap();
+        let summary_request = &p.seen()[0];
+        assert!(summary_request.iter().all(|m| m.tool_calls().next().is_none()
+            && m.content().iter().all(|c| matches!(c, Content::Text { .. }))));
+        assert!(summary_request.iter().any(|m| m.text().contains("page text") && m.origin().is_untrusted()));
+    }
+
+    #[tokio::test]
+    async fn a_failed_or_cut_off_summary_is_reported_and_the_run_goes_on() {
+        let mut s = prefilled(tool_history()).await;
+        let mut cut = Scripted::text("they read a");
+        cut.stop = crate::provider::StopReason::MaxTokens;
+        let (a, _) = agent(vec![cut, Scripted::text("final")]);
+        let (events, mut on) = collect();
+        let out = a.compaction(tight()).run_streaming(&mut s, Message::user("next"), &RunControl::default(), &mut on).await;
+        assert_eq!(out.unwrap(), "final");
+        assert!(events.lock().unwrap().iter().any(|e| matches!(e, Event::CompactionFailed { .. })));
+        assert!(s.messages().iter().all(|m| m.summary_of().is_none()), "a cut-off summary is never stored");
+    }
+
+    /// A provider whose summary call never returns.
+    struct Hangs;
+
+    #[async_trait::async_trait]
+    impl Provider for Hangs {
+        async fn complete(&self, _: ModelRequest<'_>) -> Result<crate::provider::ModelResponse> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_stops_a_summary_call_in_flight() {
+        let mut s = prefilled(tool_history()).await;
+        let a = Agent::with_provider(Arc::new(Hangs), "m").compaction(tight());
+        let cancel = CancellationToken::new();
+        let stopper = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            stopper.cancel();
+        });
+        let out = tokio::time::timeout(std::time::Duration::from_secs(2), a.run_in(&mut s, Message::user("next"), &cancel)).await;
+        assert!(matches!(out, Ok(Err(Error::Cancelled))), "returned promptly as cancelled");
     }
 
     #[tokio::test]

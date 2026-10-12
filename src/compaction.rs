@@ -16,7 +16,8 @@ Plain prose, no preamble.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Compaction {
-    /// Tool output from turns older than the most recent N is cleared.
+    /// Tool output older than the most recent N turns is cleared, in steps of
+    /// N turns so cached prefixes stay stable. 0 means never clear.
     pub clear_tool_results_after: usize,
     /// Summarise older turns once the view is estimated above this many tokens.
     pub summarize_above_tokens: u64,
@@ -57,13 +58,16 @@ pub fn context_view(messages: &[Message], policy: &Compaction) -> Vec<Message> {
         }
         None => messages.to_vec(),
     };
+    // Clearing moves in steps of N turns, not one turn at a time, so the
+    // prefix sent last turn is usually byte-identical and stays cached.
     let starts = turn_starts(&view);
-    let cutoff = if policy.clear_tool_results_after == 0 {
-        view.len()
-    } else if starts.len() > policy.clear_tool_results_after {
-        starts[starts.len() - policy.clear_tool_results_after]
-    } else {
+    let keep = policy.clear_tool_results_after;
+    let cutoff = if keep == 0 {
         0
+    } else {
+        let older = starts.len().saturating_sub(keep);
+        let step = older - older % keep;
+        if step == 0 { 0 } else { starts[step] }
     };
     for (index, message) in view.iter_mut().enumerate().take(cutoff) {
         let turn = starts.iter().filter(|start| **start <= index).count();
@@ -150,5 +154,25 @@ mod tests {
         assert_eq!(boundary, 12, "keeps the last two turns whole");
         assert_eq!(messages[boundary].origin(), &Origin::User);
         assert!(summary_boundary(&messages[..8], 2).is_none(), "nothing older than the kept turns");
+    }
+
+    #[test]
+    fn zero_means_never_clear() {
+        let messages: Vec<Message> = (0..3).flat_map(|i| turn(i, "data")).collect();
+        let off = Compaction { clear_tool_results_after: 0, summarize_above_tokens: u64::MAX, keep_recent_turns: 1 };
+        assert_eq!(context_view(&messages, &off), messages);
+    }
+
+    #[test]
+    fn clearing_moves_in_steps_so_the_cached_prefix_stays_put() {
+        let policy = Compaction { clear_tool_results_after: 2, summarize_above_tokens: u64::MAX, keep_recent_turns: 1 };
+        let five: Vec<Message> = (0..5).flat_map(|i| turn(i, "data")).collect();
+        let view = context_view(&five, &policy);
+        assert!(output_of(&view[6]).starts_with("[cleared:"), "turn 2 cleared");
+        assert_eq!(output_of(&view[10]), "data", "turn 3 waits for the next step");
+        let six: Vec<Message> = (0..6).flat_map(|i| turn(i, "data")).collect();
+        let next = context_view(&six, &policy);
+        assert_eq!(&next[..10], &view[..10], "the prefix sent last turn is unchanged");
+        assert!(output_of(&next[14]).starts_with("[cleared:"), "turn 4 cleared at the next step");
     }
 }
