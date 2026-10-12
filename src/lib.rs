@@ -17,6 +17,7 @@ pub mod providers;
 pub mod session;
 pub mod skills;
 pub mod subagent;
+pub mod telemetry;
 pub mod tool;
 
 pub use agent::{Agent, Event, RunControl};

@@ -4,12 +4,14 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::{
     approval::{ApprovalRequest, Approver, DenyAll},
     budget::{Budget, LoopGuard, Meter},
     compaction::{context_view, estimate_tokens, summary_boundary, Compaction, SUMMARY_PROMPT},
     enkeon::{Enkeon, ENKEON_INSTRUCTIONS},
+    telemetry,
     error::{Error, Result},
     label::{Origin, Source},
     message::{Content, Message},
@@ -31,6 +33,8 @@ pub struct Agent {
     budget: Budget,
     compaction: Option<Compaction>,
     enkeon: Option<Arc<Enkeon>>,
+    /// `gen_ai.provider.name` on spans, when known.
+    provider_name: Option<String>,
 }
 
 type Call = (String, String, Value);
@@ -83,7 +87,9 @@ impl Agent {
     pub fn new(model_id: &str) -> Result<Self> {
         let id = ModelId::parse(model_id)?;
         let provider = providers::resolve(&id)?;
-        Ok(Self::with_provider(provider, id.model))
+        let mut agent = Self::with_provider(provider, id.model);
+        agent.provider_name = Some(telemetry::provider_name(&id.provider));
+        Ok(agent)
     }
 
     pub fn with_provider(provider: Arc<dyn Provider>, model: impl Into<String>) -> Self {
@@ -98,6 +104,7 @@ impl Agent {
             compaction: None,
             // On by default when ENKEON_API_KEY is set; never in this crate's own tests.
             enkeon: if cfg!(test) { None } else { Enkeon::from_env().map(Arc::new) },
+            provider_name: None,
         }
     }
 
@@ -173,7 +180,19 @@ impl Agent {
         let mut meter = Meter::default();
         let extra = self.enkeon_tools(false, &control.cancel, on_event).await?;
         let start = Start { provenance: Provenance::default(), budget: self.budget, depth: 0, extra };
-        let result = self.turns(session, input, control, on_event, &mut open, start, &mut meter).await;
+        let span = tracing::info_span!(
+            "invoke_agent",
+            "otel.name" = "invoke_agent",
+            "otel.kind" = "internal",
+            "gen_ai.operation.name" = "invoke_agent",
+            "gen_ai.provider.name" = self.provider_name.as_deref(),
+            "gen_ai.request.model" = %self.model,
+            "error.type" = tracing::field::Empty,
+        );
+        let result = self.turns(session, input, control, on_event, &mut open, start, &mut meter).instrument(span.clone()).await;
+        if let Err(error) = &result {
+            span.record("error.type", telemetry::error_type(error));
+        }
         if result.is_err() {
             for id in open {
                 on_event(Event::ToolFinished { id, is_error: true });
@@ -269,10 +288,35 @@ impl Agent {
                         }
                     })
                 };
-                tokio::select! {
-                    response = self.provider.stream(request, &mut forward) => response?,
+                let chat = tracing::info_span!(
+                    "chat",
+                    "otel.name" = %format!("chat {}", self.model),
+                    "otel.kind" = "client",
+                    "gen_ai.operation.name" = "chat",
+                    "gen_ai.provider.name" = self.provider_name.as_deref(),
+                    "gen_ai.request.model" = %self.model,
+                    "gen_ai.usage.input_tokens" = tracing::field::Empty,
+                    "gen_ai.usage.output_tokens" = tracing::field::Empty,
+                    "gen_ai.usage.cache_read.input_tokens" = tracing::field::Empty,
+                    "gen_ai.usage.cache_write.input_tokens" = tracing::field::Empty,
+                    "error.type" = tracing::field::Empty,
+                );
+                let response = tokio::select! {
+                    response = self.provider.stream(request, &mut forward).instrument(chat.clone()) => response,
                     _ = cancel.cancelled() => return Err(Error::Cancelled),
+                };
+                match &response {
+                    Ok(r) => {
+                        chat.record("gen_ai.usage.input_tokens", r.usage.input_tokens);
+                        chat.record("gen_ai.usage.output_tokens", r.usage.output_tokens);
+                        chat.record("gen_ai.usage.cache_read.input_tokens", r.usage.cache_read_tokens);
+                        chat.record("gen_ai.usage.cache_write.input_tokens", r.usage.cache_write_tokens);
+                    }
+                    Err(error) => {
+                        chat.record("error.type", telemetry::error_type(error));
+                    }
                 }
+                response?
             };
             meter.charge(&response.usage);
             on_event(Event::Usage(response.usage.clone()));
@@ -480,8 +524,25 @@ impl Agent {
         }
 
         let run_one = |index: usize, tool: Arc<dyn Tool>| {
-            let args = calls[index].2.clone();
-            async move { (index, tool.call_in(args, context).await) }
+            let (id, name, args) = calls[index].clone();
+            let span = tracing::info_span!(
+                "execute_tool",
+                "otel.name" = %format!("execute_tool {name}"),
+                "otel.kind" = "internal",
+                "gen_ai.operation.name" = "execute_tool",
+                "gen_ai.tool.name" = %name,
+                "gen_ai.tool.call.id" = %id,
+                "error.type" = tracing::field::Empty,
+            );
+            let recorder = span.clone();
+            async move {
+                let output = tool.call_in(args, context).await;
+                if output.is_err() {
+                    recorder.record("error.type", "_OTHER");
+                }
+                (index, output)
+            }
+            .instrument(span)
         };
         let mut cancelled = false;
         if approved.iter().all(|(_, tool)| tool.spec().parallel_safe) {
