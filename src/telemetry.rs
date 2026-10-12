@@ -107,28 +107,52 @@ mod tests {
         }
     }
 
-    struct Capture(Spans);
+    thread_local! {
+        /// Set only on the capturing test's thread.
+        static CAPTURING: std::cell::RefCell<Option<Spans>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// One subscriber for the whole test binary, so `tracing`'s global
+    /// interest cache always sees one (a per-thread subscriber races other
+    /// tests); it records only on a thread that is capturing.
+    struct Capture;
 
     impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Capture {
         fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, _: Context<'_, S>) {
-            let mut fields = HashMap::new();
-            attrs.record(&mut Fields(&mut fields));
-            self.0.lock().unwrap().push((id.into_u64(), fields));
+            CAPTURING.with(|c| {
+                if let Some(spans) = &*c.borrow() {
+                    let mut fields = HashMap::new();
+                    attrs.record(&mut Fields(&mut fields));
+                    spans.lock().unwrap().push((id.into_u64(), fields));
+                }
+            });
         }
         fn on_record(&self, id: &Id, values: &Record<'_>, _: Context<'_, S>) {
-            let mut spans = self.0.lock().unwrap();
-            if let Some((_, fields)) = spans.iter_mut().rev().find(|(s, _)| *s == id.into_u64()) {
-                values.record(&mut Fields(fields));
-            }
+            CAPTURING.with(|c| {
+                if let Some(spans) = &*c.borrow() {
+                    let mut spans = spans.lock().unwrap();
+                    if let Some((_, fields)) = spans.iter_mut().rev().find(|(s, _)| *s == id.into_u64()) {
+                        values.record(&mut Fields(fields));
+                    }
+                }
+            });
         }
+    }
+
+    fn capture() -> Spans {
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        INSTALL.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry().with(Capture));
+            tracing::callsite::rebuild_interest_cache();
+        });
+        let spans: Spans = Arc::default();
+        CAPTURING.with(|c| *c.borrow_mut() = Some(spans.clone()));
+        spans
     }
 
     #[tokio::test]
     async fn a_run_emits_agent_chat_and_tool_spans_without_content() {
-        let spans: Spans = Arc::default();
-        let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(Capture(spans.clone())));
-        // Spans other tests already hit were cached as unwanted (no subscriber then).
-        tracing::callsite::rebuild_interest_cache();
+        let spans = capture();
         let mut cached = Scripted::text("9C");
         cached.usage.cache_read_tokens = 4;
         cached.usage.cache_write_tokens = 3;

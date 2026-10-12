@@ -66,6 +66,9 @@ pub struct Spend {
     pub microdollars: u64,
 }
 
+/// Where a `Handoff` tool leaves the next agent (and its tool name).
+pub(crate) type HandoffSlot = Arc<Mutex<Option<(String, Arc<crate::agent::Agent>)>>>;
+
 /// What a tool call knows about the run it belongs to. Ordinary tools
 /// ignore it; a sub-agent uses it to inherit trust, budget and cancellation.
 #[derive(Clone, Default)]
@@ -84,7 +87,7 @@ pub struct ToolContext {
     /// Who the run asks: a sub-agent with no approver of its own asks them.
     pub(crate) approver: Option<Arc<dyn crate::approval::Approver>>,
     /// Set by a `Handoff` tool: the agent that takes the conversation next.
-    pub(crate) handoff: Arc<Mutex<Option<(String, Arc<crate::agent::Agent>)>>>,
+    pub(crate) handoff: HandoffSlot,
 }
 
 impl std::fmt::Debug for ToolContext {
