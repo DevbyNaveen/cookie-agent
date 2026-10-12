@@ -57,6 +57,12 @@ impl Provenance {
         }
     }
 
+    /// Something untrusted was read that is not in the session (a tool
+    /// description written by someone else).
+    pub(crate) fn saw_untrusted(&mut self) {
+        self.untrusted_seen = true;
+    }
+
     pub fn untrusted_seen(&self) -> bool {
         self.untrusted_seen
     }
@@ -168,6 +174,7 @@ mod tests {
             guarded_args: guarded.iter().map(|s| s.to_string()).collect(),
             parallel_safe: false,
             delegates: false,
+            foreign: false,
         }
     }
 

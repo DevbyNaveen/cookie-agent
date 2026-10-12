@@ -40,6 +40,7 @@ impl Handoff {
                 guarded_args: Vec::new(),
                 parallel_safe: false,
                 delegates: false,
+                foreign: false,
             },
             agent: Arc::new(agent),
         }

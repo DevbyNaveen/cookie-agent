@@ -248,6 +248,7 @@ pub fn command_tool(name: &str, sandbox: Arc<dyn Sandbox>, workdir: impl AsRef<P
             guarded_args: Vec::new(),
             parallel_safe: false,
             delegates: false,
+            foreign: false,
         },
         sandbox,
         workdir,

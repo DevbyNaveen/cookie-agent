@@ -136,7 +136,8 @@ impl Enkeon {
                 // Effects only for the tools this server has: one without
                 // `remember` still gives `recall`.
                 let present: Vec<String> = client.list_tools().await?.into_iter().map(|t| t.name).collect();
-                let mut server = McpServer::http(&self.url);
+                // First-party: Enkeon's descriptions are not counted as untrusted reading (ledger ruling M10).
+                let mut server = McpServer::http(&self.url).first_party();
                 for (name, effect) in [("recall", Effect::Read), ("remember", Effect::Write)] {
                     if present.iter().any(|p| p == name) {
                         server = server.effect(name, effect);

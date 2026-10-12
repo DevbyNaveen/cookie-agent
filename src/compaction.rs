@@ -324,6 +324,7 @@ mod tests {
             guarded_args: vec![],
             parallel_safe: false,
             delegates: false,
+            foreign: false,
         };
         assert!(estimate_request_tokens(&"y".repeat(400), &[&spec], &messages) >= 200);
     }

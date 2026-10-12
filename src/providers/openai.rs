@@ -231,6 +231,7 @@ mod tests {
             guarded_args: vec![],
             parallel_safe: true,
             delegates: false,
+            foreign: false,
         };
         let req = ModelRequest { model: "gpt-x", system: "be brief", messages: &h, tools: vec![&spec] };
         let body = request_body(&req, Some(("max_completion_tokens", 512)));

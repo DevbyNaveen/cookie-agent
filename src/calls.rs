@@ -29,7 +29,32 @@ pub(crate) enum Stop {
 const NOT_RUN_CANCELLED: &str = "Not run: the run was cancelled first.";
 const INTERRUPTED: &str = "Interrupted: this may or may not have run. Check before trying again.";
 
+/// The tools one run offers, with what comes with them.
+pub(crate) struct Toolset {
+    pub(crate) tools: Vec<Arc<dyn Tool>>,
+    pub(crate) searcher: Option<crate::tool_search::Searcher>,
+    pub(crate) artifacts: crate::artifacts::Artifacts,
+    /// Some description was written by someone else (see `ToolSpec::foreign`).
+    pub(crate) foreign: bool,
+}
+
 impl Agent {
+    /// This agent's tools plus `extra` (Enkeon's), the artifact reader when
+    /// there are sub-agents, and the search tool when there are many; checked.
+    pub(crate) fn toolset(&self, extra: Vec<Arc<dyn Tool>>) -> Result<Toolset> {
+        let mut tools: Vec<Arc<dyn Tool>> = self.tools.iter().cloned().chain(extra).collect();
+        // Sub-agents' long answers come back by reference, read on demand.
+        let artifacts = crate::artifacts::Artifacts::default();
+        if tools.iter().any(|t| t.spec().delegates) {
+            tools.push(artifacts.tool());
+        }
+        let searcher = self.tool_search.and_then(|config| crate::tool_search::Searcher::new(&tools, config));
+        tools.extend(searcher.as_ref().map(|s| s.tool.clone()));
+        self.check_tools(&tools)?;
+        let foreign = tools.iter().any(|t| t.spec().foreign);
+        Ok(Toolset { tools, searcher, artifacts, foreign })
+    }
+
     /// Returns every call's result (in order) and whether the run must stop.
     /// A call that finished keeps its real result either way.
     #[allow(clippy::too_many_arguments)]

@@ -323,6 +323,7 @@ mod tests {
             guarded_args: vec![],
             parallel_safe: true,
             delegates: false,
+            foreign: false,
         };
         let req = ModelRequest { model: "eu.anthropic.claude-sonnet-4-6", system: "be brief", messages: &history, tools: vec![&spec] };
         let body = converse_body(&req, 2048, true);

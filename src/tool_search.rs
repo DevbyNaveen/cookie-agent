@@ -44,7 +44,12 @@ impl Searcher {
     /// What this request offers: the search tool and everything found.
     pub(crate) fn offered<'a>(&self, tools: &'a [Arc<dyn Tool>]) -> Vec<&'a ToolSpec> {
         let found = self.found.lock().unwrap();
-        tools.iter().map(|t| t.spec()).filter(|s| s.name == SEARCH_TOOL || found.contains(&s.name)).collect()
+        // `read_artifact` is always offered: a long answer points to it.
+        tools
+            .iter()
+            .map(|t| t.spec())
+            .filter(|s| s.name == SEARCH_TOOL || s.name == "read_artifact" || found.contains(&s.name))
+            .collect()
     }
 }
 
@@ -57,6 +62,7 @@ fn spec() -> ToolSpec {
         guarded_args: Vec::new(),
         parallel_safe: true,
         delegates: false,
+        foreign: false,
     }
 }
 
@@ -151,5 +157,17 @@ mod tests {
         let agent = Agent::with_provider(p.clone(), "m").tools(many().into_iter().take(5)).tool_search(ToolSearch { after: 10, top_k: 3 });
         agent.run("hi").await.unwrap();
         assert_eq!(p.asked()[0].1.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn read_artifact_is_always_offered_beside_search() {
+        let child = Agent::with_provider(Arc::new(Scripted::new(vec![Scripted::text("x")])), "m");
+        let p = Arc::new(Scripted::new(vec![Scripted::text("ok")]));
+        let agent = Agent::with_provider(p.clone(), "m")
+            .tools(many())
+            .tool(crate::subagent::SubAgent::reader("research", "x", child).unwrap())
+            .tool_search(ToolSearch { after: 10, top_k: 3 });
+        agent.run("hi").await.unwrap();
+        assert!(p.asked()[0].1.contains(&"read_artifact".to_string()), "{:?}", p.asked()[0].1);
     }
 }

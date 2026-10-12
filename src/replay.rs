@@ -179,6 +179,7 @@ impl Replay {
                             guarded_args: Vec::new(),
                             parallel_safe: false,
                             delegates: false,
+                            foreign: false,
                         },
                         calls: Mutex::new(vec![recorded]),
                     }),

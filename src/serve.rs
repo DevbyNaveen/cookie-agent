@@ -281,6 +281,7 @@ fn build(base: Agent, request: &RunRequest, wire: &Arc<Wire>) -> std::result::Re
             guarded_args: decl.guard.clone(),
             parallel_safe: decl.parallel_safe,
             delegates: false,
+            foreign: false,
         };
         agent = agent.tool(WireTool { spec, wire: wire.clone() });
     }

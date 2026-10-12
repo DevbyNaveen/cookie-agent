@@ -51,6 +51,7 @@ impl SubAgent {
                 // Readers have their own contexts and change nothing, so they can run side by side.
                 parallel_safe: effect == Effect::Read,
                 delegates: true,
+                foreign: false,
             },
             agent,
         }

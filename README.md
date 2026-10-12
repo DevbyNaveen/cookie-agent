@@ -62,7 +62,10 @@ let agent = Agent::new("anthropic:claude-sonnet-4-6")?
 ```
 
 Every MCP tool asks a person unless you lower it; a server's own hints can
-only make a tool stricter. The first connection is trust-on-first-use: `connect()` returns
+only make a tool stricter. A server's tool descriptions are its words, not yours: offering
+them counts as reading untrusted content (so a recipient named in one is
+refused), and each is cut at 2,000 characters. `.first_party()` marks a server
+you run yourself. The first connection is trust-on-first-use: `connect()` returns
 the tool list's SHA-256, and `pin` refuses a server whose tools changed since —
 it cannot catch a server that changes what a tool does behind the same
 description, which is why tool output is always untrusted. `connect()` returns the tool list's SHA-256 so

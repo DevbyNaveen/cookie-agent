@@ -21,7 +21,7 @@ use crate::{
     session::Session,
     telemetry,
     tool::{Effect, Tool, ToolContext},
-    tool_search::{Searcher, ToolSearch},
+    tool_search::ToolSearch,
     trust::EarnedTrust,
 };
 
@@ -258,21 +258,13 @@ impl Agent {
             (false, true) => crate::enkeon::instructions(delegated).to_string(),
             (false, false) => format!("{}\n\n{}", self.instructions, crate::enkeon::instructions(delegated)),
         };
-        let mut tools: Vec<Arc<dyn Tool>> = self.tools.iter().cloned().chain(start.extra).collect();
-        let searcher = self.tool_search.and_then(|config| Searcher::new(&tools, config));
-        tools.extend(searcher.as_ref().map(|s| s.tool.clone()));
-        // Sub-agents' long answers come back by reference, read on demand.
-        let artifacts = crate::artifacts::Artifacts::default();
-        if tools.iter().any(|t| t.spec().delegates) {
-            tools.push(artifacts.tool());
-        }
+        let crate::calls::Toolset { tools, searcher, artifacts, foreign } = self.toolset(start.extra)?;
         let policy = match &start.ceiling {
             Some(ceiling) => self.policy.within(ceiling),
             None => self.policy.clone(),
         };
         let approver: Arc<dyn Approver> =
             self.approver.clone().or(start.inherited_approver).unwrap_or_else(|| Arc::new(DenyAll));
-        self.check_tools(&tools)?;
         session.repair().await?;
         // `None` when a handoff continues the conversation as it stands.
         if let Some(input) = input {
@@ -283,6 +275,9 @@ impl Agent {
         // task is the parent model's words, so neither is trusted here.
         let mut provenance = start.provenance;
         session.messages().iter().for_each(|m| provenance.observe(m));
+        if foreign {
+            provenance.saw_untrusted();
+        }
         let mut loop_guard = LoopGuard::default();
 
         loop {

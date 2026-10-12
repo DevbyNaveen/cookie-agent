@@ -55,6 +55,10 @@ pub struct ToolSpec {
     /// A sub-agent. With a non-`Read` effect it is a writer of its own, which
     /// the one-writer-per-tree rule counts; part of the spec so wrappers keep it.
     pub delegates: bool,
+    /// Its description was written by someone else (an MCP server, another
+    /// party's agent card). The model reads it every turn, so offering it
+    /// counts as having read untrusted content.
+    pub foreign: bool,
 }
 
 /// Model calls and tokens a tool spent on the run's behalf (a sub-agent's).
@@ -142,6 +146,7 @@ where
             guarded_args: Vec::new(),
             parallel_safe: false,
             delegates: false,
+            foreign: false,
         },
         f,
         preview: None,

@@ -52,6 +52,7 @@ fn spec() -> ToolSpec {
         guarded_args: Vec::new(),
         parallel_safe: true,
         delegates: false,
+        foreign: false,
     }
 }
 

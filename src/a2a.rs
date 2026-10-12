@@ -305,7 +305,10 @@ impl A2aAgent {
         A2aTool {
             spec: ToolSpec {
                 name: name.to_string(),
-                description: format!("Send a task to the remote agent \"{}\" at {host}. Its card says: {}", self.card.name, self.card.description),
+                description: crate::mcp::foreign_description(&format!(
+                    "Send a task to the remote agent \"{}\" at {host}. Its card says: {}",
+                    self.card.name, self.card.description
+                )),
                 schema: json!({
                     "type": "object",
                     "properties": {"message": {"type": "string", "description": "The whole task: the agent sees nothing else."}},
@@ -315,6 +318,7 @@ impl A2aAgent {
                 guarded_args: Vec::new(),
                 parallel_safe: false,
                 delegates: false,
+                foreign: true,
             },
             host,
             agent: self.clone(),
