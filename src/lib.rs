@@ -3,6 +3,7 @@
 
 pub mod agent;
 pub mod approval;
+mod artifacts;
 pub mod budget;
 mod calls;
 pub mod compaction;

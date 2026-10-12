@@ -88,6 +88,8 @@ pub struct ToolContext {
     pub(crate) approver: Option<Arc<dyn crate::approval::Approver>>,
     /// Set by a `Handoff` tool: the agent that takes the conversation next.
     pub(crate) handoff: HandoffSlot,
+    /// Where sub-agents leave long answers for `read_artifact`.
+    pub(crate) artifacts: crate::artifacts::Artifacts,
 }
 
 impl std::fmt::Debug for ToolContext {

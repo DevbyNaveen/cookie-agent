@@ -261,6 +261,11 @@ impl Agent {
         let mut tools: Vec<Arc<dyn Tool>> = self.tools.iter().cloned().chain(start.extra).collect();
         let searcher = self.tool_search.and_then(|config| Searcher::new(&tools, config));
         tools.extend(searcher.as_ref().map(|s| s.tool.clone()));
+        // Sub-agents' long answers come back by reference, read on demand.
+        let artifacts = crate::artifacts::Artifacts::default();
+        if tools.iter().any(|t| t.spec().delegates) {
+            tools.push(artifacts.tool());
+        }
         let policy = match &start.ceiling {
             Some(ceiling) => self.policy.within(ceiling),
             None => self.policy.clone(),
@@ -349,6 +354,7 @@ impl Agent {
                 policy: Some(policy.clone()),
                 approver: Some(approver.clone()),
                 handoff: Default::default(),
+                artifacts: artifacts.clone(),
             };
             let (results, stop) = self
                 .run_calls(&tools, &calls, &provenance, &policy, approver.as_ref(), &mut loop_guard, &context, on_event)

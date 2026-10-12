@@ -84,7 +84,7 @@ impl Tool for SubAgent {
             .extend(events.into_iter().map(|event| Event::SubAgent { name: self.spec.name.clone(), event: Box::new(event) }));
         // `spent` is already in the parent's pool: the child charged it live.
         let _ = spent;
-        result.map_err(|e| e.to_string())
+        result.map(|answer| context.artifacts.keep(&self.spec.name, answer)).map_err(|e| e.to_string())
     }
 
 }
