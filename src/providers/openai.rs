@@ -263,12 +263,13 @@ impl ChunkAssembler {
         }
     }
 
-    /// The whole reply. A stream without a finish reason or `[DONE]` was cut off.
+    /// The whole reply. A stream without a finish reason was cut off. `[DONE]`
+    /// is not required: not every OpenAI-compatible server sends it.
     pub fn finish(mut self, on: &mut (dyn FnMut(ProviderEvent) + Send)) -> Result<ModelResponse> {
         if let Some(data) = self.sse.end()? {
             self.data(&data, on)?;
         }
-        if !self.done || self.finish.is_none() {
+        if self.finish.is_none() {
             return Err(Error::Provider("the stream ended before the reply was complete".into()));
         }
         let cut_off = self.finish.as_deref() == Some("length");
@@ -295,6 +296,9 @@ impl ChunkAssembler {
             content.push(Content::ToolCall { id, name, args });
         }
         let stop = stop_reason(self.finish.as_deref(), &content);
+        if self.usage == Usage::default() {
+            tracing::warn!("the stream reported no token usage; this call counts as one model call and zero tokens");
+        }
         Ok(ModelResponse { content, stop, usage: self.usage })
     }
 }
@@ -538,8 +542,9 @@ mod tests {
         assert!(matches!(stream(&filtered, 50).0, Err(Error::Provider(m)) if m.contains("content_filter")));
         let refused = "data: {\"choices\":[{\"index\":0,\"delta\":{\"refusal\":\"I can't help with that.\"},\"finish_reason\":null}]}\n\n";
         assert!(matches!(stream(refused, 50).0, Err(Error::Provider(m)) if m.contains("can't help")));
-        let cut = STREAM.split("data: [DONE]").next().unwrap();
-        assert!(matches!(stream(cut, 50).0, Err(Error::Provider(_))), "no [DONE]: the stream was cut off");
+        // Ruling: a finish reason is enough; `[DONE]` is not sent by every server.
+        let no_done = STREAM.split("data: [DONE]").next().unwrap();
+        assert!(stream(no_done, 50).0.is_ok(), "finished, just no [DONE]");
         let no_finish = STREAM.replace("\"finish_reason\":\"tool_calls\"", "\"finish_reason\":null");
         assert!(matches!(stream(&no_finish, 50).0, Err(Error::Provider(_))));
     }
@@ -615,5 +620,15 @@ mod tests {
         let schema = json!({"type": "object", "required": ["city"]});
         let req = ModelRequest { model: "m", system: "", messages: &history, output_schema: Some(&schema), ..Default::default() };
         assert_eq!(request_body(&req, None)["response_format"], json!({"type": "json_schema", "json_schema": {"name": "answer", "schema": schema}}));
+    }
+
+    #[test]
+    fn a_stream_that_ends_after_its_finish_reason_without_done_is_whole() {
+        let mut a = ChunkAssembler::default();
+        let chunks = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n\
+data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+        a.feed(chunks.as_bytes(), &mut |_| {}).unwrap();
+        let reply = a.finish(&mut |_| {}).unwrap();
+        assert_eq!(reply.content, vec![Content::Text { text: "hi".into() }]);
     }
 }
