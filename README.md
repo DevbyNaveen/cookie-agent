@@ -131,6 +131,24 @@ Readers hold only `Read` tools; one agent per tree may change things.
 Children spend from the parent's budget and stop when the parent is
 cancelled. Delegation goes at most 3 levels deep.
 
+## Shell commands, sandboxed
+
+```rust
+let sandbox = cookie_harness::sandbox::detect().expect("no sandbox here");
+let agent = Agent::new("anthropic:claude-sonnet-4-6")?.tool(command_tool("sh", sandbox, "./work")?);
+```
+
+`command_tool` runs `sh -c <command>` in one directory, the only place it may
+write; it has no network, a cleared environment (keys never reach it), a
+timeout (60 s, `.timeout(..)`), and stdout/stderr cut at 32 KB each, saying
+so. `detect()` picks macOS `sandbox-exec` (Seatbelt; Apple marks it
+deprecated, it still ships) or Linux `bwrap`, after trying it once; with
+neither it returns `None` and you choose `NoSandbox`, which confines nothing.
+The command is the model's choice, so it is a `Write` tool: after the run has
+read anything untrusted, a person is asked first, shown the command.
+Seatbelt does not stop a command asking another process (over XPC) to act
+for it; bubblewrap needs unprivileged user namespaces.
+
 ## Long sessions
 
 `.compaction(Compaction { clear_tool_results_after, summarize_above_tokens, keep_recent_turns, ..Compaction::default() })` (`.with_prompt(..)` replaces the summary instruction)
