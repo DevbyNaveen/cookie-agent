@@ -4,7 +4,10 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde_json::{json, Value};
 
-use super::fence::{fence, fence_tag};
+use super::{
+    fence::{fence, fence_tag},
+    http_error,
+};
 use crate::{
     error::{Error, Result},
     label::Origin,
@@ -125,12 +128,6 @@ pub fn request_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> V
         body["tools"] = json!(tools);
     }
     body
-}
-
-/// An HTTP failure, keeping the status even when the body isn't JSON.
-pub fn http_error(status: u16, body: &str) -> Error {
-    let detail: String = body.chars().take(500).collect();
-    Error::Provider(format!("HTTP {status}: {detail}"))
 }
 
 pub fn parse_response(raw: &Value) -> Result<ModelResponse> {
