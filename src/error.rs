@@ -8,6 +8,8 @@ pub enum Error {
     Provider(String),
     #[error("budget reached: {0}")]
     Budget(String),
+    #[error("the model ran out of output tokens before finishing")]
+    MaxTokens,
     #[error("cancelled")]
     Cancelled,
     #[error("stopped a loop: `{0}` was called with the same arguments three times in a row")]

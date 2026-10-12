@@ -11,7 +11,7 @@ use crate::{
 pub struct Budget {
     /// Model calls per run.
     pub max_steps: usize,
-    /// Input plus output tokens per run.
+    /// Input, output and cached tokens per run.
     pub max_tokens: u64,
 }
 
@@ -30,7 +30,7 @@ pub(crate) struct Meter {
 impl Meter {
     pub(crate) fn charge(&mut self, usage: &Usage) {
         self.steps += 1;
-        self.tokens += usage.input_tokens + usage.output_tokens;
+        self.tokens += usage.input_tokens + usage.output_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
     }
 
     pub(crate) fn check(&self, budget: &Budget) -> Result<()> {
@@ -63,5 +63,17 @@ impl LoopGuard {
             return Err(Error::Loop(name.to_string()));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_tokens_count_against_the_budget() {
+        let mut meter = Meter::default();
+        meter.charge(&Usage { input_tokens: 1, output_tokens: 1, cache_read_tokens: 500, cache_write_tokens: 500 });
+        assert!(matches!(meter.check(&Budget { max_steps: 10, max_tokens: 1_000 }), Err(Error::Budget(_))));
     }
 }

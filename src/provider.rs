@@ -9,6 +9,12 @@ use crate::{error::Result, message::{Content, Message}, tool::ToolSpec};
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Input tokens served from the provider's prompt cache.
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    /// Input tokens written to the provider's prompt cache.
+    #[serde(default)]
+    pub cache_write_tokens: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

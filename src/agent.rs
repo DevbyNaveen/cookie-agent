@@ -13,7 +13,7 @@ use crate::{
     message::{Content, Message},
     model_id::ModelId,
     policy::{Decision, Policy, Provenance},
-    provider::{ModelRequest, Provider},
+    provider::{ModelRequest, Provider, StopReason},
     providers,
     session::Session,
     tool::Tool,
@@ -107,6 +107,10 @@ impl Agent {
                 _ = cancel.cancelled() => return Err(Error::Cancelled),
             };
             meter.charge(&response.usage);
+            // A cut-off reply is not an answer, and a cut-off tool call has broken arguments.
+            if response.stop == StopReason::MaxTokens {
+                return Err(Error::MaxTokens);
+            }
 
             let reply = Message::assistant(response.content);
             let calls: Vec<Call> = reply.tool_calls().map(|(id, name, args)| (id.into(), name.into(), args.clone())).collect();
@@ -375,6 +379,14 @@ mod tests {
         let results = s.messages().last().unwrap().content().to_vec();
         assert!(matches!(&results[0], Content::ToolResult { id, output, is_error: false } if id == "c1" && output == "sent"));
         assert!(matches!(&results[1], Content::ToolResult { id, is_error: true, .. } if id == "c2"));
+    }
+
+    #[tokio::test]
+    async fn running_out_of_output_tokens_is_an_error_not_an_answer() {
+        let mut cut = Scripted::text("The answer is");
+        cut.stop = crate::provider::StopReason::MaxTokens;
+        let (a, _) = agent(vec![cut]);
+        assert!(matches!(a.run("explain").await, Err(Error::MaxTokens)));
     }
 
     #[tokio::test]

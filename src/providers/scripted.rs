@@ -25,7 +25,7 @@ impl Scripted {
         ModelResponse {
             content: vec![Content::Text { text: text.to_string() }],
             stop: StopReason::EndTurn,
-            usage: Usage { input_tokens: 10, output_tokens: 5 },
+            usage: Usage { input_tokens: 10, output_tokens: 5, ..Usage::default() },
         }
     }
 
@@ -33,7 +33,7 @@ impl Scripted {
         ModelResponse {
             content: vec![Content::ToolCall { id: id.to_string(), name: name.to_string(), args }],
             stop: StopReason::ToolUse,
-            usage: Usage { input_tokens: 10, output_tokens: 5 },
+            usage: Usage { input_tokens: 10, output_tokens: 5, ..Usage::default() },
         }
     }
 
