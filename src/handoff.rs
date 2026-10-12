@@ -59,7 +59,11 @@ impl Tool for Handoff {
     }
 
     async fn call_in(&self, _args: Value, context: &ToolContext) -> std::result::Result<String, String> {
-        *context.handoff.lock().expect("handoff lock") = Some((self.spec.name.clone(), self.agent.clone()));
+        let mut slot = context.handoff.lock().expect("handoff lock");
+        if let Some((taken, _)) = &*slot {
+            return Err(format!("The conversation is already being handed to {taken}; only one handoff per turn."));
+        }
+        *slot = Some((self.spec.name.clone(), self.agent.clone()));
         Ok(format!("Handed the conversation to {}.", self.spec.name))
     }
 }
@@ -176,5 +180,19 @@ mod tests {
         let (_, front) = scripted(vec![Scripted::call("h1", "strict", json!({}))]);
         let front = front.tool(Handoff::to("strict", "x", strict));
         assert!(matches!(front.run("go").await, Err(crate::Error::Budget(_))));
+    }
+
+    #[tokio::test]
+    async fn only_one_handoff_per_turn() {
+        let (_, a) = scripted(vec![Scripted::text("from a")]);
+        let (_, b) = scripted(vec![Scripted::text("from b")]);
+        let (p, front) = scripted(vec![Scripted::call_many(&[("h1", "a", json!({})), ("h2", "b", json!({}))])]);
+        let front = front.tool(Handoff::to("a", "x", a)).tool(Handoff::to("b", "x", b));
+        let mut session = Session::in_memory();
+        let answer = front.run_streaming(&mut session, Message::user("go"), &RunControl::default(), &mut |_| {}).await.unwrap();
+        assert_eq!(answer, "from a");
+        let results = session.messages()[2].content().to_vec();
+        assert!(matches!(&results[1], crate::message::Content::ToolResult { is_error: true, output, .. } if output.contains("only one handoff")));
+        let _ = p;
     }
 }

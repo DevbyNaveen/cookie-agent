@@ -74,7 +74,7 @@ pub struct Enkeon {
 impl fmt::Debug for Enkeon {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The query string may carry a key too.
-        let url = self.url.split('?').next().unwrap_or_default();
+        let url = crate::mcp::redact_url(&self.url);
         f.debug_struct("Enkeon").field("url", &url).field("key", &"[hidden]").finish()
     }
 }
@@ -101,7 +101,12 @@ impl Enkeon {
                 .find_map(|v| std::env::var(v).ok())
                 .map(std::path::PathBuf::from)
                 .or_else(|| std::env::var("HOME").ok().map(|home| std::path::Path::new(&home).join(".thinkingroot")))?;
-            Self::from_signed_in(&dir, std::env::var("ENKEON_PROJECT").ok().as_deref())
+            let project = std::env::var("ENKEON_PROJECT").ok();
+            let found = Self::from_signed_in(&dir, project.as_deref());
+            if found.is_none() && project.is_some() {
+                tracing::warn!(project = ?project, "ENKEON_PROJECT names no project the Enkeon CLI is signed in to; running without Enkeon");
+            }
+            found
         })?;
         Some(match url {
             Some(url) => enkeon.url(url.trim()),
@@ -112,7 +117,15 @@ impl Enkeon {
     /// The key the Enkeon CLI saved in `<dir>/config.json` for `project` (or
     /// its current project), with its gateway's MCP address.
     pub fn from_signed_in(dir: &std::path::Path, project: Option<&str>) -> Option<Self> {
-        let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).ok()?).ok()?;
+        let file = dir.join("config.json");
+        #[cfg(unix)]
+        if let Ok(meta) = std::fs::metadata(&file) {
+            use std::os::unix::fs::PermissionsExt;
+            if meta.permissions().mode() & 0o077 != 0 {
+                tracing::warn!(file = %file.display(), "the Enkeon CLI config holding your key can be read by other users; chmod 600 it");
+            }
+        }
+        let config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).ok()?).ok()?;
         let project = project.map(str::to_string).or_else(|| {
             ["projectId", "project"].iter().find_map(|k| config[*k].as_str().filter(|p| !p.is_empty()).map(str::to_string))
         })?;
@@ -318,6 +331,7 @@ mod tests {
     #[test]
     fn a_key_in_the_url_is_never_printed() {
         assert!(!format!("{:?}", Enkeon::new("k").url("https://api.example.com/mcp?key=tr_sk_secret")).contains("secret"));
+        assert!(!format!("{:?}", Enkeon::new("k").url("https://user:tr_sk_secret@api.example.com/mcp")).contains("secret"));
     }
 
     #[test]

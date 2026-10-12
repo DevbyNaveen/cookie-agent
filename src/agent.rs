@@ -252,6 +252,9 @@ impl Agent {
         if budget.max_dollars.is_some() && self.price.is_none() {
             return Err(Error::Budget("a dollar cap needs Agent::prices for this agent's model".into()));
         }
+        if let Some(price) = &self.price {
+            price.check()?;
+        }
         let delegated = start.depth > 0;
         let system = match (start.extra.is_empty(), self.instructions.is_empty()) {
             (true, _) => self.instructions.clone(),
@@ -905,5 +908,12 @@ mod tests {
         let a = a.tool(weather()).budget(capped).prices(crate::Price { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 });
         assert!(matches!(a.run("weather").await, Err(Error::Budget(m)) if m.contains('$')));
         assert_eq!(p.seen().len(), 1, "stopped after the first call went over");
+    }
+
+    #[tokio::test]
+    async fn a_price_that_is_not_a_number_is_refused() {
+        let (a, _) = agent(vec![Scripted::text("ok")]);
+        let a = a.prices(crate::Price { input: f64::NAN, output: -1.0, cache_read: 0.0, cache_write: 0.0 });
+        assert!(matches!(a.run("hi").await, Err(Error::Budget(m)) if m.contains("prices")));
     }
 }

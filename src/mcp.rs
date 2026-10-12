@@ -37,6 +37,20 @@ const MAX_LINE: usize = if cfg!(test) { 64 * 1024 } else { 16 * 1024 * 1024 };
 /// model reads it every turn.
 pub const FOREIGN_DESCRIPTION_MAX: usize = 2_000;
 
+/// A URL fit to print: no user, password or query string (any may hold a key).
+pub(crate) fn redact_url(text: &str) -> String {
+    match reqwest::Url::parse(text) {
+        Ok(mut url) if url.has_host() => {
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.set_query(None);
+            url.set_fragment(None);
+            url.to_string()
+        }
+        _ => text.split('?').next().unwrap_or_default().to_string(),
+    }
+}
+
 /// A description someone else wrote, cut to `FOREIGN_DESCRIPTION_MAX`.
 pub(crate) fn foreign_description(text: &str) -> String {
     if text.chars().count() <= FOREIGN_DESCRIPTION_MAX {
@@ -89,6 +103,8 @@ struct Http {
     /// Sent on every request, e.g. `Authorization`. Never printed.
     headers: Vec<(String, String)>,
     session: Mutex<Option<String>>,
+    /// The version the server answered `initialize` with.
+    version: Mutex<String>,
 }
 
 impl Drop for McpClient {
@@ -151,6 +167,7 @@ impl McpClient {
                 url: url.to_string(),
                 headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
                 session: Mutex::new(None),
+                version: Mutex::new(PROTOCOL_VERSION.to_string()),
             }),
             next_id: AtomicU64::new(1),
             timeout: REQUEST_TIMEOUT,
@@ -199,6 +216,9 @@ impl McpClient {
         let version = result["protocolVersion"].as_str().unwrap_or_default();
         if !SUPPORTED_VERSIONS.contains(&version) {
             return Err(Error::Mcp(format!("the server speaks MCP `{version}`; this client speaks {}", SUPPORTED_VERSIONS.join(", "))));
+        }
+        if let Transport::Http(http) = &self.transport {
+            *http.version.lock().unwrap() = version.to_string();
         }
         let initialized = initialized();
         match &self.transport {
@@ -398,7 +418,7 @@ impl Http {
             .post(&self.url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
-            .header("MCP-Protocol-Version", PROTOCOL_VERSION);
+            .header("MCP-Protocol-Version", self.version.lock().unwrap().clone());
         for (name, value) in &self.headers {
             request = request.header(name, value);
         }
@@ -523,8 +543,8 @@ impl McpServer {
 
     /// The server's name in messages: the command, or the URL without its
     /// query string (which may carry a key).
-    fn name(&self) -> &str {
-        self.command.split('?').next().unwrap_or_default()
+    fn name(&self) -> String {
+        redact_url(&self.command)
     }
 
     /// How long each tool call may take (default 120 s).

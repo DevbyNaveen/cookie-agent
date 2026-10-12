@@ -15,9 +15,14 @@ const PREVIEW: usize = 1_000;
 const PAGE: usize = 4_000;
 
 struct Artifact {
+    id: String,
     from: String,
     text: String,
 }
+
+/// Ids are unique in this process, so an id from another run or another
+/// hop never opens the wrong text.
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// One run's artifacts. Ids are `art-1`, `art-2`, … in order.
 #[derive(Clone, Default)]
@@ -32,9 +37,8 @@ impl Artifacts {
             return text;
         }
         let preview: String = text.chars().take(PREVIEW).collect();
-        let mut all = self.0.lock().unwrap();
-        all.push(Artifact { from: from.to_string(), text });
-        let id = format!("art-{}", all.len());
+        let id = format!("art-{}", NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        self.0.lock().unwrap().push(Artifact { id: id.clone(), from: from.to_string(), text });
         format!("[{id} from {from}: {length} characters; this is the start — read more with read_artifact]\n{preview}…")
     }
 
@@ -71,48 +75,65 @@ impl Tool for ReadArtifact {
         let id = args["id"].as_str().unwrap_or_default();
         let offset = args["offset"].as_u64().unwrap_or(0) as usize;
         let all = self.artifacts.0.lock().unwrap();
-        let index = id.strip_prefix("art-").and_then(|n| n.parse::<usize>().ok()).filter(|n| (1..=all.len()).contains(n));
-        let Some(artifact) = index.map(|n| &all[n - 1]) else {
+        let Some(artifact) = all.iter().find(|a| a.id == id) else {
             return Err(format!("There is no artifact `{id}`."));
         };
         let length = artifact.text.chars().count();
         let page: String = artifact.text.chars().skip(offset).take(PAGE).collect();
-        let end = (offset + PAGE).min(length);
+        let end = offset.saturating_add(PAGE).min(length);
         Ok(format!("[{id} from {}: characters {offset}–{end} of {length}]\n{page}", artifact.from))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        agent::Agent,
-        providers::scripted::Scripted,
-        subagent::SubAgent,
-    };
+    use super::*;
+    use crate::{agent::Agent, providers::scripted::Scripted, subagent::SubAgent};
     use serde_json::json;
     use std::sync::Arc;
+
+    /// Delegates, then reads the artifact whose id the preview names — as a
+    /// model would — then answers.
+    struct Parent;
+
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for Parent {
+        async fn complete(&self, request: crate::provider::ModelRequest<'_>) -> crate::Result<crate::provider::ModelResponse> {
+            let last = |m: &crate::message::Message| match m.content().first() {
+                Some(crate::message::Content::ToolResult { output, .. }) => output.clone(),
+                _ => String::new(),
+            };
+            let reply = match request.messages.len() {
+                1 => Scripted::call("d1", "research", json!({"task": "dig"})),
+                3 => {
+                    let preview = last(&request.messages[2]);
+                    let id = preview.trim_start_matches('[').split(' ').next().unwrap_or_default().to_string();
+                    Scripted::call("r1", "read_artifact", json!({"id": id, "offset": 8_000}))
+                }
+                _ => Scripted::text(&last(request.messages.last().unwrap())),
+            };
+            Ok(reply)
+        }
+    }
 
     #[tokio::test]
     async fn a_long_answer_comes_back_as_a_reference_the_parent_can_read() {
         let long = "x".repeat(9_000) + "THE END";
-        let child_p = Arc::new(Scripted::new(vec![Scripted::text(&long)]));
-        let child = Agent::with_provider(child_p, "m");
-        let parent_p = Arc::new(Scripted::new(vec![
-            Scripted::call("d1", "research", json!({"task": "dig"})),
-            Scripted::call("r1", "read_artifact", json!({"id": "art-1", "offset": 8_000})),
-            Scripted::text("done"),
-        ]));
-        let parent = Agent::with_provider(parent_p.clone(), "m").tool(SubAgent::reader("research", "x", child).unwrap());
-        assert_eq!(parent.run("go").await.unwrap(), "done");
-        assert!(parent_p.asked()[0].1.contains(&"read_artifact".to_string()), "offered when there are sub-agents");
-        let result = |turn: usize| match &parent_p.seen()[turn].last().unwrap().content()[0] {
-            crate::message::Content::ToolResult { output, .. } => output.clone(),
-            other => panic!("{other:?}"),
-        };
-        let preview = result(1);
-        assert!(preview.contains("art-1") && preview.contains("research") && preview.len() < 2_000, "{}", &preview[..200]);
-        let rest = result(2);
-        assert!(rest.contains("THE END") && rest.contains("research"));
+        let child = Agent::with_provider(Arc::new(Scripted::new(vec![Scripted::text(&long)])), "m");
+        let parent = Agent::with_provider(Arc::new(Parent), "m").tool(SubAgent::reader("research", "x", child).unwrap());
+        let read = parent.run("go").await.unwrap();
+        assert!(read.contains("THE END") && read.contains("from research"), "{read}");
+    }
+
+    #[tokio::test]
+    async fn ids_are_never_reused_and_a_huge_offset_is_harmless() {
+        let store = Artifacts::default();
+        let a = store.keep("r", "y".repeat(INLINE_LIMIT + 1));
+        let b = store.keep("r", "y".repeat(INLINE_LIMIT + 1));
+        assert_ne!(a.split(' ').next(), b.split(' ').next());
+        let id = a.trim_start_matches('[').split(' ').next().unwrap().to_string();
+        let out = store.tool().call(json!({"id": id, "offset": u64::MAX})).await.unwrap();
+        assert!(out.contains("characters"), "{out}");
     }
 
     #[tokio::test]

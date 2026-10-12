@@ -53,6 +53,17 @@ pub struct Price {
 }
 
 impl Price {
+    /// Every price a finite number, zero or more: a bad price would make every
+    /// call cost nothing and the cap never trip.
+    pub(crate) fn check(&self) -> Result<()> {
+        let all = [self.input, self.output, self.cache_read, self.cache_write];
+        if all.iter().all(|p| p.is_finite() && *p >= 0.0) {
+            Ok(())
+        } else {
+            Err(Error::Budget(format!("prices must be numbers of zero or more: {self:?}")))
+        }
+    }
+
     /// Millionths of a dollar for this usage, rounded up.
     pub fn microdollars(&self, usage: &Usage) -> u64 {
         let micro = usage.input_tokens as f64 * self.input

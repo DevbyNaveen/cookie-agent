@@ -53,8 +53,8 @@ same command to continue from the logs.
 Anything that sends, shares or invites is `outbound`; anything that deletes,
 cancels, pays or books is `destroy`. Both always go to the approver. Guards
 sit on the arguments that pick who receives, who is paid, or where data
-goes: their values must appear in the task's words (or the system message),
-or the call is refused. `write` asks only after untrusted content was read.
+goes: their values must appear in the task's words, or the call is refused (the
+system message is the developer's, not the person's, so it does not count). `write` asks only after untrusted content was read.
 
 | Tool | Suite | Effect | Guarded |
 |---|---|---|---|
