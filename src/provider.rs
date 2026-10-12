@@ -39,7 +39,34 @@ pub struct ModelResponse {
     pub usage: Usage,
 }
 
+/// What a provider reports while a reply is still arriving.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProviderEvent {
+    TextDelta(String),
+    ToolCallStarted { id: String, name: String },
+}
+
 #[async_trait]
 pub trait Provider: Send + Sync {
     async fn complete(&self, request: ModelRequest<'_>) -> Result<ModelResponse>;
+
+    /// Like `complete`, reporting progress as it arrives. The default waits
+    /// for the whole reply and reports it at once.
+    async fn stream(
+        &self,
+        request: ModelRequest<'_>,
+        on: &mut (dyn FnMut(ProviderEvent) + Send),
+    ) -> Result<ModelResponse> {
+        let response = self.complete(request).await?;
+        for content in &response.content {
+            match content {
+                Content::Text { text } if !text.is_empty() => on(ProviderEvent::TextDelta(text.clone())),
+                Content::ToolCall { id, name, .. } => {
+                    on(ProviderEvent::ToolCallStarted { id: id.clone(), name: name.clone() })
+                }
+                _ => {}
+            }
+        }
+        Ok(response)
+    }
 }

@@ -73,4 +73,25 @@ mod tests {
         let id = crate::model_id::ModelId::parse("nope:model").unwrap();
         assert!(matches!(crate::providers::resolve(&id), Err(crate::Error::UnknownProvider(_))));
     }
+
+    #[tokio::test]
+    async fn the_default_stream_reports_text_and_tool_calls() {
+        let p = Scripted::new(vec![ModelResponse {
+            content: vec![
+                Content::Text { text: "checking".into() },
+                Content::ToolCall { id: "c1".into(), name: "weather".into(), args: json!({}) },
+            ],
+            stop: StopReason::ToolUse,
+            usage: Usage::default(),
+        }]);
+        let history = vec![Message::user("weather?")];
+        let mut events = Vec::new();
+        p.stream(ModelRequest { model: "m", system: "", messages: &history, tools: vec![] }, &mut |e| events.push(e))
+            .await
+            .unwrap();
+        assert_eq!(events, vec![
+            crate::provider::ProviderEvent::TextDelta("checking".into()),
+            crate::provider::ProviderEvent::ToolCallStarted { id: "c1".into(), name: "weather".into() },
+        ]);
+    }
 }

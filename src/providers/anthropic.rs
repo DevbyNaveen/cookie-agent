@@ -1,13 +1,14 @@
 //! Anthropic Messages API. The key comes from the environment, never from context.
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde_json::{json, Value};
 
 use crate::{
     error::{Error, Result},
     label::{Origin, Source},
     message::{Content, Message, Role},
-    provider::{ModelRequest, ModelResponse, Provider, StopReason, Usage},
+    provider::{ModelRequest, ModelResponse, Provider, ProviderEvent, StopReason, Usage},
 };
 
 pub struct AnthropicProvider {
@@ -182,6 +183,128 @@ pub fn parse_response(raw: &Value) -> Result<ModelResponse> {
     Ok(ModelResponse { content, stop, usage })
 }
 
+enum Partial {
+    Text(String),
+    Tool { id: String, name: String, json: String },
+    Other,
+}
+
+/// Turns Anthropic's server-sent events into progress events and the final
+/// reply. Bytes may arrive split anywhere, including inside a character.
+#[derive(Default)]
+pub struct SseAssembler {
+    pending: Vec<u8>,
+    blocks: Vec<Partial>,
+    stop: Option<StopReason>,
+    usage: Usage,
+    ended: bool,
+}
+
+impl SseAssembler {
+    pub fn feed(&mut self, chunk: &[u8], on: &mut (dyn FnMut(ProviderEvent) + Send)) -> Result<()> {
+        self.pending.extend_from_slice(chunk);
+        // An event ends at a blank line; complete events are whole UTF-8.
+        while let Some(end) = find_event_end(&self.pending) {
+            let raw: Vec<u8> = self.pending.drain(..end).collect();
+            let text = String::from_utf8(raw).map_err(|e| Error::Provider(format!("stream is not UTF-8: {e}")))?;
+            for line in text.lines() {
+                if let Some(data) = line.strip_prefix("data:") {
+                    self.event(&serde_json::from_str(data.trim())?, on)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn event(&mut self, event: &Value, on: &mut (dyn FnMut(ProviderEvent) + Send)) -> Result<()> {
+        let index = event["index"].as_u64().unwrap_or(0) as usize;
+        match event["type"].as_str() {
+            Some("message_start") => {
+                let usage = &event["message"]["usage"];
+                self.usage.input_tokens = usage["input_tokens"].as_u64().unwrap_or(0);
+                self.usage.cache_read_tokens = usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
+                self.usage.cache_write_tokens = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+            }
+            Some("content_block_start") => {
+                let block = &event["content_block"];
+                let partial = match block["type"].as_str() {
+                    Some("text") => Partial::Text(block["text"].as_str().unwrap_or_default().to_string()),
+                    Some("tool_use") => {
+                        let (Some(id), Some(name)) = (block["id"].as_str(), block["name"].as_str()) else {
+                            return Err(Error::Provider(format!("tool_use block without an id or name: {block}")));
+                        };
+                        on(ProviderEvent::ToolCallStarted { id: id.into(), name: name.into() });
+                        Partial::Tool { id: id.into(), name: name.into(), json: String::new() }
+                    }
+                    _ => Partial::Other,
+                };
+                if self.blocks.len() <= index {
+                    self.blocks.resize_with(index + 1, || Partial::Other);
+                }
+                self.blocks[index] = partial;
+            }
+            Some("content_block_delta") => {
+                let delta = &event["delta"];
+                match (self.blocks.get_mut(index), delta["type"].as_str()) {
+                    (Some(Partial::Text(text)), Some("text_delta")) => {
+                        let piece = delta["text"].as_str().unwrap_or_default();
+                        text.push_str(piece);
+                        on(ProviderEvent::TextDelta(piece.to_string()));
+                    }
+                    (Some(Partial::Tool { json, .. }), Some("input_json_delta")) => {
+                        json.push_str(delta["partial_json"].as_str().unwrap_or_default());
+                    }
+                    _ => {}
+                }
+            }
+            Some("message_delta") => {
+                self.stop = Some(match event["delta"]["stop_reason"].as_str() {
+                    Some("tool_use") => StopReason::ToolUse,
+                    Some("max_tokens") => StopReason::MaxTokens,
+                    _ => StopReason::EndTurn,
+                });
+                if let Some(output) = event["usage"]["output_tokens"].as_u64() {
+                    self.usage.output_tokens = output;
+                }
+            }
+            Some("message_stop") => self.ended = true,
+            Some("error") => {
+                return Err(Error::Provider(format!("stream error: {}", event["error"]["message"].as_str().unwrap_or("unknown"))));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// The whole reply. A stream that never reached `message_stop` is an error.
+    pub fn finish(self) -> Result<ModelResponse> {
+        if !self.ended {
+            return Err(Error::Provider("the stream ended before the reply was complete".into()));
+        }
+        let mut content = Vec::new();
+        for block in self.blocks {
+            match block {
+                Partial::Text(text) if !text.is_empty() => content.push(Content::Text { text }),
+                Partial::Tool { id, name, json } => {
+                    let args = if json.trim().is_empty() { json!({}) } else { serde_json::from_str(&json)? };
+                    content.push(Content::ToolCall { id, name, args });
+                }
+                _ => {}
+            }
+        }
+        Ok(ModelResponse { content, stop: self.stop.unwrap_or(StopReason::EndTurn), usage: self.usage })
+    }
+}
+
+fn find_event_end(bytes: &[u8]) -> Option<usize> {
+    let lf = bytes.windows(2).position(|w| w == b"\n\n").map(|i| i + 2);
+    let crlf = bytes.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4);
+    match (lf, crlf) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 #[async_trait]
 impl Provider for AnthropicProvider {
     async fn complete(&self, request: ModelRequest<'_>) -> Result<ModelResponse> {
@@ -200,6 +323,35 @@ impl Provider for AnthropicProvider {
             return Err(http_error(status.as_u16(), &text));
         }
         parse_response(&serde_json::from_str(&text)?)
+    }
+
+    async fn stream(
+        &self,
+        request: ModelRequest<'_>,
+        on: &mut (dyn FnMut(ProviderEvent) + Send),
+    ) -> Result<ModelResponse> {
+        let mut body = request_body(&request, self.max_tokens, self.caching);
+        body["stream"] = json!(true);
+        let response = self
+            .client
+            .post(format!("{}/v1/messages", self.base_url))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::Provider(e.to_string()))?;
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(http_error(status.as_u16(), &text));
+        }
+        let mut assembler = SseAssembler::default();
+        let mut bytes = response.bytes_stream();
+        while let Some(chunk) = bytes.next().await {
+            assembler.feed(&chunk.map_err(|e| Error::Provider(e.to_string()))?, on)?;
+        }
+        assembler.finish()
     }
 }
 
@@ -333,5 +485,69 @@ mod tests {
     fn an_error_page_that_is_not_json_keeps_its_status() {
         let e = http_error(502, "<html>Bad Gateway</html>");
         assert!(matches!(&e, Error::Provider(m) if m.contains("502") && m.contains("Bad Gateway")), "{e}");
+    }
+
+    /// A real stream's shape: text, then a tool call whose JSON arrives in pieces.
+    const STREAM: &str = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":25,\"output_tokens\":1,\"cache_read_input_tokens\":7}}}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: ping\n",
+        "data: {\"type\":\"ping\"}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"It is 9°C\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" in Riga.\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"weather\",\"input\":{}}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\": \\\"Ri\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"ga\\\"}\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":42}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+
+    #[test]
+    fn assembles_a_stream_fed_in_awkward_pieces() {
+        // 5-byte pieces split events, lines and the multi-byte "°".
+        let mut events = Vec::new();
+        let mut on = |e: ProviderEvent| events.push(e);
+        let mut asm = SseAssembler::default();
+        for piece in STREAM.as_bytes().chunks(5) {
+            asm.feed(piece, &mut on).unwrap();
+        }
+        let r = asm.finish().unwrap();
+        assert_eq!(r.content[0], Content::Text { text: "It is 9°C in Riga.".into() });
+        assert_eq!(r.content[1], Content::ToolCall { id: "t1".into(), name: "weather".into(), args: json!({"city": "Riga"}) });
+        assert_eq!(r.stop, StopReason::ToolUse);
+        assert_eq!(r.usage, Usage { input_tokens: 25, output_tokens: 42, cache_read_tokens: 7, cache_write_tokens: 0 });
+        assert_eq!(events, vec![
+            ProviderEvent::TextDelta("It is 9°C".into()),
+            ProviderEvent::TextDelta(" in Riga.".into()),
+            ProviderEvent::ToolCallStarted { id: "t1".into(), name: "weather".into() },
+        ]);
+    }
+
+    #[test]
+    fn an_error_event_ends_the_stream_with_an_error() {
+        let mut asm = SseAssembler::default();
+        let raw = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n";
+        let out = asm.feed(raw.as_bytes(), &mut |_| {});
+        assert!(matches!(out, Err(Error::Provider(m)) if m.contains("Overloaded")));
+    }
+
+    #[test]
+    fn a_stream_cut_off_before_its_end_is_an_error() {
+        let mut asm = SseAssembler::default();
+        asm.feed(STREAM.split("event: message_delta").next().unwrap().as_bytes(), &mut |_| {}).unwrap();
+        assert!(matches!(asm.finish(), Err(Error::Provider(_))));
     }
 }
