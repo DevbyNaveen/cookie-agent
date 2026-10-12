@@ -33,24 +33,27 @@ pub struct Message {
     role: Role,
     content: Vec<Content>,
     origin: Origin,
+    /// Set on a summary: the number of earlier session messages it replaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary_of: Option<usize>,
 }
 
 impl Message {
     pub fn user(text: impl Into<String>) -> Self {
-        Self { role: Role::User, content: vec![Content::Text { text: text.into() }], origin: Origin::User }
+        Self { role: Role::User, content: vec![Content::Text { text: text.into() }], origin: Origin::User, summary_of: None }
     }
 
     /// Content the person didn't write (a page, a file, a screen) given to the model as context.
     pub fn untrusted(text: impl Into<String>, source: Source) -> Self {
-        Self { role: Role::User, content: vec![Content::Text { text: text.into() }], origin: Origin::Untrusted(source) }
+        Self { role: Role::User, content: vec![Content::Text { text: text.into() }], origin: Origin::Untrusted(source), summary_of: None }
     }
 
     pub(crate) fn assistant(content: Vec<Content>) -> Self {
-        Self { role: Role::Assistant, content, origin: Origin::Model }
+        Self { role: Role::Assistant, content, origin: Origin::Model, summary_of: None }
     }
 
     pub(crate) fn tool_results(results: Vec<Content>, origin: Origin) -> Self {
-        Self { role: Role::User, content: results, origin }
+        Self { role: Role::User, content: results, origin, summary_of: None }
     }
 
     /// Read one stored message. Crate-only: a session file is trusted state,
@@ -61,9 +64,38 @@ impl Message {
             role: Role,
             content: Vec<Content>,
             origin: Origin,
+            #[serde(default)]
+            summary_of: Option<usize>,
         }
         let stored: Stored = serde_json::from_str(line)?;
-        Ok(Self { role: stored.role, content: stored.content, origin: stored.origin })
+        Ok(Self { role: stored.role, content: stored.content, origin: stored.origin, summary_of: stored.summary_of })
+    }
+
+    /// A summary of the first `covers` session messages. Its origin says
+    /// whether it was written from untrusted content.
+    pub(crate) fn summary(text: String, covers: usize, origin: Origin) -> Self {
+        Self {
+            role: Role::User,
+            content: vec![Content::Text { text: format!("Summary of the earlier conversation:\n{text}") }],
+            origin,
+            summary_of: Some(covers),
+        }
+    }
+
+    pub fn summary_of(&self) -> Option<usize> {
+        self.summary_of
+    }
+
+    /// Replace tool output with a short note, keeping ids and labels.
+    pub(crate) fn clear_tool_outputs(&mut self, turn: usize) {
+        for content in &mut self.content {
+            if let Content::ToolResult { output, .. } = content {
+                if !output.starts_with("[cleared:") {
+                    let size = output.chars().count();
+                    *output = format!("[cleared: tool output from turn {turn}, {size} characters — ask again if you need it]");
+                }
+            }
+        }
     }
 
     pub fn role(&self) -> Role {

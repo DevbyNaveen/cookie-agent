@@ -4,6 +4,7 @@
 pub mod agent;
 pub mod approval;
 pub mod budget;
+pub mod compaction;
 pub mod error;
 pub mod label;
 pub mod message;
@@ -17,6 +18,7 @@ pub mod tool;
 pub use agent::{Agent, Event, RunControl};
 pub use approval::{ApprovalRequest, Approver, DenyAll, FnApprover};
 pub use budget::Budget;
+pub use compaction::{Compaction, SUMMARY_PROMPT};
 pub use error::{Error, Result};
 pub use label::{Origin, Source};
 pub use message::{Content, Message, Role};
