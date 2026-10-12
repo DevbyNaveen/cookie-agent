@@ -169,6 +169,10 @@ pub fn converse_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> 
     if let Some(effort) = request.reasoning {
         body["outputConfig"]["effort"] = json!(effort.as_str());
     }
+    // Converse takes the schema as a JSON string.
+    if let Some(schema) = request.output_schema {
+        body["outputConfig"]["textFormat"] = json!({"type": "json_schema", "structure": {"jsonSchema": {"schema": schema.to_string(), "name": "answer"}}});
+    }
     if !request.system.is_empty() {
         let mut system = vec![json!({"text": request.system})];
         if caching {
@@ -742,5 +746,15 @@ mod tests {
             Content::Reasoning { provider: "bedrock".into(), data: json!({"reasoningContent": {"redactedContent": "AAEC"}}) },
             Content::Text { text: "9°C".into() },
         ]);
+    }
+
+    #[test]
+    fn an_output_schema_is_sent_as_a_text_format() {
+        let history = vec![Message::user("hi")];
+        let schema = json!({"type": "object", "required": ["city"]});
+        let req = ModelRequest { model: "m", system: "", messages: &history, output_schema: Some(&schema), ..Default::default() };
+        assert_eq!(converse_body(&req, 10, false)["outputConfig"], json!({"textFormat": {
+            "type": "json_schema", "structure": {"jsonSchema": {"schema": schema.to_string(), "name": "answer"}},
+        }}));
     }
 }

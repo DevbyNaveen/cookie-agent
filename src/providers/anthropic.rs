@@ -219,7 +219,10 @@ pub fn request_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> V
     let mut body = json!({"model": request.model, "max_tokens": max_tokens, "messages": messages});
     if let Some(effort) = request.reasoning {
         body["thinking"] = json!({"type": "adaptive"});
-        body["output_config"] = json!({"effort": effort.as_str()});
+        body["output_config"]["effort"] = json!(effort.as_str());
+    }
+    if let Some(schema) = request.output_schema {
+        body["output_config"]["format"] = json!({"type": "json_schema", "schema": schema});
     }
     if !request.system.is_empty() {
         let mut system = json!({"type": "text", "text": request.system});
@@ -858,5 +861,13 @@ data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_
             Content::Reasoning { provider: "anthropic".into(), data: json!({"type": "redacted_thinking", "data": "EmwKAhgB"}) },
             Content::Text { text: "9°C".into() },
         ]);
+    }
+
+    #[test]
+    fn an_output_schema_is_sent_as_output_config_format() {
+        let history = vec![Message::user("hi")];
+        let schema = json!({"type": "object", "required": ["city"]});
+        let req = ModelRequest { model: "m", system: "", messages: &history, reasoning: Some(crate::provider::Effort::Low), output_schema: Some(&schema), ..Default::default() };
+        assert_eq!(request_body(&req, 10, false)["output_config"], json!({"effort": "low", "format": {"type": "json_schema", "schema": schema}}));
     }
 }

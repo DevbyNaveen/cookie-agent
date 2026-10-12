@@ -158,6 +158,10 @@ pub fn request_body(request: &ModelRequest, max_tokens: Option<u32>) -> Result<V
     if let Some(effort) = request.reasoning {
         body["generationConfig"]["thinkingConfig"] = json!({"thinkingLevel": effort.as_str()});
     }
+    if let Some(schema) = request.output_schema {
+        body["generationConfig"]["responseMimeType"] = json!("application/json");
+        body["generationConfig"]["responseJsonSchema"] = schema.clone();
+    }
     Ok(body)
 }
 
@@ -577,5 +581,13 @@ mod tests {
         let req = ModelRequest { model: "m", system: "", messages: &history, reasoning: Some(crate::provider::Effort::Medium), ..Default::default() };
         let body = request_body(&req, Some(100)).unwrap();
         assert_eq!(body["generationConfig"], json!({"maxOutputTokens": 100, "thinkingConfig": {"thinkingLevel": "medium"}}));
+    }
+
+    #[test]
+    fn an_output_schema_is_sent_as_a_json_response_schema() {
+        let history = vec![Message::user("hi")];
+        let schema = json!({"type": "object", "required": ["city"]});
+        let req = ModelRequest { model: "m", system: "", messages: &history, output_schema: Some(&schema), ..Default::default() };
+        assert_eq!(request_body(&req, None).unwrap()["generationConfig"], json!({"responseMimeType": "application/json", "responseJsonSchema": schema}));
     }
 }

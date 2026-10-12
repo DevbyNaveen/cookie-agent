@@ -38,6 +38,7 @@ pub struct Agent {
     /// `gen_ai.provider.name` on spans, when known.
     pub(crate) provider_name: Option<String>,
     pub(crate) reasoning: Option<Effort>,
+    pub(crate) output_schema: Option<serde_json::Value>,
 }
 
 /// Where a run starts from: what is trusted, what it may spend, how deep it
@@ -108,6 +109,7 @@ impl Agent {
             enkeon: if cfg!(test) { None } else { Enkeon::from_env().map(Arc::new) },
             provider_name: None,
             reasoning: None,
+            output_schema: None,
         }
     }
 
@@ -163,6 +165,13 @@ impl Agent {
     /// that wrote it and never shown as the answer.
     pub fn reasoning(mut self, effort: Effort) -> Self {
         self.reasoning = Some(effort);
+        self
+    }
+
+    /// The final answer must be JSON following this schema; one that isn't
+    /// is an error, not an answer.
+    pub fn output_schema(mut self, schema: serde_json::Value) -> Self {
+        self.output_schema = Some(schema);
         self
     }
 
@@ -263,7 +272,7 @@ impl Agent {
                 // in the file by an earlier run would only repeat it.
                 None => session.messages().iter().filter(|m| m.summary_of().is_none()).cloned().collect(),
             };
-            let request = ModelRequest { model: &self.model, system: &system, messages: &view, tools: specs, reasoning: self.reasoning };
+            let request = ModelRequest { model: &self.model, system: &system, messages: &view, tools: specs, reasoning: self.reasoning, output_schema: self.output_schema.as_ref() };
             let mut forward = |event: ProviderEvent| {
                 on_event(match event {
                     ProviderEvent::TextDelta(text) => Event::TextDelta(text),
@@ -297,7 +306,12 @@ impl Agent {
             match (calls.is_empty(), response.stop) {
                 // Paused: the same conversation goes again and the turn continues.
                 (true, StopReason::PauseTurn) => continue,
-                (true, _) => return Ok(answer),
+                (true, _) => {
+                    if let Some(schema) = &self.output_schema {
+                        crate::provider::check_output(schema, &answer)?;
+                    }
+                    return Ok(answer);
+                }
                 _ => {}
             }
 
@@ -873,5 +887,14 @@ mod tests {
         let agent = Agent::with_provider(seen.clone(), "m").reasoning(crate::provider::Effort::High);
         agent.run("think").await.unwrap();
         assert_eq!(*seen.0.lock().unwrap(), vec![Some(crate::provider::Effort::High)]);
+    }
+
+    #[tokio::test]
+    async fn a_structured_answer_is_checked_before_it_is_returned() {
+        let schema = json!({"type": "object", "required": ["city"]});
+        let (a, _) = agent(vec![Scripted::text(r#"{"city": "Riga"}"#)]);
+        assert_eq!(a.output_schema(schema.clone()).run("where?").await.unwrap(), r#"{"city": "Riga"}"#);
+        let (a, _) = agent(vec![Scripted::text("Riga, I think.")]);
+        assert!(matches!(a.output_schema(schema).run("where?").await, Err(Error::Provider(m)) if m.contains("not JSON")));
     }
 }

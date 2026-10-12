@@ -117,6 +117,9 @@ pub fn request_body(request: &ModelRequest, max_tokens: Option<(&str, u32)>) -> 
     if let Some(effort) = request.reasoning {
         body["reasoning_effort"] = json!(effort.as_str());
     }
+    if let Some(schema) = request.output_schema {
+        body["response_format"] = json!({"type": "json_schema", "json_schema": {"name": "answer", "schema": schema}});
+    }
     if let Some((field, limit)) = max_tokens {
         body[field] = json!(limit);
     }
@@ -603,5 +606,13 @@ mod tests {
         assert_eq!(body["reasoning_effort"], "low");
         assert_eq!(body["messages"][1], json!({"role": "assistant", "content": "b"}));
         assert!(request_body(&ModelRequest { model: "m", system: "", messages: &history, ..Default::default() }, None).get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn an_output_schema_is_sent_as_response_format() {
+        let history = vec![Message::user("hi")];
+        let schema = json!({"type": "object", "required": ["city"]});
+        let req = ModelRequest { model: "m", system: "", messages: &history, output_schema: Some(&schema), ..Default::default() };
+        assert_eq!(request_body(&req, None)["response_format"], json!({"type": "json_schema", "json_schema": {"name": "answer", "schema": schema}}));
     }
 }

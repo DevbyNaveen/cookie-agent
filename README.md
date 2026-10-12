@@ -26,6 +26,11 @@ thinking, OpenAI `reasoning_effort`, Gemini `thinkingLevel`, Bedrock
 `outputConfig.effort`). What it thinks is kept as the provider sent it and
 sent back only to that provider; it is never the answer and never trusted.
 
+`.output_schema(json!({…}))` makes the final answer JSON following that
+schema, through each provider's own structured-output setting. The answer is
+checked before it is returned (valid JSON, an object where the schema says
+so, every `required` key); one that fails is an error.
+
 ## Five concepts
 
 | | |
