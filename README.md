@@ -47,6 +47,26 @@ See `examples/outbound_gate.rs`: a web page tells the agent to email
 Prompt injection is not solved by this. It limits what an injected
 model can *do*.
 
+## MCP servers and skills
+
+```rust
+let github = McpServer::stdio("github-mcp", &[])
+    .effect("search_issues", Effect::Read)   // everything else asks a person
+    .guard("create_issue", "repo")
+    .pin("3f2a…")                            // refuse it if its tools change
+    .connect()
+    .await?;
+let agent = Agent::new("anthropic:claude-sonnet-4-6")?
+    .tools(github.tools)
+    .tool(Skills::from_dir("skills")?.tool());
+```
+
+Every MCP tool asks a person unless you lower it; a server's own hints can
+only make a tool stricter. `connect()` returns the tool list's SHA-256 so
+you can pin it. Skills (`SKILL.md`) are offered through one `use_skill`
+tool and loaded on demand; `read_agents_md` gives you `AGENTS.md` to put in
+your instructions — nothing is added behind your back.
+
 ## Long sessions
 
 `.compaction(Compaction { clear_tool_results_after, summarize_above_tokens, keep_recent_turns })`

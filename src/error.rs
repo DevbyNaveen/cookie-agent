@@ -18,6 +18,8 @@ pub enum Error {
     Loop(String),
     #[error("mcp: {0}")]
     Mcp(String),
+    #[error("skill: {0}")]
+    Skill(String),
     #[error("session: {0}")]
     Session(String),
     #[error(transparent)]
