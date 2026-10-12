@@ -21,6 +21,7 @@ use crate::{
     session::Session,
     telemetry,
     tool::{Effect, Tool, ToolContext},
+    trust::EarnedTrust,
 };
 
 pub struct Agent {
@@ -34,6 +35,7 @@ pub struct Agent {
     pub(crate) approver: Option<Arc<dyn Approver>>,
     pub(crate) budget: Budget,
     pub(crate) price: Option<Price>,
+    pub(crate) trust: Option<EarnedTrust>,
     pub(crate) compaction: Option<Compaction>,
     pub(crate) enkeon: Option<Arc<Enkeon>>,
     /// `gen_ai.provider.name` on spans, when known.
@@ -74,6 +76,9 @@ pub enum Event {
     SubAgent { name: String, event: Box<Event> },
     /// Enkeon is set up but could not be reached; this run goes on without it.
     EnkeonUnavailable { reason: String },
+    /// A `write` call ran without asking because a person approved it enough
+    /// times in a row.
+    RanOnEarnedTrust { tool: String },
 }
 
 /// Two ways to stop a run: `cancel` stops now; `finish_turn` lets the
@@ -104,6 +109,7 @@ impl Agent {
             approver: None,
             budget: Budget::default(),
             price: None,
+            trust: None,
             compaction: None,
             // On by default when ENKEON_API_KEY is set; never in this crate's own tests.
             enkeon: if cfg!(test) { None } else { Enkeon::from_env().map(Arc::new) },
@@ -144,6 +150,14 @@ impl Agent {
 
     pub fn budget(mut self, budget: Budget) -> Self {
         self.budget = budget;
+        self
+    }
+
+    /// Let a person's repeated approvals of a `write` tool stand: after the
+    /// streak, it runs without asking (and `Event::RanOnEarnedTrust` says so).
+    /// Tools that send, delete or pay always ask.
+    pub fn earned_trust(mut self, trust: EarnedTrust) -> Self {
+        self.trust = Some(trust);
         self
     }
 

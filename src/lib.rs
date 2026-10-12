@@ -21,6 +21,7 @@ pub mod skills;
 pub mod subagent;
 pub mod telemetry;
 pub mod tool;
+pub mod trust;
 
 pub use agent::{Agent, Event, RunControl};
 pub use approval::{ApprovalRequest, Approver, DenyAll, FnApprover};
@@ -39,3 +40,4 @@ pub use mcp::{McpClient, McpServer, McpTools};
 pub use skills::{read_agents_md, Skills};
 pub use subagent::SubAgent;
 pub use enkeon::{Enkeon, ENKEON_INSTRUCTIONS};
+pub use trust::EarnedTrust;
