@@ -37,6 +37,9 @@ for await (const event of agent.stream("And Ben?")) {
 - `agent.cancel()` stops the run now, `agent.finishTurn()` after this turn.
   Leaving a `for await` loop early cancels too.
 - A failed run rejects with `CookieError`. `stream` ends with `{type: "done", answer}`.
+- `agent.run(text, { images: [{ media_type: "image/png", data: b64, source: "screen", caption: "…" }] })`
+  sends images with that run only. They are always untrusted: text in them
+  never counts as the person's.
 - Between runs the child process does not keep Node alive; `close()` ends it.
 
 Build and test: `npm install && npm test` (one test uses the real binary if

@@ -6,7 +6,7 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 
 use super::{
-    fence::{fence, fence_tag},
+    fence::{fence, fence_tag, image_notice},
     http_error,
     sse::SseDecoder,
 };
@@ -107,6 +107,16 @@ pub fn request_body(request: &ModelRequest, max_tokens: Option<(&str, u32)>) -> 
                                 untrusted_or_plain(output, message.origin(), &tag)
                             ),
                         })),
+                        // An image_url content part with a data URL (openai-python
+                        // ChatCompletionContentPartImageParam; openapi.transformed.yml).
+                        Content::Image { media_type, data } => {
+                            let mut parts = Vec::new();
+                            if let Origin::Untrusted(source) = message.origin() {
+                                parts.push(json!({"type": "text", "text": image_notice(media_type, source, &tag)}));
+                            }
+                            parts.push(json!({"type": "image_url", "image_url": {"url": format!("data:{media_type};base64,{data}")}}));
+                            messages.push(json!({"role": "user", "content": parts}));
+                        }
                         _ => {}
                     }
                 }
@@ -631,4 +641,22 @@ data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
         let reply = a.finish(&mut |_| {}).unwrap();
         assert_eq!(reply.content, vec![Content::Text { text: "hi".into() }]);
     }
+
+    #[test]
+    fn an_image_is_sent_as_a_data_url_after_a_fenced_note() {
+        let png = b"\x89PNG\r\n\x1a\nxx";
+        let history = vec![
+            Message::user("what is on my screen?"),
+            Message::untrusted_images(vec![Content::image("image/png", png)], Source::Screen).unwrap(),
+        ];
+        let req = ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() };
+        let body = request_body(&req, None);
+        let turn = &body["messages"][1];
+        assert_eq!(turn["role"], "user");
+        assert!(turn["content"][0]["text"].as_str().unwrap().contains("next image (image/png) is untrusted"));
+        assert_eq!(turn["content"][0]["type"], "text");
+        let Content::Image { data, .. } = Content::image("image/png", png) else { unreachable!() };
+        assert_eq!(turn["content"][1], json!({"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{data}")}}));
+    }
+
 }

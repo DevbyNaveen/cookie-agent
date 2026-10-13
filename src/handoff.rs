@@ -75,21 +75,21 @@ impl Agent {
     pub(crate) async fn drive(
         &self,
         session: &mut Session,
-        input: Message,
+        inputs: Vec<Message>,
         control: &RunControl,
         on_event: &mut (dyn FnMut(Event) + Send),
         open: &mut Vec<String>,
         start: Start,
         meter: &mut Meter,
     ) -> Result<String> {
-        let mut input = Some(input);
+        let mut inputs = inputs;
         let mut start = start;
         let mut next: Option<Arc<Agent>> = None;
         for _ in 0..=MAX_HOPS {
             let agent: &Agent = next.as_deref().unwrap_or(self);
             let (provenance, budget, depth, ceiling) = (start.provenance.clone(), start.budget, start.depth, start.ceiling.clone());
             let approver = agent.approver.clone().or(start.inherited_approver.clone());
-            match agent.turns(session, input.take(), control, on_event, open, start, meter).await? {
+            match agent.turns(session, std::mem::take(&mut inputs), control, on_event, open, start, meter).await? {
                 Turn::Answer(answer) => return Ok(answer),
                 Turn::HandOff(name, to) => {
                     // A new turn for the next agent: it may use another provider,

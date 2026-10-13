@@ -195,22 +195,24 @@ class Agent:
 
     # -- public -----------------------------------------------------------
 
-    def run(self, input: str) -> str:
-        """Run to the end and return the answer. Raises CookieError if the run fails."""
-        with contextlib.closing(self.stream(input)) as events:
+    def run(self, input: str, images: Optional[list] = None) -> str:
+        """Run to the end and return the answer. Raises CookieError if the run fails.
+        `images` go with this run only: `{"media_type", "data" (base64), "source",
+        "caption"}` each, sent as untrusted content after `input`."""
+        with contextlib.closing(self.stream(input, images)) as events:
             for event in events:
                 if event["type"] == "done":
                     return event["answer"]
         raise CookieError("the run ended without an answer")  # pragma: no cover
 
-    def stream(self, input: str) -> Iterator[dict]:
+    def stream(self, input: str, images: Optional[list] = None) -> Iterator[dict]:
         """Yield the run's events as dicts (`{"type": "text_delta", "data": ...}` and so on),
         then `{"type": "done", "answer": ...}`. Tool calls and approvals are handled
         while you iterate. Leaving the loop early cancels the run."""
         if not self._run_lock.acquire(blocking=False):
             raise CookieError("a run is already going on this agent")
         try:
-            yield from self._stream(input)
+            yield from self._stream(input, images)
         finally:
             self._run_id = None
             self._run_lock.release()
@@ -240,7 +242,7 @@ class Agent:
 
     # -- the protocol -----------------------------------------------------
 
-    def _stream(self, input: str) -> Iterator[dict]:
+    def _stream(self, input: str, images: Optional[list] = None) -> Iterator[dict]:
         self._start()
         self._runs += 1
         run_id = f"r{self._runs}"
@@ -253,6 +255,8 @@ class Agent:
         if self.enkeon is not None:
             message["enkeon"] = self.enkeon
         message.update(self.extra)
+        if images:
+            message["images"] = list(images)
         self._run_id = run_id
         self._send(message)
         ended = False

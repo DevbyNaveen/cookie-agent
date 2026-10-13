@@ -131,6 +131,16 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(run["prices"]["output"], 15.0)
         self.assertEqual(run["mcp"], [{"command": "github-mcp", "effects": {"search": "read"}}])
 
+    def test_images_go_with_one_run_only(self):
+        agent, fake = self.agent([{"read": "run"}, done("a mail"), {"read": "run"}, done("ok")])
+        shot = {"media_type": "image/png", "data": "iVBORw0KGgp4eA==", "source": "screen", "caption": "Mail.app"}
+        self.assertEqual(agent.run("what is this?", images=[shot]), "a mail")
+        self.assertEqual(agent.run("thanks"), "ok")
+        agent.close()
+        first, second = fake.sent("run")
+        self.assertEqual(first["images"], [shot])
+        self.assertNotIn("images", second)
+
     def test_unset_options_are_left_out_of_the_run(self):
         agent, fake = self.agent([{"read": "run"}, done("ok")])
         agent.run("hi")

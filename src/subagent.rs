@@ -124,7 +124,7 @@ impl Agent {
         let mut open = Vec::new();
         let span = crate::telemetry::agent_span(Some(name), &self.model, self.provider_name.as_deref());
         let result = self
-            .drive(&mut session, input, &control, &mut |e| events.push(e), &mut open, start, &mut meter)
+            .drive(&mut session, vec![input], &control, &mut |e| events.push(e), &mut open, start, &mut meter)
             .instrument(span.clone())
             .await;
         if let Err(error) = &result {
