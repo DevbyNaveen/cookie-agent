@@ -128,10 +128,33 @@ a person unless `effects` lowers it, and a `pin` refuses a server whose tool
 list changed. A server that can't be reached, or fails its pin, ends that
 run with an `error`. Unknown fields are refused, here as everywhere.
 
+A `run` may also carry `"images": [{"media_type": "image/png", "data":
+"<base64>", "source": "screen", "caption": "…"}]` (source `screen`, the
+default, `web` or `file`; one source per run). They go in as one untrusted
+message right after `input`. See *Images*.
+
 Clients that do this for you: `bindings/python` (`cookie_harness`, standard
 library only) and `bindings/typescript` (`@cookie-harness/client`, no runtime
 dependencies). `evals/agentdojo` runs AgentDojo through the Python one, with
 the trust layer on and off.
+
+## Images
+
+```rust
+let shot = Message::untrusted_image("image/png", &png_bytes, Source::Screen)?;
+agent.run_streaming_all(&mut session, vec![Message::user("Answer this mail"), shot], &control, &mut |_| {}).await?;
+```
+
+An image is always untrusted, like a web page: text visible in a screenshot
+is never the person's words, so it can't pick a recipient, and reading one
+counts as having read untrusted content. `Message::untrusted_images` takes
+several images and caption text (untrusted too) as one message. Accepted:
+`image/png`, `image/jpeg`, `image/gif`, `image/webp`, whose bytes must match
+the type; at most 3,750,000 bytes each and 20 per message (Bedrock's limits,
+the smallest documented). Each provider gets the image in its own format,
+after a fenced note saying what follows is untrusted. In long sessions an
+image counts as 1,600 tokens, is written as `[image: image/png, 120 KB]` in
+summaries, and is cleared from old turns like tool output.
 
 ## Tracing
 

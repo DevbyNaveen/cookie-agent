@@ -66,6 +66,50 @@ pub struct RunRequest {
     /// MCP servers connected for this run only.
     #[serde(default)]
     pub mcp: Vec<McpDecl>,
+    /// Images sent with the input (a screenshot): one untrusted message
+    /// right after it.
+    #[serde(default)]
+    pub images: Vec<ImageDecl>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageDecl {
+    pub media_type: String,
+    /// Base64.
+    pub data: String,
+    /// `screen` (the default), `web` or `file`.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Text sent just before the image; untrusted like the image.
+    #[serde(default)]
+    pub caption: Option<String>,
+}
+
+/// The run's images as one untrusted message; `None` without images.
+fn images_message(images: &[ImageDecl]) -> std::result::Result<Option<Message>, String> {
+    use crate::{label::Source, message::Content};
+    let mut source = None;
+    let mut parts = Vec::new();
+    for image in images {
+        let this = match image.source.as_deref().unwrap_or("screen") {
+            "screen" => Source::Screen,
+            "web" => Source::Web,
+            "file" => Source::File,
+            other => return Err(format!("image source `{other}`: use screen, web or file")),
+        };
+        if source.get_or_insert(this.clone()) != &this {
+            return Err("the images of one run come from one source".into());
+        }
+        if let Some(caption) = image.caption.as_ref().filter(|c| !c.trim().is_empty()) {
+            parts.push(Content::Text { text: caption.clone() });
+        }
+        parts.push(Content::Image { media_type: image.media_type.clone(), data: image.data.clone() });
+    }
+    match source {
+        Some(source) => Message::untrusted_images(parts, source).map(Some).map_err(|e| e.to_string()),
+        None => Ok(None),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -446,6 +490,11 @@ async fn run_one(agent: Agent, servers: Vec<McpServer>, request: RunRequest, con
 
 /// The run itself; returns its last line (`done` or `error`).
 async fn run_inner(mut agent: Agent, servers: Vec<McpServer>, request: RunRequest, control: RunControl, out: Out) -> Value {
+    let mut inputs = vec![Message::user(&request.input)];
+    match images_message(&request.images) {
+        Ok(images) => inputs.extend(images),
+        Err(message) => return json!({"type": "error", "run": request.id, "message": message}),
+    }
     // Connected here, not in the read loop: a slow server holds up only its
     // run, and `cancel` stops the wait. Disconnected when the run ends.
     for server in servers {
@@ -468,7 +517,7 @@ async fn run_inner(mut agent: Agent, servers: Vec<McpServer>, request: RunReques
     let events = out.clone();
     let run = request.id.clone();
     let result = agent
-        .run_streaming(&mut session, Message::user(&request.input), &control, &mut |event| {
+        .run_streaming_all(&mut session, inputs, &control, &mut |event| {
             let _ = events.send(json!({"type": "event", "run": run, "event": event}));
         })
         .await;
@@ -684,6 +733,48 @@ mod tests {
         assert_eq!(c.next().await["answer"], "one");
         c.send(json!({"type": "run", "id": "r2", "model": "x:m", "input": "second"})).await;
         assert_eq!(c.next().await["answer"], "two");
+    }
+
+    #[tokio::test]
+    async fn images_arrive_as_one_untrusted_message_right_after_the_input() {
+        let p = Arc::new(Scripted::new(vec![Scripted::text("a mail")]));
+        let mut c = start(p.clone());
+        let png = "iVBORw0KGgp4eA=="; // the PNG signature and "xx"
+        let mut request = run("what is this?", json!([]));
+        request["images"] = json!([
+            {"media_type": "image/png", "data": png, "source": "screen", "caption": "Mail.app"},
+            {"media_type": "image/png", "data": png}
+        ]);
+        c.send(request).await;
+        assert_eq!(c.next().await["answer"], "a mail");
+        let seen = &p.seen()[0];
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], Message::user("what is this?"));
+        assert_eq!(seen[1].origin(), &crate::Origin::Untrusted(crate::Source::Screen));
+        let image = || crate::Content::Image { media_type: "image/png".into(), data: png.into() };
+        assert_eq!(seen[1].content(), &[crate::Content::Text { text: "Mail.app".into() }, image(), image()]);
+    }
+
+    #[tokio::test]
+    async fn a_bad_image_or_field_ends_the_run_before_the_model_is_called() {
+        let p = Arc::new(Scripted::new(vec![Scripted::text("never")]));
+        let mut c = start(p.clone());
+        let png = |source: &str| json!({"media_type": "image/png", "data": "iVBORw0KGgp4eA==", "source": source});
+        for (id, images, expected) in [
+            ("r1", json!([{"media_type": "image/svg+xml", "data": "PHN2Zy8+"}]), "image/png, image/jpeg"),
+            ("r2", json!([png("tool")]), "screen, web or file"),
+            ("r3", json!([{"media_type": "image/png", "data": "iVBORw0KGgp4eA==", "alt": "x"}]), "alt"),
+            ("r4", json!([png("screen"), png("web")]), "one source"),
+        ] {
+            let mut request = run("hi", json!([]));
+            request["id"] = json!(id);
+            request["images"] = images;
+            c.send(request).await;
+            let refused = c.next().await;
+            assert_eq!((refused["type"].as_str(), refused["run"].as_str()), (Some("error"), Some(id)));
+            assert!(refused["message"].as_str().unwrap().contains(expected), "{refused}");
+        }
+        assert!(p.seen().is_empty());
     }
 
     #[tokio::test]

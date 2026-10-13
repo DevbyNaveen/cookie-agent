@@ -68,6 +68,22 @@ export interface AgentOptions {
   mcp?: Record<string, unknown>[];
 }
 
+/** An image sent with one run; always untrusted content, never the person's words. */
+export interface RunImage {
+  media_type: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+  /** Base64. */
+  data: string;
+  /** Where it came from: "screen" (the default), "web" or "file". */
+  source?: "screen" | "web" | "file";
+  /** Text sent just before the image; untrusted like the image. */
+  caption?: string;
+}
+
+/** Options for one run. */
+export interface RunOptions {
+  images?: RunImage[];
+}
+
 /** A streamed event (`text_delta`, `tool_call_started`, `usage`, …), or the last one: `done`. */
 export type AgentEvent = { type: "done"; answer: string } | { type: string; data?: unknown };
 
@@ -147,8 +163,8 @@ export class Agent {
   }
 
   /** Run to the end and return the answer. Rejects with CookieError if the run fails. */
-  async run(input: string): Promise<string> {
-    for await (const event of this.stream(input)) {
+  async run(input: string, options: RunOptions = {}): Promise<string> {
+    for await (const event of this.stream(input, options)) {
       if (event.type === "done") return (event as { answer: string }).answer;
     }
     throw new CookieError("the run ended without an answer");
@@ -158,7 +174,7 @@ export class Agent {
    * The run's events, then `{type: "done", answer}`. Tool calls and approvals
    * are handled while you iterate. Leaving the loop early cancels the run.
    */
-  async *stream(input: string): AsyncGenerator<AgentEvent, void, undefined> {
+  async *stream(input: string, options: RunOptions = {}): AsyncGenerator<AgentEvent, void, undefined> {
     if (this.#running) throw new CookieError("a run is already going on this agent");
     const id = `r${++this.#runs}`;
     this.#running = id;
@@ -173,6 +189,7 @@ export class Agent {
       for (const key of ["session", "budget", "prices", "mcp"] as const) {
         if (this.options[key] !== undefined) run[key] = this.options[key];
       }
+      if (options.images?.length) run.images = options.images;
       run.tools = [...this.#tools.values()].map(({ name, description, effect, schema, guard }) => ({
         name,
         description: description ?? "",

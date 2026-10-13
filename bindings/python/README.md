@@ -39,6 +39,9 @@ with Agent("anthropic:claude-sonnet-4-6", tools=[weather, send_email], approver=
   after this turn. Leaving a `stream` loop early cancels too.
 - A failed run raises `CookieError`. `stream` ends with `{"type": "done", "answer": ...}`.
 - `enkeon=False` turns Enkeon off for the agent's runs.
+- `agent.run(text, images=[{"media_type": "image/png", "data": b64, "source": "screen", "caption": "…"}])`
+  sends images with that run only. They are always untrusted: text in them
+  never counts as the person's.
 
 Tests: `python3 -m unittest discover -s tests` (one test uses the real binary
 if `target/debug/cookie` exists: `cargo build --bin cookie`).

@@ -100,6 +100,17 @@ test("session, budget, prices and mcp are passed through", async (t) => {
   assert.deepEqual(run.mcp, [{ command: "github-mcp", effects: { search: "read" } }]);
 });
 
+test("images go with one run only", async (t) => {
+  const [a, f] = agent(t, [{ read: "run" }, done("a mail"), { read: "run" }, done("ok")]);
+  const shot = { media_type: "image/png", data: "iVBORw0KGgp4eA==", source: "screen", caption: "Mail.app" };
+  assert.equal(await a.run("what is this?", { images: [shot] }), "a mail");
+  assert.equal(await a.run("thanks"), "ok");
+  await a.close();
+  const [first, second] = f.sent("run");
+  assert.deepEqual(first.images, [shot]);
+  assert.equal("images" in second, false);
+});
+
 test("unset options are left out of the run", async (t) => {
   const [a, f] = agent(t, [{ read: "run" }, done("ok")]);
   await a.run("hi");
