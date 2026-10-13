@@ -19,6 +19,7 @@ import itertools
 import json
 import re
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -116,6 +117,24 @@ def yes(_request) -> bool:
     return True
 
 
+class Pace:
+    """At most `rpm` model calls a minute. Every model call starts right after
+    the run starts or a tool result goes back, and both pass through here.
+    ponytail: does not see the harness's own retries or compaction calls; a
+    rate limit inside the harness is the upgrade if a quota needs exact pacing."""
+
+    def __init__(self, rpm: float, clock=time.monotonic, sleep=time.sleep):
+        self.gap, self.clock, self.sleep = 60.0 / rpm, clock, sleep
+        self.last: float | None = None
+
+    def wait(self) -> None:
+        now = self.clock()
+        if self.last is not None and now < self.last + self.gap:
+            self.sleep(self.last + self.gap - now)
+            now = self.last + self.gap
+        self.last = now
+
+
 class SpendCapReached(Exception):
     """The benchmark's dollar cap is spent. Not an agent failure: it stops the run."""
 
@@ -157,13 +176,14 @@ class Spend:
 
 class CookiePipeline(BasePipelineElement):
     def __init__(self, model: str, arm: str, cookie_bin: str | None = None, system_message: str | None = None,
-                 spend: Spend | None = None):
+                 spend: Spend | None = None, pace: Pace | None = None):
         if arm not in ARMS:
             raise ValueError(f"arm must be one of {ARMS}")
         self.model = model
         self.arm = arm
         self.cookie_bin = cookie_bin
         self.spend = spend
+        self.pace = pace
         self.system_message = system_message if system_message is not None else load_system_message(None)
         # AgentDojo names the log directory after this, and the attack finds the
         # model's name in it (see register_model_name).
@@ -182,6 +202,8 @@ class CookiePipeline(BasePipelineElement):
                 text = tool_result_to_str(result) if error is None else ""
                 messages.append(ChatToolResultMessage(role="tool", content=[text_content_block_from_string(text)],
                                                       tool_call_id=fc.id, tool_call=fc, error=error))
+                if self.pace is not None:
+                    self.pace.wait()  # the model is called again once this returns
                 if error is not None:
                     raise RuntimeError(error)
                 return text
@@ -199,6 +221,8 @@ class CookiePipeline(BasePipelineElement):
         ]
         if self.spend is not None:
             self.spend.check()
+        if self.pace is not None:
+            self.pace.wait()
         agent = Agent(self.model, tools=self.tools_for(runtime, env, messages), instructions=self.system_message,
                       enkeon=False, approver=yes, cookie_bin=self.cookie_bin)
         usage: dict[str, int] = {}

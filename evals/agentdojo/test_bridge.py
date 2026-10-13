@@ -17,7 +17,7 @@ from agentdojo.functions_runtime import FunctionsRuntime
 from agentdojo.task_suite.load_suites import get_suite
 
 import run
-from bridge import KNOWN_READS, TRUST_MAP, CookiePipeline, Spend, SpendCapReached, effect_and_guard, register_model_name
+from bridge import KNOWN_READS, TRUST_MAP, CookiePipeline, Pace, Spend, SpendCapReached, effect_and_guard, register_model_name
 from cookie_harness import CookieError
 
 FAKE = Path(__file__).resolve().parents[2] / "bindings" / "python" / "tests" / "fake_serve.py"
@@ -197,6 +197,38 @@ class SpendTest(unittest.TestCase):
             run.parse(["--model", "anthropic:claude-sonnet-4-6", "--max-dollars", "60", "--prices", "1,2,3"])
         args = run.parse(["--model", "anthropic:claude-sonnet-4-6", "--max-dollars", "60", "--prices", "3.3,16.5,0.33,4.125"])
         self.assertEqual(args.prices, self.PRICES)
+
+
+class PaceTest(unittest.TestCase):
+    def test_calls_are_spaced_to_the_rate_and_a_slow_caller_waits_for_nothing(self):
+        now, slept = [100.0], []
+        pace = Pace(10, clock=lambda: now[0], sleep=lambda s: (slept.append(s), now.__setitem__(0, now[0] + s)))
+        pace.wait()
+        pace.wait()
+        now[0] += 2.0
+        pace.wait()
+        self.assertEqual([round(s, 6) for s in slept], [6.0, 4.0])
+        now[0] += 30.0
+        pace.wait()
+        self.assertEqual(len(slept), 2)
+
+    def test_the_run_and_every_tool_result_are_paced(self):
+        suite = SUITES["banking"]
+        task = suite.get_user_task_by_id("user_task_0")
+        path, _, d = fake_bin([
+            {"read": "run"},
+            {"write": {"type": "tool_call", "id": "t1", "name": "get_balance", "args": {}}},
+            {"read": "tool_result"},
+            {"write": {"type": "done", "answer": "ok"}},
+        ])
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        waits = []
+        pace = Pace(10)
+        pace.wait = lambda: waits.append(1)
+        pipeline = CookiePipeline("anthropic:claude-sonnet-4-6", "trust", cookie_bin=path, pace=pace)
+        env = task.init_environment(suite.load_and_inject_default_environment({}))
+        pipeline.query(task.PROMPT, FunctionsRuntime(suite.tools), env)
+        self.assertEqual(len(waits), 2)
 
 
 class EndToEndTest(unittest.TestCase):

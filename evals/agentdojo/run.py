@@ -21,7 +21,7 @@ from agentdojo.benchmark import benchmark_suite_with_injections, benchmark_suite
 from agentdojo.logging import OutputLogger
 from agentdojo.task_suite.load_suites import get_suite
 
-from bridge import ARMS, CookiePipeline, Spend, register_model_name
+from bridge import ARMS, CookiePipeline, Pace, Spend, register_model_name
 
 SUITES = ("workspace", "travel", "banking", "slack")
 
@@ -45,6 +45,7 @@ def parse(argv=None):
     p.add_argument("--force-rerun", action="store_true")
     p.add_argument("--no-attack", action="store_true", help="utility only")
     p.add_argument("--max-dollars", type=float, help="stop the benchmark once this much is spent (needs --prices)")
+    p.add_argument("--rpm", type=float, help="at most this many model calls a minute (the provider's quota)")
     p.add_argument("--prices", help="dollars per million tokens: input,output,cache_read,cache_write")
     args = p.parse_args(argv)
     if (args.max_dollars is None) != (args.prices is None):
@@ -70,9 +71,10 @@ def main(argv=None) -> int:
     rows = []
     # One ledger for the whole benchmark, both arms, kept across reruns.
     spend = Spend(args.logdir / "spend.jsonl", args.prices, args.max_dollars) if args.prices else None
+    pace = Pace(args.rpm) if args.rpm else None
     with OutputLogger(str(args.logdir)):
         for arm in args.arm or list(ARMS):
-            pipeline = CookiePipeline(args.model, arm, cookie_bin=args.cookie_bin, spend=spend)
+            pipeline = CookiePipeline(args.model, arm, cookie_bin=args.cookie_bin, spend=spend, pace=pace)
             for suite_name in args.suite or list(SUITES):
                 suite = get_suite(args.benchmark_version, suite_name)
                 clean = benchmark_suite_without_injections(
