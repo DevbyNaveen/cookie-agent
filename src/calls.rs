@@ -92,13 +92,14 @@ impl Agent {
                 Decision::Allow => approved.push((index, tool)),
                 // A cancelled run asks no one; a wait for a person stops on cancel.
                 Decision::Ask { .. } if cancel.is_cancelled() => outcomes[index] = Some((NOT_RUN_CANCELLED.into(), true)),
-                Decision::Ask { .. } if self.trust.as_ref().is_some_and(|t| t.allows(tool.spec())) => {
+                // Earned trust answers only for values the person wrote; data is always put to them.
+                Decision::Ask { ref from_data, .. } if from_data.is_empty() && self.trust.as_ref().is_some_and(|t| t.allows(tool.spec())) => {
                     on_event(Event::RanOnEarnedTrust { tool: name.clone() });
                     approved.push((index, tool));
                 }
-                Decision::Ask { preview, reason } => {
+                Decision::Ask { preview, reason, from_data } => {
                     on_event(Event::AskedPerson { tool: name.clone(), preview: preview.clone() });
-                    let request = ApprovalRequest { tool: name.clone(), effect: tool.spec().effect, preview, reason };
+                    let request = ApprovalRequest { tool: name.clone(), effect: tool.spec().effect, preview, reason, from_data };
                     let yes = tokio::select! {
                         yes = approver.approve(&request) => yes,
                         _ = cancel.cancelled() => false,

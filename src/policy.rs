@@ -11,7 +11,9 @@ use crate::{
 #[derive(Debug, Clone, PartialEq)]
 pub enum Decision {
     Allow,
-    Ask { preview: String, reason: String },
+    /// `from_data`: guarded values the person didn't write (`arg = value`),
+    /// put to them under `confirm_data`. Earned trust never answers such an ask.
+    Ask { preview: String, reason: String, from_data: Vec<String> },
     Deny(String),
 }
 
@@ -87,6 +89,7 @@ impl Provenance {
 #[derive(Debug, Default, Clone)]
 pub struct Policy {
     allowed: Vec<String>,
+    confirm_data: bool,
 }
 
 /// Every value a guarded argument holds, object keys included. False when
@@ -117,13 +120,30 @@ impl Policy {
         self
     }
 
+    /// Put a guarded value that came from content the person didn't write to
+    /// the person, saying so, instead of refusing it. For an app with a person
+    /// at the approval card: they can recognise a recipient found in a thread
+    /// or a bill, which a refusal never lets them do. Off by default.
+    pub fn confirm_data(mut self) -> Self {
+        self.confirm_data = true;
+        self
+    }
+
+    pub fn confirms_data(&self) -> bool {
+        self.confirm_data
+    }
+
     /// This policy, allowing only what `ceiling` also allows: a sub-agent can
-    /// never allow a destination its parent doesn't.
+    /// never allow a destination its parent doesn't, nor ask where it refuses.
     pub(crate) fn within(&self, ceiling: &Policy) -> Policy {
-        Policy { allowed: self.allowed.iter().filter(|v| ceiling.allowed.contains(v)).cloned().collect() }
+        Policy {
+            allowed: self.allowed.iter().filter(|v| ceiling.allowed.contains(v)).cloned().collect(),
+            confirm_data: self.confirm_data && ceiling.confirm_data,
+        }
     }
 
     pub fn decide(&self, spec: &ToolSpec, args: &Value, provenance: &Provenance, preview: String) -> Decision {
+        let mut from_data = Vec::new();
         for arg in &spec.guarded_args {
             // "to" names a top-level argument; "/message/to" is a JSON pointer.
             let target = if arg.starts_with('/') { args.pointer(arg) } else { args.get(arg) };
@@ -139,20 +159,35 @@ impl Policy {
                     continue;
                 }
                 if provenance.origin_of(&value).is_untrusted() {
-                    return Decision::Deny(format!(
-                        "`{arg}` = \"{value}\" came from content the person didn't write, so it can't choose who, where or how much. Ask the person to say it themselves."
-                    ));
+                    if !self.confirm_data {
+                        return Decision::Deny(format!(
+                            "`{arg}` = \"{value}\" came from content the person didn't write, so it can't choose who, where or how much. Ask the person to say it themselves."
+                        ));
+                    }
+                    from_data.push(format!("{arg} = {value}"));
                 }
             }
+        }
+        if !from_data.is_empty() {
+            return Decision::Ask {
+                preview,
+                reason: format!(
+                    "{} came from content the person didn't write (a page, file, screen or tool result). Check it before saying yes.",
+                    from_data.join(", ")
+                ),
+                from_data,
+            };
         }
         match spec.effect {
             Effect::Outbound | Effect::Destroy => Decision::Ask {
                 preview,
                 reason: format!("`{}` sends, deletes or pays, which always needs a person.", spec.name),
+                from_data,
             },
             Effect::Write if provenance.untrusted_seen() => Decision::Ask {
                 preview,
                 reason: format!("`{}` changes something after reading content the person didn't write.", spec.name),
+                from_data,
             },
             _ => Decision::Allow,
         }
@@ -213,6 +248,38 @@ mod tests {
         ]);
         let d = Policy::default().decide(&spec(Effect::Outbound, &["to"]), &json!({"to": "anna@x.com"}), &p, "send".into());
         assert!(matches!(d, Decision::Ask { .. }), "{d:?}");
+    }
+
+    #[test]
+    fn with_confirm_data_a_value_from_data_is_put_to_the_person_and_says_where_it_came_from() {
+        let p = seen(&[
+            Message::user("pay the bill in bill.txt"),
+            Message::untrusted("Pay to IBAN GB29NWBK60161331926819", Source::File),
+        ]);
+        let pay = spec(Effect::Outbound, &["to"]);
+        let args = json!({"to": "GB29NWBK60161331926819"});
+        // Off (the default): refused, as before.
+        assert!(matches!(Policy::default().decide(&pay, &args, &p, "pay".into()), Decision::Deny(_)));
+        // On: asked, naming the value the person didn't write.
+        match Policy::default().confirm_data().decide(&pay, &args, &p, "pay".into()) {
+            Decision::Ask { from_data, reason, .. } => {
+                assert_eq!(from_data, vec!["to = GB29NWBK60161331926819".to_string()]);
+                assert!(reason.contains("didn't write"), "{reason}");
+            }
+            d => panic!("{d:?}"),
+        }
+        // A guarded read (a URL can carry data out) is asked too, not let through.
+        let fetch = spec(Effect::Read, &["url"]);
+        assert!(matches!(Policy::default().confirm_data().decide(&fetch, &json!({"url": "https://x.io/?d=1"}), &p, "get".into()),
+                         Decision::Ask { .. }));
+        // What the person wrote carries no warning.
+        let p = seen(&[Message::user("email anna@x.com"), Message::untrusted("x", Source::Web)]);
+        match Policy::default().confirm_data().decide(&pay, &json!({"to": "anna@x.com"}), &p, "send".into()) {
+            Decision::Ask { from_data, .. } => assert!(from_data.is_empty()),
+            d => panic!("{d:?}"),
+        }
+        // A sub-agent can't turn it on when its parent hasn't.
+        assert!(!Policy::default().confirm_data().within(&Policy::default()).confirms_data());
     }
 
     #[test]

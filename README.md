@@ -55,6 +55,13 @@ actually happen; the default approver says no.
 See `examples/outbound_gate.rs`: a web page tells the agent to email
 `evil@x.com`; the call is refused before anyone is asked.
 
+An app with a person at the approval card can ask instead of refusing:
+`Policy::default().confirm_data()` (or `"confirm_data": true` on a `run`)
+puts such a value to the person, and `ApprovalRequest::from_data` lists what
+they didn't write (`to = evil@x.com`) so the card can say so. Earned trust
+never answers that kind of ask, and a sub-agent can't turn it on unless its
+parent has.
+
 Prompt injection is not solved by this. It limits what an injected
 model can *do*. Measured so far: see *Measured: AgentDojo banking*.
 
@@ -112,7 +119,8 @@ A `run` may also carry, besides `instructions`, `session` (a file to resume),
 `history` (earlier turns, for a client that keeps the conversation itself:
 `[{"role": "user", "text": "…"}, {"role": "assistant", "text": "…", "untrusted": true}]`;
 the person's turns are theirs, a reply is the model's, and `untrusted` marks a
-turn built from a screenshot or file), `allow` (values the person approved in
+turn built from a screenshot or file), `confirm_data` (ask about a value from data instead of refusing it; the
+approval then carries `from_data`), `allow` (values the person approved in
 advance) and `enkeon: false`:
 
 ```json

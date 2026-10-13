@@ -59,6 +59,10 @@ pub struct RunRequest {
     /// Values the person approved in advance (recipients, hosts).
     #[serde(default)]
     pub allow: Vec<String>,
+    /// Put a guarded value from content the person didn't write to them
+    /// (listed in the approval's `from_data`) instead of refusing it.
+    #[serde(default)]
+    pub confirm_data: bool,
     /// `false` turns Enkeon off for this run.
     #[serde(default)]
     pub enkeon: Option<bool>,
@@ -309,6 +313,7 @@ impl Approver for WireApprover {
             "effect": request.effect,
             "preview": request.preview,
             "reason": request.reason,
+            "from_data": request.from_data,
         });
         // No answer is a no.
         self.0.ask("a", message).await.is_some_and(|reply| reply["allow"] == true)
@@ -346,7 +351,10 @@ fn build(base: Agent, request: &RunRequest, wire: &Arc<Wire>) -> std::result::Re
     if request.enkeon == Some(false) {
         agent = agent.without_enkeon();
     }
-    let policy = request.allow.iter().fold(Policy::default(), |policy, value| policy.allow(value));
+    let mut policy = request.allow.iter().fold(Policy::default(), |policy, value| policy.allow(value));
+    if request.confirm_data {
+        policy = policy.confirm_data();
+    }
     agent = agent.policy(policy);
     for decl in &request.tools {
         let spec = ToolSpec {
@@ -739,6 +747,29 @@ mod tests {
             let reply = c.next().await;
             assert_eq!(reply["type"], "error");
             assert!(reply["message"].as_str().unwrap().contains(needle), "{reply}");
+        }
+    }
+
+    #[tokio::test]
+    async fn with_confirm_data_a_recipient_from_data_reaches_the_person_marked() {
+        let history = json!([
+            {"role": "user", "text": "what's on my screen?"},
+            {"role": "assistant", "text": "A bill from Apple, IBAN US122000000121212121212.", "untrusted": true}
+        ]);
+        for confirm in [false, true] {
+            let p = Arc::new(Scripted::new(vec![Scripted::call("e1", "send_email", json!({"to": "US122000000121212121212"})), Scripted::text("ok")]));
+            let mut c = start(p);
+            let mut request = run("pay it", email_tools());
+            request["history"] = history.clone();
+            if confirm { request["confirm_data"] = json!(true); }
+            c.send(request).await;
+            let next = c.next().await;
+            if confirm {
+                assert_eq!(next["type"], "approval");
+                assert_eq!(next["from_data"], json!(["to = US122000000121212121212"]));
+            } else {
+                assert_eq!(next["type"], "done", "refused without asking: {next}");
+            }
         }
     }
 

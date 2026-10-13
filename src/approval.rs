@@ -11,6 +11,9 @@ pub struct ApprovalRequest {
     /// What will actually happen: recipient, content, diff, amount.
     pub preview: String,
     pub reason: String,
+    /// Guarded values the person didn't write (`arg = value`); empty when
+    /// every value was theirs. Show these: they are what to check.
+    pub from_data: Vec<String>,
 }
 
 #[async_trait]
@@ -72,7 +75,7 @@ mod tests {
     use crate::tool::Effect;
 
     fn request() -> ApprovalRequest {
-        ApprovalRequest { tool: "send_email".into(), effect: Effect::Outbound, preview: "p".into(), reason: "r".into() }
+        ApprovalRequest { tool: "send_email".into(), effect: Effect::Outbound, preview: "p".into(), reason: "r".into(), from_data: vec![] }
     }
 
     #[tokio::test]
