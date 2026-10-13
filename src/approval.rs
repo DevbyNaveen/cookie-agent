@@ -20,6 +20,16 @@ pub struct ApprovalRequest {
 pub trait Approver: Send + Sync {
     async fn approve(&self, request: &ApprovalRequest) -> bool;
 
+    /// Every action of one turn that needs a person, put to them together (one
+    /// card); one answer per request, in order. The default asks one by one.
+    async fn approve_batch(&self, requests: &[ApprovalRequest]) -> Vec<bool> {
+        let mut answers = Vec::with_capacity(requests.len());
+        for request in requests {
+            answers.push(self.approve(request).await);
+        }
+        answers
+    }
+
     /// Whether a person answers (not a rule or a script). Only a person's
     /// approvals can earn trust (see `EarnedTrust`).
     fn is_person(&self) -> bool {

@@ -120,7 +120,10 @@ A `run` may also carry, besides `instructions`, `session` (a file to resume),
 `[{"role": "user", "text": "…"}, {"role": "assistant", "text": "…", "untrusted": true}]`;
 the person's turns are theirs, a reply is the model's, and `untrusted` marks a
 turn built from a screenshot or file), `confirm_data` (ask about a value from data instead of refusing it; the
-approval then carries `from_data`), `allow` (values the person approved in
+approval then carries `from_data`). When one turn has several actions that
+need a person, they come as one `approval` with `items` (one card), answered
+with `"allow": [true, false, …]` in order; `Approver::approve_batch` is the Rust
+side. `allow` (values the person approved in
 advance) and `enkeon: false`:
 
 ```json

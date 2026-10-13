@@ -757,6 +757,50 @@ mod tests {
         assert!(matches!(&history[call_index + 1].content()[0], Content::ToolResult { id, .. } if id == "c1"));
     }
 
+    /// Records how it was asked: one batch per call of `approve_batch`.
+    struct Batches {
+        asked: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+        answers: Vec<bool>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::approval::Approver for Batches {
+        async fn approve(&self, request: &ApprovalRequest) -> bool {
+            self.asked.lock().unwrap().push(vec![request.preview.clone()]);
+            self.answers[0]
+        }
+        async fn approve_batch(&self, requests: &[ApprovalRequest]) -> Vec<bool> {
+            self.asked.lock().unwrap().push(requests.iter().map(|r| r.preview.clone()).collect());
+            self.answers.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn the_actions_of_one_turn_are_put_to_the_person_together_and_answered_one_by_one() {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let (a, _) = agent(vec![
+            Scripted::call_many(&[
+                ("e1", "send_email", json!({"to": "anna@x.com"})),
+                ("e2", "send_email", json!({"to": "ben@x.com"})),
+                ("w", "weather", json!({"city": "Riga"})),
+            ]),
+            Scripted::text("done"),
+        ]);
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let a = a.tool(send_email(sent.clone())).tool(weather()).approver(Batches { asked: asked.clone(), answers: vec![false, true] });
+        let mut s = Session::in_memory();
+        a.run_in(&mut s, Message::user("email anna@x.com and ben@x.com, and the weather in Riga"), &CancellationToken::new()).await.unwrap();
+        let asked = asked.lock().unwrap().clone();
+        assert_eq!(asked.len(), 1, "one card for the turn: {asked:?}");
+        assert_eq!(asked[0].len(), 2, "both sends on it, the read not: {asked:?}");
+        assert_eq!(sent.load(Ordering::SeqCst), 1, "the no held, the yes ran");
+        let results: Vec<(String, bool)> = s.messages().iter().flat_map(|m| m.content().to_vec()).filter_map(|c| match c {
+            Content::ToolResult { id, is_error, .. } => Some((id, is_error)),
+            _ => None,
+        }).collect();
+        assert_eq!(results, [("e1".to_string(), true), ("e2".to_string(), false), ("w".to_string(), false)], "results stay in call order");
+    }
+
     #[tokio::test]
     async fn a_loop_detected_mid_batch_still_records_every_call() {
         let same = || ("w", "weather", json!({"city": "Riga"}));

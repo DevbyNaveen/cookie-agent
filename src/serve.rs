@@ -318,6 +318,27 @@ impl Approver for WireApprover {
         // No answer is a no.
         self.0.ask("a", message).await.is_some_and(|reply| reply["allow"] == true)
     }
+
+    /// One `approval` line with `items`; the client answers `allow` with one
+    /// boolean per item (or one boolean for all). Anything else is a no.
+    async fn approve_batch(&self, requests: &[ApprovalRequest]) -> Vec<bool> {
+        let items: Vec<Value> = requests
+            .iter()
+            .map(|request| json!({
+                "tool": request.tool,
+                "effect": request.effect,
+                "preview": request.preview,
+                "reason": request.reason,
+                "from_data": request.from_data,
+            }))
+            .collect();
+        let reply = self.0.ask("a", json!({"type": "approval", "items": items})).await;
+        match reply.as_ref().map(|reply| &reply["allow"]) {
+            Some(Value::Bool(all)) => vec![*all; requests.len()],
+            Some(Value::Array(each)) if each.len() == requests.len() => each.iter().map(|v| v == &Value::Bool(true)).collect(),
+            _ => vec![false; requests.len()],
+        }
+    }
 }
 
 /// An error to send back, cut so a huge field (an image) is never echoed.
@@ -771,6 +792,26 @@ mod tests {
                 assert_eq!(next["type"], "done", "refused without asking: {next}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn the_actions_of_one_turn_come_as_one_approval_with_an_answer_each() {
+        let p = Arc::new(Scripted::new(vec![
+            Scripted::call_many(&[("e1", "send_email", json!({"to": "anna@x.com"})), ("e2", "send_email", json!({"to": "ben@x.com"}))]),
+            Scripted::text("ok"),
+        ]));
+        let mut c = start(p);
+        c.send(run("email anna@x.com and ben@x.com", email_tools())).await;
+        let ask = c.next().await;
+        assert_eq!(ask["type"], "approval");
+        let items = ask["items"].as_array().expect("items");
+        assert_eq!(items.len(), 2);
+        assert_eq!((items[0]["tool"].as_str(), items[1]["effect"].as_str()), (Some("send_email"), Some("outbound")));
+        c.send(json!({"type": "approve", "id": ask["id"], "allow": [false, true]})).await;
+        let call = c.next().await;
+        assert_eq!((call["type"].as_str(), &call["args"]), (Some("tool_call"), &json!({"to": "ben@x.com"})), "only the yes runs");
+        c.send(json!({"type": "tool_result", "id": call["id"], "output": "sent"})).await;
+        assert_eq!(c.next().await["type"], "done");
     }
 
     #[tokio::test]

@@ -74,6 +74,8 @@ impl Agent {
         let mut approved: Vec<(usize, Arc<dyn Tool>)> = Vec::new();
         let mut stop = Stop::No;
 
+        // Actions that need a person, put to them together once every call is decided.
+        let mut asks: Vec<(usize, Arc<dyn Tool>, ApprovalRequest)> = Vec::new();
         for (index, (_, name, args)) in calls.iter().enumerate() {
             if let Err(Error::Loop(looping)) = loop_guard.see(name, args) {
                 // Nothing in this batch runs, and every call is still answered.
@@ -100,24 +102,36 @@ impl Agent {
                 Decision::Ask { preview, reason, from_data } => {
                     on_event(Event::AskedPerson { tool: name.clone(), preview: preview.clone() });
                     let request = ApprovalRequest { tool: name.clone(), effect: tool.spec().effect, preview, reason, from_data };
-                    let yes = tokio::select! {
-                        yes = approver.approve(&request) => yes,
-                        _ = cancel.cancelled() => false,
-                    };
-                    // Only a person's answer counts, and a cancelled wait is no answer.
-                    if let (Some(trust), true, false) = (&self.trust, approver.is_person(), cancel.is_cancelled()) {
-                        if let Err(error) = trust.record(tool.spec(), yes) {
-                            tracing::warn!(%error, "could not record the approval for earned trust");
-                        }
-                    }
-                    if yes {
-                        approved.push((index, tool));
-                    } else {
-                        outcomes[index] = Some(("The person declined this action.".into(), true));
-                    }
+                    asks.push((index, tool, request));
                 }
                 Decision::Deny(reason) => outcomes[index] = Some((reason, true)),
             }
+        }
+        // A loop stop already answered every call ("Not run"): nobody is asked.
+        if !asks.is_empty() && matches!(stop, Stop::No) {
+            let requests: Vec<ApprovalRequest> = asks.iter().map(|(_, _, request)| request.clone()).collect();
+            let answers = tokio::select! {
+                answers = async {
+                    if requests.len() == 1 { vec![approver.approve(&requests[0]).await] } else { approver.approve_batch(&requests).await }
+                } => answers,
+                _ = cancel.cancelled() => vec![false; requests.len()],
+            };
+            for (position, (index, tool, _)) in asks.into_iter().enumerate() {
+                // A short or missing answer is a no.
+                let yes = answers.get(position).copied().unwrap_or(false);
+                // Only a person's answer counts, and a cancelled wait is no answer.
+                if let (Some(trust), true, false) = (&self.trust, approver.is_person(), cancel.is_cancelled()) {
+                    if let Err(error) = trust.record(tool.spec(), yes) {
+                        tracing::warn!(%error, "could not record the approval for earned trust");
+                    }
+                }
+                if yes {
+                    approved.push((index, tool));
+                } else {
+                    outcomes[index] = Some(("The person declined this action.".into(), true));
+                }
+            }
+            approved.sort_by_key(|(index, _)| *index);
         }
 
         let run_one = |index: usize, tool: Arc<dyn Tool>| {

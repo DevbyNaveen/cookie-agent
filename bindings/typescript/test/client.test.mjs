@@ -182,8 +182,27 @@ test("the approver is asked and its yes is sent", async (t) => {
   const [a, f] = agent(t, approvalScript(), { tools: [sendEmail], approver: async (r) => (asked.push(r), true) });
   await a.run("email anna");
   await a.close();
-  assert.deepEqual(asked, [{ tool: "send_email", effect: "outbound", preview: "to anna", reason: "sends" }]);
+  assert.deepEqual(asked, [{ tool: "send_email", effect: "outbound", preview: "to anna", reason: "sends", fromData: [] }]);
   assert.deepEqual(f.sent("approve"), [{ type: "approve", id: "a1", allow: true }]);
+});
+
+test("a batch asks the approver for each item and answers together", async (t) => {
+  const asked = [];
+  const script = [
+    { read: "run" },
+    { write: { type: "approval", id: "a1", items: [
+      { tool: "send_email", effect: "outbound", preview: "to anna", reason: "sends", from_data: [] },
+      { tool: "send_email", effect: "outbound", preview: "to evil", reason: "r", from_data: ["to = evil@x.com"] },
+    ] } },
+    { read: "approve" },
+    done("ok"),
+  ];
+  const [a, f] = agent(t, script, { tools: [sendEmail], approver: (r) => (asked.push(r), r.fromData.length === 0) });
+  await a.run("email anna and evil");
+  await a.close();
+  assert.deepEqual(asked.map((r) => r.preview), ["to anna", "to evil"]);
+  assert.deepEqual(asked[1].fromData, ["to = evil@x.com"]);
+  assert.deepEqual(f.sent("approve"), [{ type: "approve", id: "a1", allow: [true, false] }]);
 });
 
 test("no approver, a throwing approver or anything but true is a no", async (t) => {

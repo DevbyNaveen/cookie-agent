@@ -40,6 +40,8 @@ export interface ApprovalRequest {
   /** What will actually happen. */
   preview: string;
   reason: string;
+  /** Values the person didn't write (`to = ...`), when the run asked for `confirm_data`. */
+  fromData: string[];
 }
 
 /** Only a returned `true` is a yes. */
@@ -273,7 +275,17 @@ export class Agent {
     return reply;
   }
 
-  async #approve(line: Line): Promise<boolean> {
+  /** One answer, or one per item when the turn's actions came together. */
+  async #approve(line: Line): Promise<boolean | boolean[]> {
+    if (Array.isArray(line.items)) {
+      const answers: boolean[] = [];
+      for (const item of line.items as Line[]) answers.push(await this.#approveOne(item));
+      return answers;
+    }
+    return this.#approveOne(line);
+  }
+
+  async #approveOne(line: Line): Promise<boolean> {
     const approver = this.options.approver;
     if (!approver) return false;
     const request: ApprovalRequest = {
@@ -281,6 +293,7 @@ export class Agent {
       effect: String(line.effect ?? ""),
       preview: String(line.preview ?? ""),
       reason: String(line.reason ?? ""),
+      fromData: Array.isArray(line.from_data) ? line.from_data.map(String) : [],
     };
     try {
       return (await approver(request)) === true;

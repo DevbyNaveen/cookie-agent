@@ -47,6 +47,8 @@ class ApprovalRequest:
     effect: str
     preview: str
     reason: str
+    # Values the person didn't write (`to = ...`), when the run asked for `confirm_data`.
+    from_data: tuple = ()
 
 
 Approver = Callable[[ApprovalRequest], bool]
@@ -305,9 +307,16 @@ class Agent:
             reply.update(output=f"{type(e).__name__}: {e}", is_error=True)
         return reply
 
-    def _approve(self, line: dict) -> bool:
+    def _approve(self, line: dict):
+        """One answer, or one per item when the turn's actions came together."""
+        if isinstance(line.get("items"), list):
+            return [self._approve_one(item) for item in line["items"]]
+        return self._approve_one(line)
+
+    def _approve_one(self, line: dict) -> bool:
         request = ApprovalRequest(tool=line.get("tool", ""), effect=line.get("effect", ""),
-                                  preview=line.get("preview", ""), reason=line.get("reason", ""))
+                                  preview=line.get("preview", ""), reason=line.get("reason", ""),
+                                  from_data=tuple(line.get("from_data") or ()))
         try:
             # Only a real True is a yes.
             return self.approver(request) is True

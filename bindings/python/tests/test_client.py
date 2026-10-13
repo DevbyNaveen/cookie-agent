@@ -232,6 +232,24 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(asked, [ApprovalRequest(tool="send_email", effect="outbound", preview="to anna", reason="sends")])
         self.assertEqual(fake.sent("approve"), [{"type": "approve", "id": "a1", "allow": True}])
 
+    def test_a_batch_asks_the_approver_for_each_item_and_answers_together(self):
+        asked = []
+        script = [
+            {"read": "run"},
+            {"write": {"type": "approval", "id": "a1", "items": [
+                {"tool": "send_email", "effect": "outbound", "preview": "to anna", "reason": "sends", "from_data": []},
+                {"tool": "send_email", "effect": "outbound", "preview": "to evil", "reason": "r", "from_data": ["to = evil@x.com"]},
+            ]}},
+            {"read": "approve"},
+            done("ok"),
+        ]
+        agent, fake = self.agent(script, tools=[send_email], approver=lambda r: asked.append(r) or not r.from_data)
+        agent.run("email anna and evil")
+        agent.close()
+        self.assertEqual([r.preview for r in asked], ["to anna", "to evil"])
+        self.assertEqual(asked[1].from_data, ("to = evil@x.com",))
+        self.assertEqual(fake.sent("approve"), [{"type": "approve", "id": "a1", "allow": [True, False]}])
+
     def test_no_approver_a_raising_approver_or_a_non_true_answer_is_a_no(self):
         def raises(_):
             raise RuntimeError("no one home")
