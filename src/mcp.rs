@@ -1197,6 +1197,8 @@ pub(crate) mod fake_http {
         Crlf,
         /// Never answers anything.
         Hang,
+        /// `tools/list` also has Enkeon's research and connector tools.
+        WorkTools,
         /// `tools/call` answers on SSE after first sending a ping request.
         PingFirst,
         /// No `remember` tool.
@@ -1283,6 +1285,14 @@ pub(crate) mod fake_http {
                         "tools/list" if mode == Mode::Huge => ("200 OK", "", "application/json", "x".repeat(super::MAX_LINE + 10)),
                         "tools/list" if mode == Mode::NoRemember => ("200 OK", "", "application/json", reply(json!({"tools": [
                             {"name": "recall", "description": "Search memory", "inputSchema": {"type": "object"}},
+                        ]}))),
+                        "tools/list" if mode == Mode::WorkTools => ("200 OK", "", "application/json", reply(json!({"tools": [
+                            {"name": "recall", "description": "Search memory", "inputSchema": {"type": "object"}},
+                            {"name": "remember", "description": "Store", "inputSchema": {"type": "object"}},
+                            {"name": "forget", "description": "Forget", "inputSchema": {"type": "object"}},
+                            {"name": "web_search", "description": "Search the web", "inputSchema": {"type": "object"}},
+                            {"name": "connector_actions", "description": "List actions", "inputSchema": {"type": "object"}},
+                            {"name": "connector_call", "description": "Run an action", "inputSchema": {"type": "object"}},
                         ]}))),
                         "tools/list" => ("200 OK", "", "application/json", reply(json!({"tools": [
                             {"name": "recall", "description": "Search memory", "inputSchema": {"type": "object"}, "annotations": {"readOnlyHint": true}},

@@ -62,8 +62,10 @@ impl crate::agent::Agent {
 }
 
 const DEFAULT_URL: &str = "https://api.thinkingroot.com/mcp";
-/// The two tools offered. Enkeon has more; add them with `McpServer::http`.
-const OFFERED: [&str; 2] = ["recall", "remember"];
+/// The tools offered: context, web search, and the person's connected apps
+/// (each only when the server lists it — a key without the scope has none).
+/// Enkeon has more; add them with `McpServer::http`.
+const OFFERED: [&str; 5] = ["recall", "remember", "web_search", "connector_actions", "connector_call"];
 
 pub struct Enkeon {
     key: String,
@@ -151,10 +153,22 @@ impl Enkeon {
                 let present: Vec<String> = client.list_tools().await?.into_iter().map(|t| t.name).collect();
                 // First-party: Enkeon's descriptions are not counted as untrusted reading (ledger ruling M10).
                 let mut server = McpServer::http(&self.url).first_party();
-                for (name, effect) in [("recall", Effect::Read), ("remember", Effect::Write)] {
+                // A search query leaves the machine, so one built from content the person
+                // didn't write is put to them. A connector action is a write here; the
+                // gateway itself parks anything outbound or destructive for the person.
+                for (name, effect) in [
+                    ("recall", Effect::Read),
+                    ("remember", Effect::Write),
+                    ("web_search", Effect::Read),
+                    ("connector_actions", Effect::Read),
+                    ("connector_call", Effect::Write),
+                ] {
                     if present.iter().any(|p| p == name) {
                         server = server.effect(name, effect);
                     }
+                }
+                if present.iter().any(|p| p == "web_search") {
+                    server = server.guard("web_search", "query");
                 }
                 let connected = server.tools_from(client).await?;
                 Ok::<_, crate::Error>(connected.tools.into_iter().filter(|t| OFFERED.contains(&t.spec().name.as_str())).collect())
@@ -310,6 +324,22 @@ mod tests {
         let mut s = Session::in_memory();
         let out = tokio::time::timeout(std::time::Duration::from_secs(3), agent.run_streaming(&mut s, Message::user("hi"), &control, &mut |_| {})).await;
         assert!(matches!(out, Ok(Err(Error::Cancelled))), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn research_and_connected_apps_are_offered_with_their_effects() {
+        let server = fake_http::start(fake_http::Mode::WorkTools).await;
+        let tools = Enkeon::new("tr_sk_secret").url(&server.url).tools().await.unwrap();
+        let by_name: std::collections::BTreeMap<String, (Effect, Vec<String>)> = tools
+            .iter()
+            .map(|t| (t.spec().name.clone(), (t.spec().effect, t.spec().guarded_args.clone())))
+            .collect();
+        assert_eq!(by_name.keys().cloned().collect::<Vec<_>>(), ["connector_actions", "connector_call", "recall", "remember", "web_search"],
+                   "forget stays out");
+        assert_eq!(by_name["web_search"], (Effect::Read, vec!["query".to_string()]), "a query from content is put to the person: it leaves the machine");
+        assert_eq!(by_name["connector_actions"].0, Effect::Read);
+        // The gateway parks anything outbound or destructive for the person; the harness asks before any write after untrusted reading.
+        assert_eq!(by_name["connector_call"].0, Effect::Write);
     }
 
     #[tokio::test]
