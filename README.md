@@ -109,7 +109,11 @@ person (answer with `approve` — no answer means no), and `done` or `error`.
 through the same gates as Rust ones, and their results are untrusted.
 
 A `run` may also carry, besides `instructions`, `session` (a file to resume),
-`allow` (values the person approved in advance) and `enkeon: false`:
+`history` (earlier turns, for a client that keeps the conversation itself:
+`[{"role": "user", "text": "…"}, {"role": "assistant", "text": "…", "untrusted": true}]`;
+the person's turns are theirs, a reply is the model's, and `untrusted` marks a
+turn built from a screenshot or file), `allow` (values the person approved in
+advance) and `enkeon: false`:
 
 ```json
 "budget": {"max_steps": 10, "max_tokens": 50000, "max_dollars": 0.50},
