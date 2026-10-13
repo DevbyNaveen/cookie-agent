@@ -233,14 +233,21 @@ class PaceTest(unittest.TestCase):
 
 class EndToEndTest(unittest.TestCase):
     def test_run_py_scores_both_arms_on_one_task_pair(self):
-        path, _, d = fake_bin([{"read": "run"}, {"write": {"type": "done", "answer": "Nothing to do."}}])
+        path, log, d = fake_bin([{"read": "run"}, {"write": {"type": "done", "answer": "Nothing to do."}}])
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         logdir = Path(d) / "runs"
+        argv = ["--model", "anthropic:claude-sonnet-4-6", "--suite", "banking", "--user-task", "user_task_0",
+                "--injection-task", "injection_task_0", "--logdir", str(logdir), "--cookie-bin", path]
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            code = run.main(["--model", "anthropic:claude-sonnet-4-6", "--suite", "banking", "--user-task", "user_task_0",
-                             "--injection-task", "injection_task_0", "--logdir", str(logdir), "--cookie-bin", path])
+            code = run.main(argv)
         self.assertEqual(code, 0)
+        # Every saved result reloads (AgentDojo refuses one with no conversation), so a
+        # rerun after a crash picks up where it stopped instead of paying for it all again.
+        ran = len(received(log, "run"))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(run.main(argv), 0)
+        self.assertEqual(len(received(log, "run")), ran, "the rerun ran nothing")
         rows = json.loads((logdir / "results-claude-sonnet-4-6.json").read_text())["rows"]
         self.assertEqual([(r["arm"], r["tasks"], r["pairs"]) for r in rows], [("trust", 1, 1), ("off", 1, 1)])
         # An agent that does nothing is useless and never attacked successfully.

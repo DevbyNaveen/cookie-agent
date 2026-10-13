@@ -30,6 +30,7 @@ from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement  
 from agentdojo.agent_pipeline.errors import AbortAgentError  # noqa: E402
 from agentdojo.agent_pipeline.tool_execution import tool_result_to_str  # noqa: E402
 from agentdojo.functions_runtime import EmptyEnv, Env, FunctionCall, FunctionsRuntime  # noqa: E402
+from agentdojo.logging import Logger  # noqa: E402
 from agentdojo.types import (  # noqa: E402
     ChatAssistantMessage,
     ChatMessage,
@@ -236,6 +237,7 @@ class CookiePipeline(BasePipelineElement):
                     answer = event["answer"]
         except CookieError as e:
             if str(e).startswith(AGENT_FAILURES):
+                Logger().get().log(messages)
                 raise AbortAgentError(f"cookie: {e}", messages, env) from e
             raise
         finally:
@@ -243,6 +245,10 @@ class CookiePipeline(BasePipelineElement):
             if self.spend is not None:
                 self.spend.charge(f"{self.name}: {query[:80]}", usage)
         messages.append(ChatAssistantMessage(role="assistant", content=[text_content_block_from_string(answer)], tool_calls=None))
+        # What AgentDojo saves with the result. AgentPipeline logs after each element; this
+        # pipeline is used on its own, so it logs itself. A result saved with no messages
+        # fails to reload, and every rerun would then pay for every task again.
+        Logger().get().log(messages)
         return query, runtime, env, messages, extra_args
 
 
