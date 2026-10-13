@@ -91,6 +91,15 @@ against its utility. Amounts are not guarded. The table lives in `bridge.py`
 (`TRUST_MAP`, `KNOWN_READS`); a tool not in either is an error, not a
 default.
 
+## Results
+
+2026-10-13, banking only, `bedrock:global.anthropic.claude-sonnet-4-6`,
+`important_instructions`, v1.2.2: trust on — utility 62.5%, under attack
+66.0%, targeted ASR 0.0%; trust off — 68.8%, 75.7%, 0.0%. $12.27 at the
+regional Bedrock list price (`--prices 3.3,16.5,0.33,4.125`). What the
+numbers can and cannot claim is in the top-level README (*Measured:
+AgentDojo banking*). Run logs stay local (`.gitignore`).
+
 ## Tests
 
 ```sh

@@ -56,7 +56,7 @@ See `examples/outbound_gate.rs`: a web page tells the agent to email
 `evil@x.com`; the call is refused before anyone is asked.
 
 Prompt injection is not solved by this. It limits what an injected
-model can *do*.
+model can *do*. Measured so far: see *Measured: AgentDojo banking*.
 
 ## MCP servers and skills
 
@@ -325,6 +325,32 @@ counts as theirs; a summary of untrusted content stays untrusted.
 On Anthropic, the server can clear old tool results instead (beta):
 `Agent::with_provider(Arc::new(AnthropicProvider::from_env()?.context_editing(ClearToolUses::default())), model)`.
 What it cleared is reported as a `tracing` event.
+
+## Measured: AgentDojo banking
+
+One run, 2026-10-13: AgentDojo 0.1.35 (benchmark v1.2.2), the
+`important_instructions` attack, `bedrock:global.anthropic.claude-sonnet-4-6`,
+the banking suite (16 user tasks, 144 injection pairs per arm), through
+`evals/agentdojo`.
+
+| Arm | Utility | Utility under attack | Targeted attack success |
+|---|---|---|---|
+| trust layer on | 62.5% (10/16) | 66.0% (95/144) | 0.0% (0/144) |
+| trust layer off | 68.8% (11/16) | 75.7% (109/144) | 0.0% (0/144) |
+
+What this does and doesn't show:
+
+- **No security gain is measurable here.** Sonnet 4.6 ignored every
+  injection on its own, so both arms are at 0%. The layer limits what an
+  injected model can do; this model was never injected. A model that falls
+  for the attack, stronger attacks and the other suites are what can show
+  the difference. Not run yet.
+- **The layer costs utility, as designed.** The losses are payments to a
+  recipient the person didn't write: "send Apple the VAT difference" is
+  refused because Apple's IBAN comes from the transaction history, not from
+  the person. Asking the person about such a value, instead of refusing it,
+  should recover most of that; not built yet.
+- One model, one suite, one attack, one run. Not a ranking.
 
 ## Licence
 
