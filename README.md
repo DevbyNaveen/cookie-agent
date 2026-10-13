@@ -116,6 +116,7 @@ person (answer with `approve` — no answer means no), and `done` or `error`.
 through the same gates as Rust ones, and their results are untrusted.
 
 A `run` may also carry, besides `instructions`, `session` (a file to resume),
+`skills` (a folder of `SKILL.md` skills, offered through `use_skill`),
 `history` (earlier turns, for a client that keeps the conversation itself:
 `[{"role": "user", "text": "…"}, {"role": "assistant", "text": "…", "untrusted": true}]`;
 the person's turns are theirs, a reply is the model's, and `untrusted` marks a

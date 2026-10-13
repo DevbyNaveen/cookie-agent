@@ -75,6 +75,9 @@ pub struct RunRequest {
     /// MCP servers connected for this run only.
     #[serde(default)]
     pub mcp: Vec<McpDecl>,
+    /// A folder of skills (`<dir>/*/SKILL.md`), offered through `use_skill`.
+    #[serde(default)]
+    pub skills: Option<PathBuf>,
     /// Images sent with the input (a screenshot): one untrusted message
     /// right after it.
     #[serde(default)]
@@ -389,6 +392,10 @@ fn build(base: Agent, request: &RunRequest, wire: &Arc<Wire>) -> std::result::Re
             foreign: false,
         };
         agent = agent.tool(WireTool { spec, wire: wire.clone() });
+    }
+    if let Some(dir) = &request.skills {
+        let skills = crate::skills::Skills::from_dir(dir).map_err(|e| format!("skills folder {}: {e}", dir.display()))?;
+        agent = agent.tools(skills.into_tools());
     }
     // Checked here, so a bad entry is refused before the run starts.
     let servers = request.mcp.iter().map(McpDecl::server).collect::<std::result::Result<_, _>>()?;
@@ -812,6 +819,26 @@ mod tests {
         assert_eq!((call["type"].as_str(), &call["args"]), (Some("tool_call"), &json!({"to": "ben@x.com"})), "only the yes runs");
         c.send(json!({"type": "tool_result", "id": call["id"], "output": "sent"})).await;
         assert_eq!(c.next().await["type"], "done");
+    }
+
+    #[tokio::test]
+    async fn a_run_can_bring_a_folder_of_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("deck")).unwrap();
+        std::fs::write(dir.path().join("deck/SKILL.md"), "---\nname: deck\ndescription: Make a slide deck\n---\nSteps.").unwrap();
+        let p = Arc::new(Scripted::new(vec![Scripted::text("ok")]));
+        let mut c = start(p.clone());
+        let mut request = run("make a deck", json!([]));
+        request["skills"] = json!(dir.path());
+        c.send(request).await;
+        assert_eq!(c.next().await["type"], "done");
+        assert!(p.asked()[0].1.iter().any(|t| t == "use_skill"), "the skill tool is offered: {:?}", p.asked()[0].1);
+        // A folder that isn't there is refused, not ignored.
+        let mut c = start(Arc::new(Scripted::new(vec![Scripted::text("ok")])));
+        let mut request = run("hi", json!([]));
+        request["skills"] = json!("/nonexistent/skills");
+        c.send(request).await;
+        assert_eq!(c.next().await["type"], "error");
     }
 
     #[tokio::test]
