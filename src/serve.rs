@@ -291,6 +291,14 @@ impl Approver for WireApprover {
     }
 }
 
+/// An error to send back, cut so a huge field (an image) is never echoed.
+fn short(text: &str) -> String {
+    if text.chars().count() <= 300 {
+        return text.to_string();
+    }
+    format!("{}…", text.chars().take(300).collect::<String>())
+}
+
 fn effect(name: &str) -> std::result::Result<Effect, String> {
     serde_json::from_value(json!(name)).map_err(|_| format!("unknown effect `{name}` (read, write, outbound, destroy)"))
 }
@@ -404,7 +412,7 @@ where
                 let request: RunRequest = match serde_json::from_value(message) {
                     Ok(request) => request,
                     Err(e) => {
-                        let _ = out.send(json!({"type": "error", "run": named, "message": format!("bad run: {e}")}));
+                        let _ = out.send(json!({"type": "error", "run": named, "message": format!("bad run: {}", short(&e.to_string()))}));
                         continue;
                     }
                 };
@@ -881,5 +889,14 @@ mod tests {
             assert_eq!((refused["type"].as_str(), refused["run"].as_str()), (Some("error"), Some("r1")));
             assert!(refused["message"].as_str().unwrap().contains(says), "{refused}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_bad_run_error_never_echoes_a_huge_payload() {
+        let p = Arc::new(Scripted::new(vec![Scripted::text("never")]));
+        let mut c = start(p);
+        c.send(json!({"type": "run", "id": "r1", "model": "x:m", "input": "hi", "images": "A".repeat(100_000)})).await;
+        let error = c.next().await;
+        assert!(error["message"].as_str().unwrap().len() < 1_000);
     }
 }

@@ -121,6 +121,17 @@ impl Message {
     /// untrusted message. Each image is checked: type, size, and that its
     /// bytes are what the type says.
     pub fn untrusted_images(parts: Vec<Content>, source: Source) -> Result<Self> {
+        // Base64 wrapped across lines (as Python's encodebytes does) is accepted
+        // and stored without the line breaks.
+        let parts: Vec<Content> = parts
+            .into_iter()
+            .map(|part| match part {
+                Content::Image { media_type, data } => {
+                    Content::Image { media_type, data: data.chars().filter(|c| !c.is_ascii_whitespace()).collect() }
+                }
+                other => other,
+            })
+            .collect();
         let mut images = 0;
         for part in &parts {
             match part {
@@ -379,5 +390,14 @@ mod tests {
         cleared.clear_tool_outputs(2);
         assert_eq!(cleared.text(), "screen\n[cleared: an image/png image from turn 2, 3 KB]");
         assert!(cleared.origin().is_untrusted());
+    }
+
+    #[test]
+    fn base64_with_line_breaks_is_accepted_and_stored_clean() {
+        use base64::Engine;
+        let png = b"\x89PNG\r\n\x1a\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        let wrapped: String = base64::engine::general_purpose::STANDARD.encode(png).chars().collect::<Vec<_>>().chunks(20).map(|c| c.iter().collect::<String>()).collect::<Vec<_>>().join("\n");
+        let m = Message::untrusted_images(vec![Content::Image { media_type: "image/png".into(), data: wrapped }], crate::label::Source::Screen).unwrap();
+        assert!(matches!(&m.content()[0], Content::Image { data, .. } if !data.contains('\n')));
     }
 }

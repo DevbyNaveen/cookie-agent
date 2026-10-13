@@ -236,6 +236,7 @@ mod tests {
         let (ended, ()) = tokio::time::timeout(std::time::Duration::from_secs(3), async { tokio::join!(chatting, driving) }).await.expect("chat hung");
         ended.unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "back\n");
-        assert_eq!(session.messages().len(), 3, "the cancelled run's input stays, then the second run");
+        assert_eq!(session.messages().len(), 4, "the cancelled run's input and its stop note stay, then the second run");
+        assert!(session.messages()[1].text().contains("stopped before answering"));
     }
 }

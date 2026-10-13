@@ -110,6 +110,21 @@ pub fn backoff(attempt: u32) -> Duration {
     cap.mul_f64(f64::from(nanos % 1_000_000) / 1_000_000.0)
 }
 
+/// Converse takes at most 20 images in one message, and neighbouring user
+/// messages are merged into one: say so here, before sending.
+pub fn check_images(body: &Value) -> Result<()> {
+    for message in body["messages"].as_array().into_iter().flatten() {
+        let images = message["content"].as_array().map_or(0, |c| c.iter().filter(|b| b.get("image").is_some()).count());
+        if images > crate::message::MAX_IMAGES_PER_MESSAGE {
+            return Err(Error::Provider(format!(
+                "Bedrock takes at most {} images in one message; this one has {images}",
+                crate::message::MAX_IMAGES_PER_MESSAGE
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Converse needs the conversation to open with the person's turn; say so
 /// here instead of after a round trip.
 pub fn check_first_turn(body: &Value) -> Result<()> {
@@ -461,6 +476,7 @@ impl BedrockProvider {
         let region = region_for_model(self.region.as_deref(), request.model)?;
         let body = converse_body(request, self.max_tokens, self.caching);
         check_first_turn(&body)?;
+        check_images(&body)?;
         Ok((region, serde_json::to_vec(&body)?))
     }
 }
@@ -795,4 +811,13 @@ mod tests {
         assert_eq!(content[2], json!({"image": {"format": "png", "source": {"bytes": data}}}));
     }
 
+
+    #[test]
+    fn more_than_twenty_images_in_one_converse_message_is_refused_here() {
+        let png = b"\x89PNG\r\n\x1a\nxx";
+        let shots = |n: usize| Message::untrusted_images((0..n).map(|_| Content::image("image/png", png)).collect(), Source::Screen).unwrap();
+        let history = vec![Message::user("a"), shots(12), Message::user("b"), shots(12)];
+        let request = ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() };
+        assert!(matches!(check_images(&converse_body(&request, 100, false)), Err(Error::Provider(m)) if m.contains("20")));
+    }
 }

@@ -156,6 +156,11 @@ after a fenced note saying what follows is untrusted. In long sessions an
 image counts as 1,600 tokens, is written as `[image: image/png, 120 KB]` in
 summaries, and is cleared from old turns like tool output.
 
+Image data is standard base64 (line breaks are fine; they are removed). Images
+are kept in the session file like everything else — clearing old turns only
+changes what the model is sent — so a session with many screenshots grows
+large on disk.
+
 ## Tracing
 
 Every run emits OpenTelemetry GenAI spans through `tracing`:

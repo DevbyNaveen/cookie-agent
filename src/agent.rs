@@ -139,6 +139,14 @@ impl Agent {
         let result = self.drive(session, inputs, control, on_event, &mut open, start, &mut meter).instrument(span.clone()).await;
         if let Err(error) = &result {
             span.record("error.type", telemetry::error_type(error));
+            // The person's turn got no answer: say so in the session, so the next
+            // run starts a clean turn instead of being merged into this one.
+            if session.messages().last().is_some_and(|m| m.role() == crate::message::Role::User && m.tool_calls().next().is_none()
+                && !m.content().iter().any(|c| matches!(c, Content::ToolResult { .. })))
+            {
+                let note = format!("(This run stopped before answering: {}.)", telemetry::error_type(error));
+                let _ = session.append(Message::assistant(vec![Content::Text { text: note }])).await;
+            }
             for id in open {
                 on_event(Event::ToolFinished { id, is_error: true });
             }
@@ -893,5 +901,21 @@ mod tests {
         assert_eq!(a.output_schema(schema.clone()).run("where?").await.unwrap(), r#"{"city": "Riga"}"#);
         let (a, _) = agent(vec![Scripted::text("Riga, I think.")]);
         assert!(matches!(a.output_schema(schema).run("where?").await, Err(Error::Provider(m)) if m.contains("not JSON")));
+    }
+
+    #[tokio::test]
+    async fn a_run_that_stops_before_answering_leaves_a_note_so_the_next_turn_is_clean() {
+        let a = Agent::with_provider(Arc::new(Hangs), "m");
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let mut s = Session::in_memory();
+        assert!(a.run_in(&mut s, Message::user("first"), &cancel).await.is_err());
+        let last = s.messages().last().unwrap();
+        assert_eq!(last.role(), crate::message::Role::Assistant, "the person's message is answered by a note");
+        assert!(last.text().contains("stopped before answering"), "{}", last.text());
+        let (b, p) = agent(vec![Scripted::text("ok")]);
+        b.run_in(&mut s, Message::user("second"), &CancellationToken::new()).await.unwrap();
+        let roles: Vec<_> = p.seen()[0].iter().map(|m| m.role()).collect();
+        assert!(roles.windows(2).all(|w| w[0] != w[1]), "turns alternate: {roles:?}");
     }
 }
