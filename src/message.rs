@@ -158,6 +158,19 @@ impl Message {
         Self { role: Role::User, content: vec![Content::Text { text: task.into() }], origin: Origin::Model, summary_of: None }
     }
 
+    /// A turn from before this run, sent by a client that keeps the
+    /// conversation itself. Untrusted when that turn was built from content
+    /// the person didn't write.
+    pub(crate) fn earlier(by_person: bool, text: &str, untrusted: bool) -> Self {
+        let role = if by_person { Role::User } else { Role::Assistant };
+        let origin = match (untrusted, by_person) {
+            (true, _) => Origin::Untrusted(crate::label::Source::Context),
+            (false, true) => Origin::User,
+            (false, false) => Origin::Model,
+        };
+        Self { role, content: vec![Content::Text { text: text.to_string() }], origin, summary_of: None }
+    }
+
     pub(crate) fn assistant(content: Vec<Content>) -> Self {
         Self { role: Role::Assistant, content, origin: Origin::Model, summary_of: None }
     }
