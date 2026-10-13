@@ -70,9 +70,28 @@ pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
 /// Credentials under the home directory that a command can never read.
 pub const SECRET_PATHS: &[&str] = &[
-    ".ssh", ".aws", ".gnupg", ".netrc", ".npmrc", ".pypirc", ".docker", ".kube",
-    ".config/gcloud", ".thinkingroot", "Library/Keychains",
+    ".ssh", ".aws", ".gnupg", ".netrc", ".npmrc", ".pypirc", ".docker", ".kube", ".azure",
+    ".config/gcloud", ".config/gh", ".git-credentials", ".cargo/credentials", ".cargo/credentials.toml",
+    ".terraform.d", ".codex", ".claude.json", ".thinkingroot", ".zsh_history", ".bash_history",
+    "Library/Keychains", "Library/Cookies", "Library/Application Support/Google/Chrome",
+    "Library/Application Support/Firefox", "Library/Application Support/BraveSoftware",
 ];
+
+/// Every path to hide: each secret as named and, if it is a symlink, where
+/// it really is (Seatbelt matches real paths).
+fn secret_paths(home: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for secret in SECRET_PATHS {
+        let path = home.join(secret);
+        if let Ok(real) = std::fs::canonicalize(&path) {
+            if real != path {
+                paths.push(real);
+            }
+        }
+        paths.push(path);
+    }
+    paths
+}
 
 /// Codex's deny-by-default policy (processes, sysctls and a few services a
 /// shell needs), unmodified — see THIRD_PARTY_NOTICES.md.
@@ -83,8 +102,12 @@ const SEATBELT_BASE: &str = include_str!("seatbelt_base_policy.sbpl");
 /// services. Reads anywhere except `SECRET_PATHS`; writes only in
 /// `WRITABLE_ROOT` (and xcrun's own cache file in /tmp).
 pub fn seatbelt_profile() -> String {
+    seatbelt_profile_for(SECRET_PATHS.len())
+}
+
+fn seatbelt_profile_for(secrets: usize) -> String {
     let mut profile = format!("{SEATBELT_BASE}\n(allow file-read*)\n");
-    for i in 0..SECRET_PATHS.len() {
+    for i in 0..secrets {
         profile.push_str(&format!("(deny file-read* (subpath (param \"SECRET_{i}\")))\n"));
     }
     profile.push_str(concat!(
@@ -114,9 +137,10 @@ impl Sandbox for Seatbelt {
 
     fn wrap(&self, program: &str, args: &[String], writable: &Path) -> (String, Vec<String>) {
         let home = home(&self.home);
-        let mut argv = vec!["-p".to_string(), seatbelt_profile(), format!("-DWRITABLE_ROOT={}", writable.display())];
-        for (i, secret) in SECRET_PATHS.iter().enumerate() {
-            argv.push(format!("-DSECRET_{i}={}", home.join(secret).display()));
+        let secrets = secret_paths(&home);
+        let mut argv = vec!["-p".to_string(), seatbelt_profile_for(secrets.len()), format!("-DWRITABLE_ROOT={}", writable.display())];
+        for (i, secret) in secrets.iter().enumerate() {
+            argv.push(format!("-DSECRET_{i}={}", secret.display()));
         }
         argv.push("--".to_string());
         argv.push(program.to_string());
@@ -157,8 +181,8 @@ impl Sandbox for Bubblewrap {
             ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"].iter().map(|s| s.to_string()).collect();
         // Credentials: an empty directory over a directory, /dev/null over a file.
         let home = home(&self.home);
-        for secret in SECRET_PATHS {
-            let path = home.join(secret).display().to_string();
+        for secret in secret_paths(&home) {
+            let path = secret.display().to_string();
             if Path::new(&path).is_dir() {
                 argv.extend(["--tmpfs".to_string(), path]);
             } else if Path::new(&path).exists() {
@@ -421,13 +445,15 @@ mod tests {
 
     #[test]
     fn bubblewrap_binds_the_directory_after_the_read_only_root_and_unshares_the_network() {
-        let home = tempfile::tempdir().unwrap();
-        std::fs::create_dir(home.path().join(".ssh")).unwrap();
-        std::fs::write(home.path().join(".netrc"), "secret").unwrap();
-        let (program, argv) = Bubblewrap::with_home(home.path()).wrap("/bin/sh", &["-c".into(), "ls".into()], Path::new("/home/a/w"));
+        let dir = tempfile::tempdir().unwrap();
+        // Canonical, so each secret's path and real path are the same here.
+        let home = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir(home.join(".ssh")).unwrap();
+        std::fs::write(home.join(".netrc"), "secret").unwrap();
+        let (program, argv) = Bubblewrap::with_home(&home).wrap("/bin/sh", &["-c".into(), "ls".into()], Path::new("/home/a/w"));
         assert!(BWRAP_PATHS.contains(&program.as_str()), "never from PATH: {program}");
-        let ssh = home.path().join(".ssh").display().to_string();
-        let netrc = home.path().join(".netrc").display().to_string();
+        let ssh = home.join(".ssh").display().to_string();
+        let netrc = home.join(".netrc").display().to_string();
         assert_eq!(
             strings(&argv),
             [
@@ -601,5 +627,23 @@ mod tests {
         let out = tool.call(json!({"command": "ls / >/dev/null && id -un >/dev/null && git --version && echo hi > f && cat f"})).await.unwrap();
         assert!(out.starts_with("exit code: 0") && out.contains("git version") && out.contains("hi"), "{out}");
         assert!(!out.contains("couldn't create cache file"), "xcrun can write its cache: {out}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_credential_reached_through_a_symlink_stays_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let dotfiles = tempfile::tempdir().unwrap();
+        std::fs::write(dotfiles.path().join("netrc"), "machine x password SECRET").unwrap();
+        std::os::unix::fs::symlink(dotfiles.path().join("netrc"), home.path().join(".netrc")).unwrap();
+        std::fs::create_dir_all(home.path().join(".config/gh")).unwrap();
+        std::fs::write(home.path().join(".config/gh/hosts.yml"), "oauth_token: SECRET").unwrap();
+        let tool = command_tool("sh", Arc::new(Seatbelt::with_home(home.path())), dir.path()).unwrap();
+        let out = tool
+            .call(json!({"command": format!("cat {0}/.netrc {0}/.config/gh/hosts.yml", home.path().display())}))
+            .await
+            .unwrap();
+        assert!(!out.contains("SECRET"), "{out}");
     }
 }

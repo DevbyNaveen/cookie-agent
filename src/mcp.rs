@@ -285,7 +285,12 @@ impl McpClient {
             Err(_) => {
                 pending.lock().unwrap().remove(&id);
                 // Best effort, and bounded: the server may not be reading at all.
-                let _ = tokio::time::timeout(Duration::from_secs(1), send(writer, &cancelled(id))).await;
+                let cancel = tokio::time::timeout(Duration::from_secs(1), send(writer, &cancelled(id))).await;
+                // A write cut off part way leaves half a line in the pipe; anything
+                // sent after it would be glued on and lost. The connection is done.
+                if !matches!(cancel, Ok(Ok(()))) {
+                    closed.store(true, Ordering::SeqCst);
+                }
                 Err(Error::Mcp(format!("{method}: no answer in {}s", self.timeout.as_secs_f32())))
             }
         }
@@ -1147,6 +1152,9 @@ mod tests {
         let client = McpClient::over(r, w).await.unwrap().timeout(std::time::Duration::from_millis(200));
         let out = tokio::time::timeout(std::time::Duration::from_secs(3), client.call_tool("x", json!({"big": "y".repeat(10_000)}))).await;
         assert!(matches!(out, Ok(Err(Error::Mcp(_)))), "{out:?}");
+        // Half a line may be in the pipe now: the connection is done, and says so at once.
+        let next = tokio::time::timeout(std::time::Duration::from_millis(100), client.list_tools()).await;
+        assert!(matches!(next, Ok(Err(Error::Mcp(ref m))) if m.contains("closed")), "{next:?}");
     }
 }
 

@@ -180,6 +180,7 @@ impl Agent {
             provenance.saw_untrusted();
         }
         let mut loop_guard = LoopGuard::default();
+        let mut said: Vec<String> = Vec::new();
 
         loop {
             if cancel.is_cancelled() {
@@ -238,9 +239,15 @@ impl Agent {
             let answer = reply.text();
             session.append(reply).await?;
             match (calls.is_empty(), response.stop) {
-                // Paused: the same conversation goes again and the turn continues.
-                (true, StopReason::PauseTurn) => continue,
+                // Paused: the same conversation goes again and the turn continues;
+                // what was said so far is part of the answer.
+                (true, StopReason::PauseTurn) => {
+                    said.push(answer);
+                    continue;
+                }
                 (true, _) => {
+                    said.push(answer);
+                    let answer = said.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
                     if let Some(schema) = &self.output_schema {
                         crate::provider::check_output(schema, &answer)?;
                     }
@@ -828,7 +835,7 @@ mod tests {
         let mut paused = Scripted::text("Searching");
         paused.stop = StopReason::PauseTurn;
         let (a, p) = agent(vec![paused, Scripted::text("Found it.")]);
-        assert_eq!(a.run("look it up").await.unwrap(), "Found it.");
+        assert_eq!(a.run("look it up").await.unwrap(), "Searching\nFound it.", "what it said before the pause is part of the answer");
         let resent = &p.seen()[1];
         assert_eq!(resent.len(), 2, "no extra message is added to continue");
         assert_eq!(resent[1].text(), "Searching");

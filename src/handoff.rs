@@ -92,6 +92,10 @@ impl Agent {
             match agent.turns(session, input.take(), control, on_event, open, start, meter).await? {
                 Turn::Answer(answer) => return Ok(answer),
                 Turn::HandOff(name, to) => {
+                    // A new turn for the next agent: it may use another provider,
+                    // which can't continue a tool turn it did not start (thinking
+                    // blocks, signatures). Visible in the session, never the person's.
+                    session.append(Message::delegated(format!("(The conversation is now with {name}.)"))).await?;
                     on_event(Event::HandedOff { to: name });
                     let extra = to.enkeon_tools(depth > 0, &control.cancel, on_event).await?;
                     // The next agent's own limits apply too: the stricter of each.
@@ -194,5 +198,18 @@ mod tests {
         let results = session.messages()[2].content().to_vec();
         assert!(matches!(&results[1], crate::message::Content::ToolResult { is_error: true, output, .. } if output.contains("only one handoff")));
         let _ = p;
+    }
+
+    #[tokio::test]
+    async fn the_next_agent_starts_a_fresh_turn() {
+        let (p, next) = scripted(vec![Scripted::text("done")]);
+        let (_, front) = scripted(vec![Scripted::call("h1", "next", json!({}))]);
+        let front = front.tool(Handoff::to("next", "x", next));
+        front.run("go").await.unwrap();
+        let saw = &p.seen()[0];
+        let last = saw.last().unwrap();
+        assert_eq!(last.role(), crate::message::Role::User);
+        assert!(last.content().iter().all(|c| matches!(c, crate::message::Content::Text { .. })), "not a tool result: a new turn");
+        assert!(!last.origin().is_untrusted() && last.origin() != &crate::Origin::User, "a note, not the person's words");
     }
 }

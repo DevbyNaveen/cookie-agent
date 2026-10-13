@@ -48,6 +48,19 @@ impl Effort {
     }
 }
 
+/// Where the turn in progress begins: the last instruction (the person's
+/// words, a task, a note), not counting tool results. Reasoning is sent back
+/// only from here on — the API needs it there, ignores it before, and older
+/// turns may have been edited (cleared output, summaries), which would make
+/// it invalid.
+pub(crate) fn current_turn_start(messages: &[crate::message::Message]) -> usize {
+    use crate::message::{Content, Role};
+    messages
+        .iter()
+        .rposition(|m| m.role() == Role::User && !m.content().iter().any(|c| matches!(c, Content::ToolResult { .. })))
+        .unwrap_or(0)
+}
+
 #[derive(Default)]
 pub struct ModelRequest<'a> {
     pub model: &'a str,

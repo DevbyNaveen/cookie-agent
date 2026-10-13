@@ -192,14 +192,26 @@ fn block(content: &Content, origin: &Origin, tag: &str) -> Option<Value> {
 /// With `caching`, three cache breakpoints: the system prompt, the last
 /// tool, and the last block of the conversation (so each turn reuses the
 /// prefix the previous turn wrote).
+/// The output limit used with reasoning when a lower one was set.
+pub const REASONING_MAX_TOKENS: u32 = 16_384;
+
 pub fn request_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> Value {
     let tag = fence_tag(request.messages);
     let cache = json!({"type": "ephemeral"});
+    let turn = crate::provider::current_turn_start(request.messages);
     let mut messages: Vec<Value> = request
         .messages
         .iter()
-        .filter_map(|m: &Message| {
-            let content: Vec<Value> = m.content().iter().filter_map(|c| block(c, m.origin(), &tag)).collect();
+        .enumerate()
+        .filter_map(|(i, m): (usize, &Message)| {
+            // Thinking: only the model's own, only in the turn in progress.
+            let keep_reasoning = i >= turn && m.role() == Role::Assistant;
+            let content: Vec<Value> = m
+                .content()
+                .iter()
+                .filter(|c| keep_reasoning || !matches!(c, Content::Reasoning { .. }))
+                .filter_map(|c| block(c, m.origin(), &tag))
+                .collect();
             (!content.is_empty()).then(|| {
                 json!({
                     "role": match m.role() { Role::User => "user", Role::Assistant => "assistant" },
@@ -216,6 +228,8 @@ pub fn request_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> V
             }
         }
     }
+    // Thinking spends output tokens: a low limit would cut most answers off.
+    let max_tokens = if request.reasoning.is_some() { max_tokens.max(REASONING_MAX_TOKENS) } else { max_tokens };
     let mut body = json!({"model": request.model, "max_tokens": max_tokens, "messages": messages});
     if let Some(effort) = request.reasoning {
         body["thinking"] = json!({"type": "adaptive"});
@@ -827,10 +841,13 @@ data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_
         ]);
         let turn = Message::assistant(r.content.clone());
         assert_eq!(turn.text(), "9°C");
-        let history = vec![Message::user("weather?"), turn, Message::user("thanks")];
+        let history = vec![Message::user("weather?"), turn.clone()];
         let body = request_body(&ModelRequest { model: "m", system: "", messages: &history, ..Default::default() }, 10, true);
-        assert_eq!(body["messages"][1]["content"][0], thinking, "sent back unchanged");
+        assert_eq!(body["messages"][1]["content"][0], thinking, "sent back unchanged in the turn in progress");
         assert_eq!(body["messages"][1]["content"][1], redacted);
+        let later = vec![Message::user("weather?"), turn, Message::user("thanks")];
+        let body = request_body(&ModelRequest { model: "m", system: "", messages: &later, ..Default::default() }, 10, true);
+        assert_eq!(body["messages"][1]["content"], json!([{"type": "text", "text": "9°C"}]), "a finished turn's thinking is left out");
         let foreign = vec![Message::user("a"), Message::assistant(vec![
             Content::Reasoning { provider: "bedrock".into(), data: json!({"reasoningContent": {}}) },
             Content::Text { text: "b".into() },
@@ -871,5 +888,29 @@ data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_
         let schema = json!({"type": "object", "required": ["city"]});
         let req = ModelRequest { model: "m", system: "", messages: &history, reasoning: Some(crate::provider::Effort::Low), output_schema: Some(&schema), ..Default::default() };
         assert_eq!(request_body(&req, 10, false)["output_config"], json!({"effort": "low", "format": {"type": "json_schema", "schema": schema}}));
+    }
+
+    #[test]
+    fn thinking_goes_back_only_for_the_turn_in_progress() {
+        let think = |s: &str| Content::Reasoning { provider: PROVIDER.into(), data: json!({"type": "thinking", "thinking": s, "signature": "sig"}) };
+        let history = vec![
+            Message::user("first"),
+            Message::assistant(vec![think("old"), Content::Text { text: "a".into() }]),
+            Message::user("second"),
+            Message::assistant(vec![think("now"), Content::ToolCall { id: "t1".into(), name: "w".into(), args: json!({}) }]),
+            Message::tool_results(vec![Content::ToolResult { id: "t1".into(), output: "9".into(), is_error: false }], crate::label::Origin::Untrusted(Source::Tool("w".into()))),
+        ];
+        let body = request_body(&ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() }, 1024, false);
+        let thinking: Vec<&str> = body["messages"].as_array().unwrap().iter()
+            .flat_map(|m| m["content"].as_array().unwrap().iter())
+            .filter(|b| b["type"] == "thinking").map(|b| b["thinking"].as_str().unwrap()).collect();
+        assert_eq!(thinking, ["now"], "older turns' thinking is left out, so edits to them can't invalidate it");
+    }
+
+    #[test]
+    fn reasoning_raises_a_low_output_limit() {
+        let history = vec![Message::user("hi")];
+        let body = request_body(&ModelRequest { model: "m", system: "", messages: &history, tools: vec![], reasoning: Some(crate::provider::Effort::High), ..Default::default() }, 4096, false);
+        assert!(body["max_tokens"].as_u64().unwrap() >= 16_384);
     }
 }

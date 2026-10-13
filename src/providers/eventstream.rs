@@ -22,6 +22,9 @@ pub struct Decoder {
     pending: Vec<u8>,
 }
 
+/// The largest frame accepted.
+const MAX_FRAME: usize = 16 * 1024 * 1024;
+
 impl Decoder {
     pub fn feed(&mut self, chunk: &[u8]) -> Result<Vec<Frame>> {
         self.pending.extend_from_slice(chunk);
@@ -32,6 +35,10 @@ impl Decoder {
                 return Err(Error::Provider("event stream: the prelude checksum does not match".into()));
             }
             let (total, headers) = (word(0) as usize, word(4) as usize);
+            // The event-stream spec caps headers at 128 KB; no reply frame is near 16 MB.
+            if total > MAX_FRAME || headers > 128 * 1024 {
+                return Err(Error::Provider(format!("event stream: a message of {total} bytes is too large")));
+            }
             if total < 16 || headers > total - 16 {
                 return Err(Error::Provider(format!("event stream: a message of {total} bytes with {headers} bytes of headers")));
             }
@@ -216,5 +223,15 @@ pub(crate) mod tests {
         let mut short = good.clone();
         short[..4].copy_from_slice(&8u32.to_be_bytes());
         assert!(Decoder::default().feed(&short).is_err(), "shorter than a prelude and checksum");
+    }
+
+    #[test]
+    fn a_frame_claiming_to_be_huge_is_refused_at_once() {
+        let mut prelude = Vec::new();
+        prelude.extend_from_slice(&(u32::MAX).to_be_bytes());
+        prelude.extend_from_slice(&0u32.to_be_bytes());
+        let crc = crc32(&prelude);
+        prelude.extend_from_slice(&crc.to_be_bytes());
+        assert!(Decoder::default().feed(&prelude).is_err());
     }
 }

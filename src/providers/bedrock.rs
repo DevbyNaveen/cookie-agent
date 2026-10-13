@@ -149,8 +149,16 @@ pub fn converse_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> 
     let cache_point = json!({"cachePoint": {"type": "default"}});
     // Converse wants user and assistant turns to alternate: merge neighbours.
     let mut messages: Vec<Value> = Vec::new();
-    for message in request.messages {
-        let content: Vec<Value> = message.content().iter().filter_map(|c| block(c, message.origin(), &tag)).collect();
+    let turn = crate::provider::current_turn_start(request.messages);
+    for (i, message) in request.messages.iter().enumerate() {
+        // Reasoning: only the model's own, only in the turn in progress.
+        let keep_reasoning = i >= turn && message.role() == Role::Assistant;
+        let content: Vec<Value> = message
+            .content()
+            .iter()
+            .filter(|c| keep_reasoning || !matches!(c, Content::Reasoning { .. }))
+            .filter_map(|c| block(c, message.origin(), &tag))
+            .collect();
         if content.is_empty() {
             continue;
         }
@@ -165,6 +173,7 @@ pub fn converse_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> 
             _ => messages.push(json!({"role": role, "content": content})),
         }
     }
+    let max_tokens = if request.reasoning.is_some() { max_tokens.max(super::anthropic::REASONING_MAX_TOKENS) } else { max_tokens };
     let mut body = json!({"messages": messages, "inferenceConfig": {"maxTokens": max_tokens}});
     if let Some(effort) = request.reasoning {
         body["outputConfig"]["effort"] = json!(effort.as_str());

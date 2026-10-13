@@ -17,12 +17,13 @@ pub struct Session {
     /// Held while the session is open: one writer per file.
     _lock: Option<std::fs::File>,
     /// Tests only: make the next write stop after this many bytes and fail.
+    #[cfg(test)]
     pub(crate) fail_after_bytes: Option<usize>,
 }
 
 impl Session {
     pub fn in_memory() -> Self {
-        Self { path: None, messages: Vec::new(), _lock: None, fail_after_bytes: None }
+        Self { path: None, messages: Vec::new(), _lock: None, #[cfg(test)] fail_after_bytes: None }
     }
 
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -56,7 +57,7 @@ impl Session {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e.into()),
         };
-        let mut session = Self { path: Some(path), messages, _lock: Some(lock), fail_after_bytes: None };
+        let mut session = Self { path: Some(path), messages, _lock: Some(lock), #[cfg(test)] fail_after_bytes: None };
         session.repair().await?;
         Ok(session)
     }
@@ -87,7 +88,10 @@ impl Session {
             line.push('\n');
             let mut file = OpenOptions::new().create(true).append(true).open(path).await?;
             let before = file.metadata().await?.len();
+            #[cfg(test)]
             let fail_after = self.fail_after_bytes;
+            #[cfg(not(test))]
+            let fail_after: Option<usize> = None;
             let written = async {
                 if let Some(n) = fail_after {
                     file.write_all(&line.as_bytes()[..n.min(line.len())]).await?;

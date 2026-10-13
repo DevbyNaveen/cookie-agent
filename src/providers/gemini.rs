@@ -159,8 +159,8 @@ pub fn request_body(request: &ModelRequest, max_tokens: Option<u32>) -> Result<V
         body["generationConfig"]["thinkingConfig"] = json!({"thinkingLevel": effort.as_str()});
     }
     if let Some(schema) = request.output_schema {
-        body["generationConfig"]["responseMimeType"] = json!("application/json");
-        body["generationConfig"]["responseJsonSchema"] = schema.clone();
+        // `responseJsonSchema` is deprecated in favour of `responseFormat`.
+        body["generationConfig"]["responseFormat"] = json!({"text": {"mimeType": "APPLICATION_JSON", "schema": schema}});
     }
     Ok(body)
 }
@@ -589,6 +589,6 @@ mod tests {
         let history = vec![Message::user("hi")];
         let schema = json!({"type": "object", "required": ["city"]});
         let req = ModelRequest { model: "m", system: "", messages: &history, output_schema: Some(&schema), ..Default::default() };
-        assert_eq!(request_body(&req, None).unwrap()["generationConfig"], json!({"responseMimeType": "application/json", "responseJsonSchema": schema}));
+        assert_eq!(request_body(&req, None).unwrap()["generationConfig"], json!({"responseFormat": {"text": {"mimeType": "APPLICATION_JSON", "schema": schema}}}));
     }
 }
