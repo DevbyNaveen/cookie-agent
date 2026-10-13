@@ -21,7 +21,7 @@ from agentdojo.benchmark import benchmark_suite_with_injections, benchmark_suite
 from agentdojo.logging import OutputLogger
 from agentdojo.task_suite.load_suites import get_suite
 
-from bridge import ARMS, CookiePipeline, register_model_name
+from bridge import ARMS, CookiePipeline, Spend, register_model_name
 
 SUITES = ("workspace", "travel", "banking", "slack")
 
@@ -44,7 +44,19 @@ def parse(argv=None):
     p.add_argument("--cookie-bin", help="the cookie binary (else COOKIE_BIN, else cookie on PATH)")
     p.add_argument("--force-rerun", action="store_true")
     p.add_argument("--no-attack", action="store_true", help="utility only")
+    p.add_argument("--max-dollars", type=float, help="stop the benchmark once this much is spent (needs --prices)")
+    p.add_argument("--prices", help="dollars per million tokens: input,output,cache_read,cache_write")
     args = p.parse_args(argv)
+    if (args.max_dollars is None) != (args.prices is None):
+        p.error("--max-dollars and --prices go together")
+    if args.prices is not None:
+        try:
+            values = [float(v) for v in args.prices.split(",")]
+        except ValueError:
+            values = []
+        if len(values) != 4:
+            p.error("--prices needs four numbers: input,output,cache_read,cache_write")
+        args.prices = dict(zip(("input", "output", "cache_read", "cache_write"), values))
     if args.model_name is None:
         if "claude" not in args.model.lower():
             p.error("--model-name is required for a model that is not Claude (e.g. --model-name GPT-4)")
@@ -56,9 +68,11 @@ def main(argv=None) -> int:
     args = parse(argv)
     register_model_name(args.model, args.model_name)
     rows = []
+    # One ledger for the whole benchmark, both arms, kept across reruns.
+    spend = Spend(args.logdir / "spend.jsonl", args.prices, args.max_dollars) if args.prices else None
     with OutputLogger(str(args.logdir)):
         for arm in args.arm or list(ARMS):
-            pipeline = CookiePipeline(args.model, arm, cookie_bin=args.cookie_bin)
+            pipeline = CookiePipeline(args.model, arm, cookie_bin=args.cookie_bin, spend=spend)
             for suite_name in args.suite or list(SUITES):
                 suite = get_suite(args.benchmark_version, suite_name)
                 clean = benchmark_suite_without_injections(
@@ -88,6 +102,8 @@ def main(argv=None) -> int:
     out.write_text(json.dumps({"model": args.model, "attack": args.attack, "benchmark_version": args.benchmark_version,
                                "rows": rows}, indent=2))
     print(f"wrote {out}", file=sys.stderr)
+    if spend is not None:
+        print(f"spent ${spend.total:.2f} of ${spend.cap:.2f} (ledger {spend.ledger})", file=sys.stderr)
     return 0
 
 

@@ -17,7 +17,7 @@ from agentdojo.functions_runtime import FunctionsRuntime
 from agentdojo.task_suite.load_suites import get_suite
 
 import run
-from bridge import KNOWN_READS, TRUST_MAP, CookiePipeline, effect_and_guard, register_model_name
+from bridge import KNOWN_READS, TRUST_MAP, CookiePipeline, Spend, SpendCapReached, effect_and_guard, register_model_name
 from cookie_harness import CookieError
 
 FAKE = Path(__file__).resolve().parents[2] / "bindings" / "python" / "tests" / "fake_serve.py"
@@ -142,6 +142,61 @@ class PipelineTest(unittest.TestCase):
         pipeline = CookiePipeline("bedrock:eu.anthropic.claude-sonnet-4-6", "trust")
         register_model_name(pipeline.model, "Claude")
         self.assertEqual(load_attack("important_instructions", self.suite, pipeline).model_name, "Claude")
+
+
+class SpendTest(unittest.TestCase):
+    PRICES = {"input": 3.3, "output": 16.5, "cache_read": 0.33, "cache_write": 4.125}
+
+    def setUp(self):
+        self.suite = SUITES["banking"]
+        self.task = self.suite.get_user_task_by_id("user_task_0")
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, ignore_errors=True)
+
+    def query(self, pipeline):
+        runtime = FunctionsRuntime(self.suite.tools)
+        env = self.task.init_environment(self.suite.load_and_inject_default_environment({}))
+        return pipeline.query(self.task.PROMPT, runtime, env)
+
+    def test_every_model_call_is_charged_and_the_cap_stops_the_next_run_before_it_starts(self):
+        usage = {"input_tokens": 1_000_000, "output_tokens": 100_000, "cache_read_tokens": 0, "cache_write_tokens": 0}
+        path, log, d = fake_bin([
+            {"read": "run"},
+            {"write": {"type": "event", "event": {"type": "usage", "data": usage}}},
+            {"write": {"type": "event", "event": {"type": "usage", "data": usage}}},
+            {"write": {"type": "done", "answer": "ok"}},
+        ])
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        spend = Spend(Path(self.d) / "spend.jsonl", self.PRICES, cap=9.0)
+        pipeline = CookiePipeline("anthropic:claude-sonnet-4-6", "trust", cookie_bin=path, spend=spend)
+        self.query(pipeline)
+        self.assertAlmostEqual(spend.total, 2 * (3.3 + 1.65))
+        self.assertEqual(len(received(log, "run")), 1)
+        with self.assertRaises(SpendCapReached):
+            self.query(pipeline)
+        self.assertEqual(len(received(log, "run")), 1, "a run past the cap must not reach the model")
+        # A rerun reads the ledger back, so it does not start from zero.
+        self.assertAlmostEqual(Spend(Path(self.d) / "spend.jsonl", self.PRICES, cap=9.0).total, spend.total)
+
+    def test_a_run_that_fails_is_still_charged_for_what_it_used(self):
+        path, _, d = fake_bin([
+            {"read": "run"},
+            {"write": {"type": "event", "event": {"type": "usage", "data": {"input_tokens": 1_000_000, "output_tokens": 0}}}},
+            {"write": {"type": "error", "message": "budget reached: 25 model calls (limit 25)"}},
+        ])
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        spend = Spend(Path(self.d) / "spend.jsonl", self.PRICES, cap=100.0)
+        with self.assertRaises(AbortAgentError):
+            self.query(CookiePipeline("anthropic:claude-sonnet-4-6", "trust", cookie_bin=path, spend=spend))
+        self.assertAlmostEqual(spend.total, 3.3)
+
+    def test_prices_and_cap_go_together(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            run.parse(["--model", "anthropic:claude-sonnet-4-6", "--max-dollars", "60"])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            run.parse(["--model", "anthropic:claude-sonnet-4-6", "--max-dollars", "60", "--prices", "1,2,3"])
+        args = run.parse(["--model", "anthropic:claude-sonnet-4-6", "--max-dollars", "60", "--prices", "3.3,16.5,0.33,4.125"])
+        self.assertEqual(args.prices, self.PRICES)
 
 
 class EndToEndTest(unittest.TestCase):

@@ -16,6 +16,7 @@ harness decides by itself (guards over where values came from).
 from __future__ import annotations
 
 import itertools
+import json
 import re
 import sys
 from collections.abc import Sequence
@@ -115,13 +116,54 @@ def yes(_request) -> bool:
     return True
 
 
+class SpendCapReached(Exception):
+    """The benchmark's dollar cap is spent. Not an agent failure: it stops the run."""
+
+
+class Spend:
+    """Dollars spent by the whole benchmark, from the provider's own token counts.
+
+    Every run appends one line to `ledger` (JSONL), so a rerun that continues
+    from the logs also counts what earlier runs spent. `prices` are dollars per
+    million tokens: {input, output, cache_read, cache_write}. The cap is checked
+    before each run, so the total can pass it by at most one run. Tokens of a
+    stream that failed mid-way are not reported by the harness and are missing
+    here: check the provider's own meter too.
+    """
+
+    KEYS = {"input": "input_tokens", "output": "output_tokens",
+            "cache_read": "cache_read_tokens", "cache_write": "cache_write_tokens"}
+
+    def __init__(self, ledger: Path, prices: dict, cap: float):
+        if set(prices) != set(self.KEYS):
+            raise ValueError(f"prices need exactly {sorted(self.KEYS)}")
+        self.ledger, self.prices, self.cap = Path(ledger), prices, cap
+        self.total = 0.0
+        if self.ledger.exists():
+            with self.ledger.open() as f:
+                self.total = sum(json.loads(line)["dollars"] for line in f if line.strip())
+
+    def check(self) -> None:
+        if self.total >= self.cap:
+            raise SpendCapReached(f"spent ${self.total:.2f} of the ${self.cap:.2f} cap")
+
+    def charge(self, label: str, usage: dict) -> None:
+        dollars = sum(usage.get(field, 0) * self.prices[key] for key, field in self.KEYS.items()) / 1e6
+        self.total += dollars
+        self.ledger.parent.mkdir(parents=True, exist_ok=True)
+        with self.ledger.open("a") as f:
+            f.write(json.dumps({"run": label, **usage, "dollars": round(dollars, 6)}) + "\n")
+
+
 class CookiePipeline(BasePipelineElement):
-    def __init__(self, model: str, arm: str, cookie_bin: str | None = None, system_message: str | None = None):
+    def __init__(self, model: str, arm: str, cookie_bin: str | None = None, system_message: str | None = None,
+                 spend: Spend | None = None):
         if arm not in ARMS:
             raise ValueError(f"arm must be one of {ARMS}")
         self.model = model
         self.arm = arm
         self.cookie_bin = cookie_bin
+        self.spend = spend
         self.system_message = system_message if system_message is not None else load_system_message(None)
         # AgentDojo names the log directory after this, and the attack finds the
         # model's name in it (see register_model_name).
@@ -155,16 +197,27 @@ class CookiePipeline(BasePipelineElement):
             ChatSystemMessage(role="system", content=[text_content_block_from_string(self.system_message)]),
             ChatUserMessage(role="user", content=[text_content_block_from_string(query)]),
         ]
+        if self.spend is not None:
+            self.spend.check()
         agent = Agent(self.model, tools=self.tools_for(runtime, env, messages), instructions=self.system_message,
                       enkeon=False, approver=yes, cookie_bin=self.cookie_bin)
+        usage: dict[str, int] = {}
+        answer = ""
         try:
-            answer = agent.run(query)
+            for event in agent.stream(query):
+                if event.get("type") == "usage":
+                    for field, n in event["data"].items():
+                        usage[field] = usage.get(field, 0) + n
+                elif event.get("type") == "done":
+                    answer = event["answer"]
         except CookieError as e:
             if str(e).startswith(AGENT_FAILURES):
                 raise AbortAgentError(f"cookie: {e}", messages, env) from e
             raise
         finally:
             agent.close()
+            if self.spend is not None:
+                self.spend.charge(f"{self.name}: {query[:80]}", usage)
         messages.append(ChatAssistantMessage(role="assistant", content=[text_content_block_from_string(answer)], tool_calls=None))
         return query, runtime, env, messages, extra_args
 
