@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "TypeScript client for the Cookie Agent Harness (`cookie serve`)",
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/DevbyNaveen/cookie-harness.git", "directory": "bindings/typescript" },
   "type": "module",
   "engines": { "node": ">=20" },
   "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
