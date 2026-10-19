@@ -102,12 +102,38 @@ pub fn retry_send_error(timed_out: bool) -> bool {
     !timed_out
 }
 
+/// Tries for a server error or a dropped connection.
+pub const ATTEMPTS: u32 = 3;
+/// Tries for throttling. Bedrock's quotas are per minute, so a refusal now
+/// says nothing about ten seconds from now: a burst should ride through the
+/// window, not fail the run (measured 2026-10-19: an account at 10 requests a
+/// minute lost half its runs to three quick retries).
+pub const THROTTLED_ATTEMPTS: u32 = 7;
+
+/// A rate limit, as opposed to the provider being unwell.
+pub fn throttled(status: Option<u16>, text: &str) -> bool {
+    let text = text.to_lowercase();
+    status == Some(429) || text.contains("throttlingexception") || text.contains("too many requests")
+}
+
+fn jitter() -> f64 {
+    let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    f64::from(nanos % 1_000_000) / 1_000_000.0
+}
+
 /// "Full jitter": a random wait up to 1 s, then 2 s, so callers throttled
 /// together don't retry together.
 pub fn backoff(attempt: u32) -> Duration {
     let cap = Duration::from_secs(1 << (attempt.saturating_sub(1)).min(5));
-    let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
-    cap.mul_f64(f64::from(nanos % 1_000_000) / 1_000_000.0)
+    cap.mul_f64(jitter())
+}
+
+/// After throttling: "equal jitter" — at least half of 2, 4, 8, 16, 32, 32 s,
+/// so each retry lands later in the window (about 47–94 s in all) while
+/// callers throttled together still spread out.
+pub fn throttle_backoff(attempt: u32) -> Duration {
+    let cap = Duration::from_secs(1 << attempt.clamp(1, 5));
+    cap / 2 + (cap / 2).mul_f64(jitter())
 }
 
 /// Converse takes at most 20 images in one message, and neighbouring user
@@ -441,10 +467,12 @@ impl BedrockProvider {
     /// dropped connections; a successful response is returned unread.
     async fn send(&self, url: &str, region: &str, body: &[u8]) -> Result<reqwest::Response> {
         let mut last_error = String::new();
-        for attempt in 0..3u32 {
+        let (mut attempt, mut limit, mut was_throttled) = (0u32, ATTEMPTS, false);
+        while attempt < limit {
             if attempt > 0 {
-                tokio::time::sleep(backoff(attempt)).await;
+                tokio::time::sleep(if was_throttled { throttle_backoff(attempt) } else { backoff(attempt) }).await;
             }
+            attempt += 1;
             let mut call = self.client.post(url).header("content-type", "application/json").body(body.to_vec());
             for (name, value) in sign(&self.credentials, region, url, body, SystemTime::now())? {
                 call = call.header(name, value);
@@ -467,9 +495,13 @@ impl BedrockProvider {
             if !retriable(Some(status.as_u16()), &text) {
                 return Err(http_error(status.as_u16(), &text));
             }
+            was_throttled = throttled(Some(status.as_u16()), &text);
+            if was_throttled {
+                limit = THROTTLED_ATTEMPTS;
+            }
             last_error = format!("HTTP {status}: {}", text.chars().take(300).collect::<String>());
         }
-        Err(Error::Provider(format!("bedrock gave up after 3 attempts: {last_error}")))
+        Err(Error::Provider(format!("bedrock gave up after {attempt} attempts: {last_error}")))
     }
 
     fn prepare(&self, request: &ModelRequest) -> Result<(String, Vec<u8>)> {
@@ -601,6 +633,10 @@ mod tests {
         assert!(retriable(Some(429), ""));
         assert!(retriable(Some(503), ""));
         assert!(retriable(Some(400), "ThrottlingException: Too many requests"));
+        assert!(throttled(Some(429), ""));
+        assert!(throttled(Some(400), "ThrottlingException: slow down"));
+        assert!(throttled(None, "HTTP 429 Too Many Requests"));
+        assert!(!throttled(Some(503), "ServiceUnavailable"));
         assert!(retriable(None, "connection reset"));
         assert!(!retriable(Some(400), "ValidationException: bad input"));
         assert!(!retriable(Some(403), "AccessDeniedException"));
@@ -819,5 +855,20 @@ mod tests {
         let history = vec![Message::user("a"), shots(12), Message::user("b"), shots(12)];
         let request = ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() };
         assert!(matches!(check_images(&converse_body(&request, 100, false)), Err(Error::Provider(m)) if m.contains("20")));
+    }
+
+    #[test]
+    fn a_throttled_call_waits_out_the_window() {
+        // Each wait is at least half its cap and never more than the cap.
+        for attempt in 1..THROTTLED_ATTEMPTS {
+            let cap = Duration::from_secs(1 << attempt.clamp(1, 5));
+            let w = throttle_backoff(attempt);
+            assert!(w >= cap / 2 && w <= cap, "attempt {attempt}: {w:?}");
+        }
+        // Six waits after the first try: at least 1+2+4+8+16+16 = 47 s, so a
+        // per-minute quota has turned over before the run gives up.
+        let floor: Duration = (1..THROTTLED_ATTEMPTS).map(|a| Duration::from_secs(1 << a.clamp(1, 5)) / 2).sum();
+        assert_eq!(floor, Duration::from_secs(47));
+        assert!(THROTTLED_ATTEMPTS > ATTEMPTS);
     }
 }
