@@ -82,7 +82,31 @@ pub struct RunRequest {
     /// right after it.
     #[serde(default)]
     pub images: Vec<ImageDecl>,
+    /// Helpers the model may hand a part of the job to: read-only sub-agents
+    /// built from this run's own tools (`HelperDecl`).
+    #[serde(default)]
+    pub helpers: Vec<HelperDecl>,
 }
+
+/// A helper: a sub-agent with a fresh context that only looks things up. It
+/// holds some of the run's own tools (each must be `read`), shares the run's
+/// budget, trust and cancellation, and its answer comes back to the model as
+/// untrusted, like any tool result. Its tool calls reach the client with
+/// `agent` set to its name; a `helper` line says when it starts (with the
+/// task) and when it finishes.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HelperDecl {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub instructions: Option<String>,
+    /// Names from the run's `tools`.
+    pub tools: Vec<String>,
+}
+
+/// Helpers one run may declare.
+const MAX_HELPERS: usize = 4;
 
 /// One earlier turn: `user` is the person's own words, `assistant` the
 /// model's reply. `untrusted` marks a turn built from something the person
@@ -282,6 +306,8 @@ impl Wire {
 struct WireTool {
     spec: ToolSpec,
     wire: Arc<Wire>,
+    /// The helper that holds this copy of the tool; `None` for the run's own.
+    agent: Option<String>,
 }
 
 #[async_trait]
@@ -291,9 +317,17 @@ impl Tool for WireTool {
     }
 
     async fn call(&self, args: Value) -> std::result::Result<String, String> {
+        let mut call = json!({"type": "tool_call", "name": self.spec.name, "args": args});
+        if let Some(agent) = &self.agent {
+            call["agent"] = json!(agent);
+            // Which call of the helper this is: several can run at once.
+            if let Ok(id) = HELPER_CALL.try_with(String::clone) {
+                call["helper"] = json!(id);
+            }
+        }
         let reply = self
             .wire
-            .ask("t", json!({"type": "tool_call", "name": self.spec.name, "args": args}))
+            .ask("t", call)
             .await
             .ok_or_else(|| "The client did not answer.".to_string())?;
         let output = reply["output"].as_str().unwrap_or_default().to_string();
@@ -302,6 +336,40 @@ impl Tool for WireTool {
         } else {
             Ok(output)
         }
+    }
+}
+
+tokio::task_local! {
+    /// The `helper` line id of the helper call a tool call runs inside. Tool
+    /// calls run on the helper's own task (joined, never spawned), so it is set.
+    static HELPER_CALL: String;
+}
+
+/// A helper as the model's tool: the sub-agent itself, announced to the
+/// client as it starts and finishes so it can show who is working on what.
+struct HelperTool {
+    inner: crate::subagent::SubAgent,
+    wire: Arc<Wire>,
+}
+
+#[async_trait]
+impl Tool for HelperTool {
+    fn spec(&self) -> &ToolSpec {
+        self.inner.spec()
+    }
+
+    async fn call(&self, args: Value) -> std::result::Result<String, String> {
+        self.inner.call(args).await
+    }
+
+    async fn call_in(&self, args: Value, context: &crate::tool::ToolContext) -> std::result::Result<String, String> {
+        let id = format!("h{}", self.wire.next.fetch_add(1, Ordering::Relaxed));
+        let name = &self.inner.spec().name;
+        let task = args["task"].as_str().unwrap_or_default().to_string();
+        let _ = self.wire.out.send(json!({"type": "helper", "run": self.wire.run, "id": id, "name": name, "state": "started", "task": task}));
+        let result = HELPER_CALL.scope(id.clone(), self.inner.call_in(args, context)).await;
+        let _ = self.wire.out.send(json!({"type": "helper", "run": self.wire.run, "id": id, "name": name, "state": "finished", "ok": result.is_ok()}));
+        result
     }
 }
 
@@ -356,7 +424,73 @@ fn effect(name: &str) -> std::result::Result<Effect, String> {
     serde_json::from_value(json!(name)).map_err(|_| format!("unknown effect `{name}` (read, write, outbound, destroy)"))
 }
 
-fn build(base: Agent, request: &RunRequest, wire: &Arc<Wire>) -> std::result::Result<(Agent, Vec<McpServer>), String> {
+fn tool_spec(decl: &ToolDecl) -> std::result::Result<ToolSpec, String> {
+    Ok(ToolSpec {
+        name: decl.name.clone(),
+        description: decl.description.clone(),
+        schema: if decl.schema.is_null() { json!({"type": "object"}) } else { decl.schema.clone() },
+        effect: effect(&decl.effect)?,
+        guarded_args: decl.guard.clone(),
+        parallel_safe: decl.parallel_safe,
+        delegates: false,
+        foreign: false,
+    })
+}
+
+/// The run's helpers, each a read-only sub-agent of the same model holding
+/// its own copies of the tools it names. Refused before the run starts when
+/// one is malformed: a bad name, a name taken, a tool the run does not have,
+/// or a tool that changes things.
+fn helpers(
+    mut agent: Agent,
+    request: &RunRequest,
+    wire: &Arc<Wire>,
+    make_child: &dyn Fn() -> std::result::Result<Agent, String>,
+) -> std::result::Result<Agent, String> {
+    if request.helpers.len() > MAX_HELPERS {
+        return Err(format!("at most {MAX_HELPERS} helpers"));
+    }
+    let mut taken: Vec<&str> = request.tools.iter().map(|t| t.name.as_str()).collect();
+    taken.extend(["use_skill", "read_artifact"]);
+    for helper in &request.helpers {
+        if !crate::tool::valid_tool_name(&helper.name) || taken.contains(&helper.name.as_str()) {
+            return Err(format!("helper `{}`: a name must be 1-64 letters, digits, _ or - and not another tool's", helper.name));
+        }
+        taken.push(&helper.name);
+        if helper.tools.is_empty() {
+            return Err(format!("helper `{}` has no tools", helper.name));
+        }
+        let mut child = make_child()?;
+        if let Some(text) = &helper.instructions {
+            child = child.instructions(text.clone());
+        }
+        // The child's spend is charged to the run's pool in dollars only if it knows the prices.
+        if let Some(price) = request.prices {
+            child = child.prices(price);
+        }
+        if request.enkeon == Some(false) {
+            child = child.without_enkeon();
+        }
+        for name in &helper.tools {
+            let decl = request
+                .tools
+                .iter()
+                .find(|t| &t.name == name)
+                .ok_or_else(|| format!("helper `{}`: the run has no tool `{name}`", helper.name))?;
+            child = child.tool(WireTool { spec: tool_spec(decl)?, wire: wire.clone(), agent: Some(helper.name.clone()) });
+        }
+        let inner = crate::subagent::SubAgent::reader(&helper.name, &helper.description, child).map_err(|e| e.to_string())?;
+        agent = agent.tool(HelperTool { inner, wire: wire.clone() });
+    }
+    Ok(agent)
+}
+
+fn build(
+    base: Agent,
+    request: &RunRequest,
+    wire: &Arc<Wire>,
+    make_child: &dyn Fn() -> std::result::Result<Agent, String>,
+) -> std::result::Result<(Agent, Vec<McpServer>), String> {
     let mut agent = base.approver(WireApprover(wire.clone()));
     if let Some(limits) = &request.budget {
         let default = Budget::default();
@@ -381,18 +515,9 @@ fn build(base: Agent, request: &RunRequest, wire: &Arc<Wire>) -> std::result::Re
     }
     agent = agent.policy(policy);
     for decl in &request.tools {
-        let spec = ToolSpec {
-            name: decl.name.clone(),
-            description: decl.description.clone(),
-            schema: if decl.schema.is_null() { json!({"type": "object"}) } else { decl.schema.clone() },
-            effect: effect(&decl.effect)?,
-            guarded_args: decl.guard.clone(),
-            parallel_safe: decl.parallel_safe,
-            delegates: false,
-            foreign: false,
-        };
-        agent = agent.tool(WireTool { spec, wire: wire.clone() });
+        agent = agent.tool(WireTool { spec: tool_spec(decl)?, wire: wire.clone(), agent: None });
     }
+    agent = helpers(agent, request, wire, make_child)?;
     if let Some(dir) = &request.skills {
         let skills = crate::skills::Skills::from_dir(dir).map_err(|e| format!("skills folder {}: {e}", dir.display()))?;
         agent = agent.tools(skills.into_tools());
@@ -484,7 +609,8 @@ where
                     run: request.id.clone(),
                     cancel: control.cancel.clone(),
                 });
-                let (agent, servers) = match make_agent(&request).map_err(|e| e.to_string()).and_then(|base| build(base, &request, &wire)) {
+                let make_child = || make_agent(&request).map_err(|e| e.to_string());
+                let (agent, servers) = match make_agent(&request).map_err(|e| e.to_string()).and_then(|base| build(base, &request, &wire, &make_child)) {
                     Ok(built) => built,
                     Err(message) => {
                         let _ = out.send(json!({"type": "error", "run": request.id, "message": message}));
@@ -724,6 +850,113 @@ mod tests {
                 assert_eq!(m, json!({"type": "done", "run": "r1", "answer": "hello"}));
                 break;
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_helper_works_over_the_wire_under_its_own_name_and_reports_back_untrusted() {
+        let tools = json!([{"name": "lookup", "description": "Look up", "schema": {"type": "object"}, "effect": "read", "parallel_safe": true}]);
+        // One script for both agents, consumed in order: the parent delegates,
+        // the helper looks up and answers, the parent answers.
+        let p = Arc::new(Scripted::new(vec![
+            Scripted::call("h1", "research", json!({"task": "find x"})),
+            Scripted::call("c1", "lookup", json!({"q": "x"})),
+            Scripted::text("x is 5"),
+            Scripted::text("done"),
+        ]));
+        let mut c = start(p.clone());
+        let mut request = run("what is x?", tools);
+        request["helpers"] = json!([{"name": "research", "description": "Researches one thing", "instructions": "Report what you found.", "tools": ["lookup"]}]);
+        c.send(request).await;
+        let started = c.next().await;
+        assert_eq!((started["type"].as_str(), started["state"].as_str(), started["name"].as_str(), started["task"].as_str()), (Some("helper"), Some("started"), Some("research"), Some("find x")));
+        let call = c.next().await;
+        assert_eq!((call["type"].as_str(), call["name"].as_str(), call["agent"].as_str()), (Some("tool_call"), Some("lookup"), Some("research")));
+        assert_eq!(call["helper"], started["id"], "the call names which helper call made it");
+        c.send(json!({"type": "tool_result", "id": call["id"], "output": "x=5"})).await;
+        let finished = c.next().await;
+        assert_eq!((finished["state"].as_str(), finished["id"].as_str(), finished["ok"].as_bool()), (Some("finished"), started["id"].as_str(), Some(true)));
+        assert_eq!(c.next().await["answer"], "done");
+        let seen = p.seen();
+        assert_eq!(seen[1][0].text(), "find x", "the helper sees only its task");
+        assert!(!seen[1][0].origin().is_untrusted() && seen[1][0].origin() != &crate::Origin::User, "the task is the parent model's words");
+        assert!(seen[3].last().unwrap().origin().is_untrusted(), "its report reaches the parent as untrusted");
+    }
+
+    #[tokio::test]
+    async fn helpers_side_by_side_each_name_their_own_calls() {
+        let tools = json!([{"name": "lookup", "description": "", "schema": {"type": "object"}, "effect": "read", "parallel_safe": true}]);
+        let p = Arc::new(Scripted::new(vec![
+            Scripted::call_many(&[("h1", "research", json!({"task": "acme"})), ("h2", "research", json!({"task": "globex"}))]),
+            Scripted::call("c1", "lookup", json!({})),
+            Scripted::call("c2", "lookup", json!({})),
+            Scripted::text("found"),
+            Scripted::text("found"),
+            Scripted::text("done"),
+        ]));
+        let mut c = start(p);
+        let mut request = run("acme and globex", tools);
+        request["helpers"] = json!([{"name": "research", "description": "", "tools": ["lookup"]}]);
+        c.send(request).await;
+        let mut started = std::collections::BTreeMap::new();
+        let mut calls = Vec::new();
+        while calls.len() < 2 {
+            let m = c.next().await;
+            match m["type"].as_str() {
+                Some("helper") => {
+                    started.insert(m["id"].as_str().unwrap().to_string(), m["task"].as_str().unwrap().to_string());
+                }
+                Some("tool_call") => calls.push(m),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(started.len(), 2);
+        assert_ne!(calls[0]["helper"], calls[1]["helper"]);
+        for call in &calls {
+            assert!(started.contains_key(call["helper"].as_str().unwrap()), "each call names a helper that started");
+            c.send(json!({"type": "tool_result", "id": call["id"], "output": "x"})).await;
+        }
+        loop {
+            let m = c.next().await;
+            if m["type"] == "done" {
+                assert_eq!(m["answer"], "done");
+                break;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_s_own_tool_call_names_no_agent() {
+        let tools = json!([{"name": "lookup", "description": "", "schema": {"type": "object"}, "effect": "read"}]);
+        let p = Arc::new(Scripted::new(vec![Scripted::call("c1", "lookup", json!({})), Scripted::text("ok")]));
+        let mut c = start(p);
+        c.send(run("look", tools)).await;
+        assert!(c.next().await.get("agent").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_malformed_helper_is_refused_before_the_run_starts() {
+        let tools = json!([
+            {"name": "lookup", "description": "", "schema": {"type": "object"}, "effect": "read"},
+            {"name": "save", "description": "", "schema": {"type": "object"}, "effect": "write"}
+        ]);
+        let cases = [
+            (json!([{"name": "r", "description": "", "tools": ["save"]}]), "save"),
+            (json!([{"name": "r", "description": "", "tools": ["nope"]}]), "no tool `nope`"),
+            (json!([{"name": "lookup", "description": "", "tools": ["lookup"]}]), "name"),
+            (json!([{"name": "r", "description": "", "tools": []}]), "no tools"),
+            (json!([{"name": "has space", "description": "", "tools": ["lookup"]}]), "name"),
+        ];
+        for (helpers, why) in cases {
+            let p = Arc::new(Scripted::new(vec![Scripted::text("never")]));
+            let mut c = start(p.clone());
+            let mut request = run("hi", tools.clone());
+            request["helpers"] = helpers.clone();
+            c.send(request).await;
+            let reply = c.next().await;
+            assert_eq!(reply["type"], "error", "{helpers}");
+            assert!(reply["message"].as_str().unwrap().contains(why), "{helpers}: {}", reply["message"]);
+            assert!(p.seen().is_empty(), "nothing ran");
         }
     }
 
