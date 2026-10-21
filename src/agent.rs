@@ -42,6 +42,10 @@ pub struct Agent {
     pub(crate) provider_name: Option<String>,
     pub(crate) reasoning: Option<Effort>,
     pub(crate) output_schema: Option<serde_json::Value>,
+    /// Tools whose working is not proof of the result (an update in someone
+    /// else's app): a run that used one and read nothing after is asked,
+    /// once, to check before it finishes.
+    pub(crate) check_after: Vec<String>,
 }
 
 /// Where a run starts from: what is trusted, what it may spend, how deep it
@@ -266,6 +270,12 @@ impl Agent {
                     continue;
                 }
                 (true, _) => {
+                    // Changed something it must check and read nothing since:
+                    // asked once, then the answer stands.
+                    if let Some(tool) = loop_guard.take_unchecked() {
+                        session.append(Message::harness_note(check_note(&tool))).await?;
+                        continue;
+                    }
                     said.push(answer);
                     let answer = said.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
                     if let Some(schema) = &self.output_schema {
@@ -315,6 +325,7 @@ impl Agent {
             match stop {
                 Stop::Cancelled => return Err(Error::Cancelled),
                 Stop::Loop(name) => return Err(Error::Loop(name)),
+                Stop::Declined => return Err(Error::Declined),
                 Stop::No if control.finish_turn.is_cancelled() => return Err(Error::Stopped),
                 Stop::No => {}
             }
@@ -326,11 +337,20 @@ impl Agent {
     }
 }
 
+/// What a run that changed something and checked nothing is told before it finishes.
+fn check_note(tool: &str) -> String {
+    format!(
+        "Before you finish: you used `{tool}` and have not checked the result. Check it with a tool that reads \
+         it, if there is one, then give your whole answer again. If it cannot be checked (it is waiting for \
+         someone's yes, or nothing can read it), give your whole answer and say plainly what is not confirmed."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        approval::{ApprovalRequest, FnApprover},
+        approval::{ApprovalRequest, FnApprover, PersonApprover},
         providers::scripted::Scripted,
         tool::{tool, Effect},
     };
@@ -420,6 +440,61 @@ mod tests {
             a.run("email anna@x.com that I'm late").await.unwrap();
             assert_eq!(sent.load(Ordering::SeqCst), expected_sends);
         }
+    }
+
+    #[tokio::test]
+    async fn the_same_change_twice_is_sent_once() {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let send = || Scripted::call("c", "send_email", json!({"to": "anna@x.com"}));
+        let (a, p) = agent(vec![send(), send(), Scripted::text("ok")]);
+        let a = a.tool(send_email(sent.clone())).approver(FnApprover(|_: &ApprovalRequest| true));
+        a.run("email anna@x.com that I'm late").await.unwrap();
+        assert_eq!(sent.load(Ordering::SeqCst), 1, "sent once");
+        let second = p.seen()[2].last().unwrap().content()[0].clone();
+        assert!(matches!(&second, Content::ToolResult { output, is_error: false, .. } if output.starts_with("Already done")), "{second:?}");
+    }
+
+    #[tokio::test]
+    async fn three_noes_from_the_person_in_a_row_stop_the_run() {
+        let ask = |to: &str| Scripted::call("c", "send_email", json!({"to": to}));
+        let (a, _) = agent(vec![ask("a@x.com"), ask("b@x.com"), ask("c@x.com"), Scripted::text("x")]);
+        let a = a.tool(send_email(Arc::new(AtomicUsize::new(0)))).approver(PersonApprover(|_: &ApprovalRequest| false));
+        let out = a.run("email a@x.com, b@x.com and c@x.com").await;
+        assert!(matches!(out, Err(Error::Declined)), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn a_change_that_must_be_checked_is_checked_once_before_the_answer() {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let (a, p) = agent(vec![
+            Scripted::call("c1", "send_email", json!({"to": "anna@x.com"})),
+            Scripted::text("Sent."),
+            Scripted::text("Sent — not confirmed, nothing can read the mailbox."),
+        ]);
+        let a = a.tool(send_email(sent)).approver(FnApprover(|_: &ApprovalRequest| true)).check_after(["send_email"]);
+        let answer = a.run("email anna@x.com").await.unwrap();
+        assert_eq!(answer, "Sent — not confirmed, nothing can read the mailbox.");
+        let note = p.seen()[2].last().unwrap().text();
+        assert!(note.starts_with("Before you finish"), "{note}");
+        // Without check_after the first answer stands.
+        let (a, _) = agent(vec![Scripted::call("c1", "send_email", json!({"to": "anna@x.com"})), Scripted::text("Sent.")]);
+        let a = a.tool(send_email(Arc::new(AtomicUsize::new(0)))).approver(FnApprover(|_: &ApprovalRequest| true));
+        assert_eq!(a.run("email anna@x.com").await.unwrap(), "Sent.");
+    }
+
+    #[tokio::test]
+    async fn a_read_after_the_change_is_the_check() {
+        let (a, _) = agent(vec![
+            Scripted::call("c1", "send_email", json!({"to": "anna@x.com"})),
+            Scripted::call("c2", "weather", json!({"city": "Riga"})),
+            Scripted::text("Sent and checked."),
+        ]);
+        let a = a
+            .tool(send_email(Arc::new(AtomicUsize::new(0))))
+            .tool(weather())
+            .approver(FnApprover(|_: &ApprovalRequest| true))
+            .check_after(["send_email"]);
+        assert_eq!(a.run("email anna@x.com").await.unwrap(), "Sent and checked.");
     }
 
     #[tokio::test]

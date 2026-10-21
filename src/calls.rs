@@ -24,10 +24,13 @@ pub(crate) enum Stop {
     No,
     Cancelled,
     Loop(String),
+    /// The person said no three times in a row.
+    Declined,
 }
 
 const NOT_RUN_CANCELLED: &str = "Not run: the run was cancelled first.";
 const INTERRUPTED: &str = "Interrupted: this may or may not have run. Check before trying again.";
+const ALREADY_DONE: &str = "Already done earlier in this run, so it was not sent again. It returned: ";
 
 /// The tools one run offers, with what comes with them.
 pub(crate) struct Toolset {
@@ -90,6 +93,14 @@ impl Agent {
                 outcomes[index] = Some((format!("There is no tool called `{name}`."), true));
                 continue;
             };
+            // The same change twice is one change: the second is answered
+            // with what the first returned, never sent again.
+            if tool.spec().effect != Effect::Read {
+                if let Some(earlier) = loop_guard.already_done(name, args) {
+                    outcomes[index] = Some((format!("{ALREADY_DONE}{earlier}"), false));
+                    continue;
+                }
+            }
             match policy.decide(tool.spec(), args, provenance, tool.preview(args)) {
                 Decision::Allow => approved.push((index, tool)),
                 // A cancelled run asks no one; a wait for a person stops on cancel.
@@ -125,14 +136,22 @@ impl Agent {
                         tracing::warn!(%error, "could not record the approval for earned trust");
                     }
                 }
+                // Only the person's own noes count toward stopping.
+                let stop_now = approver.is_person() && !cancel.is_cancelled() && loop_guard.answered(yes);
                 if yes {
                     approved.push((index, tool));
                 } else {
                     outcomes[index] = Some(("The person declined this action.".into(), true));
                 }
+                if stop_now && matches!(stop, Stop::No) {
+                    stop = Stop::Declined;
+                }
             }
             approved.sort_by_key(|(index, _)| *index);
         }
+        // What ran and what it was, for what is remembered afterwards.
+        let ran: Vec<(usize, Effect, String)> =
+            approved.iter().map(|(index, tool)| (*index, tool.spec().effect, tool.spec().name.clone())).collect();
 
         let run_one = |index: usize, tool: Arc<dyn Tool>| {
             let (id, name, args) = calls[index].clone();
@@ -173,6 +192,19 @@ impl Agent {
         }
         if cancel.is_cancelled() && matches!(stop, Stop::No) {
             stop = Stop::Cancelled;
+        }
+        // Changes that worked are remembered; a check-after tool that worked
+        // waits for a read; a read that worked counts as the check.
+        for (index, effect, name) in ran {
+            let Some((output, false)) = &outcomes[index] else { continue };
+            if effect == Effect::Read {
+                loop_guard.set_unchecked(None);
+            } else {
+                loop_guard.did(&calls[index].1, &calls[index].2, output);
+                if self.check_after.contains(&name) {
+                    loop_guard.set_unchecked(Some(name));
+                }
+            }
         }
 
         let results = calls

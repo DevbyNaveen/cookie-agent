@@ -86,6 +86,29 @@ pub struct RunRequest {
     /// built from this run's own tools (`HelperDecl`).
     #[serde(default)]
     pub helpers: Vec<HelperDecl>,
+    /// Tools whose working is not proof of the result (an update in someone
+    /// else's app): a run that used one and read nothing after is asked,
+    /// once, to check before it finishes (`Agent::check_after`).
+    #[serde(default)]
+    pub check_after: Vec<String>,
+    /// Lessons this job may be given (`LessonsDecl`): the harness matches and
+    /// picks, puts the chosen ones beside the job, and says which it gave on
+    /// a `lessons` line before the run starts.
+    #[serde(default)]
+    pub lessons: Option<LessonsDecl>,
+}
+
+/// The lessons a client keeps, offered to one run.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LessonsDecl {
+    pub candidates: Vec<crate::lessons::Lesson>,
+    /// Cookie's own jobs without a lesson: the bandit's other arm.
+    #[serde(default)]
+    pub baseline: crate::lessons::Arm,
+    /// Give every match (an evaluation's "on" arm), no bandit.
+    #[serde(default)]
+    pub all: bool,
 }
 
 /// A helper: a sub-agent with a fresh context that only looks things up. It
@@ -518,6 +541,9 @@ fn build(
         agent = agent.tool(WireTool { spec: tool_spec(decl)?, wire: wire.clone(), agent: None });
     }
     agent = helpers(agent, request, wire, make_child)?;
+    if !request.check_after.is_empty() {
+        agent = agent.check_after(request.check_after.iter().cloned());
+    }
     if let Some(dir) = &request.skills {
         let skills = crate::skills::Skills::from_dir(dir).map_err(|e| format!("skills folder {}: {e}", dir.display()))?;
         agent = agent.tools(skills.into_tools());
@@ -640,6 +666,36 @@ where
                     }
                 }
             }
+            // State in, state out: the client keeps what Cookie pays
+            // attention to and what it learned; these never wait on a run.
+            kind @ ("attention" | "lessons") => {
+                let result = if kind == "attention" { crate::attention::rpc(&message) } else { crate::lessons::rpc(&message) };
+                let _ = out.send(match result {
+                    Ok(mut reply) => {
+                        reply["type"] = json!(kind);
+                        reply["id"] = named.clone();
+                        reply
+                    }
+                    Err(why) => json!({"type": "error", "id": named, "message": why}),
+                });
+            }
+            "distill" => {
+                let request = match distill_request(&message) {
+                    Ok(r) => r,
+                    Err(why) => {
+                        let _ = out.send(json!({"type": "error", "id": named, "message": why}));
+                        continue;
+                    }
+                };
+                match make_agent(&request) {
+                    Ok(agent) => {
+                        tokio::spawn(distill(agent, message.clone(), out.clone()));
+                    }
+                    Err(e) => {
+                        let _ = out.send(json!({"type": "error", "id": named, "message": e.to_string()}));
+                    }
+                }
+            }
             "cancel" => {
                 if let Some((control, _)) = &current {
                     control.cancel.cancel();
@@ -682,6 +738,47 @@ async fn run_one(agent: Agent, servers: Vec<McpServer>, request: RunRequest, con
     let _ = out.send(last);
 }
 
+/// The `run` a `distill` line stands for, so the client's agent factory
+/// builds the same model it would for a job.
+fn distill_request(m: &Value) -> std::result::Result<RunRequest, String> {
+    let model = m.get("model").and_then(Value::as_str).ok_or("`model` is required")?;
+    serde_json::from_value(json!({"type": "run", "id": m["id"].as_str().unwrap_or("distill"), "model": model, "input": ""}))
+        .map_err(|e| e.to_string())
+}
+
+/// Ask the small model whether a finished job taught a lesson:
+/// `{id, model, asked, steps: [[tool, what, ok]], answer?, correction?,
+/// prices: {input, output}}` → `{type: "lesson", id, lesson: {text, when} | null, cents}`.
+async fn distill(agent: Agent, m: Value, out: Out) {
+    let id = m["id"].clone();
+    let s = |k: &str| m.get(k).and_then(Value::as_str).map(str::to_string);
+    let steps: Vec<(String, String, bool)> = serde_json::from_value(m["steps"].clone()).unwrap_or_default();
+    let input = crate::lessons::distill_input(&s("asked").unwrap_or_default(), &steps, s("answer").as_deref(), s("correction").as_deref());
+    let agent = agent
+        .instructions(crate::lessons::DISTILL_PROMPT)
+        .without_enkeon()
+        .budget(Budget { max_steps: 1, max_tokens: 20_000, max_dollars: None });
+    let (mut used_in, mut used_out) = (0u64, 0u64);
+    let mut session = Session::in_memory();
+    let result = agent
+        .run_streaming_all(&mut session, vec![Message::user(input)], &RunControl::default(), &mut |event| {
+            if let crate::Event::Usage(u) = event {
+                used_in += u.input_tokens + u.cache_read_tokens + u.cache_write_tokens;
+                used_out += u.output_tokens;
+            }
+        })
+        .await;
+    let price = |k: &str| m.pointer(&format!("/prices/{k}")).and_then(Value::as_f64).unwrap_or(0.0);
+    let cents = crate::lessons::cost_cents(used_in, used_out, price("input"), price("output"));
+    let _ = out.send(match result {
+        Ok(raw) => json!({
+            "type": "lesson", "id": id, "cents": cents,
+            "lesson": crate::lessons::parse_lesson(&raw).map(|(text, when)| json!({"text": text, "when": when})),
+        }),
+        Err(e) => json!({"type": "error", "id": id, "message": e.to_string(), "cents": cents}),
+    });
+}
+
 /// The run itself; returns its last line (`done` or `error`).
 async fn run_inner(mut agent: Agent, servers: Vec<McpServer>, request: RunRequest, control: RunControl, out: Out) -> Value {
     let mut inputs = vec![Message::user(&request.input)];
@@ -718,6 +815,17 @@ async fn run_inner(mut agent: Agent, servers: Vec<McpServer>, request: RunReques
         };
         if let Err(message) = appended {
             return json!({"type": "error", "run": request.id, "message": message});
+        }
+    }
+    // Lessons beside the job, never as the person's words.
+    if let Some(decl) = &request.lessons {
+        let mut rng = crate::lessons::SplitMix64::from_time();
+        let (picked, block) = crate::lessons::pick(&request.input, &decl.candidates, decl.baseline, decl.all, &mut rng);
+        let _ = out.send(json!({"type": "lessons", "run": request.id, "picked": picked}));
+        if let Some(block) = block {
+            if let Err(e) = session.append(Message::earlier(true, &block, true)).await {
+                return json!({"type": "error", "run": request.id, "message": e.to_string()});
+            }
         }
     }
     let events = out.clone();
@@ -776,6 +884,68 @@ mod tests {
 
     fn email_tools() -> Value {
         json!([{"name": "send_email", "description": "Send", "schema": {"type": "object"}, "effect": "outbound", "guard": ["to"]}])
+    }
+
+    #[tokio::test]
+    async fn attention_keeps_no_state_of_its_own() {
+        let mut c = start(Arc::new(Scripted::new(vec![])));
+        let write = json!({"id": "m1", "kind": "decision", "weight": "critical", "feeling": null, "revises": false,
+            "name": "Acme renews in March", "about": ["Acme"], "branch": "acme", "outside": false, "by_person": true});
+        c.send(json!({"type": "attention", "id": "x1", "op": "add", "write": write, "now": 1000.0})).await;
+        let reply = c.next().await;
+        assert_eq!(reply["type"], "attention", "{reply}");
+        assert_eq!(reply["id"], "x1");
+        assert_eq!(reply["subject"]["key"], "acme|*", "{reply}");
+        assert!(reply["subject"]["level"].as_f64().unwrap() > 0.0);
+        assert!(reply["verdict"].is_null(), "a soft write is not scored at once");
+        // The client sends the subject back to have it scored.
+        c.send(json!({"type": "attention", "id": "x2", "op": "consider", "subject": reply["subject"], "team": {}, "now": 1000.0})).await;
+        let scored = c.next().await;
+        assert_eq!(scored["verdict"]["kind"], "wait", "one write is not enough: {scored}");
+        c.send(json!({"type": "attention", "id": "x3", "op": "nope", "now": 1.0})).await;
+        assert_eq!(c.next().await["type"], "error");
+    }
+
+    #[tokio::test]
+    async fn a_run_is_given_the_lessons_that_fit_and_says_which() {
+        let p = Arc::new(Scripted::new(vec![Scripted::text("March.")]));
+        let mut c = start(p.clone());
+        let mut request = run("When does the Acme contract renewal date come up?", json!([]));
+        request["lessons"] = json!({"all": true, "candidates": [
+            {"id": "l1", "text": "Read the contracts branch before saying a renewal date.", "cue": "contract renewal date",
+             "state": "active", "wins": 3, "losses": 0, "withheld": 0, "last_used_at": null, "created_at": 0.0},
+            {"id": "l2", "text": "Quote prices from the pricing page.", "cue": "pricing questions",
+             "state": "active", "wins": 1, "losses": 0, "withheld": 0, "last_used_at": null, "created_at": 0.0}]});
+        c.send(request).await;
+        let lessons = c.next().await;
+        assert_eq!(lessons["type"], "lessons", "{lessons}");
+        assert_eq!(lessons["picked"], json!([{"id": "l1", "offered": true}]), "only the lesson that fits");
+        assert_eq!(c.next().await["type"], "done");
+        let seen = &p.seen()[0];
+        let given = seen.iter().find(|m| m.text().contains("Lessons Cookie learned")).expect("the lesson rides beside the job");
+        assert!(given.origin().is_untrusted(), "never as the person's words");
+    }
+
+    #[tokio::test]
+    async fn the_lessons_line_scores_without_a_run() {
+        let mut c = start(Arc::new(Scripted::new(vec![])));
+        let lesson = json!({"id": "l1", "text": "t", "cue": "c", "state": "active", "wins": 1, "losses": 0, "withheld": 0, "last_used_at": null, "created_at": 0.0});
+        c.send(json!({"type": "lessons", "id": "s1", "op": "score", "lesson": lesson, "clean": true})).await;
+        let reply = c.next().await;
+        assert_eq!(reply["lesson"]["wins"], 2, "{reply}");
+        c.send(json!({"type": "lessons", "id": "s2", "op": "correction", "text": "That's not right"})).await;
+        assert_eq!(c.next().await["correction"], true);
+    }
+
+    #[tokio::test]
+    async fn distill_answers_with_a_lesson_or_none_and_its_cost() {
+        let p = Arc::new(Scripted::new(vec![Scripted::text("{\"lesson\": \"Read the contracts branch before a renewal date.\", \"when\": \"questions about contract renewals\"}")]));
+        let mut c = start(p);
+        c.send(json!({"type": "distill", "id": "d1", "model": "m", "asked": "When does Acme renew?",
+            "steps": [["recall", "acme renewal", true]], "answer": "March.", "prices": {"input": 1.1, "output": 5.5}})).await;
+        let reply = c.next().await;
+        assert_eq!(reply["type"], "lesson", "{reply}");
+        assert_eq!(reply["lesson"]["when"], "questions about contract renewals");
     }
 
     #[tokio::test]

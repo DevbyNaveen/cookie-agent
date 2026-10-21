@@ -16,6 +16,8 @@ pub enum Error {
     Stopped,
     #[error("stopped a loop: `{0}` was called with the same arguments three times in a row")]
     Loop(String),
+    #[error("stopped: the person said no three times in a row")]
+    Declined,
     #[error("tool: {0}")]
     Tool(String),
     #[error("mcp: {0}")]

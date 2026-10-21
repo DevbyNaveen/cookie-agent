@@ -188,7 +188,18 @@ impl Meter {
 pub(crate) struct LoopGuard {
     /// The most recent calls, newest last.
     recent: std::collections::VecDeque<String>,
+    /// Changes that already worked this run, by call: the same change is
+    /// answered from here and never sent twice.
+    done: std::collections::HashMap<String, String>,
+    /// Requests the person said no to, in a row.
+    declined: usize,
+    /// A tool that must be checked afterwards (`Agent::check_after`) worked,
+    /// and nothing has read anything since.
+    unchecked: Option<String>,
 }
+
+/// Three noes in a row: the person does not want what this run is doing.
+const DECLINED_IN_A_ROW: usize = 3;
 
 /// The same call three times in a row is a loop; so is one call coming back
 /// a fourth time among the last twelve (a cycle such as a, b, a, b, …).
@@ -210,6 +221,35 @@ impl LoopGuard {
         }
         Ok(())
     }
+
+    /// What this exact change returned, if it already worked this run.
+    pub(crate) fn already_done(&self, name: &str, args: &Value) -> Option<&str> {
+        self.done.get(&format!("{name}{args}")).map(String::as_str)
+    }
+
+    /// A change worked: remember what it returned.
+    pub(crate) fn did(&mut self, name: &str, args: &Value, output: &str) {
+        let kept: String = output.chars().take(400).collect();
+        self.done.insert(format!("{name}{args}"), kept);
+    }
+
+    /// The person answered a request. `true` once they have said no three
+    /// times in a row.
+    pub(crate) fn answered(&mut self, yes: bool) -> bool {
+        self.declined = if yes { 0 } else { self.declined + 1 };
+        self.declined >= DECLINED_IN_A_ROW
+    }
+
+    /// A tool that must be checked afterwards worked (`Some(name)`), or
+    /// something was read since (`None`).
+    pub(crate) fn set_unchecked(&mut self, tool: Option<String>) {
+        self.unchecked = tool;
+    }
+
+    /// The tool still waiting to be checked, taken (asked about once).
+    pub(crate) fn take_unchecked(&mut self) -> Option<String> {
+        self.unchecked.take()
+    }
 }
 
 #[cfg(test)]
@@ -221,6 +261,23 @@ mod tests {
         let mut meter = Meter::default();
         meter.charge(&Usage { input_tokens: 1, output_tokens: 1, cache_read_tokens: 500, cache_write_tokens: 500 }, None);
         assert!(matches!(meter.check(&Budget { max_steps: 10, max_tokens: 1_000, max_dollars: None }), Err(Error::Budget(_))));
+    }
+
+    #[test]
+    fn a_change_is_remembered_and_three_noes_in_a_row_stop_but_a_yes_resets() {
+        use serde_json::json;
+        let mut guard = LoopGuard::default();
+        let args = json!({"deal": 7, "stage": "won"});
+        assert_eq!(guard.already_done("update_deal", &args), None);
+        guard.did("update_deal", &args, "Deal 7 moved to won.");
+        assert_eq!(guard.already_done("update_deal", &args), Some("Deal 7 moved to won."));
+        assert_eq!(guard.already_done("update_deal", &json!({"deal": 7, "stage": "lost"})), None);
+        assert!(!guard.answered(false));
+        assert!(!guard.answered(false));
+        assert!(!guard.answered(true), "a yes resets the count");
+        assert!(!guard.answered(false));
+        assert!(!guard.answered(false));
+        assert!(guard.answered(false), "three in a row");
     }
 
     #[test]

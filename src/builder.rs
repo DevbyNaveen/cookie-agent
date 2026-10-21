@@ -47,6 +47,7 @@ impl Agent {
             provider_name: None,
             reasoning: None,
             output_schema: None,
+            check_after: Vec::new(),
         }
     }
 
@@ -135,6 +136,14 @@ impl Agent {
     /// Keep long sessions within reach. Off unless set.
     pub fn compaction(mut self, compaction: Compaction) -> Self {
         self.compaction = Some(compaction);
+        self
+    }
+
+    /// Tools whose working is not proof of the result — an update in someone
+    /// else's app. A run that used one and read nothing after is asked, once,
+    /// to check before it finishes.
+    pub fn check_after(mut self, tools: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.check_after = tools.into_iter().map(Into::into).collect();
         self
     }
 }

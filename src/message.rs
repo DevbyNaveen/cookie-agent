@@ -171,6 +171,12 @@ impl Message {
         Self { role, content: vec![Content::Text { text: text.to_string() }], origin, summary_of: None }
     }
 
+    /// A note from the harness itself (not the person, not a tool): followed
+    /// like the developer's instructions.
+    pub(crate) fn harness_note(text: impl Into<String>) -> Self {
+        Self { role: Role::User, content: vec![Content::Text { text: text.into() }], origin: Origin::System, summary_of: None }
+    }
+
     pub(crate) fn assistant(content: Vec<Content>) -> Self {
         Self { role: Role::Assistant, content, origin: Origin::Model, summary_of: None }
     }
