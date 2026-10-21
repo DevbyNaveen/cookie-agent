@@ -11,6 +11,7 @@ mod builder;
 pub mod chat;
 mod calls;
 pub mod compaction;
+pub mod cookie;
 pub mod enkeon;
 pub mod handoff;
 pub mod error;
