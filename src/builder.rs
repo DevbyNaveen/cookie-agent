@@ -48,6 +48,7 @@ impl Agent {
             reasoning: None,
             output_schema: None,
             check_after: Vec::new(),
+            close_with_answer: false,
         }
     }
 
@@ -144,6 +145,14 @@ impl Agent {
     /// to check before it finishes.
     pub fn check_after(mut self, tools: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.check_after = tools.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// End with an answer instead of an error: a run that reaches its budget,
+    /// or is asked to finish its turn, makes one more model call that writes
+    /// the answer from what it found and says what it did not get to.
+    pub fn close_with_answer(mut self) -> Self {
+        self.close_with_answer = true;
         self
     }
 }

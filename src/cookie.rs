@@ -246,6 +246,10 @@ pub fn skills_dir() -> Option<&'static std::path::Path> {
     .as_deref()
 }
 
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// What a client asks for to run Cookie.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
@@ -264,9 +268,16 @@ pub struct Options {
 /// check_after, source_tools, tag}` — `tag` is what each citable result starts
 /// with, `{n}` standing for its step.
 pub fn profile(o: &Options) -> Value {
+    let instructions = instructions(&o.team, o.act.then_some(o.permission));
+    let tools = tool_decls(o.search, o.ask_first, o.save, o.act.then_some(o.permission));
+    // What a run was given, as one short fingerprint: a client keeps it with
+    // each run, so a change of prompt or tools is never mixed into old results.
+    let prompt = hex(&sha2::Sha256::digest(format!("{instructions}\n{}", Value::Array(tools.clone())).as_bytes())[..8]);
     json!({
-        "instructions": instructions(&o.team, o.act.then_some(o.permission)),
-        "tools": tool_decls(o.search, o.ask_first, o.save, o.act.then_some(o.permission)),
+        "harness": env!("CARGO_PKG_VERSION"),
+        "prompt": prompt,
+        "instructions": instructions,
+        "tools": tools,
         "helpers": if o.helpers { helper_decls(o.search) } else { json!([]) },
         "skills": skills_dir(),
         "check_after": if o.act { json!(["app_call"]) } else { json!([]) },
@@ -367,6 +378,9 @@ mod tests {
         assert_eq!(p["check_after"], json!(["app_call"]));
         assert_eq!(p["helpers"][0]["name"], "researcher");
         assert_eq!(p["tag"], "[source s{n}]");
+        assert_eq!(p["prompt"].as_str().unwrap().len(), 16);
+        let other = profile(&Options { team: "Acme".into(), ..Options::default() });
+        assert_ne!(p["prompt"], other["prompt"], "another prompt, another fingerprint");
         let quiet = profile(&Options { team: "Honeyb".into(), ..Options::default() });
         assert_eq!(quiet["helpers"], json!([]));
         assert_eq!(quiet["check_after"], json!([]));

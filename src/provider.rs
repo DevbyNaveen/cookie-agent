@@ -17,6 +17,16 @@ pub struct Usage {
     pub cache_write_tokens: u64,
 }
 
+/// The arguments of a tool call that were not valid JSON, carried to the
+/// call itself so it can be answered with what was wrong and the model can
+/// send it again (`calls::run_calls`).
+pub const MALFORMED_ARGS: &str = "__malformed_arguments__";
+
+pub(crate) fn malformed_args(raw: &str, error: &serde_json::Error) -> serde_json::Value {
+    let raw: String = raw.chars().take(300).collect();
+    serde_json::json!({ MALFORMED_ARGS: format!("{error} in: {raw}") })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {

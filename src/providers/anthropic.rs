@@ -422,7 +422,8 @@ impl SseAssembler {
                             Ok(args) => args,
                             // Cut off mid-call: the arguments are incomplete, not malformed.
                             Err(_) if self.stop == Some(StopReason::MaxTokens) => return Err(Error::MaxTokens),
-                            Err(e) => return Err(e.into()),
+                            // Broken JSON is the model's mistake to fix, not the run's end.
+                            Err(e) => crate::provider::malformed_args(&json, &e),
                         }
                     } else if start.is_object() {
                         start

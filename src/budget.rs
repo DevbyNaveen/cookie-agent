@@ -11,7 +11,10 @@ use crate::{
 pub struct Budget {
     /// Model calls per run.
     pub max_steps: usize,
-    /// Input, output and cached tokens per run.
+    /// Input, output and cache-written tokens per run. Cache reads are left
+    /// out: they re-read what a call already counted, and at a tenth of the
+    /// price they are the dollar cap's to weigh. Counting them made a run
+    /// with a growing, cached history stop after a few calls.
     pub max_tokens: u64,
     /// Dollars per run, priced with `Agent::prices`. A cap with no prices is
     /// refused rather than ignored.
@@ -119,9 +122,19 @@ impl Meter {
         Ok(())
     }
 
+    /// The one model call past a limit that turns what a run found into its
+    /// answer (`Agent::close_with_answer`): counted, never refused. It may
+    /// spend past the dollar cap by that one call.
+    pub(crate) fn begin_closing(&mut self) {
+        for (pool, _) in &self.pools {
+            pool.lock().expect("pool lock").steps += 1;
+        }
+        self.steps += 1;
+    }
+
     /// The tokens and dollars of a call `begin_call` already counted.
     pub(crate) fn charge(&mut self, usage: &Usage, price: Option<&Price>) {
-        let tokens = usage.input_tokens + usage.output_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
+        let tokens = usage.input_tokens + usage.output_tokens + usage.cache_write_tokens;
         let microdollars = price.map_or(0, |p| p.microdollars(usage));
         let spend = crate::tool::Spend { steps: 0, tokens, microdollars };
         self.count(spend);
@@ -196,6 +209,16 @@ pub(crate) struct LoopGuard {
     /// A tool that must be checked afterwards (`Agent::check_after`) worked,
     /// and nothing has read anything since.
     unchecked: Option<String>,
+    /// Calls already warned about repeating: the next repeat stops the run.
+    warned: std::collections::HashSet<String>,
+}
+
+/// What a repeated call comes to.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Seen {
+    Fine,
+    /// Not run: the model is told it is going round in circles, once.
+    Warned(String),
 }
 
 /// Three noes in a row: the person does not want what this run is doing.
@@ -208,7 +231,10 @@ const WINDOW: usize = 12;
 const IN_WINDOW: usize = 4;
 
 impl LoopGuard {
-    pub(crate) fn see(&mut self, name: &str, args: &Value) -> Result<()> {
+    /// A call about to run. The first time it repeats past the limit it is
+    /// not run and the model is told so (it may be one step from an answer);
+    /// repeating it after that stops the run.
+    pub(crate) fn see(&mut self, name: &str, args: &Value) -> Result<Seen> {
         let key = format!("{name}{args}");
         if self.recent.len() == WINDOW {
             self.recent.pop_front();
@@ -217,9 +243,16 @@ impl LoopGuard {
         let in_a_row = self.recent.iter().rev().take_while(|k| **k == key).count();
         let in_window = self.recent.iter().filter(|k| **k == key).count();
         if in_a_row >= IN_A_ROW || in_window >= IN_WINDOW {
-            return Err(Error::Loop(name.to_string()));
+            if !self.warned.insert(key) {
+                return Err(Error::Loop(name.to_string()));
+            }
+            return Ok(Seen::Warned(format!(
+                "Not run: `{name}` was already called with these same arguments {} times and gave the same. Try another \
+                 way, or answer with what you have. Calling it again like this stops the job.",
+                in_window.max(in_a_row) - 1
+            )));
         }
-        Ok(())
+        Ok(Seen::Fine)
     }
 
     /// What this exact change returned, if it already worked this run.
@@ -257,10 +290,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cached_tokens_count_against_the_budget() {
+    fn cache_writes_count_against_the_budget_and_reads_do_not() {
+        let cap = Budget { max_steps: 10, max_tokens: 1_000, max_dollars: None };
         let mut meter = Meter::default();
-        meter.charge(&Usage { input_tokens: 1, output_tokens: 1, cache_read_tokens: 500, cache_write_tokens: 500 }, None);
-        assert!(matches!(meter.check(&Budget { max_steps: 10, max_tokens: 1_000, max_dollars: None }), Err(Error::Budget(_))));
+        meter.charge(&Usage { input_tokens: 1, output_tokens: 1, cache_read_tokens: 50_000, cache_write_tokens: 0 }, None);
+        assert!(meter.check(&cap).is_ok(), "re-reading a cached history is not new tokens");
+        meter.charge(&Usage { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 1_000 }, None);
+        assert!(matches!(meter.check(&cap), Err(Error::Budget(_))));
+        meter.begin_closing();
+        assert_eq!(meter.steps, 1, "the closing call is counted, never refused");
     }
 
     #[test]
@@ -285,17 +323,20 @@ mod tests {
         use serde_json::json;
         let (a, b) = (json!({"x": 1}), json!({"x": 2}));
         let mut guard = LoopGuard::default();
-        let mut out = Ok(());
+        let mut warned = false;
         for (name, args) in [("a", &a), ("b", &b), ("a", &a), ("b", &b), ("a", &a), ("b", &b), ("a", &a)] {
-            out = guard.see(name, args);
-            if out.is_err() {
-                break;
-            }
+            warned |= matches!(guard.see(name, args), Ok(Seen::Warned(_)));
         }
-        assert!(out.is_err(), "a,b,a,b,a,b,a is a loop");
+        assert!(warned, "a,b,a,b,a,b,a is a loop: warned first");
+        assert!(guard.see("a", &a).is_err(), "and the next repeat stops it");
         let mut guard = LoopGuard::default();
         for (i, name) in ["a", "c", "a", "d", "a", "e", "f"].iter().enumerate() {
-            assert!(guard.see(name, &json!({"x": if *name == "a" { 0 } else { i }})).is_ok(), "three a's spread out are fine");
+            assert_eq!(guard.see(name, &json!({"x": if *name == "a" { 0 } else { i }})).unwrap(), Seen::Fine, "three a's spread out are fine");
         }
+        let mut guard = LoopGuard::default();
+        assert_eq!(guard.see("x", &a).unwrap(), Seen::Fine);
+        assert_eq!(guard.see("x", &a).unwrap(), Seen::Fine);
+        assert!(matches!(guard.see("x", &a), Ok(Seen::Warned(w)) if w.contains("2 times")));
+        assert!(guard.see("x", &a).is_err());
     }
 }

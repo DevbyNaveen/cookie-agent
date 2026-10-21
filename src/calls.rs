@@ -80,14 +80,26 @@ impl Agent {
         // Actions that need a person, put to them together once every call is decided.
         let mut asks: Vec<(usize, Arc<dyn Tool>, ApprovalRequest)> = Vec::new();
         for (index, (_, name, args)) in calls.iter().enumerate() {
-            if let Err(Error::Loop(looping)) = loop_guard.see(name, args) {
-                // Nothing in this batch runs, and every call is still answered.
-                for outcome in outcomes.iter_mut().filter(|o| o.is_none()) {
-                    *outcome = Some(("Not run: the agent kept repeating the same calls, so the run stopped.".into(), true));
+            // Arguments that were not JSON: answered with what was wrong, never run.
+            if let Some(wrong) = args.get(crate::provider::MALFORMED_ARGS).and_then(|v| v.as_str()) {
+                outcomes[index] = Some((format!("The arguments for `{name}` were not valid JSON ({wrong}). Send the call again with valid JSON."), true));
+                continue;
+            }
+            match loop_guard.see(name, args) {
+                Err(Error::Loop(looping)) => {
+                    // Nothing in this batch runs, and every call is still answered.
+                    for outcome in outcomes.iter_mut().filter(|o| o.is_none()) {
+                        *outcome = Some(("Not run: the agent kept repeating the same calls, so the run stopped.".into(), true));
+                    }
+                    approved.clear();
+                    stop = Stop::Loop(looping);
+                    break;
                 }
-                approved.clear();
-                stop = Stop::Loop(looping);
-                break;
+                Ok(crate::budget::Seen::Warned(note)) => {
+                    outcomes[index] = Some((note, true));
+                    continue;
+                }
+                _ => {}
             }
             let Some(tool) = tools.iter().find(|t| t.spec().name == *name).cloned() else {
                 outcomes[index] = Some((format!("There is no tool called `{name}`."), true));

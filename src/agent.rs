@@ -46,6 +46,10 @@ pub struct Agent {
     /// else's app): a run that used one and read nothing after is asked,
     /// once, to check before it finishes.
     pub(crate) check_after: Vec<String>,
+    /// A run that reaches a limit (steps, tokens, dollars) or is asked to
+    /// finish its turn ends with an answer made from what it found, in one
+    /// more model call, instead of an error that loses the work.
+    pub(crate) close_with_answer: bool,
 }
 
 /// Where a run starts from: what is trusted, what it may spend, how deep it
@@ -87,6 +91,22 @@ pub enum Event {
     RanOnEarnedTrust { tool: String },
     /// The conversation moved to another agent (`Handoff`).
     HandedOff { to: String },
+    /// A limit was reached or the turn was asked to finish: the next call
+    /// writes the answer from what was found (`Agent::close_with_answer`).
+    Closing { reason: String },
+    /// A reply cut off at the output limit is being continued.
+    Continued { times: usize },
+}
+
+/// How many times a cut-off reply is continued before the run gives up.
+const CONTINUE_AT_MOST: usize = 3;
+
+/// What a run that must stop is told before its last call.
+fn close_note(reason: &str) -> String {
+    format!(
+        "[Stop here ({reason}).] Do not call any tool. Write your answer now from what you have found so far. \
+         If something the job asked for is missing, say plainly what you did not get to."
+    )
 }
 
 /// How one agent's turns ended.
@@ -205,12 +225,33 @@ impl Agent {
         }
         let mut loop_guard = LoopGuard::default();
         let mut said: Vec<String> = Vec::new();
+        // Why this run is writing its last answer, once it must.
+        let mut closing: Option<String> = None;
+        // Cut-off replies continued so far, and whether the last words said were cut.
+        let mut continued = 0usize;
+        let mut cut = false;
+        // Tool rounds finished: asked to finish, a run closes after its turn.
+        let mut rounds = 0usize;
 
         loop {
             if cancel.is_cancelled() {
                 return Err(Error::Cancelled);
             }
-            meter.check(&budget)?;
+            if closing.is_none() {
+                let why = match meter.check(&budget) {
+                    Err(e) if self.close_with_answer => Some(e.to_string()),
+                    Err(e) => return Err(e),
+                    Ok(()) if self.close_with_answer && rounds > 0 && control.finish_turn.is_cancelled() => {
+                        Some("time is up for this job".to_string())
+                    }
+                    Ok(()) => None,
+                };
+                if let Some(why) = why {
+                    session.append(Message::harness_note(close_note(&why))).await?;
+                    on_event(Event::Closing { reason: why.clone() });
+                    closing = Some(why);
+                }
+            }
             let specs: Vec<_> = match &searcher {
                 Some(searcher) => searcher.offered(&tools),
                 None => tools.iter().map(|t| t.spec()).collect(),
@@ -230,7 +271,11 @@ impl Agent {
                 // in the file by an earlier run would only repeat it.
                 None => session.messages().iter().filter(|m| m.summary_of().is_none()).cloned().collect(),
             };
-            meter.begin_call(&budget)?;
+            if closing.is_some() {
+                meter.begin_closing();
+            } else {
+                meter.begin_call(&budget)?;
+            }
             let request = ModelRequest { model: &self.model, system: &system, messages: &view, tools: specs, reasoning: self.reasoning, output_schema: self.output_schema.as_ref() };
             let mut forward = |event: ProviderEvent| {
                 on_event(match event {
@@ -250,12 +295,64 @@ impl Agent {
                 }
             };
             telemetry::record_chat(&chat, &response);
-            let response = response?;
+            let response = match response {
+                // Cut off inside a tool call (its arguments are incomplete): not
+                // run; the model is asked to make it again, smaller.
+                Err(Error::MaxTokens) if continued < CONTINUE_AT_MOST && closing.is_none() => {
+                    continued += 1;
+                    on_event(Event::Continued { times: continued });
+                    session.append(Message::harness_note(
+                        "[Your last reply was cut off at the length limit in the middle of a tool call, so it was not run.] \
+                         Make the call again with less in it, or in smaller steps.",
+                    ))
+                    .await?;
+                    continue;
+                }
+                other => other?,
+            };
             meter.charge(&response.usage, self.price.as_ref());
             on_event(Event::Usage(response.usage.clone()));
-            // A cut-off reply is not an answer, and a cut-off tool call has broken arguments.
-            if response.stop == StopReason::MaxTokens {
-                return Err(Error::MaxTokens);
+
+            // The last call: its words are the answer, whatever else it tried.
+            if let Some(reason) = &closing {
+                let text: Vec<Content> = response.content.into_iter().filter(|c| matches!(c, Content::Text { .. })).collect();
+                let reply = Message::assistant(text);
+                let words = reply.text();
+                session.append(reply).await?;
+                match said.last_mut() {
+                    Some(last) if cut => last.push_str(&words),
+                    _ => said.push(words),
+                }
+                let answer = said.into_iter().filter(|s| !s.trim().is_empty()).collect::<Vec<_>>().join("\n");
+                if answer.trim().is_empty() {
+                    return Err(Error::Budget(reason.clone()));
+                }
+                return Ok(Turn::Answer(answer));
+            }
+
+            // Cut off at the output limit with no tool call in it: kept, and
+            // continued where it stopped. (A complete tool call before the cut
+            // runs as usual.)
+            if response.stop == StopReason::MaxTokens && !response.content.iter().any(|c| matches!(c, Content::ToolCall { .. })) {
+                if continued >= CONTINUE_AT_MOST {
+                    return Err(Error::MaxTokens);
+                }
+                let reply = Message::assistant(response.content);
+                continued += 1;
+                on_event(Event::Continued { times: continued });
+                let words = reply.text();
+                session.append(reply).await?;
+                match said.last_mut() {
+                    Some(last) if cut => last.push_str(&words),
+                    _ => said.push(words),
+                }
+                cut = true;
+                session.append(Message::harness_note(
+                    "[Your reply was cut off at the length limit.] Continue exactly where it stopped, mid-sentence if need be, \
+                     without repeating anything.",
+                ))
+                .await?;
+                continue;
             }
 
             let reply = Message::assistant(response.content);
@@ -266,7 +363,11 @@ impl Agent {
                 // Paused: the same conversation goes again and the turn continues;
                 // what was said so far is part of the answer.
                 (true, StopReason::PauseTurn) => {
-                    said.push(answer);
+                    match said.last_mut() {
+                        Some(last) if cut => last.push_str(&answer),
+                        _ => said.push(answer),
+                    }
+                    cut = false;
                     continue;
                 }
                 (true, _) => {
@@ -276,7 +377,10 @@ impl Agent {
                         session.append(Message::harness_note(check_note(&tool))).await?;
                         continue;
                     }
-                    said.push(answer);
+                    match said.last_mut() {
+                        Some(last) if cut => last.push_str(&answer),
+                        _ => said.push(answer),
+                    }
                     let answer = said.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
                     if let Some(schema) = &self.output_schema {
                         crate::provider::check_output(schema, &answer)?;
@@ -326,9 +430,11 @@ impl Agent {
                 Stop::Cancelled => return Err(Error::Cancelled),
                 Stop::Loop(name) => return Err(Error::Loop(name)),
                 Stop::Declined => return Err(Error::Declined),
-                Stop::No if control.finish_turn.is_cancelled() => return Err(Error::Stopped),
+                // Asked to finish: closing makes the next call the answer.
+                Stop::No if control.finish_turn.is_cancelled() && !self.close_with_answer => return Err(Error::Stopped),
                 Stop::No => {}
             }
+            rounds += 1;
             let handed = context.handoff.lock().expect("handoff lock").take();
             if let Some((name, to)) = handed {
                 return Ok(Turn::HandOff(name, to));
@@ -520,10 +626,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_same_call_three_times_in_a_row_is_stopped() {
+    async fn the_same_call_repeated_is_warned_once_then_stopped() {
         let call = || Scripted::call("c", "weather", json!({"city": "Riga"}));
-        let (a, _) = agent(vec![call(), call(), call(), Scripted::text("x")]);
+        let (a, p) = agent(vec![call(), call(), call(), call(), Scripted::text("x")]);
         assert!(matches!(a.tool(weather()).run("weather").await, Err(Error::Loop(_))));
+        assert!(p.seen()[3].iter().any(|m| m.content().iter().any(|c| matches!(c, Content::ToolResult { output, .. } if output.contains("Not run")))), "the third was answered with a warning");
+        // Warned, it changes course and answers.
+        let (a, _) = agent(vec![call(), call(), call(), Scripted::text("Sunny, from the first look.")]);
+        assert_eq!(a.tool(weather()).run("weather").await.unwrap(), "Sunny, from the first look.");
     }
 
     #[tokio::test]
@@ -805,12 +915,63 @@ mod tests {
         assert!(matches!(a.tool(bad).run("hi").await, Err(Error::Tool(m)) if m.contains("repo.search")));
     }
 
+    fn cut(text: &str) -> crate::provider::ModelResponse {
+        let mut r = Scripted::text(text);
+        r.stop = crate::provider::StopReason::MaxTokens;
+        r
+    }
+
     #[tokio::test]
-    async fn running_out_of_output_tokens_is_an_error_not_an_answer() {
-        let mut cut = Scripted::text("The answer is");
-        cut.stop = crate::provider::StopReason::MaxTokens;
-        let (a, _) = agent(vec![cut]);
+    async fn a_cut_off_reply_is_continued_where_it_stopped() {
+        let (a, p) = agent(vec![cut("The answer is "), Scripted::text("forty-two.")]);
+        let (events, mut on) = collect();
+        let out = a.run_streaming(&mut Session::in_memory(), Message::user("explain"), &RunControl::default(), &mut on).await;
+        assert_eq!(out.unwrap(), "The answer is forty-two.", "one answer, not two pieces");
+        assert!(p.seen()[1].iter().any(|m| m.text().contains("Continue exactly where it stopped")));
+        assert!(events.lock().unwrap().iter().any(|e| matches!(e, Event::Continued { times: 1 })));
+    }
+
+    #[tokio::test]
+    async fn a_reply_cut_off_again_and_again_is_an_error_not_an_answer() {
+        let (a, _) = agent(vec![cut("a"), cut("b"), cut("c"), cut("d")]);
         assert!(matches!(a.run("explain").await, Err(Error::MaxTokens)));
+    }
+
+    #[tokio::test]
+    async fn at_the_budget_a_closing_run_answers_from_what_it_found() {
+        let (a, p) = agent(vec![Scripted::call("c1", "weather", json!({"city": "Riga"})), Scripted::text("Riga is sunny; I did not check Tartu.")]);
+        let a = a.tool(weather()).budget(Budget { max_steps: 1, max_tokens: 100_000, max_dollars: None }).close_with_answer();
+        let (events, mut on) = collect();
+        let out = a.run_streaming(&mut Session::in_memory(), Message::user("weather in Riga and Tartu?"), &RunControl::default(), &mut on).await;
+        assert_eq!(out.unwrap(), "Riga is sunny; I did not check Tartu.");
+        assert_eq!(p.seen().len(), 2, "one call past the limit, no more");
+        assert!(p.seen()[1].iter().any(|m| m.text().contains("Do not call any tool")));
+        assert!(events.lock().unwrap().iter().any(|e| matches!(e, Event::Closing { reason } if reason.contains("model calls"))));
+        // Without it, the limit is an error as before.
+        let (a, _) = agent(vec![Scripted::call("c1", "weather", json!({"city": "Riga"})), Scripted::text("never")]);
+        let a = a.tool(weather()).budget(Budget { max_steps: 1, max_tokens: 100_000, max_dollars: None });
+        assert!(matches!(a.run("weather?").await, Err(Error::Budget(_))));
+    }
+
+    #[tokio::test]
+    async fn asked_to_finish_a_closing_run_answers_and_its_tool_calls_are_dropped() {
+        let mut last = Scripted::call("c3", "weather", json!({"city": "Pärnu"}));
+        last.content.insert(0, Content::Text { text: "Riga is sunny.".into() });
+        let (a, p) = agent(vec![Scripted::call("c1", "weather", json!({"city": "Riga"})), last]);
+        let a = a.tool(weather()).close_with_answer();
+        let control = RunControl::default();
+        control.finish_turn.cancel();
+        let out = a.run_streaming(&mut Session::in_memory(), Message::user("weather?"), &control, &mut |_| {}).await;
+        assert_eq!(out.unwrap(), "Riga is sunny.");
+        assert_eq!(p.seen().len(), 2, "the turn's tools ran, then one closing call");
+    }
+
+    #[tokio::test]
+    async fn arguments_that_are_not_json_are_answered_and_the_run_goes_on() {
+        let broken = json!({ crate::provider::MALFORMED_ARGS: "expected value at line 1 in: {city: Riga" });
+        let (a, p) = agent(vec![Scripted::call("c1", "weather", broken), Scripted::text("Sunny.")]);
+        assert_eq!(a.tool(weather()).run("weather?").await.unwrap(), "Sunny.");
+        assert!(p.seen()[1].iter().any(|m| m.content().iter().any(|c| matches!(c, Content::ToolResult { is_error: true, output, .. } if output.contains("not valid JSON")))));
     }
 
     #[tokio::test]
@@ -883,6 +1044,7 @@ mod tests {
             ("c1", same().1, same().2.clone()),
             ("c2", same().1, same().2.clone()),
             ("c3", same().1, same().2.clone()),
+            ("c4", same().1, same().2.clone()),
         ])]);
         let a = a.tool(weather());
         let mut s = Session::in_memory();
@@ -890,7 +1052,7 @@ mod tests {
         assert!(matches!(out, Err(Error::Loop(_))), "{out:?}");
         let last = s.messages().last().unwrap();
         let answered: Vec<&str> = last.content().iter().filter_map(|c| match c { Content::ToolResult { id, .. } => Some(id.as_str()), _ => None }).collect();
-        assert_eq!(answered, ["c1", "c2", "c3"], "no call is left unanswered");
+        assert_eq!(answered, ["c1", "c2", "c3", "c4"], "no call is left unanswered");
     }
 
     #[tokio::test]

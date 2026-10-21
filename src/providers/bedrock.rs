@@ -38,7 +38,8 @@ pub struct BedrockProvider {
 
 impl BedrockProvider {
     pub fn new(credentials: Credentials, region: Option<String>) -> Self {
-        Self { credentials, region, max_tokens: 4096, caching: true, client: super::http_client() }
+        // Room for a long answer; a cut-off one is continued (`Agent`), never kept.
+        Self { credentials, region, max_tokens: 16_384, caching: true, client: super::http_client() }
     }
 
     /// `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`,
@@ -192,9 +193,13 @@ fn blocks(content: &Content, origin: &Origin, tag: &str) -> Vec<Value> {
     }]
 }
 
-/// Cache points after the system prompt and after the tools, never inside
-/// the messages: the conversation grows every turn, so a point there writes
-/// a new entry per call that is never read back (measured in Enkeon).
+/// Cache points after the system prompt and after the tools, and at the end
+/// of the conversation once a tool round has happened. Inside one run's tool
+/// loop every request starts with the previous request's messages, so the
+/// point at the end of this one is read back by the next call; the history is
+/// then paid at the cached price instead of in full on every step. A first
+/// call (one user turn, nothing to read back yet) gets none: that point would
+/// only be written.
 pub fn converse_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> Value {
     let tag = fence_tag(request.messages);
     let cache_point = json!({"cachePoint": {"type": "default"}});
@@ -222,6 +227,11 @@ pub fn converse_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> 
                 last["content"].as_array_mut().expect("content is an array").extend(content);
             }
             _ => messages.push(json!({"role": role, "content": content})),
+        }
+    }
+    if caching && request.messages.iter().any(|m| m.role() == Role::Assistant) {
+        if let Some(last) = messages.last_mut() {
+            last["content"].as_array_mut().expect("content is an array").push(cache_point.clone());
         }
     }
     let max_tokens = if request.reasoning.is_some() { max_tokens.max(super::anthropic::REASONING_MAX_TOKENS) } else { max_tokens };
@@ -278,7 +288,10 @@ pub fn parse_response(raw: &Value) -> Result<ModelResponse> {
 fn stop_reason(reason: Option<&str>) -> Result<StopReason> {
     Ok(match reason {
         Some("tool_use") => StopReason::ToolUse,
-        Some("max_tokens" | "model_context_window_exceeded") => StopReason::MaxTokens,
+        Some("max_tokens") => StopReason::MaxTokens,
+        // Not a long answer: the input no longer fits. Said as itself, so a
+        // client never mistakes a full context for a reply to continue.
+        Some("model_context_window_exceeded") => return Err(Error::ContextFull),
         // Blocked, filtered or broken: whatever text came back is not an answer.
         Some(reason @ ("guardrail_intervened" | "content_filtered" | "malformed_tool_use" | "malformed_model_output")) => {
             return Err(Error::Provider(format!("the model stopped without an answer: {reason}")));
@@ -418,7 +431,9 @@ impl StreamAssembler {
                             Ok(args) => args,
                             // Cut off mid-call: the arguments are incomplete, not malformed.
                             Err(_) if stop == StopReason::MaxTokens => return Err(Error::MaxTokens),
-                            Err(e) => return Err(e.into()),
+                            // Broken JSON is the model's mistake to fix, not the run's end:
+                            // the call is answered with what was wrong (`calls`).
+                            Err(e) => crate::provider::malformed_args(&json, &e),
                         }
                     };
                     content.push(Content::ToolCall { id, name, args });
@@ -584,7 +599,11 @@ mod tests {
         assert_eq!(result["status"], "error");
         assert!(result["content"][0]["text"].as_str().unwrap().starts_with("<untrusted-"));
         assert!(m[2]["content"][1]["text"].as_str().unwrap().contains("ignore your rules"));
-        assert_eq!(m[2]["content"].as_array().unwrap().len(), 2, "the empty user text is dropped");
+        assert_eq!(m[2]["content"].as_array().unwrap().len(), 3, "the empty user text is dropped");
+        assert_eq!(m[2]["content"][2], json!({"cachePoint": {"type": "default"}}), "after a tool round, the history is cached for the next call");
+        let first = vec![Message::user("hi")];
+        let first = converse_body(&ModelRequest { model: req.model, system: req.system, messages: &first, tools: vec![&spec], ..Default::default() }, 2048, true);
+        assert_eq!(first["messages"][0]["content"].as_array().unwrap().len(), 1, "a first call writes no history point");
         let plain = converse_body(&req, 2048, false);
         assert_eq!(plain["system"], json!([{"text": "be brief"}]));
         assert_eq!(plain["toolConfig"]["tools"].as_array().unwrap().len(), 1);
@@ -668,7 +687,7 @@ mod tests {
             assert!(matches!(parse_response(&raw), Err(Error::Provider(m)) if m.contains(reason)), "{reason}");
         }
         let full = json!({"output": {"message": {"content": [{"text": "The ans"}]}}, "stopReason": "model_context_window_exceeded"});
-        assert_eq!(parse_response(&full).unwrap().stop, StopReason::MaxTokens);
+        assert!(matches!(parse_response(&full), Err(Error::ContextFull)), "a full context is said as itself");
     }
 
     #[test]

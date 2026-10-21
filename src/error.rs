@@ -10,6 +10,8 @@ pub enum Error {
     Budget(String),
     #[error("the model ran out of output tokens before finishing")]
     MaxTokens,
+    #[error("the conversation no longer fits the model's context window")]
+    ContextFull,
     #[error("cancelled")]
     Cancelled,
     #[error("stopped after the turn finished, as asked")]
@@ -36,6 +38,32 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+}
+
+impl Error {
+    /// What kind of failure this is, as one stable word a client can count
+    /// and group by: never parse the message.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Error::ModelId(_) | Error::UnknownProvider(_) => "setup",
+            Error::Provider(_) => "provider",
+            Error::Budget(_) => "budget",
+            Error::MaxTokens => "max_tokens",
+            Error::ContextFull => "context_full",
+            Error::Cancelled => "cancelled",
+            Error::Stopped => "stopped",
+            Error::Loop(_) => "loop",
+            Error::Declined => "declined",
+            Error::Tool(_) => "tool",
+            Error::Mcp(_) => "mcp",
+            Error::A2a(_) => "a2a",
+            Error::Skill(_) => "skill",
+            Error::Session(_) | Error::Io(_) => "session",
+            Error::Replay(_) => "replay",
+            Error::Image(_) => "image",
+            Error::Json(_) => "json",
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

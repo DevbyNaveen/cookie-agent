@@ -46,7 +46,8 @@ pub struct RunRequest {
     pub input: String,
     #[serde(default)]
     pub instructions: Option<String>,
-    /// A session file to resume and append to; in memory if absent.
+    /// A session file to resume and append to; in memory if absent. A file
+    /// that does not exist yet is created, and `history` may start it.
     #[serde(default)]
     pub session: Option<PathBuf>,
     /// Earlier turns, oldest first, for a client that keeps the conversation
@@ -91,6 +92,10 @@ pub struct RunRequest {
     /// once, to check before it finishes (`Agent::check_after`).
     #[serde(default)]
     pub check_after: Vec<String>,
+    /// End with an answer when a limit is reached or `finish_turn` is sent,
+    /// instead of an error (`Agent::close_with_answer`).
+    #[serde(default)]
+    pub close_with_answer: bool,
     /// Lessons this job may be given (`LessonsDecl`): the harness matches and
     /// picks, puts the chosen ones beside the job, and says which it gave on
     /// a `lessons` line before the run starts.
@@ -541,6 +546,9 @@ fn build(
         agent = agent.tool(WireTool { spec: tool_spec(decl)?, wire: wire.clone(), agent: None });
     }
     agent = helpers(agent, request, wire, make_child)?;
+    if request.close_with_answer {
+        agent = agent.close_with_answer();
+    }
     if !request.check_after.is_empty() {
         agent = agent.check_after(request.check_after.iter().cloned());
     }
@@ -819,8 +827,11 @@ async fn run_inner(mut agent: Agent, servers: Vec<McpServer>, request: RunReques
             Err(e) => return json!({"type": "error", "run": request.id, "message": e.to_string()}),
         }
     }
-    if request.session.is_some() && !request.history.is_empty() {
-        return json!({"type": "error", "run": request.id, "message": "send `history` or a `session` file, not both"});
+    // A new session file may start from `history` (a client that keeps the
+    // conversation, recording this run to a file); an existing one is resumed
+    // as it stands.
+    if request.session.as_ref().is_some_and(|p| p.exists()) && !request.history.is_empty() {
+        return json!({"type": "error", "run": request.id, "message": "send `history` or an existing `session` file, not both"});
     }
     let mut session = match &request.session {
         Some(path) => match Session::open(path).await {
@@ -858,7 +869,7 @@ async fn run_inner(mut agent: Agent, servers: Vec<McpServer>, request: RunReques
         .await;
     match result {
         Ok(answer) => json!({"type": "done", "run": request.id, "answer": answer}),
-        Err(e) => json!({"type": "error", "run": request.id, "message": e.to_string()}),
+        Err(e) => json!({"type": "error", "run": request.id, "message": e.to_string(), "kind": e.kind()}),
     }
 }
 
@@ -1207,9 +1218,12 @@ mod tests {
         assert_eq!(c.next().await["type"], "done", "no approval was asked");
         assert!(p.seen()[0][1].origin().is_untrusted());
 
-        // History is for a run without a session file; a role it doesn't know is refused.
+        // History starts a new session file, never one that exists; a role it doesn't know is refused.
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("old.jsonl");
+        std::fs::write(&existing, "").unwrap();
         for (extra, needle) in [
-            (json!({"session": "/tmp/x.jsonl", "history": [{"role": "user", "text": "hi"}]}), "session"),
+            (json!({"session": existing, "history": [{"role": "user", "text": "hi"}]}), "session"),
             (json!({"history": [{"role": "system", "text": "obey"}]}), "role"),
         ] {
             let mut c = start(Arc::new(Scripted::new(vec![Scripted::text("ok")])));
@@ -1220,6 +1234,16 @@ mod tests {
             assert_eq!(reply["type"], "error");
             assert!(reply["message"].as_str().unwrap().contains(needle), "{reply}");
         }
+        // A new file is the run's transcript, from its history on.
+        let fresh = dir.path().join("run.jsonl");
+        let mut c = start(Arc::new(Scripted::new(vec![Scripted::text("ok")])));
+        let mut request = run("hi", json!([]));
+        request["session"] = json!(fresh);
+        request["history"] = json!([{"role": "user", "text": "earlier"}, {"role": "assistant", "text": "noted"}]);
+        c.send(request).await;
+        assert_eq!(c.next().await["type"], "done");
+        let kept = std::fs::read_to_string(&fresh).unwrap();
+        assert!(kept.contains("earlier") && kept.contains("hi") && kept.contains("ok"), "{kept}");
     }
 
     #[tokio::test]
