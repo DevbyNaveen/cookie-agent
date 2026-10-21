@@ -667,11 +667,14 @@ where
                 }
             }
             // State in, state out: the client keeps what Cookie pays
-            // attention to and what it learned; these never wait on a run.
-            kind @ ("attention" | "lessons" | "profile" | "sources") => {
+            // attention to and what it learned, and asks where a mail or
+            // Slack answer goes; these never wait on a run.
+            kind @ ("attention" | "lessons" | "profile" | "sources" | "mail" | "slack") => {
                 let result = match kind {
                     "attention" => crate::attention::rpc(&message),
                     "lessons" => crate::lessons::rpc(&message),
+                    "mail" => crate::cookie::mail::rpc(&message),
+                    "slack" => crate::cookie::slack::rpc(&message),
                     _ => crate::cookie::rpc(&message),
                 };
                 let _ = out.send(match result {

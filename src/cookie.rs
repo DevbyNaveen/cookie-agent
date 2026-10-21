@@ -4,6 +4,9 @@
 //! for the profile with a `profile` line and runs Cookie with it; it executes
 //! the tools, because only it holds what they reach.
 
+pub mod mail;
+pub mod slack;
+
 use serde_json::{json, Value};
 use sha2::Digest;
 
