@@ -669,7 +669,7 @@ where
             // State in, state out: the client keeps what Cookie pays
             // attention to and what it learned, and asks where a mail or
             // Slack answer goes; these never wait on a run.
-            kind @ ("attention" | "lessons" | "profile" | "sources" | "mail" | "slack") => {
+            kind @ ("attention" | "lessons" | "profile" | "sources" | "permission" | "mail" | "slack") => {
                 let result = match kind {
                     "attention" => crate::attention::rpc(&message),
                     "lessons" => crate::lessons::rpc(&message),
@@ -945,6 +945,9 @@ mod tests {
         let s = c.next().await;
         assert_eq!(s["answer"], "Acme renews in March.");
         assert_eq!(s["sources"], json!([[1]]));
+        c.send(json!({"type": "permission", "id": "g1", "level": "smart", "effect": "outbound", "wants_yes": false})).await;
+        let g = c.next().await;
+        assert_eq!((g["type"].as_str(), g["id"].as_str(), g["gate"].as_str()), (Some("permission"), Some("g1"), Some("ask")), "{g}");
     }
 
     #[tokio::test]

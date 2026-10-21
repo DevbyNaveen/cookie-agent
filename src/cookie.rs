@@ -5,6 +5,7 @@
 //! the tools, because only it holds what they reach.
 
 pub mod mail;
+pub mod permission;
 pub mod slack;
 
 use serde_json::{json, Value};
@@ -23,8 +24,8 @@ pub fn is_source(tool: &str) -> bool {
 
 /// The instructions every run carries. Stable for a team, so the model's
 /// prompt cache is reused run after run.
-pub fn instructions(team: &str, act: bool) -> String {
-    let acting = if act { ACTING } else { "" };
+pub fn instructions(team: &str, act: Option<permission::Level>) -> String {
+    let acting = act.map(permission::acting).unwrap_or("");
     format!(
         "You are Cookie, {team}'s teammate. People on the team give you jobs by email, in Slack, or from your page; \
          you answer where they asked.\n\
@@ -59,17 +60,11 @@ pub fn instructions(team: &str, act: bool) -> String {
     )
 }
 
-/// How Cookie acts in the team's apps — only when acting is on.
-const ACTING: &str = "- You can act in the team's connected apps for the person: look with `apps`, then `app_call`. \
-Read the record before you change it, one change per call, exactly what was asked. A change is not done when you \
-call it: it waits for the person's yes on your page and runs once they say yes. Never send it again, and say in your \
-answer what is waiting for their yes. If an app is not connected, say so; never pretend you did something.\n";
-
 /// The tools Cookie is offered: `search` when web search is set up, `ask_first`
 /// unless the job answers questions already asked, `save` unless the run must
-/// leave the team's context as it was, `act` when Cookie may change things in
-/// the team's apps.
-pub fn tool_decls(search: bool, ask_first: bool, save: bool, act: bool) -> Vec<Value> {
+/// leave the team's context as it was, `act` (at the person's permission
+/// level) when Cookie may change things in the team's apps.
+pub fn tool_decls(search: bool, ask_first: bool, save: bool, act: Option<permission::Level>) -> Vec<Value> {
     let mut tools = vec![
         json!({
             "name": "recall",
@@ -114,7 +109,7 @@ pub fn tool_decls(search: bool, ask_first: bool, save: bool, act: bool) -> Vec<V
             })
         );
     }
-    if act {
+    if let Some(level) = act {
         tools.push(json!({
             "name": "apps",
             "description": "List the team's connected apps you can use for this person (CRM, issue tracker, mail, docs…) and the actions each one has, with what each does and whether it waits for the person's yes. Name an app to see all of its actions. Look here before you act.",
@@ -124,17 +119,7 @@ pub fn tool_decls(search: bool, ask_first: bool, save: bool, act: bool) -> Vec<V
             "effect": "read",
             "parallel_safe": true
         }));
-        tools.push(json!({
-            "name": "app_call",
-            "description": "Run one action on a connected app, by the exact name `apps` gives. Reading runs at once. A change (create, update, send, delete) is not done yet: it waits for the person's yes on Cookie's page and runs exactly as you wrote it once they say yes — never send it again, and say in your answer what is waiting. Before changing a record, read it first.",
-            "schema": {"type": "object", "properties": {
-                "app": {"type": "string", "description": "The app, e.g. `hubspot`."},
-                "action": {"type": "string", "description": "The exact action name, e.g. `HUBSPOT_UPDATE_DEAL`."},
-                "args": {"type": "object", "description": "The action's arguments."}
-            }, "required": ["app", "action"]},
-            "effect": "write",
-            "parallel_safe": false
-        }));
+        tools.push(permission::app_call_decl(level));
     }
     if search {
         tools.push(json!({
@@ -270,6 +255,8 @@ pub struct Options {
     pub ask_first: bool,
     pub save: bool,
     pub act: bool,
+    /// How much Cookie may do before it asks (`permission`); `smart` if unsaid.
+    pub permission: permission::Level,
     pub helpers: bool,
 }
 
@@ -278,8 +265,8 @@ pub struct Options {
 /// with, `{n}` standing for its step.
 pub fn profile(o: &Options) -> Value {
     json!({
-        "instructions": instructions(&o.team, o.act),
-        "tools": tool_decls(o.search, o.ask_first, o.save, o.act),
+        "instructions": instructions(&o.team, o.act.then_some(o.permission)),
+        "tools": tool_decls(o.search, o.ask_first, o.save, o.act.then_some(o.permission)),
         "helpers": if o.helpers { helper_decls(o.search) } else { json!([]) },
         "skills": skills_dir(),
         "check_after": if o.act { json!(["app_call"]) } else { json!([]) },
@@ -288,7 +275,7 @@ pub fn profile(o: &Options) -> Value {
     })
 }
 
-/// One `profile` or `sources` line.
+/// One `profile`, `sources` or `permission` line.
 pub fn rpc(m: &Value) -> Result<Value, String> {
     match m["type"].as_str().unwrap_or_default() {
         "profile" => {
@@ -301,6 +288,7 @@ pub fn rpc(m: &Value) -> Result<Value, String> {
             let (answer, sources) = split_sources(answer, &usable);
             Ok(json!({"answer": answer, "sources": sources}))
         }
+        "permission" => permission::rpc(m),
         other => Err(format!("unknown cookie line `{other}`")),
     }
 }
@@ -312,18 +300,18 @@ mod tests {
     #[test]
     fn search_and_asking_are_offered_only_when_they_apply() {
         let names = |t: Vec<Value>| t.iter().map(|x| x["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
-        assert_eq!(names(tool_decls(false, false, true, false)), vec!["recall", "read_url", "read_site", "remember"]);
-        assert_eq!(names(tool_decls(true, true, true, false)), vec!["recall", "read_url", "read_site", "remember", "web_search", "ask_first"]);
-        assert_eq!(names(tool_decls(true, false, false, false)), vec!["recall", "read_url", "read_site", "web_search"], "a measurement run saves nothing");
+        assert_eq!(names(tool_decls(false, false, true, None)), vec!["recall", "read_url", "read_site", "remember"]);
+        assert_eq!(names(tool_decls(true, true, true, None)), vec!["recall", "read_url", "read_site", "remember", "web_search", "ask_first"]);
+        assert_eq!(names(tool_decls(true, false, false, None)), vec!["recall", "read_url", "read_site", "web_search"], "a measurement run saves nothing");
         assert_eq!(
-            names(tool_decls(false, false, true, true)),
+            names(tool_decls(false, false, true, Some(permission::Level::Smart))),
             vec!["recall", "read_url", "read_site", "remember", "apps", "app_call"],
             "acting is offered only when it is on"
         );
         // Without actions nothing Cookie can call sends, deletes or pays; the
         // writes are a save and, when acting is on, an app action — which the
         // client's connector gate parks for the person.
-        for t in tool_decls(true, true, true, true) {
+        for t in tool_decls(true, true, true, Some(permission::Level::Smart)) {
             let want = if matches!(t["name"].as_str(), Some("remember" | "app_call")) { "write" } else { "read" };
             assert_eq!(t["effect"], want, "{}", t["name"]);
         }
@@ -354,25 +342,26 @@ mod tests {
         assert_eq!(d[0]["name"], "researcher");
         // Every tool it holds is one the run declares as a read.
         for t in tools(d) {
-            let decl = tool_decls(true, true, true, true).into_iter().find(|x| x["name"] == t.as_str()).unwrap();
+            let decl = tool_decls(true, true, true, Some(permission::Level::Smart)).into_iter().find(|x| x["name"] == t.as_str()).unwrap();
             assert_eq!(decl["effect"], "read", "{t}");
         }
     }
 
     #[test]
     fn instructions_are_stable_for_a_team() {
-        assert_eq!(instructions("Honeyb", false), instructions("Honeyb", false), "same bytes every run → prompt cache reuse");
-        assert!(instructions("Honeyb", false).contains("recall"));
-        assert!(!instructions("Honeyb", false).contains("app_call"), "no acting unless it is on");
-        assert!(instructions("Honeyb", true).contains("app_call"));
-        for act in [false, true] {
+        assert_eq!(instructions("Honeyb", None), instructions("Honeyb", None), "same bytes every run → prompt cache reuse");
+        assert!(instructions("Honeyb", None).contains("recall"));
+        assert!(!instructions("Honeyb", None).contains("app_call"), "no acting unless it is on");
+        assert!(instructions("Honeyb", Some(permission::Level::Smart)).contains("app_call"));
+        use permission::Level::*;
+        for act in [None, Some(Ask), Some(Smart), Some(Full)] {
             assert!(!instructions("Honeyb", act).contains("memory"), "customer-facing words say context, not memory");
         }
     }
 
     #[test]
     fn the_profile_carries_everything_a_client_needs() {
-        let p = profile(&Options { team: "Honeyb".into(), search: true, ask_first: true, save: true, act: true, helpers: true });
+        let p = profile(&Options { team: "Honeyb".into(), search: true, ask_first: true, save: true, act: true, helpers: true, ..Options::default() });
         assert!(p["instructions"].as_str().unwrap().contains("Honeyb"));
         assert!(p["tools"].as_array().unwrap().iter().any(|t| t["name"] == "app_call"));
         assert_eq!(p["check_after"], json!(["app_call"]));
