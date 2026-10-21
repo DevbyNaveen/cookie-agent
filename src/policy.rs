@@ -32,7 +32,7 @@ fn is_value_char(c: char) -> bool {
 }
 
 /// Whole words, lower-cased, without sentence punctuation at their end.
-fn words(text: &str) -> Vec<String> {
+pub(crate) fn words(text: &str) -> Vec<String> {
     text.split(|c: char| !is_value_char(c))
         .map(|w| w.trim_end_matches(['.', ',', ':', ';', '?']).to_lowercase())
         .filter(|w| !w.is_empty())

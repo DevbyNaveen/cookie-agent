@@ -755,12 +755,20 @@ fn distill_request(m: &Value) -> std::result::Result<RunRequest, String> {
 
 /// Ask the small model whether a finished job taught a lesson:
 /// `{id, model, asked, steps: [[tool, what, ok]], answer?, correction?,
-/// prices: {input, output}}` → `{type: "lesson", id, lesson: {text, when} | null, cents}`.
+/// failed?, went_well?: {asked, steps, answer?}, prices: {input, output}}` →
+/// `{type: "lesson", id, lesson: {text, when} | null, refused?, cents}`. A
+/// lesson the consent screen refuses comes back as `null` with `refused`.
 async fn distill(agent: Agent, m: Value, out: Out) {
     let id = m["id"].clone();
     let s = |k: &str| m.get(k).and_then(Value::as_str).map(str::to_string);
-    let steps: Vec<(String, String, bool)> = serde_json::from_value(m["steps"].clone()).unwrap_or_default();
-    let input = crate::lessons::distill_input(&s("asked").unwrap_or_default(), &steps, s("answer").as_deref(), s("correction").as_deref());
+    let job = crate::lessons::Job {
+        asked: s("asked").unwrap_or_default(),
+        steps: serde_json::from_value(m["steps"].clone()).unwrap_or_default(),
+        answer: s("answer"),
+    };
+    let went_well: Option<crate::lessons::Job> = serde_json::from_value(m["went_well"].clone()).ok();
+    let failed = m["failed"].as_bool().unwrap_or(false);
+    let input = crate::lessons::distill_input(&job, failed, s("correction").as_deref(), went_well.as_ref());
     let agent = agent
         .instructions(crate::lessons::DISTILL_PROMPT)
         .without_enkeon()
@@ -778,10 +786,16 @@ async fn distill(agent: Agent, m: Value, out: Out) {
     let price = |k: &str| m.pointer(&format!("/prices/{k}")).and_then(Value::as_f64).unwrap_or(0.0);
     let cents = crate::lessons::cost_cents(used_in, used_out, price("input"), price("output"));
     let _ = out.send(match result {
-        Ok(raw) => json!({
-            "type": "lesson", "id": id, "cents": cents,
-            "lesson": crate::lessons::parse_lesson(&raw).map(|(text, when)| json!({"text": text, "when": when})),
-        }),
+        Ok(raw) => {
+            let parsed = crate::lessons::parse_lesson(&raw);
+            match parsed.as_ref().and_then(|(text, _)| crate::lessons::screen(text)) {
+                Some(why) => json!({"type": "lesson", "id": id, "cents": cents, "lesson": null, "refused": why}),
+                None => json!({
+                    "type": "lesson", "id": id, "cents": cents,
+                    "lesson": parsed.map(|(text, when)| json!({"text": text, "when": when})),
+                }),
+            }
+        }
         Err(e) => json!({"type": "error", "id": id, "message": e.to_string(), "cents": cents}),
     });
 }
@@ -948,6 +962,9 @@ mod tests {
         c.send(json!({"type": "permission", "id": "g1", "level": "smart", "effect": "outbound", "wants_yes": false})).await;
         let g = c.next().await;
         assert_eq!((g["type"].as_str(), g["id"].as_str(), g["gate"].as_str()), (Some("permission"), Some("g1"), Some("ask")), "{g}");
+        c.send(json!({"type": "lessons", "id": "l1", "op": "similar", "asked": "When does Acme renew?", "candidates": [["r1", "Beta pricing"], ["r2", "Acme contract renewal date"]]})).await;
+        let l = c.next().await;
+        assert_eq!((l["id"].as_str(), l["run"].as_str()), (Some("l1"), Some("r2")), "{l}");
     }
 
     #[tokio::test]

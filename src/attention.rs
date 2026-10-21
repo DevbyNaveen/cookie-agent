@@ -48,6 +48,20 @@ pub const NOTICE_AT: f64 = 0.75;
 pub const DAILY_CAP: i64 = 8;
 /// Signals a subject keeps.
 pub const MAX_CUES: usize = 20;
+/// A held plan due within this long is coming due: Cookie notices before the
+/// day, not only after it.
+pub const DUE_SOON: f64 = 24.0 * 3600.0;
+/// A plan past its day longer than this is history, not news.
+pub const PAST_DUE_WINDOW: f64 = 72.0 * 3600.0;
+/// A notice waits for the team's writes to go quiet this long — a natural
+/// break — before it is put in front of anyone. Help offered at a break is
+/// taken up far more than help offered mid-task (arXiv 2601.10253: 52%
+/// engaged after a commit, 62% dismissed mid-task).
+pub const BREAK_AFTER: f64 = 10.0 * 60.0;
+/// The longest a notice waits for a break: a hard cue (a contradiction, a
+/// day passed), then anything else.
+pub const HOLD_HARD: f64 = 30.0 * 60.0;
+pub const HOLD_MAX: f64 = 4.0 * 3600.0;
 
 /// One write, as attention sees it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -112,7 +126,7 @@ impl Subject {
 }
 
 /// A subject the team should hear about.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Notice {
     pub subject: String,
     pub title: String,
@@ -376,6 +390,94 @@ pub fn label(subject: &mut Subject, cue_kinds: &[String], label: &str, now: f64)
     }
 }
 
+/// A held plan, as the client reads it from the brain.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Plan {
+    pub id: String,
+    pub name: String,
+    /// Epoch seconds; 0 = no day.
+    pub due: f64,
+    pub branch: String,
+    pub about: Vec<String>,
+    pub to: Option<String>,
+}
+
+/// The hard cues held plans give right now: one coming due within
+/// [`DUE_SOON`] (`<id>:soon`), one past its day within [`PAST_DUE_WINDOW`]
+/// (`<id>:due`). Each id fires once; the client remembers which did.
+pub fn due_cues(plans: &[Plan], now: f64) -> Vec<(Plan, Signal)> {
+    let mut out = Vec::new();
+    for p in plans.iter().filter(|p| p.due > 0.0) {
+        let left = p.due - now;
+        let owed = p.to.as_deref().map(|t| format!(" (owed to {t})")).unwrap_or_default();
+        let (suffix, kind, why, salience) = if left > 0.0 && left <= DUE_SOON {
+            let hours = (left / 3600.0).ceil() as i64;
+            let when = if hours <= 1 { "within the hour".to_string() } else { format!("in {hours} hours") };
+            (":soon", "due_soon", format!("Due {when}: {}{owed}", p.name), 8.0)
+        } else if left <= 0.0 && -left < PAST_DUE_WINDOW {
+            (":due", "past_due", format!("Past its day: {}{owed}", p.name), 10.0)
+        } else {
+            continue;
+        };
+        let signal = Signal {
+            id: format!("{}{suffix}", p.id),
+            kind: kind.into(),
+            why,
+            salience,
+            at: now,
+            outside: false,
+            by_person: true,
+            hard: true,
+        };
+        out.push((p.clone(), signal));
+    }
+    out
+}
+
+/// When a notice is put in front of the team.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Moment {
+    /// When the notice was made (epoch seconds).
+    pub since: f64,
+    /// The team's last write to the brain, and Cookie jobs at work for it.
+    pub last_write_at: Option<f64>,
+    pub jobs_running: i64,
+    pub hard: bool,
+}
+
+/// Release a held notice now, and why now — or keep holding it. It goes out
+/// at a natural break (the team's writes quiet for [`BREAK_AFTER`], no Cookie
+/// job at work), or once it has waited as long as it may.
+pub fn deliver(m: &Moment, now: f64) -> Option<&'static str> {
+    let quiet = m.last_write_at.is_none_or(|t| now - t >= BREAK_AFTER) && m.jobs_running == 0;
+    let longest = if m.hard { HOLD_HARD } else { HOLD_MAX };
+    if quiet {
+        Some("the team's work went quiet")
+    } else if now - m.since >= longest {
+        Some("it could not wait for a quieter moment")
+    } else {
+        None
+    }
+}
+
+/// Why this notice, in one sentence a person reads first: the hard cue that
+/// fired it, else what built up.
+pub fn why_now(n: &Notice) -> String {
+    if let Some(c) = n.cues.iter().find(|c| c.hard && !c.why.is_empty()) {
+        return c.why.clone();
+    }
+    let people = n.cues.iter().filter(|c| c.by_person).count();
+    let notes = n.cues.len();
+    let plural = |k: usize, one: &str, many: &str| if k == 1 { one.to_string() } else { format!("{k} {many}") };
+    if people > 0 {
+        format!("{} about {} from your team", plural(notes, "A new note", "new notes"), n.title)
+    } else {
+        format!("{} about {} came in", plural(notes, "A new note", "new notes"), n.title)
+    }
+}
+
 // ── Over `cookie serve` ───────────────────────────────────────────────────
 
 fn verdict_json(v: &Verdict) -> Value {
@@ -383,7 +485,11 @@ fn verdict_json(v: &Verdict) -> Value {
         Verdict::Wait => json!({"kind": "wait"}),
         Verdict::Drop => json!({"kind": "drop"}),
         Verdict::Fade => json!({"kind": "fade"}),
-        Verdict::Notice(n) => json!({"kind": "notice", "notice": n}),
+        Verdict::Notice(n) => {
+            let mut notice = json!(n);
+            notice["why_now"] = json!(why_now(n));
+            json!({"kind": "notice", "notice": notice})
+        }
     }
 }
 
@@ -403,8 +509,14 @@ fn field<T: serde::de::DeserializeOwned>(m: &Value, k: &str) -> Result<T, String
 ///   by_person}` (`skip`: Cookie wrote it, so it never wakes Cookie).
 /// * `consider` — `{subject, team, now}`: score a waiting subject.
 /// * `label` — `{subject, kinds, label, now}`: the team's label on a notice.
+/// * `due` — `{plans, now}`: the hard cues held plans give now (coming due,
+///   past their day) → `{cues: [{branch, about, signal}]}`; the client signals
+///   each one it has not signalled before.
+/// * `deliver` — `{moment, now}`: put a held notice in front of the team now?
+///   → `{release, because?}`.
 ///
-/// Replies `{subject, signal?, verdict?}`; the client stores `subject`.
+/// Replies `{subject, signal?, verdict?}`; the client stores `subject`. A
+/// notice in a verdict carries `why_now`, the sentence it opens with.
 pub fn rpc(m: &Value) -> Result<Value, String> {
     let now = m.get("now").and_then(Value::as_f64).unwrap_or(0.0);
     let op = m.get("op").and_then(Value::as_str).unwrap_or_default();
@@ -446,6 +558,21 @@ pub fn rpc(m: &Value) -> Result<Value, String> {
             let said: String = field(m, "label")?;
             label(&mut subject, &kinds, &said, now);
             Ok(json!({"subject": subject}))
+        }
+        "due" => {
+            let plans: Vec<Plan> = field(m, "plans")?;
+            let cues: Vec<Value> = due_cues(&plans, now)
+                .into_iter()
+                .map(|(p, signal)| json!({"branch": p.branch, "about": p.about, "signal": signal}))
+                .collect();
+            Ok(json!({"cues": cues}))
+        }
+        "deliver" => {
+            let moment: Moment = field(m, "moment")?;
+            Ok(match deliver(&moment, now) {
+                Some(why) => json!({"release": true, "because": why}),
+                None => json!({"release": false}),
+            })
         }
         "classify" => {
             let event = m.get("event").cloned().unwrap_or(Value::Null);
@@ -641,5 +768,39 @@ mod tests {
         assert!((s.level - 9.0 * 0.25).abs() < 1e-9, "{}", s.level);
         label(&mut s, &kinds, "useful", 0.0);
         assert_eq!(s.habituation["decision"].w, 1.0);
+    }
+
+    #[test]
+    fn plans_are_noticed_before_their_day_and_after_it_once_each() {
+        let now = 1_000_000.0;
+        let plan = |id: &str, due: f64| Plan { id: id.into(), name: format!("Quote for {id}"), due, branch: "acme".into(), to: Some("Anna".into()), ..Plan::default() };
+        let cues = due_cues(&[plan("p1", now + 5.0 * 3600.0), plan("p2", now - 3600.0), plan("p3", now + 3.0 * 86_400.0), plan("p4", now - 5.0 * 86_400.0), plan("p5", 0.0)], now);
+        let got: Vec<(&str, &str)> = cues.iter().map(|(_, s)| (s.id.as_str(), s.kind.as_str())).collect();
+        assert_eq!(got, vec![("p1:soon", "due_soon"), ("p2:due", "past_due")]);
+        assert_eq!(cues[0].1.why, "Due in 5 hours: Quote for p1 (owed to Anna)");
+        assert!(cues.iter().all(|(_, s)| s.hard));
+        let r = rpc(&json!({"op": "due", "now": now, "plans": [{"id": "p1", "name": "x", "due": now + 60.0}]})).unwrap();
+        assert_eq!(r["cues"][0]["signal"]["why"], "Due within the hour: x");
+    }
+
+    #[test]
+    fn a_notice_waits_for_a_break_but_not_forever() {
+        let busy = Moment { since: 0.0, last_write_at: Some(100.0), jobs_running: 0, hard: false };
+        assert_eq!(deliver(&busy, 200.0), None, "the team is mid-task");
+        assert_eq!(deliver(&busy, 100.0 + BREAK_AFTER), Some("the team's work went quiet"));
+        let working = Moment { last_write_at: None, jobs_running: 1, ..busy.clone() };
+        assert_eq!(deliver(&working, 500.0), None, "Cookie is working for them");
+        assert!(deliver(&Moment { hard: true, last_write_at: Some(HOLD_HARD - 1.0), ..busy.clone() }, HOLD_HARD).is_some(), "a hard cue waits half an hour at most");
+        assert!(deliver(&Moment { last_write_at: Some(HOLD_MAX - 1.0), ..busy.clone() }, HOLD_MAX).is_some());
+        assert_eq!(rpc(&json!({"op": "deliver", "now": 50.0, "moment": {"since": 0.0, "last_write_at": 40.0}})).unwrap()["release"], false);
+    }
+
+    #[test]
+    fn a_notice_says_why_now() {
+        let cue = |kind: &str, why: &str, hard: bool| Signal { kind: kind.into(), why: why.into(), hard, by_person: true, ..Signal::default() };
+        let mut n = Notice { title: "Acme".into(), cues: vec![cue("fact", "", false), cue("decision", "", false)], ..Notice::default() };
+        assert_eq!(why_now(&n), "2 new notes about Acme from your team");
+        n.cues.push(cue("past_due", "Past its day: Quote", true));
+        assert_eq!(why_now(&n), "Past its day: Quote");
     }
 }
