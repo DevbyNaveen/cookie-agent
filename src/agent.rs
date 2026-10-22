@@ -104,8 +104,10 @@ const CONTINUE_AT_MOST: usize = 3;
 /// What a run that must stop is told before its last call.
 fn close_note(reason: &str) -> String {
     format!(
-        "[Stop here ({reason}).] Do not call any tool. Write your answer now from what you have found so far. \
-         If something the job asked for is missing, say plainly what you did not get to."
+        "[Stop here ({reason}).] Do not call any tool. Write your answer now from what you have found so far, \
+         leading with what you found. If something the job asked for is missing, say plainly what you did not get to \
+         and, in one line, what would get it (a source, a name, a narrower ask). Do not talk about budgets, limits, \
+         model calls or sessions, and never ask the person to retry or start again: a new job has the same limits."
     )
 }
 

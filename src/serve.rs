@@ -560,6 +560,11 @@ fn helpers(
         if request.enkeon == Some(false) {
             child = child.without_enkeon();
         }
+        // A helper that runs out hands back what it found, never a bare
+        // "budget spent" for the run to repeat to the person.
+        if request.close_with_answer {
+            child = child.close_with_answer();
+        }
         for name in &helper.tools {
             let decl = request
                 .tools
