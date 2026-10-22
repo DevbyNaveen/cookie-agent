@@ -118,6 +118,10 @@ pub struct LessonsDecl {
     /// Give every match (an evaluation's "on" arm), no bandit.
     #[serde(default)]
     pub all: bool,
+    /// Cookie's recent jobs without a lesson (what each asked, whether it ended
+    /// clean): the job's own kind is its baseline when there are enough.
+    #[serde(default)]
+    pub history: Vec<(String, bool)>,
 }
 
 /// A helper: a sub-agent with a fresh context that only looks things up. It
@@ -135,6 +139,9 @@ pub struct HelperDecl {
     pub instructions: Option<String>,
     /// Names from the run's `tools`.
     pub tools: Vec<String>,
+    /// Model calls this helper may make, at most (still within the run's).
+    #[serde(default)]
+    pub max_steps: Option<usize>,
 }
 
 /// Helpers one run may declare.
@@ -559,6 +566,9 @@ fn helpers(
         }
         if request.enkeon == Some(false) {
             child = child.without_enkeon();
+        }
+        if let Some(steps) = helper.max_steps {
+            child = child.budget(Budget { max_steps: steps, ..Budget::default() });
         }
         // A helper that runs out hands back what it found, never a bare
         // "budget spent" for the run to repeat to the person.
@@ -1018,7 +1028,8 @@ async fn run_inner(mut agent: Agent, servers: Vec<McpServer>, request: RunReques
     // Lessons beside the job, never as the person's words.
     if let Some(decl) = &request.lessons {
         let mut rng = crate::lessons::SplitMix64::from_time();
-        let (picked, block) = crate::lessons::pick(&request.input, &decl.candidates, decl.baseline, decl.all, &mut rng);
+        let baseline = crate::lessons::baseline_for(&request.input, &decl.history, decl.baseline);
+        let (picked, block) = crate::lessons::pick(&request.input, &decl.candidates, baseline, decl.all, &mut rng);
         let _ = out.send(json!({"type": "lessons", "run": request.id, "picked": picked}));
         if let Some(block) = block {
             if let Err(e) = session.append(Message::earlier(true, &block, true)).await {

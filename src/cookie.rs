@@ -163,8 +163,35 @@ pub fn tool_decls(search: bool, ask_first: bool, save: bool, act: Option<permiss
     tools
 }
 
+/// The person's own earlier jobs, searched.
+fn past_jobs_decl() -> Value {
+    json!({
+        "name": "past_jobs",
+        "description": "Search this person's own earlier jobs with you: what they asked and what you answered, with the pages it came from. Use it when they point back at earlier work (\"like last time\", \"the leads you found\", \"that report\"). Only their own jobs are there, never a teammate's.",
+        "schema": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "What the earlier job was about, in plain words."}
+        }, "required": ["query"]},
+        "effect": "read",
+        "parallel_safe": true
+    })
+}
+
+/// A follow-up when someone outside the team does not reply.
+fn chase_decl() -> Value {
+    json!({
+        "name": "chase",
+        "description": "When your answer is a message to someone outside the team that needs their reply (it goes out as a draft the person sends), set a follow-up: if they have not replied after the days you give, Cookie writes a short, polite nudge as a draft for the person to send. Nothing is ever sent without the person. Use it only when a reply is really expected, once per job.",
+        "schema": {"type": "object", "properties": {
+            "after_days": {"type": "integer", "minimum": 1, "maximum": 14, "description": "Working days to wait for their reply."},
+            "about": {"type": "string", "description": "What the reply is needed for, in a few words (shown to the person)."}
+        }, "required": ["after_days", "about"]},
+        "effect": "write",
+        "parallel_safe": false
+    })
+}
+
 /// What a run spends on, so asking comes before any of it.
-const SPENDING: [&str; 4] = ["web_search", "read_url", "read_site", "researcher"];
+const SPENDING: [&str; 6] = ["web_search", "read_url", "read_site", "researcher", "company_researcher", "verifier"];
 const ASK_TOO_EARLY: &str = "Not asked: look it up in the team's context with `recall` first, the answer may already be \
 there. If the context points to one answer, go with it and say in one line what you assumed. Ask only what it cannot \
 settle and would change the work.";
@@ -178,13 +205,42 @@ pub fn helper_decls(search: bool) -> Value {
     if search {
         tools.push("web_search");
     }
-    json!([{
-        "name": "researcher",
-        "description": "Hand one company or one question to a researcher with its own fresh context: it looks it up in the team's context and on the web, reads the pages, and reports back what it found. Give it the whole task in one go — it sees nothing else. For several companies, start several at once, one each. Its report keeps the [sN] tags of what it read: end your paragraphs with those tags. Do small lookups yourself.",
-        "instructions": if search { HELPER_INSTRUCTIONS.to_string() } else { HELPER_INSTRUCTIONS.replace(HELPER_SEARCHING, HELPER_NO_SEARCH) },
-        "tools": tools,
-    }])
+    let fit = |text: &str| if search { text.to_string() } else { text.replace(HELPER_SEARCHING, HELPER_NO_SEARCH) };
+    let mut checks = vec!["recall", "read_url", "read_site"];
+    if search {
+        checks.push("web_search");
+    }
+    json!([
+        {
+            "name": "researcher",
+            "description": "Hand one question to a researcher with its own fresh context: it looks it up in the team's context and on the web, reads the pages, and reports back what it found. Give it the whole task in one go — it sees nothing else. For one company, use company_researcher. Its report keeps the [sN] tags of what it read: end your paragraphs with those tags. Do small lookups yourself.",
+            "instructions": fit(HELPER_INSTRUCTIONS),
+            "tools": tools,
+        },
+        {
+            "name": "company_researcher",
+            "description": "Hand one company to a researcher: what it does, its size and customers, recent news, funding and hiring, and whether it fits what the job is looking for. Name the company (and its site, if you have it) and what to judge it against. For several companies, start several at once, one each. Its report keeps the [sN] tags of what it read.",
+            "instructions": fit(&format!("{HELPER_INSTRUCTIONS} {COMPANY_FOCUS}")),
+            "tools": tools,
+            "max_steps": COMPANY_STEPS,
+        },
+        {
+            "name": "verifier",
+            "description": "Hand one claim you are about to rely on (a number, a date, a name, a fact about a company) to a checker with a fresh context: it looks for it in the team's context and on the page it came from, and says whether the sources support it, with the words that do. Use it for the one or two claims the answer stands on, not for everything.",
+            "instructions": fit(VERIFIER_INSTRUCTIONS),
+            "tools": checks,
+            "max_steps": VERIFIER_STEPS,
+        },
+    ])
 }
+
+/// Model calls for one company's research, and for checking one claim.
+const COMPANY_STEPS: usize = 12;
+const VERIFIER_STEPS: usize = 6;
+
+const COMPANY_FOCUS: &str = "You research one company. Start at its own site (`read_site` with a focus on what the task asks), then news, funding and hiring. Report what it does, its size and customers, recent signals with their dates, and how it fits what the task judges it against — each line with its tags. If you cannot confirm the company is the one meant, say so first.";
+
+const VERIFIER_INSTRUCTIONS: &str = "You check one claim for Cookie, a teammate who answers the team's jobs. Look for it in the team's own context with `recall`, then on the page it came from, then the web: search, then read the pages you rely on (`read_site` for one company's own site). Every result starts with a tag like [source s3]. Answer in at most three lines: SUPPORTED, NOT SUPPORTED or CONTRADICTED; the exact words from the source that decide it, with its tag; and what the source says instead, if it differs. Never guess: if you could not find it, say NOT SUPPORTED and what you looked at.";
 
 /// Without a search backend there is no `web_search`, and a model told to
 /// "search the web" anyway writes search-page addresses into `read_url` (a
@@ -306,6 +362,12 @@ pub struct Options {
     /// Offer `watch_page`: keep an eye on a page for the person.
     pub watch: bool,
     pub helpers: bool,
+    /// Offer `past_jobs`: the person's own earlier jobs.
+    #[serde(default)]
+    pub past_jobs: bool,
+    /// Offer `chase`: follow up when a message to someone outside goes unanswered.
+    #[serde(default)]
+    pub chase: bool,
 }
 
 /// The whole profile for one run: `{instructions, tools, helpers, skills,
@@ -326,6 +388,12 @@ pub fn profile(o: &Options) -> Value {
     }
     if o.watch {
         tools.push(watch::tool_decl());
+    }
+    if o.past_jobs {
+        tools.push(past_jobs_decl());
+    }
+    if o.chase {
+        tools.push(chase_decl());
     }
     // What a run was given, as one short fingerprint: a client keeps it with
     // each run, so a change of prompt or tools is never mixed into old results.
@@ -412,13 +480,33 @@ mod tests {
         assert!(helper_decls(false)[0]["instructions"].as_str().unwrap().contains(HELPER_NO_SEARCH), "a helper without search is told so");
         assert!(helper_decls(true)[0]["instructions"].as_str().unwrap().contains(HELPER_SEARCHING));
         let d = helper_decls(true);
-        assert_eq!(d.as_array().unwrap().len(), 1);
-        assert_eq!(d[0]["name"], "researcher");
-        // Every tool it holds is one the run declares as a read.
-        for t in tools(d) {
-            let decl = tool_decls(true, true, true, Some(permission::Level::Smart)).into_iter().find(|x| x["name"] == t.as_str()).unwrap();
-            assert_eq!(decl["effect"], "read", "{t}");
+        let names: Vec<&str> = d.as_array().unwrap().iter().map(|h| h["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["researcher", "company_researcher", "verifier"]);
+        assert_eq!(d[1]["max_steps"], COMPANY_STEPS);
+        assert_eq!(d[2]["max_steps"], VERIFIER_STEPS);
+        // Every tool any helper holds is one the run declares as a read.
+        for h in d.as_array().unwrap() {
+            for t in h["tools"].as_array().unwrap() {
+                let decl = tool_decls(true, true, true, Some(permission::Level::Smart)).into_iter().find(|x| x["name"] == *t).unwrap();
+                assert_eq!(decl["effect"], "read", "{} holds {t}", h["name"]);
+            }
         }
+        for h in helper_decls(false).as_array().unwrap() {
+            let text = h["instructions"].as_str().unwrap();
+            assert!(text.contains(HELPER_NO_SEARCH) && !text.contains(HELPER_SEARCHING), "{} is told it cannot search", h["name"]);
+            assert!(!h["tools"].as_array().unwrap().iter().any(|t| t == "web_search"));
+        }
+    }
+
+    #[test]
+    fn past_jobs_and_chase_are_offered_only_when_asked_for() {
+        let names = |p: Value| p["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let plain = names(profile(&Options { team: "Honeyb".into(), ..Options::default() }));
+        assert!(!plain.iter().any(|n| n == "past_jobs" || n == "chase"));
+        let both = names(profile(&Options { team: "Honeyb".into(), past_jobs: true, chase: true, ..Options::default() }));
+        assert!(both.iter().any(|n| n == "past_jobs") && both.iter().any(|n| n == "chase"));
+        assert_eq!(past_jobs_decl()["effect"], "read");
+        assert_eq!(chase_decl()["effect"], "write", "a chase is kept, so it is a write");
     }
 
     #[test]

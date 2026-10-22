@@ -179,9 +179,64 @@ pub fn overlap(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
     a.intersection(b).count() as f64 / a.union(b).count() as f64
 }
 
-/// Clean: an answer, nothing failed, no step failed.
-pub fn clean(answer: Option<&str>, failed: bool, steps_ok: &[bool]) -> bool {
-    !failed && answer.is_some_and(|a| !a.trim().is_empty()) && steps_ok.iter().all(|ok| *ok)
+/// A word without its common English endings, so "renewals", "renewing" and
+/// "renewed" meet at "renew".
+fn stem(w: &str) -> String {
+    for end in ["ings", "ing", "ies", "ers", "ed", "es", "er", "ly", "s"] {
+        if let Some(root) = w.strip_suffix(end).filter(|r| r.chars().count() >= 3) {
+            return if end == "ies" { format!("{root}y") } else { root.to_string() };
+        }
+    }
+    w.to_string()
+}
+
+/// The three-letter pieces of a text's words: they meet where spellings
+/// differ ("invoice"/"invoicing", "Acme's"/"acme").
+fn trigrams(words: &HashSet<String>) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for w in words {
+        let c: Vec<char> = format!(" {w} ").chars().collect();
+        for t in c.windows(3) {
+            out.insert(t.iter().collect());
+        }
+    }
+    out
+}
+
+/// How alike two texts are, 0 to 1: the better of word overlap on stems and
+/// letter-trigram overlap. No embedding model is reachable from here, so this
+/// is the harness's best plain-text likeness; plain word Jaccard is its floor.
+// ponytail: plain-text likeness; swap in embeddings when a client sends vectors.
+pub fn similarity(a: &str, b: &str) -> f64 {
+    let (wa, wb) = (words(a), words(b));
+    let plain = overlap(&wa, &wb);
+    let stems = |w: &HashSet<String>| w.iter().map(|x| stem(x)).collect::<HashSet<_>>();
+    let (sa, sb) = (stems(&wa), stems(&wb));
+    // Trigrams are looser, so they count for a little less.
+    plain.max(overlap(&sa, &sb)).max(overlap(&trigrams(&sa), &trigrams(&sb)) * 0.85)
+}
+
+/// Cookie's own jobs most like `text` (`history`: what each job asked, and
+/// whether it ended clean), as a bandit arm — the honest baseline for that
+/// kind of job. Fewer than [`KIND_AT_LEAST`] alike: the pooled one.
+pub fn baseline_for(text: &str, history: &[(String, bool)], pooled: Arm) -> Arm {
+    let alike: Vec<bool> = history.iter().filter(|(asked, _)| similarity(text, asked) >= MATCH_AT).map(|(_, clean)| *clean).collect();
+    if alike.len() < KIND_AT_LEAST {
+        return pooled;
+    }
+    let wins = alike.iter().filter(|c| **c).count() as i64;
+    Arm { wins, losses: alike.len() as i64 - wins }
+}
+
+/// Jobs alike before a job kind gets its own baseline.
+pub const KIND_AT_LEAST: usize = 10;
+
+/// Clean: an answer, nothing failed, no step failed — and, when the answer
+/// was checked against its sources (`checked`), the check found every
+/// paragraph backed. An answer the checker had to rewrite was a draft that
+/// said more than it read: that is not a win for what rode in it.
+pub fn clean(answer: Option<&str>, failed: bool, steps_ok: &[bool], checked: Option<bool>) -> bool {
+    !failed && answer.is_some_and(|a| !a.trim().is_empty()) && steps_ok.iter().all(|ok| *ok) && checked != Some(false)
 }
 
 /// The steps that count as work: lookups, reads, searches, actions — not the
@@ -327,15 +382,14 @@ pub fn pick<R: Uniform + ?Sized>(
     all: bool,
     rng: &mut R,
 ) -> (Vec<Picked>, Option<String>) {
-    let want = words(job);
-    if want.is_empty() {
+    if words(job).is_empty() {
         return (Vec::new(), None);
     }
     let mut matched: Vec<(f64, &Lesson)> = lessons
         .iter()
         .filter(|l| l.state == "active")
         .filter_map(|l| {
-            let score = overlap(&want, &words(&format!("{} {}", l.cue, l.text)));
+            let score = similarity(job, &format!("{} {}", l.cue, l.text));
             (score >= MATCH_AT).then_some((score, l))
         })
         .collect();
@@ -393,8 +447,17 @@ pub fn proven(lesson: Arm, baseline: Arm) -> bool {
 
 /// A new lesson this alike to one already held (not archived) is that lesson.
 pub fn is_duplicate(text: &str, held: &[&str]) -> bool {
-    let mine = words(text);
-    held.iter().any(|h| overlap(&mine, &words(h)) >= SAME_AT)
+    duplicate_of(text, held).is_some()
+}
+
+/// Which held lesson a new one is the same as (the most alike), if any.
+pub fn duplicate_of(text: &str, held: &[&str]) -> Option<usize> {
+    held.iter()
+        .enumerate()
+        .map(|(i, h)| (i, similarity(text, h)))
+        .filter(|(_, s)| *s >= SAME_AT)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| i)
 }
 
 /// Unused 14 days → quiet; 30 days → archived. Returns whether it changed.
@@ -504,13 +567,90 @@ pub fn screen(text: &str) -> Option<&'static str> {
 /// The earlier job most like `asked` among `candidates` (`(id, asked)`),
 /// alike enough to compare with ([`MATCH_AT`]).
 pub fn most_like(asked: &str, candidates: &[(String, String)]) -> Option<String> {
-    let mine = words(asked);
     candidates
         .iter()
-        .map(|(id, text)| (id, overlap(&mine, &words(text))))
+        .map(|(id, text)| (id, similarity(asked, text)))
         .filter(|(_, o)| *o >= MATCH_AT)
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(id, _)| id.clone())
+}
+
+// ── Routines ─────────────────────────────────────────────────────────────
+
+/// How alike jobs must be to be the same routine (stricter than a lesson's
+/// match: offering to repeat a job on a schedule must be about one job).
+pub const ROUTINE_AT: f64 = 0.35;
+/// Alike jobs before a routine is offered.
+pub const ROUTINE_FROM: usize = 3;
+/// Their hours (local) must fall within this many hours of each other.
+const ROUTINE_HOURS: i64 = 3;
+
+/// A job a person gives on a cadence, offered once as a schedule.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Routine {
+    /// `weekly` or `daily`.
+    pub cadence: String,
+    /// ISO weekday (1 = Monday), for `weekly`.
+    pub weekday: i64,
+    /// Local hour and minute the jobs usually came in.
+    pub hour: i64,
+    pub minute: i64,
+    /// How many alike jobs it was seen in.
+    pub seen: usize,
+}
+
+/// Is `asked` a job this person gives on a cadence? `past`: their jobs of the
+/// last weeks (what each asked, Unix seconds when), this one included;
+/// `tz_offset_min`: their clock. Weekly when [`ROUTINE_FROM`] alike jobs fell
+/// on one weekday in as many different weeks; daily when they came on as many
+/// different days of the last week. Either way within [`ROUTINE_HOURS`] of
+/// each other. `known`: routines already offered to them (any answer) — a
+/// job like one of those is never offered again.
+pub fn routine(asked: &str, past: &[(String, f64)], tz_offset_min: i64, known: &[String]) -> Option<Routine> {
+    if words(asked).is_empty() || known.iter().any(|k| similarity(asked, k) >= ROUTINE_AT) {
+        return None;
+    }
+    let local: Vec<i64> = past
+        .iter()
+        .filter(|(text, _)| similarity(asked, text) >= ROUTINE_AT)
+        .map(|(_, at)| *at as i64 + tz_offset_min * 60)
+        .collect();
+    if local.len() < ROUTINE_FROM {
+        return None;
+    }
+    let day = |t: i64| t.div_euclid(86_400);
+    // 1970-01-01 was a Thursday (ISO 4).
+    let weekday = |t: i64| (day(t) + 3).rem_euclid(7) + 1;
+    let minute_of_day = |t: i64| t.rem_euclid(86_400) / 60;
+    let fits = |ts: &[i64]| -> Option<(i64, i64)> {
+        let mut mins: Vec<i64> = ts.iter().map(|t| minute_of_day(*t)).collect();
+        mins.sort_unstable();
+        (mins.last()? - mins.first()? <= ROUTINE_HOURS * 60).then(|| {
+            let mid = mins[mins.len() / 2];
+            (mid / 60, mid % 60 / 15 * 15)
+        })
+    };
+    let distinct = |ts: &[i64], key: &dyn Fn(i64) -> i64| ts.iter().map(|t| key(*t)).collect::<HashSet<_>>().len();
+    // Weekly: the commonest weekday, in different weeks.
+    let mut by_day: std::collections::BTreeMap<i64, Vec<i64>> = std::collections::BTreeMap::new();
+    for t in &local {
+        by_day.entry(weekday(*t)).or_default().push(*t);
+    }
+    if let Some((wd, ts)) = by_day.iter().max_by_key(|(_, ts)| ts.len()) {
+        if distinct(ts, &|t| day(t).div_euclid(7)) >= ROUTINE_FROM {
+            if let Some((hour, minute)) = fits(ts) {
+                return Some(Routine { cadence: "weekly".into(), weekday: *wd, hour, minute, seen: ts.len() });
+            }
+        }
+    }
+    // Daily: different days within the last week of them.
+    let last = *local.iter().max()?;
+    let week: Vec<i64> = local.iter().copied().filter(|t| last - t < 7 * 86_400).collect();
+    if distinct(&week, &day) < ROUTINE_FROM {
+        return None;
+    }
+    let (hour, minute) = fits(&week)?;
+    Some(Routine { cadence: "daily".into(), weekday: weekday(last), hour, minute, seen: week.len() })
 }
 
 /// The model's answer: `NONE`, or `{"lesson", "when"}` → (lesson, cue).
@@ -570,7 +710,10 @@ pub fn rpc(m: &serde_json::Value) -> Result<serde_json::Value, String> {
         }
         "proven" => {
             let l: Lesson = field(m, "lesson")?;
-            Ok(json!({"proven": may_publish(&l, field(m, "baseline")?)}))
+            // Against jobs of its own kind when there are enough of them.
+            let history: Vec<(String, bool)> = m.get("history").map(|_| field(m, "history")).transpose()?.unwrap_or_default();
+            let baseline = baseline_for(&l.cue, &history, field(m, "baseline")?);
+            Ok(json!({"proven": may_publish(&l, baseline)}))
         }
         "screen" => Ok(json!({"refused": screen(&field::<String>(m, "text")?)})),
         "groups" => {
@@ -586,7 +729,8 @@ pub fn rpc(m: &serde_json::Value) -> Result<serde_json::Value, String> {
         "duplicate" => {
             let text: String = field(m, "text")?;
             let held: Vec<String> = field(m, "held")?;
-            Ok(json!({"duplicate": is_duplicate(&text, &held.iter().map(String::as_str).collect::<Vec<_>>())}))
+            let of = duplicate_of(&text, &held.iter().map(String::as_str).collect::<Vec<_>>());
+            Ok(json!({"duplicate": of.is_some(), "of": of}))
         }
         "curate" => {
             let mut l: Lesson = field(m, "lesson")?;
@@ -596,7 +740,14 @@ pub fn rpc(m: &serde_json::Value) -> Result<serde_json::Value, String> {
         "clean" => {
             let answer: Option<String> = m.get("answer").map(|_| field(m, "answer")).transpose()?.flatten();
             let steps_ok: Vec<bool> = field(m, "steps_ok")?;
-            Ok(json!({"clean": clean(answer.as_deref(), field(m, "failed")?, &steps_ok)}))
+            let checked: Option<bool> = m.get("checked").map(|_| field(m, "checked")).transpose()?.flatten();
+            Ok(json!({"clean": clean(answer.as_deref(), field(m, "failed")?, &steps_ok, checked)}))
+        }
+        "routine" => {
+            let past: Vec<(String, f64)> = field(m, "past")?;
+            let known: Vec<String> = m.get("known").map(|_| field(m, "known")).transpose()?.unwrap_or_default();
+            let tz: i64 = m.get("tz_offset_min").map(|_| field(m, "tz_offset_min")).transpose()?.unwrap_or(0);
+            Ok(json!({"routine": routine(&field::<String>(m, "asked")?, &past, tz, &known)}))
         }
         "correction" => Ok(json!({"correction": is_correction(&field::<String>(m, "text")?)})),
         "parse" => Ok(json!({"lesson": parse_lesson(&field::<String>(m, "raw")?).map(|(text, when)| json!({"text": text, "when": when}))})),
@@ -753,11 +904,13 @@ mod tests {
 
     #[test]
     fn clean_means_an_answer_and_nothing_failed() {
-        assert!(clean(Some("Done."), false, &[true]));
-        assert!(!clean(Some("Done."), false, &[true, false]));
-        assert!(!clean(None, false, &[true]));
-        assert!(!clean(Some("  "), false, &[true]));
-        assert!(!clean(Some("Done."), true, &[true]));
+        assert!(clean(Some("Done."), false, &[true], None));
+        assert!(!clean(Some("Done."), false, &[true, false], None));
+        assert!(!clean(None, false, &[true], None));
+        assert!(!clean(Some("  "), false, &[true], None));
+        assert!(!clean(Some("Done."), true, &[true], None));
+        assert!(clean(Some("Done."), false, &[true], Some(true)), "checked and backed");
+        assert!(!clean(Some("Done."), false, &[true], Some(false)), "the checker had to rewrite it: not a win");
     }
 
     #[test]
@@ -910,5 +1063,53 @@ mod tests {
         let mut old = lesson("c", "x", "y");
         assert!(curate(&mut old, 40.0 * day));
         assert_eq!(old.state, "archived", "a long-idle active lesson is archived in one pass");
+    }
+
+    #[test]
+    fn likeness_meets_where_the_words_only_differ_in_their_endings() {
+        assert!(overlap(&words("renewals invoices"), &words("renewing invoicing")) < MATCH_AT, "plain words miss it");
+        assert!(similarity("renewals invoices", "renewing invoicing") >= MATCH_AT, "stems and trigrams meet");
+        assert!(similarity("invoice reminder for Beta", "invoicing reminders Beta") >= MATCH_AT);
+        assert!(similarity("weekly pipeline report", "lunch order for Friday") < MATCH_AT, "unrelated jobs stay apart");
+        assert_eq!(similarity("", "anything"), 0.0);
+    }
+
+    #[test]
+    fn a_job_kind_with_enough_history_is_judged_against_its_own_kind() {
+        let pooled = Arm { wins: 50, losses: 50 };
+        let mut history: Vec<(String, bool)> = (0..12).map(|i| (format!("weekly pipeline report {i}"), true)).collect();
+        history.extend((0..30).map(|i| (format!("lunch order {i}"), false)));
+        assert_eq!(baseline_for("pipeline report for this week", &history, pooled), Arm { wins: 12, losses: 0 });
+        assert_eq!(baseline_for("renew the Acme contract", &history, pooled), pooled, "too few alike: the pooled baseline");
+    }
+
+    #[test]
+    fn a_new_lesson_names_the_held_one_it_repeats() {
+        let held = ["Check the CRM before the inbox for renewal dates", "Reply to invoices in Latvian"];
+        assert_eq!(duplicate_of("check the CRM before the inbox for renewals dates", &held), Some(0));
+        assert_eq!(duplicate_of("Ask finance before quoting a discount", &held), None);
+    }
+
+    #[test]
+    fn a_job_given_on_a_cadence_is_a_routine_and_offered_once() {
+        // Mondays 09:10, 09:40 and 08:55 UTC, three weeks running (2026-10-05 was a Monday).
+        let monday = 1_791_158_400.0; // 2026-10-05 00:00 UTC
+        let at = |week: f64, h: f64, m: f64| monday + week * 7.0 * 86_400.0 + h * 3600.0 + m * 60.0;
+        let past = vec![
+            ("pipeline report for this week".to_string(), at(0.0, 9.0, 10.0)),
+            ("weekly pipeline report please".to_string(), at(1.0, 9.0, 40.0)),
+            ("the pipeline report for the week".to_string(), at(2.0, 8.0, 55.0)),
+            ("lunch order".to_string(), at(2.0, 12.0, 0.0)),
+        ];
+        let r = routine("pipeline report for this week", &past, 0, &[]).expect("a weekly routine");
+        assert_eq!((r.cadence.as_str(), r.weekday, r.hour, r.seen), ("weekly", 1, 9, 3));
+        assert!(routine("pipeline report for this week", &past, 0, &["weekly pipeline report".into()]).is_none(), "never offered twice");
+        assert!(routine("pipeline report for this week", &past[..2], 0, &[]).is_none(), "two is not a routine");
+        // Daily: three different days in one week, mornings.
+        let days = vec![("morning inbox digest".to_string(), at(0.0, 8.0, 0.0)), ("morning inbox digest".to_string(), at(0.14, 8.5, 0.0)), ("inbox digest this morning".to_string(), at(0.29, 7.5, 0.0))];
+        assert_eq!(routine("morning inbox digest", &days, 0, &[]).map(|r| r.cadence), Some("daily".into()));
+        // Scattered hours are no routine.
+        let scattered = vec![("pipeline report".to_string(), at(0.0, 9.0, 0.0)), ("pipeline report".to_string(), at(1.0, 15.0, 0.0)), ("pipeline report".to_string(), at(2.0, 20.0, 0.0))];
+        assert!(routine("pipeline report", &scattered, 0, &[]).is_none());
     }
 }
