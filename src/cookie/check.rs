@@ -85,10 +85,14 @@ pub fn verdict(raw: &str) -> Verdict {
         #[serde(default)] problems: Vec<Problem>,
         #[serde(default)] misses_the_job: bool,
     }
+    // The verdict is the one JSON object in the reply: a model that says a word
+    // around it ("Here is my verdict: {…}") still gave one. What it says must
+    // then match the schema exactly, or it is no verdict at all.
     let raw = raw.trim();
-    let raw = raw.strip_prefix("```json").or_else(|| raw.strip_prefix("```")).and_then(|s| s.strip_suffix("```"))
-        .unwrap_or(raw).trim();
-    let Ok(v) = serde_json::from_str::<Wire>(raw) else { return Verdict::unavailable() };
+    let Some(object) = raw.find('{').zip(raw.rfind('}')).filter(|(a, b)| a < b).and_then(|(a, b)| raw.get(a..=b)) else {
+        return Verdict::unavailable();
+    };
+    let Ok(v) = serde_json::from_str::<Wire>(object) else { return Verdict::unavailable() };
     if v.problems.iter().any(|p| p.paragraph == 0 || p.why.trim().is_empty()) { return Verdict::unavailable() }
     let ok = v.ok && v.problems.is_empty() && !v.misses_the_job;
     Verdict {
@@ -151,6 +155,10 @@ mod tests {
         assert_eq!(parse_check("no idea"), (false, vec![], false));
         for bad in ["{}", "null", "[]", r#"{"ok":"true"}"#, r#"{"ok":true,"problems":null}"#, r#"{"ok":true,"misses_the_job":"false"}"#] {
             assert_eq!(verdict(bad).status, CheckStatus::Unavailable, "{bad}");
+        }
+        // Found on the live gate 2026-10-22: a word around the JSON made every check "unavailable".
+        for wrapped in ["Here is my verdict: {\"ok\": true}", "```json\n{\"ok\": true, \"problems\": []}\n```", "Sure.\n{\"ok\": true}\nThanks"] {
+            assert_eq!(verdict(wrapped).status, CheckStatus::Supported, "{wrapped}");
         }
     }
 
