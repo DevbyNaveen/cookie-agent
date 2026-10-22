@@ -170,7 +170,20 @@ impl Agent {
             let span = telemetry::tool_span(&name, &id);
             let recorder = span.clone();
             async move {
+                let attempt = if tool.spec().effect != Effect::Read {
+                    match self.action_ledger.as_ref().map(|ledger|ledger.begin(&name,&args)).transpose() {
+                        Ok(key) => key,
+                        Err(e) => return (index, Err(e.to_string())),
+                    }
+                } else { None };
                 let output = tool.call_in(args, context).await;
+                if output.is_ok() {
+                    if let (Some(ledger),Some(key))=(&self.action_ledger,attempt) {
+                        if ledger.acknowledged(&key).is_err() {
+                            return (index,Err("The tool ran but its receipt could not be saved. Outcome unknown; do not retry.".into()));
+                        }
+                    }
+                }
                 if output.is_err() {
                     recorder.record("error.type", "_OTHER");
                 }
@@ -182,7 +195,7 @@ impl Agent {
         // together; one that is not runs alone, after what came before it
         // and before what comes after. One `remember` no longer makes a batch
         // of lookups wait for each other.
-        for segment in segments(approved) {
+        for segment in segments(approved, &self.check_after) {
             if cancel.is_cancelled() {
                 for (index, _) in segment {
                     outcomes[index] = Some((NOT_RUN_CANCELLED.into(), true));
@@ -204,15 +217,15 @@ impl Agent {
             stop = Stop::Cancelled;
         }
         // Changes that worked are remembered; a check-after tool that worked
-        // waits for a read; a read that worked counts as the check.
+        // waits for an adapter-defined read proving its identity and changed fields.
         for (index, effect, name) in ran {
             let Some((output, false)) = &outcomes[index] else { continue };
             if effect == Effect::Read {
-                loop_guard.set_unchecked(None);
+                loop_guard.observe_read(&name, output, &self.verification);
             } else {
                 loop_guard.did(&calls[index].1, &calls[index].2, output);
                 if self.check_after.contains(&name) {
-                    loop_guard.set_unchecked(Some(name));
+                    loop_guard.pending_check(name, calls[index].2.clone());
                 }
             }
         }
@@ -263,12 +276,14 @@ impl Agent {
 
 /// Consecutive parallel-safe calls make one segment; any other call is a
 /// segment of its own. Order is kept.
-fn segments(approved: Vec<(usize, Arc<dyn Tool>)>) -> Vec<Vec<(usize, Arc<dyn Tool>)>> {
+fn segments(approved: Vec<(usize, Arc<dyn Tool>)>, check_after: &[String]) -> Vec<Vec<(usize, Arc<dyn Tool>)>> {
     let mut out: Vec<Vec<(usize, Arc<dyn Tool>)>> = Vec::new();
     for (index, tool) in approved {
-        let safe = tool.spec().parallel_safe;
+        // A verification read must happen after its write, even when the
+        // adapter ordinarily permits that write to execute in parallel.
+        let safe = tool.spec().parallel_safe && !check_after.contains(&tool.spec().name);
         match out.last_mut() {
-            Some(last) if safe && last.iter().all(|(_, t)| t.spec().parallel_safe) => last.push((index, tool)),
+            Some(last) if safe && last.iter().all(|(_, t)| t.spec().parallel_safe && !check_after.contains(&t.spec().name)) => last.push((index, tool)),
             _ => out.push(vec![(index, tool)]),
         }
     }
@@ -281,5 +296,20 @@ fn record(outcomes: &mut [Option<(String, bool)>], finished: Vec<(usize, std::re
             Ok(output) => (output, false),
             Err(error) => (error, true),
         });
+    }
+}
+
+#[cfg(test)]
+mod verification_order_tests {
+    use super::*;
+    use crate::tool::tool;
+    use serde_json::json;
+
+    #[test]
+    fn verification_writes_form_a_barrier_even_when_marked_parallel_safe() {
+        let write: Arc<dyn Tool> = Arc::new(tool("update", "update", json!({}), Effect::Write, |_| async { Ok("ok".into()) }).parallel_safe());
+        let read: Arc<dyn Tool> = Arc::new(tool("get", "get", json!({}), Effect::Read, |_| async { Ok("ok".into()) }).parallel_safe());
+        let groups = segments(vec![(0,write),(1,read.clone()),(2,read)], &["update".into()]);
+        assert_eq!(groups.iter().map(Vec::len).collect::<Vec<_>>(),vec![1,2]);
     }
 }

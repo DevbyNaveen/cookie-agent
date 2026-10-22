@@ -208,7 +208,7 @@ pub(crate) struct LoopGuard {
     declined: usize,
     /// A tool that must be checked afterwards (`Agent::check_after`) worked,
     /// and nothing has read anything since.
-    unchecked: Option<String>,
+    unchecked: Vec<crate::verification::Pending>,
     /// Calls already warned about repeating: the next repeat stops the run.
     warned: std::collections::HashSet<String>,
 }
@@ -273,16 +273,21 @@ impl LoopGuard {
         self.declined >= DECLINED_IN_A_ROW
     }
 
-    /// A tool that must be checked afterwards worked (`Some(name)`), or
-    /// something was read since (`None`).
-    pub(crate) fn set_unchecked(&mut self, tool: Option<String>) {
-        self.unchecked = tool;
+    pub(crate) fn pending_check(&mut self, tool: String, args: Value) {
+        self.unchecked.push(crate::verification::Pending { tool, args });
     }
 
-    /// The tool still waiting to be checked, taken (asked about once).
-    pub(crate) fn take_unchecked(&mut self) -> Option<String> {
-        self.unchecked.take()
+    pub(crate) fn observe_read(&mut self, name: &str, output: &str, rules: &[crate::verification::VerificationRule]) {
+        let Ok(value) = serde_json::from_str::<Value>(output) else { return };
+        self.unchecked.retain(|p| !rules.iter().any(|r| r.write_tool == p.tool && r.proves(&p.args, name, &value)));
     }
+
+    /// All unresolved changes get one reminder; this is not a verified receipt.
+    pub(crate) fn take_unchecked(&mut self) -> Option<String> {
+        if self.unchecked.is_empty() { return None }
+        Some(std::mem::take(&mut self.unchecked).into_iter().map(|p| p.tool).collect::<Vec<_>>().join(", "))
+    }
+
 }
 
 #[cfg(test)]

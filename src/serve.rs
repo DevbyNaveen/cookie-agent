@@ -92,6 +92,12 @@ pub struct RunRequest {
     /// once, to check before it finishes (`Agent::check_after`).
     #[serde(default)]
     pub check_after: Vec<String>,
+    #[serde(default)]
+    pub verification: Vec<crate::verification::VerificationRule>,
+    /// Optional local durable receipts, configured by the embedding app.
+    /// The same job/revision scope must be reused on process restart.
+    #[serde(default)]
+    pub action_ledger: Option<ActionLedgerDecl>,
     /// End with an answer when a limit is reached or `finish_turn` is sent,
     /// instead of an error (`Agent::close_with_answer`).
     #[serde(default)]
@@ -112,6 +118,10 @@ pub struct RunRequest {
     #[serde(default)]
     pub stall_after_secs: Option<u64>,
 }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionLedgerDecl { pub directory: PathBuf, pub scope: String }
 
 /// Seconds without progress before a run is asked to finish (`stall_after_secs`).
 pub const STALL_AFTER: u64 = 150;
@@ -687,6 +697,10 @@ fn build(
     if !request.check_after.is_empty() {
         agent = agent.check_after(request.check_after.iter().cloned());
     }
+    agent = agent.verify_with(request.verification.clone()).map_err(|e| e.to_string())?;
+    if let Some(config) = &request.action_ledger {
+        agent = agent.action_ledger(crate::durable::ActionLedger::open(&config.directory,&config.scope).map_err(|e|e.to_string())?);
+    }
     if let Some(dir) = &request.skills {
         let skills = crate::skills::Skills::from_dir(dir).map_err(|e| format!("skills folder {}: {e}", dir.display()))?;
         agent = agent.tools(skills.into_tools());
@@ -1045,11 +1059,11 @@ async fn procedure(agent: Agent, m: Value, out: Out) {
 /// paragraph beside its sources → `{type: "check", id, ok, problems,
 /// misses_the_job, cents}`; `revise` rewrites the answer to what its sources
 /// support → `{type: "revise", id, answer, cents}`. Lines carry `{id, model,
-/// job, answer, read: [[step, text]], problems?, prices}`. A failed check
-/// passes the answer as it is (said so with `failed`); a failed revision
-/// keeps it.
+/// job, answer, read: [[step, text]], problems?, prices}`. A failed or malformed
+/// check returns `ok: false, status: unavailable`; a failed revision supplies
+/// no replacement and must never be treated as successful verification.
 async fn check(agent: Agent, revise: bool, m: Value, out: Out) {
-    use crate::cookie::check::{check_input, parse_check, read_of, revise_input, CHECK_PROMPT, REVISE_PROMPT};
+    use crate::cookie::check::{check_input, verdict, read_of, revise_input, CHECK_PROMPT, REVISE_PROMPT};
     let id = m["id"].clone();
     let job = m["job"].as_str().unwrap_or_default();
     let answer = m["answer"].as_str().unwrap_or_default();
@@ -1067,17 +1081,17 @@ async fn check(agent: Agent, revise: bool, m: Value, out: Out) {
         return;
     }
     let Some(input) = check_input(job, answer, &read) else {
-        let _ = out.send(json!({"type": "check", "id": id, "ok": true, "problems": [], "cents": 0}));
+        let _ = out.send(json!({"type": "check", "id": id, "ok": false, "status": "unavailable", "problems": [], "cents": 0}));
         return;
     };
     let (result, used_in, used_out) = one_call(&agent, CHECK_PROMPT, input).await;
     let cents = crate::lessons::cost_cents(used_in, used_out, price("input"), price("output"));
     let _ = out.send(match result {
         Ok(raw) => {
-            let (ok, problems, misses) = parse_check(&raw);
-            json!({"type": "check", "id": id, "ok": ok, "problems": problems, "misses_the_job": misses, "cents": cents})
+            let v = verdict(&raw);
+            json!({"type": "check", "id": id, "ok": v.ok, "status": v.status, "problems": v.problems, "misses_the_job": v.misses_the_job, "cents": cents})
         }
-        Err(e) => json!({"type": "check", "id": id, "ok": true, "problems": [], "failed": e.to_string(), "cents": cents}),
+        Err(e) => json!({"type": "check", "id": id, "ok": false, "status": "unavailable", "problems": [], "failed": e.to_string(), "cents": cents}),
     });
 }
 
