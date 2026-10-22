@@ -14,8 +14,9 @@ role to approach (for example "Head of Operations"), not a person you found.
 Before searching anything, `recall` what the team sells, who it already sells
 to, its prices, and any customer it won or lost and why. Write down, for
 yourself, the fit in one line: industry, size, region, and the problem the
-team solves. If the team's context says nothing about who it sells to, ask
-with `ask_first` instead of guessing.
+team solves. If the context points to one product or one market, go with it and
+say what you assumed. Only if it says nothing about who the team sells to, ask
+with `ask_first` now, before any search: once you have searched, you finish.
 
 ## 2. Search for signals, not lists
 

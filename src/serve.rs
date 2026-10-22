@@ -286,6 +286,40 @@ pub struct ToolDecl {
     pub guard: Vec<String>,
     #[serde(default)]
     pub parallel_safe: bool,
+    /// When it may run, by what the run has already used.
+    #[serde(default)]
+    pub order: Option<OrderDecl>,
+}
+
+/// When a tool may run, by what this run has already used (its own tools,
+/// its helpers' and the helpers themselves): at least one of `after` first,
+/// and none of `not_after` yet. Refused otherwise, with the words given, so
+/// the model is told what to do instead. Deterministic: the model cannot talk
+/// its way past it.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrderDecl {
+    #[serde(default)]
+    pub after: Vec<String>,
+    #[serde(default)]
+    pub too_early: String,
+    #[serde(default)]
+    pub not_after: Vec<String>,
+    #[serde(default)]
+    pub too_late: String,
+}
+
+impl OrderDecl {
+    /// `Err` with the refusal when the run's `used` tools do not allow it now.
+    fn check(&self, used: &std::collections::HashSet<String>) -> std::result::Result<(), String> {
+        if !self.after.is_empty() && !self.after.iter().any(|t| used.contains(t)) {
+            return Err(self.too_early.clone());
+        }
+        if self.not_after.iter().any(|t| used.contains(t)) {
+            return Err(self.too_late.clone());
+        }
+        Ok(())
+    }
 }
 
 /// When a run summarises its older tool rounds.
@@ -317,6 +351,9 @@ struct Wire {
     next: Arc<AtomicU64>,
     run: String,
     cancel: CancellationToken,
+    /// The tools this run has used so far (a call that came back, or a
+    /// helper handed a task), for `OrderDecl`.
+    used: Mutex<std::collections::HashSet<String>>,
 }
 
 /// Takes an id off the waiting list however its wait ends.
@@ -354,6 +391,7 @@ struct WireTool {
     wire: Arc<Wire>,
     /// The helper that holds this copy of the tool; `None` for the run's own.
     agent: Option<String>,
+    order: Option<OrderDecl>,
 }
 
 #[async_trait]
@@ -363,6 +401,9 @@ impl Tool for WireTool {
     }
 
     async fn call(&self, args: Value) -> std::result::Result<String, String> {
+        if let Some(order) = &self.order {
+            order.check(&self.wire.used.lock().unwrap())?;
+        }
         let mut call = json!({"type": "tool_call", "name": self.spec.name, "args": args});
         if let Some(agent) = &self.agent {
             call["agent"] = json!(agent);
@@ -380,6 +421,7 @@ impl Tool for WireTool {
         if reply["is_error"].as_bool().unwrap_or(false) {
             Err(output)
         } else {
+            self.wire.used.lock().unwrap().insert(self.spec.name.clone());
             Ok(output)
         }
     }
@@ -412,6 +454,7 @@ impl Tool for HelperTool {
         let id = format!("h{}", self.wire.next.fetch_add(1, Ordering::Relaxed));
         let name = &self.inner.spec().name;
         let task = args["task"].as_str().unwrap_or_default().to_string();
+        self.wire.used.lock().unwrap().insert(name.clone());
         let _ = self.wire.out.send(json!({"type": "helper", "run": self.wire.run, "id": id, "name": name, "state": "started", "task": task}));
         let result = HELPER_CALL.scope(id.clone(), self.inner.call_in(args, context)).await;
         let _ = self.wire.out.send(json!({"type": "helper", "run": self.wire.run, "id": id, "name": name, "state": "finished", "ok": result.is_ok()}));
@@ -523,7 +566,7 @@ fn helpers(
                 .iter()
                 .find(|t| &t.name == name)
                 .ok_or_else(|| format!("helper `{}`: the run has no tool `{name}`", helper.name))?;
-            child = child.tool(WireTool { spec: tool_spec(decl)?, wire: wire.clone(), agent: Some(helper.name.clone()) });
+            child = child.tool(WireTool { spec: tool_spec(decl)?, wire: wire.clone(), agent: Some(helper.name.clone()), order: decl.order.clone() });
         }
         let inner = crate::subagent::SubAgent::reader(&helper.name, &helper.description, child).map_err(|e| e.to_string())?;
         agent = agent.tool(HelperTool { inner, wire: wire.clone() });
@@ -561,7 +604,7 @@ fn build(
     }
     agent = agent.policy(policy);
     for decl in &request.tools {
-        agent = agent.tool(WireTool { spec: tool_spec(decl)?, wire: wire.clone(), agent: None });
+        agent = agent.tool(WireTool { spec: tool_spec(decl)?, wire: wire.clone(), agent: None, order: decl.order.clone() });
     }
     agent = helpers(agent, request, wire, make_child)?;
     if request.close_with_answer {
@@ -668,6 +711,7 @@ where
                     next: next.clone(),
                     run: request.id.clone(),
                     cancel: control.cancel.clone(),
+                    used: Mutex::default(),
                 });
                 let make_child = || make_agent(&request).map_err(|e| e.to_string());
                 let (agent, servers) = match make_agent(&request).map_err(|e| e.to_string()).and_then(|base| build(base, &request, &wire, &make_child)) {
@@ -1170,6 +1214,92 @@ mod tests {
 
     fn run(input: &str, tools: Value) -> Value {
         json!({"type": "run", "id": "r1", "model": "x:m", "input": input, "tools": tools})
+    }
+
+    /// Every tool result in one request the model was sent: (output, is_error).
+    fn results(request: &[crate::message::Message]) -> Vec<(String, bool)> {
+        request
+            .iter()
+            .flat_map(|m| m.content())
+            .filter_map(|c| match c {
+                crate::message::Content::ToolResult { output, is_error, .. } => Some((output.clone(), *is_error)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// What the model was handed back for its last call.
+    fn last_result(p: &Scripted) -> String {
+        p.seen().last().map(|r| results(r)).and_then(|r| r.last().map(|(t, _)| t.clone())).unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn lookups_asked_in_one_turn_run_together_and_come_back_in_one_round() {
+        let tools = json!(crate::cookie::tool_decls(false, false, false, None));
+        let p = Arc::new(Scripted::new(vec![
+            Scripted::call_many(&[
+                ("c1", "recall", json!({"query": "Acme price"})),
+                ("c2", "recall", json!({"query": "Acme renewal"})),
+                ("c3", "recall", json!({"query": "Acme contact"})),
+            ]),
+            Scripted::text("done"),
+        ]));
+        let mut c = start(p.clone());
+        c.send(run("brief me on Acme", tools)).await;
+        // All three reach the client before any is answered: they run at once.
+        let mut calls = Vec::new();
+        for _ in 0..3 {
+            let call = c.next().await;
+            assert_eq!(call["type"], "tool_call", "{call}");
+            calls.push(call);
+        }
+        for call in calls.iter().rev() {
+            c.send(json!({"type": "tool_result", "id": call["id"], "output": "found"})).await;
+        }
+        assert_eq!(c.next().await["answer"], "done");
+        let seen = p.seen();
+        assert_eq!(seen.len(), 2, "one model round for the three lookups, then the answer");
+        assert_eq!(results(&seen[1]).len(), 3, "the three results go back together in the next request");
+    }
+
+    #[tokio::test]
+    async fn cookie_asks_only_after_a_lookup_and_before_it_spends_anything() {
+        let tools = json!(crate::cookie::tool_decls(true, true, false, None));
+        let ask = || json!({"questions": ["Which region?"]});
+        // Asked straight away: refused, and the client never sees it.
+        let p = Arc::new(Scripted::new(vec![
+            Scripted::call("a1", "ask_first", ask()),
+            Scripted::call("c1", "recall", json!({"query": "who we sell to"})),
+            Scripted::call("a2", "ask_first", ask()),
+            Scripted::text("asked"),
+        ]));
+        let mut c = start(p.clone());
+        c.send(run("find leads", tools.clone())).await;
+        let first = c.next().await;
+        assert_eq!((first["type"].as_str(), first["name"].as_str()), (Some("tool_call"), Some("recall")), "the early ask never reached the client: {first}");
+        assert!(results(&p.seen()[1]).iter().any(|(t, err)| *err && t.contains("look it up")), "the model is told to look it up first");
+        c.send(json!({"type": "tool_result", "id": first["id"], "output": "We sell to logistics firms."})).await;
+        let asked = c.next().await;
+        assert_eq!((asked["type"].as_str(), asked["name"].as_str()), (Some("tool_call"), Some("ask_first")), "after a lookup, before any spend: {asked}");
+        c.send(json!({"type": "tool_result", "id": asked["id"], "output": "asked"})).await;
+        assert_eq!(c.next().await["answer"], "asked");
+
+        // Asked after the research began: refused, finish instead.
+        let p = Arc::new(Scripted::new(vec![
+            Scripted::call("c1", "recall", json!({"query": "x"})),
+            Scripted::call("w1", "read_url", json!({"url": "https://acme.example"})),
+            Scripted::call("a1", "ask_first", ask()),
+            Scripted::text("done"),
+        ]));
+        let mut c = start(p.clone());
+        c.send(run("find leads", tools)).await;
+        for _ in 0..2 {
+            let call = c.next().await;
+            assert_eq!(call["type"], "tool_call", "{call}");
+            c.send(json!({"type": "tool_result", "id": call["id"], "output": "ok"})).await;
+        }
+        assert_eq!(c.next().await["answer"], "done", "the late ask never reached the client");
+        assert!(last_result(&p).contains("Finish the job"), "the model is told to finish: {}", last_result(&p));
     }
 
     #[tokio::test]
