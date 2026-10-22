@@ -17,8 +17,8 @@ decides on its own — a guarded argument whose value came from tool output
 ## Run it
 
 Needs Python 3.10+, a built `cookie` and the model's key in the environment
-(`ANTHROPIC_API_KEY` for `anthropic:` models). Nothing here has been run
-against a model yet.
+(`ANTHROPIC_API_KEY` for `anthropic:` models). First run with a model:
+2026-10-13, banking suite — results in the main README.
 
 ```sh
 cargo build --release --bin cookie                 # from the repo root

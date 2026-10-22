@@ -117,3 +117,56 @@ fn chat_checks_its_arguments_before_reading_anything() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("ANTHROPIC_API_KEY"));
 }
+
+#[test]
+fn local_help_explains_itself_and_exits_clean() {
+    let out = Command::new(COOKIE).args(["local", "--help"]).output().unwrap();
+    assert!(out.status.success());
+    let help = String::from_utf8_lossy(&out.stdout);
+    assert!(help.contains("cookie local [folder]") && help.contains("--permission ask|full") && help.contains("EXA_API_KEY"), "{help}");
+}
+
+#[test]
+fn local_without_a_model_key_says_how_to_get_one() {
+    let out = Command::new(COOKIE)
+        .arg("local")
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("COOKIE_MODEL")
+        .env_remove("ENKEON_API_KEY")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("export ANTHROPIC_API_KEY"));
+}
+
+#[test]
+fn local_refuses_a_folder_that_isnt_one() {
+    let out = Command::new(COOKIE).args(["local", "/no/such/folder"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("isn't a folder"));
+}
+
+#[test]
+fn serve_logs_spans_as_json_on_stderr_and_never_on_stdout() {
+    let mut child = Command::new(COOKIE)
+        .arg("serve")
+        .env_remove("ENKEON_API_KEY")
+        .env("RUST_LOG", "cookie_harness=info")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    writeln!(stdin, r#"{{"type":"run","id":"r1","model":"nope:x","input":"hi"}}"#).unwrap();
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    for line in String::from_utf8(out.stdout).unwrap().lines() {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert!(v["type"].is_string(), "stdout carries only protocol lines: {line}");
+    }
+    for line in String::from_utf8(out.stderr).unwrap().lines() {
+        serde_json::from_str::<serde_json::Value>(line).unwrap_or_else(|_| panic!("every stderr line is JSON: {line}"));
+    }
+}

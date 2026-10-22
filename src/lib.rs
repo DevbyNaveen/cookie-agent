@@ -17,6 +17,7 @@ pub mod handoff;
 pub mod error;
 pub mod label;
 pub mod lessons;
+pub mod local;
 pub mod mcp;
 pub mod message;
 pub mod model_id;
