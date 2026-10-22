@@ -445,6 +445,15 @@ Tests never reach the network or a model: the scripted provider
 (`providers::scripted`) stands in for one. A change to what Cookie may do
 without asking adds a case to `tests/consent_safety.rs`; it never edits one.
 
+**Every bug becomes a test.** A bug is fixed only together with a test that
+fails without the fix, named for what it protects and holding the input that
+broke it. An input that ever broke a text function also goes into
+`CRASHED` in `src/fuzz.rs`, so every fuzz test tries it first from then on.
+A function that cuts, finds or slices text gets a fuzz test there: thousands
+of seeded strings in every script (multi-byte letters, combining marks,
+emoji, right-to-left text, HTML, JSON), so a byte index that lands inside a
+character fails in CI, not on someone's page.
+
 ## Licence
 
 MIT

@@ -341,7 +341,7 @@ mod tests {
     #[test]
     fn text_in_any_language_never_breaks_masking() {
         // Found on a live job: a page with `ä` right before a `key:` crashed the run.
-        for text in ["Tööäpäev: api_key=sk-abcdefghijklmnopqrstuvwx", "Mäsä token: 12", "ä:", "Ärikliendid=", "naïve façade — 東京: ok", "😀=x"] {
+        for text in ["Tööäpäevtoken=12", "äapi_key=sk-abcdefghijklmnopqrstuvwx", "😀token=sk-mailto:9", "Tööäpäev: api_key=sk-abcdefghijklmnopqrstuvwx", "ä:", "Ärikliendid=", "naïve façade — 東京: ok", "😀=x"] {
             let _ = secrets(text);
         }
         assert!(secrets("Tööäpäev api_key=sk-abcdefghijklmnopqrstuvwx").contains("[secret removed]") || !secrets("Tööäpäev api_key=sk-abcdefghijklmnopqrstuvwx").contains("abcdefghijklmnop"));

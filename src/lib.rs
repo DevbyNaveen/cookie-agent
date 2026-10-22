@@ -13,6 +13,8 @@ mod calls;
 pub mod compaction;
 pub mod cookie;
 pub mod enkeon;
+#[cfg(test)]
+mod fuzz;
 pub mod handoff;
 pub mod error;
 pub mod label;
