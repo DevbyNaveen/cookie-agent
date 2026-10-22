@@ -3,6 +3,25 @@
 //! Conventions: open-telemetry/semantic-conventions-genai (status:
 //! Development). Message content is never recorded.
 
+/// Log as JSON lines to stderr: one line per event, and one per span when it
+/// closes (with its timings), fields as recorded — ids, models, token counts,
+/// `error.type`, never message content. `RUST_LOG` picks what is logged
+/// (e.g. `RUST_LOG=cookie_harness=info` for every span); without it, `default`.
+/// stdout is left alone: `cookie serve` speaks its protocol there.
+pub fn log_json_to_stderr(default: &str) {
+    use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default));
+    let _ = tracing_subscriber::fmt()
+        .json()
+        .flatten_event(true)
+        .with_current_span(true)
+        .with_span_list(false)
+        .with_span_events(FmtSpan::CLOSE)
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
 /// `gen_ai.provider.name` for a `provider:` prefix.
 pub(crate) fn provider_name(prefix: &str) -> String {
     match prefix {

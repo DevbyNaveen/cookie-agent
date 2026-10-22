@@ -1,0 +1,44 @@
+name: release
+# A tag like v0.2.0 builds `cookie` for each platform, tests it there, and
+# attaches the archives and their SHA-256 sums to the GitHub release.
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-14, target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: the tag is the crate's version
+        shell: bash
+        run: test "${GITHUB_REF_NAME#v}" = "$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+      - name: test
+        run: cargo test --features bedrock --target ${{ matrix.target }} -- --skip bubblewrap
+      - name: build
+        run: cargo build --release --features bedrock --bin cookie --target ${{ matrix.target }}
+      - name: package
+        shell: bash
+        run: |
+          name="cookie-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$name"
+          cp "target/${{ matrix.target }}/release/cookie" README.md LICENSE THIRD_PARTY_NOTICES.md "$name/"
+          tar -czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            cookie-*.tar.gz
+            cookie-*.tar.gz.sha256

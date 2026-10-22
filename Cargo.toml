@@ -34,8 +34,9 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "io-std", "signal", "sync", "time", "process"] }
 tokio-util = "0.7"
 tracing = "0.1"
+# `cookie serve` logs JSON to stderr (spans with timings and token counts, never content).
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "env-filter", "std", "registry"] }
 url = "2"
 
 [dev-dependencies]
 tempfile = "3"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }

@@ -8,6 +8,34 @@ let agent = Agent::new("anthropic:claude-sonnet-4-6")?.tool(weather);
 println!("{}", agent.run("Weather in Riga?").await?);
 ```
 
+## Cookie on your own machine, in a minute
+
+```sh
+cargo install --git https://github.com/DevbyNaveen/cookie-harness --locked   # or a binary from Releases
+export ANTHROPIC_API_KEY=sk-ant-...
+export TINYFISH_API_KEY=...      # optional: free web search (or EXA_API_KEY, BRAVE_SEARCH_API_KEY)
+cd ~/your-project && cookie local
+```
+
+Ask it what you would ask a teammate who just read your folder: *"What does
+this project do?"*, *"Where do we handle refunds?"*, *"Summarise
+https://…"*. It looks through the folder (read only), searches the web if a
+search key is set, reads pages, and says where each fact came from — a
+`path:line` or a page address.
+
+It can't send, write or delete anything. With `--permission ask` (the
+default) a page address it found in a page, a file or a search result is
+shown to you before it is read, because reading a URL can carry data out;
+`--permission full` reads those without asking. `--model openai:<model>`,
+`gemini:…`, `ollama:qwen3` or `bedrock:…` pick another model (see the table
+below); `--session talk.jsonl` keeps the conversation to pick up later.
+`cookie local --help` lists everything.
+
+Pages are read over https only, never from an address on your machine or
+network, only where the site's `robots.txt` allows, at most 2 MB each.
+
+## The library
+
 You always name the model (`provider:model`); there is no default.
 
 | Provider | Model id | Needs |
@@ -182,8 +210,15 @@ large on disk.
 Every run emits OpenTelemetry GenAI spans through `tracing`:
 `invoke_agent`, `chat {model}` and `execute_tool {tool}`, with provider,
 model, token usage, tool call id and `error.type` — never message content.
-Export them with `tracing-opentelemetry`. The GenAI conventions are still
-marked Development, so the names may change.
+The GenAI conventions are still marked Development, so the names may change.
+
+`cookie serve` writes them as JSON lines on **stderr** (stdout stays the
+protocol): one line per span as it closes, with its timings, and one per
+warning. `RUST_LOG` picks what is logged — warnings only by default,
+`RUST_LOG=cookie_harness=info` for every span. To send spans to an
+OpenTelemetry collector instead, embed the library and add
+`tracing-opentelemetry` to your own subscriber; the harness itself ships no
+exporter.
 
 ## Enkeon (on when you have a key)
 
@@ -363,6 +398,52 @@ What this does and doesn't show:
   the person. Asking the person about such a value, instead of refusing it,
   should recover most of that; not built yet.
 - One model, one suite, one attack, one run. Not a ranking.
+
+## How Cookie decides what it may do in someone's apps
+
+`cookie serve` is how Enkeon runs Cookie as a team's AI teammate, and the
+same rules ship here (`src/cookie/permission.rs`, one `permission` line per
+action). In order:
+
+1. **The person's own "never" rule** for that app action wins, at every level.
+2. **A read runs.**
+3. **Who, where and how much** (a recipient, an address, a link, an
+   amount, a phone number) must come from the person's own words or the
+   team's own records. A value that only appears in mail, a page or another
+   tool's result waits for the person, at every level — "full" included.
+4. **Caps per job:** after 20 changes, or 10 recipients, the next one waits.
+5. **The person's "always" rule** lets that action run without asking.
+6. **The level the person chose:** `ask` (every change waits), `smart`
+   (Cookie decides, and a separate judge model that sees only the person's
+   words and the change checks it; sends and deletes always wait), `full`
+   (changes run; sends and deletes are held for 120 seconds so they can be
+   undone).
+
+The cases are fixed in `tests/consent_safety.rs` and run on every change; a
+case is never edited to make a change pass.
+
+## Evals
+
+```sh
+cargo test --test consent_safety     # what Cookie may do without asking: 20 fixed cases
+cargo test                           # everything, offline, on scripted models
+```
+
+`evals/agentdojo` runs AgentDojo through `cookie serve`, trust layer on and
+off (results above).
+
+## Contributing
+
+Issues and pull requests are welcome. Before a pull request:
+
+```sh
+cargo test --all-features
+cargo clippy --all-features --all-targets -- -D warnings
+```
+
+Tests never reach the network or a model: the scripted provider
+(`providers::scripted`) stands in for one. A change to what Cookie may do
+without asking adds a case to `tests/consent_safety.rs`; it never edits one.
 
 ## Licence
 
