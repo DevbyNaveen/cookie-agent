@@ -1396,24 +1396,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cookie_asks_only_after_a_lookup_and_before_it_spends_anything() {
+    async fn cookie_may_ask_before_it_spends_anything_never_after() {
         let tools = json!(crate::cookie::tool_decls(true, true, false, None));
         let ask = || json!({"questions": ["Which region?"]});
-        // Asked straight away: refused, and the client never sees it.
-        let p = Arc::new(Scripted::new(vec![
-            Scripted::call("a1", "ask_first", ask()),
-            Scripted::call("c1", "recall", json!({"query": "who we sell to"})),
-            Scripted::call("a2", "ask_first", ask()),
-            Scripted::text("asked"),
-        ]));
+        // Asked straight away, before any research: whether to look it up first is Cookie's call.
+        let p = Arc::new(Scripted::new(vec![Scripted::call("a1", "ask_first", ask()), Scripted::text("asked")]));
         let mut c = start(p.clone());
         c.send(run("find leads", tools.clone())).await;
-        let first = c.next().await;
-        assert_eq!((first["type"].as_str(), first["name"].as_str()), (Some("tool_call"), Some("recall")), "the early ask never reached the client: {first}");
-        assert!(results(&p.seen()[1]).iter().any(|(t, err)| *err && t.contains("look it up")), "the model is told to look it up first");
-        c.send(json!({"type": "tool_result", "id": first["id"], "output": "We sell to logistics firms."})).await;
         let asked = c.next().await;
-        assert_eq!((asked["type"].as_str(), asked["name"].as_str()), (Some("tool_call"), Some("ask_first")), "after a lookup, before any spend: {asked}");
+        assert_eq!((asked["type"].as_str(), asked["name"].as_str()), (Some("tool_call"), Some("ask_first")), "before any spend, asking is allowed: {asked}");
         c.send(json!({"type": "tool_result", "id": asked["id"], "output": "asked"})).await;
         assert_eq!(c.next().await["answer"], "asked");
 
