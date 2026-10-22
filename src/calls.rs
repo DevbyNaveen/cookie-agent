@@ -170,7 +170,20 @@ impl Agent {
             let span = telemetry::tool_span(&name, &id);
             let recorder = span.clone();
             async move {
+                let attempt = if tool.spec().effect != Effect::Read {
+                    match self.action_ledger.as_ref().map(|ledger|ledger.begin(&name,&args)).transpose() {
+                        Ok(key) => key,
+                        Err(e) => return (index, Err(e.to_string())),
+                    }
+                } else { None };
                 let output = tool.call_in(args, context).await;
+                if output.is_ok() {
+                    if let (Some(ledger),Some(key))=(&self.action_ledger,attempt) {
+                        if ledger.acknowledged(&key).is_err() {
+                            return (index,Err("The tool ran but its receipt could not be saved. Outcome unknown; do not retry.".into()));
+                        }
+                    }
+                }
                 if output.is_err() {
                     recorder.record("error.type", "_OTHER");
                 }
@@ -204,15 +217,15 @@ impl Agent {
             stop = Stop::Cancelled;
         }
         // Changes that worked are remembered; a check-after tool that worked
-        // waits for a read; a read that worked counts as the check.
+        // waits for an adapter-defined read proving its identity and changed fields.
         for (index, effect, name) in ran {
             let Some((output, false)) = &outcomes[index] else { continue };
             if effect == Effect::Read {
-                loop_guard.set_unchecked(None);
+                loop_guard.observe_read(&name, output, &self.verification);
             } else {
                 loop_guard.did(&calls[index].1, &calls[index].2, output);
                 if self.check_after.contains(&name) {
-                    loop_guard.set_unchecked(Some(name));
+                    loop_guard.pending_check(name, calls[index].2.clone());
                 }
             }
         }

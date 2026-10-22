@@ -57,16 +57,51 @@ pub fn check_input(job: &str, answer: &str, read: &[(usize, String)]) -> Option<
     Some(out)
 }
 
-/// The checker's verdict: `(ok, problems, misses_the_job)`. An answer it
-/// could not read is not blocked (the check is a second opinion, not a gate
-/// that a parse error may close).
+/// A second opinion is never proof when it could not be obtained or parsed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckStatus { Supported, Unsupported, Unavailable }
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Verdict {
+    pub status: CheckStatus,
+    pub ok: bool,
+    pub problems: Vec<Value>,
+    pub misses_the_job: bool,
+}
+
+impl Verdict {
+    pub fn unavailable() -> Self {
+        Self { status: CheckStatus::Unavailable, ok: false, problems: vec![], misses_the_job: false }
+    }
+}
+
+pub fn verdict(raw: &str) -> Verdict {
+    #[derive(serde::Deserialize)]
+    struct Problem { paragraph: usize, why: String }
+    #[derive(serde::Deserialize)]
+    struct Wire {
+        ok: bool,
+        #[serde(default)] problems: Vec<Problem>,
+        #[serde(default)] misses_the_job: bool,
+    }
+    let raw = raw.trim();
+    let raw = raw.strip_prefix("```json").or_else(|| raw.strip_prefix("```")).and_then(|s| s.strip_suffix("```"))
+        .unwrap_or(raw).trim();
+    let Ok(v) = serde_json::from_str::<Wire>(raw) else { return Verdict::unavailable() };
+    if v.problems.iter().any(|p| p.paragraph == 0 || p.why.trim().is_empty()) { return Verdict::unavailable() }
+    let ok = v.ok && v.problems.is_empty() && !v.misses_the_job;
+    Verdict {
+        status: if ok { CheckStatus::Supported } else { CheckStatus::Unsupported }, ok,
+        problems: v.problems.into_iter().map(|p| json!({"paragraph": p.paragraph, "why": p.why})).collect(),
+        misses_the_job: v.misses_the_job,
+    }
+}
+
+/// Compatibility accessor: unavailable is explicitly NOT success.
 pub fn parse_check(raw: &str) -> (bool, Vec<Value>, bool) {
-    let parsed = raw.find('{').zip(raw.rfind('}')).and_then(|(a, b)| serde_json::from_str::<Value>(raw.get(a..=b)?).ok());
-    let Some(v) = parsed else { return (true, Vec::new(), false) };
-    let problems: Vec<Value> = v["problems"].as_array().cloned().unwrap_or_default();
-    let misses = v["misses_the_job"] == true;
-    let ok = v["ok"] != false && problems.is_empty() && !misses;
-    (ok, problems, misses)
+    let v = verdict(raw);
+    (v.ok, v.problems, v.misses_the_job)
 }
 
 /// The reviser's input.
@@ -107,13 +142,16 @@ mod tests {
     }
 
     #[test]
-    fn the_verdict_is_read_and_an_unreadable_one_never_blocks() {
+    fn the_verdict_requires_an_explicit_well_formed_success() {
         assert_eq!(parse_check("{\"ok\": true}"), (true, vec![], false));
-        let (ok, problems, _) = parse_check("Sure: {\"ok\": false, \"problems\": [{\"paragraph\": 2, \"why\": \"price not in source\"}]}");
+        let (ok, problems, _) = parse_check("{\"ok\": false, \"problems\": [{\"paragraph\": 2, \"why\": \"price not in source\"}]}");
         assert!(!ok);
         assert_eq!(problems[0]["paragraph"], 2);
         assert!(!parse_check("{\"ok\": true, \"misses_the_job\": true}").0);
-        assert_eq!(parse_check("no idea"), (true, vec![], false));
+        assert_eq!(parse_check("no idea"), (false, vec![], false));
+        for bad in ["{}", "null", "[]", r#"{"ok":"true"}"#, r#"{"ok":true,"problems":null}"#, r#"{"ok":true,"misses_the_job":"false"}"#] {
+            assert_eq!(verdict(bad).status, CheckStatus::Unavailable, "{bad}");
+        }
     }
 
     #[test]

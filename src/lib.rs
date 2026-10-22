@@ -12,6 +12,7 @@ pub mod chat;
 mod calls;
 pub mod compaction;
 pub mod cookie;
+pub mod durable;
 pub mod enkeon;
 #[cfg(test)]
 mod fuzz;
@@ -38,6 +39,7 @@ pub mod telemetry;
 pub mod tool;
 pub mod tool_search;
 pub mod trust;
+pub mod verification;
 
 pub use agent::{Agent, Event, RunControl};
 pub use approval::{ApprovalRequest, Approver, DenyAll, FnApprover, PersonApprover};

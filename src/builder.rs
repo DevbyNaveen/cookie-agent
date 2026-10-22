@@ -48,12 +48,21 @@ impl Agent {
             reasoning: None,
             output_schema: None,
             check_after: Vec::new(),
+            verification: Vec::new(),
+            action_ledger: None,
             close_with_answer: false,
         }
     }
 
     pub fn instructions(mut self, text: impl Into<String>) -> Self {
         self.instructions = text.into();
+        self
+    }
+
+    /// Persist admission of non-read tool calls across process restarts.
+    /// Existing policy and approvals still apply before every admission.
+    pub fn action_ledger(mut self, ledger: crate::durable::ActionLedger) -> Self {
+        self.action_ledger = Some(ledger);
         self
     }
 
@@ -143,6 +152,17 @@ impl Agent {
     /// Tools whose working is not proof of the result — an update in someone
     /// else's app. A run that used one and read nothing after is asked, once,
     /// to check before it finishes.
+    pub fn verify_with(mut self, rules: Vec<crate::verification::VerificationRule>) -> Result<Self> {
+        if rules.iter().any(|r| !r.validate()) {
+            return Err(crate::Error::Tool("verification needs a valid read tool, identity and expected fields".into()));
+        }
+        for rule in &rules {
+            if !self.check_after.contains(&rule.write_tool) { self.check_after.push(rule.write_tool.clone()); }
+        }
+        self.verification = rules;
+        Ok(self)
+    }
+
     pub fn check_after(mut self, tools: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.check_after = tools.into_iter().map(Into::into).collect();
         self

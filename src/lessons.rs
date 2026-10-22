@@ -236,7 +236,7 @@ pub const KIND_AT_LEAST: usize = 10;
 /// paragraph backed. An answer the checker had to rewrite was a draft that
 /// said more than it read: that is not a win for what rode in it.
 pub fn clean(answer: Option<&str>, failed: bool, steps_ok: &[bool], checked: Option<bool>) -> bool {
-    !failed && answer.is_some_and(|a| !a.trim().is_empty()) && steps_ok.iter().all(|ok| *ok) && checked != Some(false)
+    !failed && answer.is_some_and(|a| !a.trim().is_empty()) && steps_ok.iter().all(|ok| *ok) && checked == Some(true)
 }
 
 /// The steps that count as work: lookups, reads, searches, actions — not the
@@ -904,7 +904,7 @@ mod tests {
 
     #[test]
     fn clean_means_an_answer_and_nothing_failed() {
-        assert!(clean(Some("Done."), false, &[true], None));
+        assert!(!clean(Some("Done."), false, &[true], None), "unchecked is not a learning win");
         assert!(!clean(Some("Done."), false, &[true, false], None));
         assert!(!clean(None, false, &[true], None));
         assert!(!clean(Some("  "), false, &[true], None));

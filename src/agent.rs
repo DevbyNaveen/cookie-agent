@@ -46,6 +46,8 @@ pub struct Agent {
     /// else's app): a run that used one and read nothing after is asked,
     /// once, to check before it finishes.
     pub(crate) check_after: Vec<String>,
+    pub(crate) verification: Vec<crate::verification::VerificationRule>,
+    pub(crate) action_ledger: Option<crate::durable::ActionLedger>,
     /// A run that reaches a limit (steps, tokens, dollars) or is asked to
     /// finish its turn ends with an answer made from what it found, in one
     /// more model call, instead of an error that loses the work.
@@ -653,6 +655,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_new_agent_process_ledger_refuses_an_already_attempted_action() {
+        let root = tempfile::tempdir().unwrap();
+        let sent = Arc::new(AtomicUsize::new(0));
+        for _ in 0..2 {
+            let (a, _) = agent(vec![Scripted::call("c", "send_email", json!({"to":"anna@x.com"})), Scripted::text("Read the receipt.")]);
+            let ledger = crate::durable::ActionLedger::open(root.path(), "job-42-revision-1").unwrap();
+            a.tool(send_email(sent.clone()))
+                .approver(FnApprover(|_: &ApprovalRequest| true))
+                .action_ledger(ledger)
+                .run("email anna@x.com").await.unwrap();
+        }
+        assert_eq!(sent.load(Ordering::SeqCst), 1, "admission survives a new agent instance");
+    }
+
+    #[tokio::test]
     async fn three_noes_from_the_person_in_a_row_stop_the_run() {
         let ask = |to: &str| Scripted::call("c", "send_email", json!({"to": to}));
         let (a, _) = agent(vec![ask("a@x.com"), ask("b@x.com"), ask("c@x.com"), Scripted::text("x")]);
@@ -681,18 +698,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_read_after_the_change_is_the_check() {
+    async fn an_unrelated_read_does_not_verify_a_change() {
         let (a, _) = agent(vec![
             Scripted::call("c1", "send_email", json!({"to": "anna@x.com"})),
             Scripted::call("c2", "weather", json!({"city": "Riga"})),
             Scripted::text("Sent and checked."),
+            Scripted::text("Sent; delivery has not been checked."),
         ]);
         let a = a
             .tool(send_email(Arc::new(AtomicUsize::new(0))))
             .tool(weather())
             .approver(FnApprover(|_: &ApprovalRequest| true))
             .check_after(["send_email"]);
-        assert_eq!(a.run("email anna@x.com").await.unwrap(), "Sent and checked.");
+        assert_eq!(a.run("email anna@x.com").await.unwrap(), "Sent; delivery has not been checked.");
     }
 
     #[tokio::test]
