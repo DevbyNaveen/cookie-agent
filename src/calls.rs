@@ -296,3 +296,18 @@ fn record(outcomes: &mut [Option<(String, bool)>], finished: Vec<(usize, std::re
         });
     }
 }
+
+#[cfg(test)]
+mod verification_order_tests {
+    use super::*;
+    use crate::tool::tool;
+    use serde_json::json;
+
+    #[test]
+    fn verification_writes_form_a_barrier_even_when_marked_parallel_safe() {
+        let write: Arc<dyn Tool> = Arc::new(tool("update", "update", json!({}), Effect::Write, |_| async { Ok("ok".into()) }).parallel_safe());
+        let read: Arc<dyn Tool> = Arc::new(tool("get", "get", json!({}), Effect::Read, |_| async { Ok("ok".into()) }).parallel_safe());
+        let groups = segments(vec![(0,write),(1,read.clone()),(2,read)], &["update".into()]);
+        assert_eq!(groups.iter().map(Vec::len).collect::<Vec<_>>(),vec![1,2]);
+    }
+}
