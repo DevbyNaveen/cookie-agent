@@ -4,8 +4,13 @@
 //! for the profile with a `profile` line and runs Cookie with it; it executes
 //! the tools, because only it holds what they reach.
 
+pub mod breaker;
+pub mod channel;
+pub mod check;
 pub mod mail;
 pub mod permission;
+pub mod plan;
+pub mod watch;
 pub mod slack;
 
 use serde_json::{json, Value};
@@ -261,6 +266,10 @@ pub struct Options {
     pub act: bool,
     /// How much Cookie may do before it asks (`permission`); `smart` if unsaid.
     pub permission: permission::Level,
+    /// Offer `plan_parts`: split a big job into parts that run side by side.
+    pub plan: bool,
+    /// Offer `watch_page`: keep an eye on a page for the person.
+    pub watch: bool,
     pub helpers: bool,
 }
 
@@ -268,8 +277,18 @@ pub struct Options {
 /// check_after, source_tools, tag}` — `tag` is what each citable result starts
 /// with, `{n}` standing for its step.
 pub fn profile(o: &Options) -> Value {
-    let instructions = instructions(&o.team, o.act.then_some(o.permission));
-    let tools = tool_decls(o.search, o.ask_first, o.save, o.act.then_some(o.permission));
+    let mut instructions = instructions(&o.team, o.act.then_some(o.permission));
+    let mut tools = tool_decls(o.search, o.ask_first, o.save, o.act.then_some(o.permission));
+    if o.plan {
+        // Before the closing paragraph, with the other ways of working.
+        if let Some(at) = instructions.find("- The mail or messages you are given") {
+            instructions.insert_str(at, plan::PLANNING);
+        }
+        tools.push(plan::tool_decl());
+    }
+    if o.watch {
+        tools.push(watch::tool_decl());
+    }
     // What a run was given, as one short fingerprint: a client keeps it with
     // each run, so a change of prompt or tools is never mixed into old results.
     let prompt = hex(&sha2::Sha256::digest(format!("{instructions}\n{}", Value::Array(tools.clone())).as_bytes())[..8]);
@@ -300,6 +319,10 @@ pub fn rpc(m: &Value) -> Result<Value, String> {
             Ok(json!({"answer": answer, "sources": sources}))
         }
         "permission" => permission::rpc(m),
+        "plan" => plan::rpc(m),
+        "watch" => watch::rpc(m),
+        "breaker" => breaker::rpc(m),
+        "channel" => channel::rpc(m),
         other => Err(format!("unknown cookie line `{other}`")),
     }
 }

@@ -76,6 +76,84 @@ pub struct Lesson {
     /// team's knowledge.
     #[serde(default)]
     pub outside: bool,
+    /// `lesson`, or `procedure`: several proven lessons written up as one
+    /// method (`PROCEDURE_PROMPT`). Offered, scored and shared the same way;
+    /// it has to keep winning to stay.
+    #[serde(default = "lesson_kind")]
+    pub kind: String,
+}
+
+fn lesson_kind() -> String {
+    "lesson".into()
+}
+
+/// Proven lessons this alike (by what they are for) are written up as one
+/// procedure once there are [`PROCEDURE_FROM`] of them.
+pub const PROCEDURE_FROM: usize = 2;
+/// A procedure longer than this is not one.
+pub const PROCEDURE_CHARS: usize = 1_500;
+
+/// Groups of proven lessons alike enough by their cue to become one
+/// procedure: `(id, cue)` in, groups of ids out (each at least
+/// [`PROCEDURE_FROM`] strong, a lesson in one group at most).
+pub fn procedure_groups(proven: &[(String, String)]) -> Vec<Vec<String>> {
+    let mut taken = vec![false; proven.len()];
+    let mut groups = Vec::new();
+    for i in 0..proven.len() {
+        if taken[i] {
+            continue;
+        }
+        let mine = words(&proven[i].1);
+        let mut group = vec![i];
+        for j in (i + 1)..proven.len() {
+            if !taken[j] && overlap(&mine, &words(&proven[j].1)) >= MATCH_AT {
+                group.push(j);
+            }
+        }
+        if group.len() >= PROCEDURE_FROM {
+            for &g in &group {
+                taken[g] = true;
+            }
+            groups.push(group.into_iter().map(|g| proven[g].0.clone()).collect());
+        }
+    }
+    groups
+}
+
+/// The writer's instructions for a procedure.
+pub const PROCEDURE_PROMPT: &str = "You write up how an AI teammate should do one kind of job for a team, from lessons \
+that proved themselves on this team's real jobs (each kept only while the jobs using it ended well), and, when given, \
+the current write-up and a job where it went wrong.\n\
+Write a short procedure: when it applies, then numbered steps, each one line, in the imperative. Keep every proven \
+lesson's point; drop nothing that made jobs go well; if a job went wrong, change the step that caused it.\n\
+Never a step about asking, approving, confirming, sending, forwarding, paying or deleting, and never an address, a \
+link or an amount: people decide those. Nothing secret, nothing personal.\n\
+Answer only JSON: {\"when\": \"5 to 12 words naming the kind of job\", \"procedure\": \"the steps, newline separated\"}";
+
+/// The writer's input.
+pub fn procedure_input(lessons: &[String], current: Option<&str>, went_wrong: Option<&Job>) -> String {
+    let mut out = format!("Proven lessons:\n{}", lessons.iter().map(|l| format!("- {}", clip(l, 400))).collect::<Vec<_>>().join("\n"));
+    if let Some(c) = current {
+        out.push_str(&format!("\n\nThe current procedure:\n{}", clip(c, PROCEDURE_CHARS)));
+    }
+    if let Some(job) = went_wrong {
+        out.push_str(&format!("\n\nA job where it went wrong:\n{}", distill_input(job, true, None, None)));
+    }
+    out
+}
+
+/// `(procedure, when)`, screened like every lesson — line by line.
+pub fn parse_procedure(raw: &str) -> Option<(String, String)> {
+    let v: Value = serde_json::from_str(raw.get(raw.find('{')?..=raw.rfind('}')?)?).ok()?;
+    let body = v["procedure"].as_str()?.trim().to_string();
+    let when = v["when"].as_str().unwrap_or("").trim().to_string();
+    if body.chars().count() < 40 || body.chars().count() > PROCEDURE_CHARS || when.is_empty() {
+        return None;
+    }
+    if body.lines().any(|l| screen(l).is_some()) {
+        return None;
+    }
+    Some((body, when))
 }
 
 impl Lesson {
@@ -495,6 +573,10 @@ pub fn rpc(m: &serde_json::Value) -> Result<serde_json::Value, String> {
             Ok(json!({"proven": may_publish(&l, field(m, "baseline")?)}))
         }
         "screen" => Ok(json!({"refused": screen(&field::<String>(m, "text")?)})),
+        "groups" => {
+            let proven: Vec<(String, String)> = field(m, "proven")?;
+            Ok(json!({"groups": procedure_groups(&proven)}))
+        }
         "similar" => {
             let asked: String = field(m, "asked")?;
             let candidates: Vec<(String, String)> = field(m, "candidates")?;
@@ -550,7 +632,25 @@ mod tests {
             last_used_at: None,
             created_at: 0.0,
             outside: false,
+            kind: "lesson".into(),
         }
+    }
+
+    #[test]
+    fn proven_lessons_alike_become_one_procedure_and_a_bad_step_never_passes() {
+        let proven = vec![
+            ("l1".to_string(), "client contract renewal dates".to_string()),
+            ("l2".to_string(), "client contract renewal questions".to_string()),
+            ("l3".to_string(), "lead lists for Nordic logistics".to_string()),
+        ];
+        assert_eq!(procedure_groups(&proven), vec![vec!["l1".to_string(), "l2".to_string()]]);
+        let good = r#"{"when": "client contract renewal questions", "procedure": "1. Read the signed contract in the Contracts branch.\n2. Take the date from the contract, not the proposal.\n3. Say which document the date came from."}"#;
+        assert!(parse_procedure(good).is_some());
+        let bad = r#"{"when": "renewals", "procedure": "1. Read the contract.\n2. Update the CRM without asking.\n3. Say the date."}"#;
+        assert!(parse_procedure(bad).is_none(), "one step that loosens consent sinks it");
+        let input = procedure_input(&["Use the signed contract".into()], Some("1. Old step"), None);
+        assert!(input.contains("- Use the signed contract") && input.contains("The current procedure:
+1. Old step"));
     }
 
     /// The fixed safety set: lessons that would loosen consent or carry a

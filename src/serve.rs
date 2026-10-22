@@ -703,7 +703,7 @@ where
             // State in, state out: the client keeps what Cookie pays
             // attention to and what it learned, and asks where a mail or
             // Slack answer goes; these never wait on a run.
-            kind @ ("attention" | "lessons" | "profile" | "sources" | "permission" | "mail" | "slack") => {
+            kind @ ("attention" | "lessons" | "profile" | "sources" | "permission" | "plan" | "watch" | "breaker" | "channel" | "mail" | "slack") => {
                 let result = match kind {
                     "attention" => crate::attention::rpc(&message),
                     "lessons" => crate::lessons::rpc(&message),
@@ -720,7 +720,7 @@ where
                     Err(why) => json!({"type": "error", "id": named, "message": why}),
                 });
             }
-            kind @ ("distill" | "judge") => {
+            kind @ ("distill" | "judge" | "check" | "revise" | "procedure") => {
                 let request = match distill_request(&message) {
                     Ok(r) => r,
                     Err(why) => {
@@ -731,6 +731,12 @@ where
                 match make_agent(&request) {
                     Ok(agent) if kind == "judge" => {
                         tokio::spawn(judge(agent, message.clone(), out.clone()));
+                    }
+                    Ok(agent) if kind == "procedure" => {
+                        tokio::spawn(procedure(agent, message.clone(), out.clone()));
+                    }
+                    Ok(agent) if kind == "check" || kind == "revise" => {
+                        tokio::spawn(check(agent, kind == "revise", message.clone(), out.clone()));
                     }
                     Ok(agent) => {
                         tokio::spawn(distill(agent, message.clone(), out.clone()));
@@ -838,6 +844,66 @@ async fn one_call(agent: &Agent, system: &str, input: String) -> (crate::Result<
         }
         Err(e) => (Err(e), 0, 0),
     }
+}
+
+/// Write proven lessons up as one procedure, or rewrite one after a job it
+/// rode in went wrong: `{id, model, lessons: [text], current?, went_wrong?:
+/// {asked, steps, answer}, prices}` → `{type: "procedure", id, procedure:
+/// {text, when} | null, cents}`. A write-up the consent screen refuses, line
+/// by line, comes back null.
+async fn procedure(agent: Agent, m: Value, out: Out) {
+    let id = m["id"].clone();
+    let lessons: Vec<String> = serde_json::from_value(m["lessons"].clone()).unwrap_or_default();
+    let went_wrong: Option<crate::lessons::Job> = serde_json::from_value(m["went_wrong"].clone()).ok();
+    let input = crate::lessons::procedure_input(&lessons, m["current"].as_str(), went_wrong.as_ref());
+    let (result, used_in, used_out) = one_call(&agent, crate::lessons::PROCEDURE_PROMPT, input).await;
+    let price = |k: &str| m.pointer(&format!("/prices/{k}")).and_then(Value::as_f64).unwrap_or(0.0);
+    let cents = crate::lessons::cost_cents(used_in, used_out, price("input"), price("output"));
+    let _ = out.send(match result {
+        Ok(raw) => json!({"type": "procedure", "id": id, "cents": cents,
+            "procedure": crate::lessons::parse_procedure(&raw).map(|(text, when)| json!({"text": text, "when": when}))}),
+        Err(e) => json!({"type": "error", "id": id, "message": e.to_string(), "cents": cents}),
+    });
+}
+
+/// The check before an answer goes out (`cookie::check`): `check` reads each
+/// paragraph beside its sources → `{type: "check", id, ok, problems,
+/// misses_the_job, cents}`; `revise` rewrites the answer to what its sources
+/// support → `{type: "revise", id, answer, cents}`. Lines carry `{id, model,
+/// job, answer, read: [[step, text]], problems?, prices}`. A failed check
+/// passes the answer as it is (said so with `failed`); a failed revision
+/// keeps it.
+async fn check(agent: Agent, revise: bool, m: Value, out: Out) {
+    use crate::cookie::check::{check_input, parse_check, read_of, revise_input, CHECK_PROMPT, REVISE_PROMPT};
+    let id = m["id"].clone();
+    let job = m["job"].as_str().unwrap_or_default();
+    let answer = m["answer"].as_str().unwrap_or_default();
+    let read = read_of(&m);
+    let price = |k: &str| m.pointer(&format!("/prices/{k}")).and_then(Value::as_f64).unwrap_or(0.0);
+    if revise {
+        let problems: Vec<Value> = m["problems"].as_array().cloned().unwrap_or_default();
+        let (result, used_in, used_out) = one_call(&agent, REVISE_PROMPT, revise_input(job, answer, &problems, &read)).await;
+        let cents = crate::lessons::cost_cents(used_in, used_out, price("input"), price("output"));
+        let _ = out.send(match result {
+            Ok(text) if !text.trim().is_empty() => json!({"type": "revise", "id": id, "answer": text.trim(), "cents": cents}),
+            Ok(_) => json!({"type": "revise", "id": id, "answer": answer, "failed": "empty", "cents": cents}),
+            Err(e) => json!({"type": "revise", "id": id, "answer": answer, "failed": e.to_string(), "cents": cents}),
+        });
+        return;
+    }
+    let Some(input) = check_input(job, answer, &read) else {
+        let _ = out.send(json!({"type": "check", "id": id, "ok": true, "problems": [], "cents": 0}));
+        return;
+    };
+    let (result, used_in, used_out) = one_call(&agent, CHECK_PROMPT, input).await;
+    let cents = crate::lessons::cost_cents(used_in, used_out, price("input"), price("output"));
+    let _ = out.send(match result {
+        Ok(raw) => {
+            let (ok, problems, misses) = parse_check(&raw);
+            json!({"type": "check", "id": id, "ok": ok, "problems": problems, "misses_the_job": misses, "cents": cents})
+        }
+        Err(e) => json!({"type": "check", "id": id, "ok": true, "problems": [], "failed": e.to_string(), "cents": cents}),
+    });
 }
 
 /// Ask a second, tool-less model whether the person's own words asked for one

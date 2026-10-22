@@ -91,7 +91,14 @@ pub struct Ask {
     pub thread_ts: Option<String>,
     pub dm: bool,
     pub text: String,
+    /// Files shared with the message: `(name, private download address)`,
+    /// at most [`MAX_FILES`]. Read as content, never as instructions.
+    #[serde(default)]
+    pub files: Vec<(String, String)>,
 }
+
+/// Files read from one message, at most.
+pub const MAX_FILES: usize = 5;
 
 /// `app_mention` anywhere, or a person's message in a DM with Cookie. Never a
 /// bot, an edit, a join, or Cookie itself.
@@ -102,7 +109,9 @@ pub fn ask_of(body: &Value, bot_user_id: &str) -> Option<Ask> {
     if !(kind == "app_mention" || (kind == "message" && dm)) {
         return None;
     }
-    if e.get("bot_id").is_some() || e.get("subtype").is_some() {
+    // An edit, a join, a bot's post: never a job. A file shared with words is.
+    let subtype = e.get("subtype").and_then(Value::as_str);
+    if e.get("bot_id").is_some() || subtype.is_some_and(|s| s != "file_share") {
         return None;
     }
     let user = e.get("user")?.as_str()?;
@@ -123,6 +132,19 @@ pub fn ask_of(body: &Value, bot_user_id: &str) -> Option<Ask> {
         thread_ts: e.get("thread_ts").and_then(Value::as_str).map(str::to_string),
         dm,
         text: clean_text(e.get("text").and_then(Value::as_str).unwrap_or("")),
+        files: e
+            .get("files")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|f| {
+                let url = f.get("url_private_download").or_else(|| f.get("url_private"))?.as_str()?;
+                // Only Slack's own file host: the download carries the bot's token.
+                let host = url.strip_prefix("https://")?.split('/').next()?;
+                (host == "files.slack.com").then(|| (f.get("name").and_then(Value::as_str).unwrap_or("file").to_string(), url.to_string()))
+            })
+            .take(MAX_FILES)
+            .collect(),
     })
 }
 
@@ -447,4 +469,17 @@ mod tests {
         assert_eq!(r, json!({"kind": "thread", "place": {"to": "thread", "channel": "C1", "thread_ts": null}, "text": "hi"}));
         assert!(rpc(&json!({"op": "nope"})).is_err());
     }
+
+    #[test]
+    fn a_file_shared_with_words_is_a_job_and_only_slacks_own_file_host_is_kept() {
+        let body = json!({"event_id": "Ev9", "team_id": "T1", "event": {"type": "message", "channel_type": "im", "subtype": "file_share",
+            "user": "U1", "channel": "D1", "ts": "1.1", "text": "summarise this",
+            "files": [{"name": "contract.pdf", "url_private_download": "https://files.slack.com/files-pri/T1-F1/download/contract.pdf"},
+                      {"name": "evil", "url_private_download": "https://evil.io/steal"}]}});
+        let ask = ask_of(&body, "UBOT").unwrap();
+        assert_eq!(ask.files, vec![("contract.pdf".to_string(), "https://files.slack.com/files-pri/T1-F1/download/contract.pdf".to_string())]);
+        let edited = json!({"event_id": "Ev9", "event": {"type": "message", "channel_type": "im", "subtype": "message_changed", "user": "U1", "channel": "D1", "ts": "1.1"}});
+        assert!(ask_of(&edited, "UBOT").is_none());
+    }
+
 }
