@@ -888,6 +888,6 @@ mod tests {
         // per-minute quota has turned over before the run gives up.
         let floor: Duration = (1..THROTTLED_ATTEMPTS).map(|a| Duration::from_secs(1 << a.clamp(1, 5)) / 2).sum();
         assert_eq!(floor, Duration::from_secs(47));
-        assert!(THROTTLED_ATTEMPTS > ATTEMPTS);
+        const _: () = assert!(THROTTLED_ATTEMPTS > ATTEMPTS);
     }
 }

@@ -789,7 +789,7 @@ mod tests {
     }
 
     fn tight() -> crate::compaction::Compaction {
-        crate::compaction::Compaction { clear_tool_results_after: 99, summarize_above_tokens: 20, keep_recent_turns: 1, summary_prompt: None }
+        crate::compaction::Compaction { clear_tool_results_after: 99, summarize_above_tokens: 20, keep_recent_turns: 1, summary_prompt: None, within_turn: false }
     }
 
     #[tokio::test]
@@ -1120,7 +1120,7 @@ mod tests {
     #[tokio::test]
     async fn the_summary_prompt_can_be_replaced() {
         let (a, p) = agent(vec![Scripted::text("SUMMARY"), Scripted::text("ok")]);
-        let a = a.compaction(Compaction { clear_tool_results_after: 0, summarize_above_tokens: 1, keep_recent_turns: 1, summary_prompt: None }.with_prompt("Mine."));
+        let a = a.compaction(Compaction { clear_tool_results_after: 0, summarize_above_tokens: 1, keep_recent_turns: 1, summary_prompt: None, within_turn: false }.with_prompt("Mine."));
         let mut s = Session::in_memory();
         s.append(Message::user("one")).await.unwrap();
         s.append(Message::assistant(vec![Content::Text { text: "reply one".into() }])).await.unwrap();

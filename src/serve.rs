@@ -96,6 +96,10 @@ pub struct RunRequest {
     /// instead of an error (`Agent::close_with_answer`).
     #[serde(default)]
     pub close_with_answer: bool,
+    /// Summarise older tool rounds once the request passes a size, so a long
+    /// job keeps going (`Compaction` with `within_turn`).
+    #[serde(default)]
+    pub compaction: Option<CompactionDecl>,
     /// Lessons this job may be given (`LessonsDecl`): the harness matches and
     /// picks, puts the chosen ones beside the job, and says which it gave on
     /// a `lessons` line before the run starts.
@@ -282,6 +286,20 @@ pub struct ToolDecl {
     pub guard: Vec<String>,
     #[serde(default)]
     pub parallel_safe: bool,
+}
+
+/// When a run summarises its older tool rounds.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompactionDecl {
+    /// Estimated request size that starts a summary.
+    pub summarize_above_tokens: u64,
+    /// Tool rounds always kept word for word.
+    #[serde(default = "two")]
+    pub keep_recent_rounds: usize,
+}
+
+fn two() -> usize {
+    2
 }
 
 type Out = mpsc::UnboundedSender<Value>;
@@ -549,6 +567,14 @@ fn build(
     if request.close_with_answer {
         agent = agent.close_with_answer();
     }
+    if let Some(c) = &request.compaction {
+        agent = agent.compaction(crate::Compaction {
+            summarize_above_tokens: c.summarize_above_tokens.max(8_000),
+            keep_recent_turns: c.keep_recent_rounds.max(1),
+            within_turn: true,
+            ..crate::Compaction::default()
+        });
+    }
     if !request.check_after.is_empty() {
         agent = agent.check_after(request.check_after.iter().cloned());
     }
@@ -661,7 +687,7 @@ where
                 let expected = if kind == "approve" { 'a' } else { 't' };
                 let mut waiting_now = waiting.lock().unwrap();
                 match waiting_now.get(&id).map(|(run, _)| run.clone()) {
-                    Some(run) if id.starts_with(expected) => {
+                    Some(_) if id.starts_with(expected) => {
                         if let Some((_, reply)) = waiting_now.remove(&id) {
                             let _ = reply.send(message);
                         }
@@ -694,7 +720,7 @@ where
                     Err(why) => json!({"type": "error", "id": named, "message": why}),
                 });
             }
-            "distill" => {
+            kind @ ("distill" | "judge") => {
                 let request = match distill_request(&message) {
                     Ok(r) => r,
                     Err(why) => {
@@ -703,6 +729,9 @@ where
                     }
                 };
                 match make_agent(&request) {
+                    Ok(agent) if kind == "judge" => {
+                        tokio::spawn(judge(agent, message.clone(), out.clone()));
+                    }
                     Ok(agent) => {
                         tokio::spawn(distill(agent, message.clone(), out.clone()));
                     }
@@ -777,20 +806,7 @@ async fn distill(agent: Agent, m: Value, out: Out) {
     let went_well: Option<crate::lessons::Job> = serde_json::from_value(m["went_well"].clone()).ok();
     let failed = m["failed"].as_bool().unwrap_or(false);
     let input = crate::lessons::distill_input(&job, failed, s("correction").as_deref(), went_well.as_ref());
-    let agent = agent
-        .instructions(crate::lessons::DISTILL_PROMPT)
-        .without_enkeon()
-        .budget(Budget { max_steps: 1, max_tokens: 20_000, max_dollars: None });
-    let (mut used_in, mut used_out) = (0u64, 0u64);
-    let mut session = Session::in_memory();
-    let result = agent
-        .run_streaming_all(&mut session, vec![Message::user(input)], &RunControl::default(), &mut |event| {
-            if let crate::Event::Usage(u) = event {
-                used_in += u.input_tokens + u.cache_read_tokens + u.cache_write_tokens;
-                used_out += u.output_tokens;
-            }
-        })
-        .await;
+    let (result, used_in, used_out) = one_call(&agent, crate::lessons::DISTILL_PROMPT, input).await;
     let price = |k: &str| m.pointer(&format!("/prices/{k}")).and_then(Value::as_f64).unwrap_or(0.0);
     let cents = crate::lessons::cost_cents(used_in, used_out, price("input"), price("output"));
     let _ = out.send(match result {
@@ -806,6 +822,41 @@ async fn distill(agent: Agent, m: Value, out: Out) {
         }
         Err(e) => json!({"type": "error", "id": id, "message": e.to_string(), "cents": cents}),
     });
+}
+
+/// One model call, no tools, no stream: a side question (a lesson, a
+/// judgment). Not streamed on purpose — a reply nobody watches arrive gains
+/// nothing from it, and an account may allow a small model's plain calls
+/// without its streaming ones. Returns the text and the tokens used.
+async fn one_call(agent: &Agent, system: &str, input: String) -> (crate::Result<String>, u64, u64) {
+    let messages = vec![Message::user(input)];
+    let request = crate::provider::ModelRequest { model: &agent.model, system, messages: &messages, tools: Vec::new(), ..Default::default() };
+    match agent.provider.complete(request).await {
+        Ok(r) => {
+            let used_in = r.usage.input_tokens + r.usage.cache_read_tokens + r.usage.cache_write_tokens;
+            (Ok(Message::assistant(r.content).text()), used_in, r.usage.output_tokens)
+        }
+        Err(e) => (Err(e), 0, 0),
+    }
+}
+
+/// Ask a second, tool-less model whether the person's own words asked for one
+/// change Cookie would make without asking (`cookie::permission::JUDGE_PROMPT`):
+/// `{id, model, person: [..], app, action, args, prices}` →
+/// `{type: "judge", id, asked, why, cents}`. A failed call is a no.
+async fn judge(agent: Agent, m: Value, out: Out) {
+    use crate::cookie::permission::{judge_input, parse_judgment, JUDGE_PROMPT};
+    let id = m["id"].clone();
+    let person: Vec<String> = serde_json::from_value(m["person"].clone()).unwrap_or_default();
+    let input = judge_input(&person, m["app"].as_str().unwrap_or(""), m["action"].as_str().unwrap_or(""), &m["args"]);
+    let (result, used_in, used_out) = one_call(&agent, JUDGE_PROMPT, input).await;
+    let price = |k: &str| m.pointer(&format!("/prices/{k}")).and_then(Value::as_f64).unwrap_or(0.0);
+    let cents = crate::lessons::cost_cents(used_in, used_out, price("input"), price("output"));
+    let (asked, why) = match result {
+        Ok(raw) => parse_judgment(&raw),
+        Err(e) => (false, format!("the judge could not answer: {e}")),
+    };
+    let _ = out.send(json!({"type": "judge", "id": id, "asked": asked, "why": why, "cents": cents}));
 }
 
 /// The run itself; returns its last line (`done` or `error`).

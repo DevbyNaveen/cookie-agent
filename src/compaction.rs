@@ -9,6 +9,9 @@ use crate::message::{Content, Message};
 pub const SUMMARY_PROMPT: &str = "Summarise the conversation so far for whoever continues it. \
 Keep every decision, open question, name, number, address and file path exactly as written. \
 Say which facts came from the person and which came from tools, pages or files. \
+Keep every source tag (like [source s3]) and every web address next to the facts it backs, word for word, \
+so the answer can still cite them. Say what is done and what is still to do. \
+The tools still work after this summary: it replaces only what was already read. \
 Plain prose, no preamble.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,13 +25,18 @@ pub struct Compaction {
     pub keep_recent_turns: usize,
     /// The summary instruction; `SUMMARY_PROMPT` when `None`.
     pub summary_prompt: Option<String>,
+    /// Count finished tool rounds as places a summary may end, not only the
+    /// person's turns: a single long job (one instruction, many tool rounds)
+    /// can then be compacted, keeping `keep_recent_turns` rounds word for word
+    /// and the instruction itself always in view.
+    pub within_turn: bool,
 }
 
 /// Nothing cleared, never summarised, one turn kept: set the fields you want
 /// with `Compaction { summarize_above_tokens: 150_000, ..Compaction::default() }`.
 impl Default for Compaction {
     fn default() -> Self {
-        Self { clear_tool_results_after: 0, summarize_above_tokens: u64::MAX, keep_recent_turns: 1, summary_prompt: None }
+        Self { clear_tool_results_after: 0, summarize_above_tokens: u64::MAX, keep_recent_turns: 1, summary_prompt: None, within_turn: false }
     }
 }
 
@@ -90,13 +98,37 @@ fn turn_starts(messages: &[Message]) -> Vec<usize> {
         .collect()
 }
 
+/// Where a round of tool use ends and the next begins: the model's message
+/// right after a message of tool results. A boundary there never splits a
+/// call from its result.
+fn round_starts(messages: &[Message]) -> Vec<usize> {
+    let mut starts = turn_starts(messages);
+    starts.extend((1..messages.len()).filter(|&i| {
+        messages[i].role() == crate::message::Role::Assistant
+            && messages[i - 1].content().iter().any(|c| matches!(c, Content::ToolResult { .. }))
+            && messages[i - 1].summary_of().is_none()
+    }));
+    starts.sort_unstable();
+    starts.dedup();
+    starts
+}
+
 /// What to send: the latest summary and the turns after it, with tool output
-/// from older turns cleared.
+/// from older turns cleared. A summary that ends inside the current turn
+/// keeps that turn's instruction in view before it: the job is never
+/// summarised away.
 pub fn context_view(messages: &[Message], policy: &Compaction) -> Vec<Message> {
     let mut view: Vec<Message> = match messages.iter().rposition(|m| m.summary_of().is_some()) {
         Some(at) => {
             let covers = messages[at].summary_of().unwrap_or(0).min(at);
-            std::iter::once(messages[at].clone())
+            // The summary ends inside a turn (not at one's start): that turn's instruction.
+            let starts = turn_starts(messages);
+            let asked = (!starts.contains(&covers)).then(|| starts.iter().rev().find(|&&s| s < covers).copied()).flatten();
+            asked
+                .filter(|_| policy.within_turn)
+                .map(|start| messages[start].clone())
+                .into_iter()
+                .chain(std::iter::once(messages[at].clone()))
                 .chain(messages[covers..].iter().filter(|m| m.summary_of().is_none()).cloned())
                 .collect()
         }
@@ -123,7 +155,10 @@ pub fn context_view(messages: &[Message], policy: &Compaction) -> Vec<Message> {
 /// Where a summary can end: the start of the oldest turn kept word for word.
 /// `None` when there is nothing older than the kept turns.
 pub fn summary_boundary(messages: &[Message], keep_recent_turns: usize) -> Option<usize> {
-    let starts = turn_starts(messages);
+    boundary_in(&turn_starts(messages), keep_recent_turns)
+}
+
+fn boundary_in(starts: &[usize], keep_recent_turns: usize) -> Option<usize> {
     let keep = keep_recent_turns.max(1);
     if starts.len() <= keep {
         return None;
@@ -161,7 +196,8 @@ impl crate::agent::Agent {
         }
         let messages = session.messages();
         let already = messages.iter().rev().find_map(Message::summary_of).unwrap_or(0);
-        let Some(boundary) = summary_boundary(messages, policy.keep_recent_turns).filter(|b| *b > already) else {
+        let starts = if policy.within_turn { round_starts(messages) } else { turn_starts(messages) };
+        let Some(boundary) = boundary_in(&starts, policy.keep_recent_turns).filter(|b| *b > already) else {
             // Over the limit with nothing older than the kept turns: say so.
             return Err(Error::Provider(format!(
                 "the request is about {tokens_before} tokens but there are no turns older than the {} kept to summarise",
@@ -245,7 +281,7 @@ mod tests {
     #[test]
     fn clears_tool_output_older_than_the_recent_turns_and_nothing_else() {
         let messages: Vec<Message> = (0..4).flat_map(|i| turn(i, &"x".repeat(100))).collect();
-        let policy = Compaction { clear_tool_results_after: 2, summarize_above_tokens: u64::MAX, keep_recent_turns: 2, summary_prompt: None };
+        let policy = Compaction { clear_tool_results_after: 2, summarize_above_tokens: u64::MAX, keep_recent_turns: 2, summary_prompt: None, within_turn: false };
         let view = context_view(&messages, &policy);
         assert_eq!(view.len(), messages.len());
         assert!(output_of(&view[2]).starts_with("[cleared: tool output from turn 1, 100 characters"));
@@ -260,7 +296,7 @@ mod tests {
     fn the_latest_summary_replaces_the_turns_it_covers() {
         let mut messages: Vec<Message> = (0..3).flat_map(|i| turn(i, "data")).collect();
         messages.push(Message::summary("earlier: three readings".into(), 8, Origin::Model));
-        let policy = Compaction { clear_tool_results_after: 99, summarize_above_tokens: u64::MAX, keep_recent_turns: 1, summary_prompt: None };
+        let policy = Compaction { clear_tool_results_after: 99, summarize_above_tokens: u64::MAX, keep_recent_turns: 1, summary_prompt: None, within_turn: false };
         let view = context_view(&messages, &policy);
         assert_eq!(view[0].text(), "Summary of the earlier conversation:\nearlier: three readings");
         assert_eq!(view[1].text(), "question 2");
@@ -279,13 +315,13 @@ mod tests {
     #[test]
     fn zero_means_never_clear() {
         let messages: Vec<Message> = (0..3).flat_map(|i| turn(i, "data")).collect();
-        let off = Compaction { clear_tool_results_after: 0, summarize_above_tokens: u64::MAX, keep_recent_turns: 1, summary_prompt: None };
+        let off = Compaction { clear_tool_results_after: 0, summarize_above_tokens: u64::MAX, keep_recent_turns: 1, summary_prompt: None, within_turn: false };
         assert_eq!(context_view(&messages, &off), messages);
     }
 
     #[test]
     fn clearing_moves_in_steps_so_the_cached_prefix_stays_put() {
-        let policy = Compaction { clear_tool_results_after: 2, summarize_above_tokens: u64::MAX, keep_recent_turns: 1, summary_prompt: None };
+        let policy = Compaction { clear_tool_results_after: 2, summarize_above_tokens: u64::MAX, keep_recent_turns: 1, summary_prompt: None, within_turn: false };
         let five: Vec<Message> = (0..5).flat_map(|i| turn(i, "data")).collect();
         let view = context_view(&five, &policy);
         assert!(output_of(&view[6]).starts_with("[cleared:"), "turn 2 cleared");
@@ -317,7 +353,7 @@ mod tests {
         for t in 2..6 {
             messages.push(Message::user(format!("t{t}")));
         }
-        let view = context_view(&messages, &Compaction { clear_tool_results_after: 1, summarize_above_tokens: u64::MAX, keep_recent_turns: 1, summary_prompt: None });
+        let view = context_view(&messages, &Compaction { clear_tool_results_after: 1, summarize_above_tokens: u64::MAX, keep_recent_turns: 1, summary_prompt: None, within_turn: false });
         assert!(!view[1].text().contains("obey") && !view.iter().any(|m| m.content().iter().any(|c| matches!(c, Content::ToolResult { output, .. } if output.contains("obey")))));
     }
 
@@ -356,6 +392,40 @@ mod tests {
         assert_eq!(view[1].text(), "[cleared: an image/png image from turn 1, 1 KB]");
         assert!(view[1].origin().is_untrusted());
         assert!(matches!(view[4].content()[0], Content::Image { .. }), "the recent turn keeps its image");
+    }
+
+
+    /// One instruction, many tool rounds: a long single job.
+    fn one_long_job(rounds: usize) -> Vec<Message> {
+        let mut m = vec![Message::user("research Acme in depth")];
+        for i in 0..rounds {
+            m.push(Message::assistant(vec![Content::ToolCall { id: format!("c{i}"), name: "read".into(), args: json!({"i": i}) }]));
+            m.push(Message::tool_results(
+                vec![Content::ToolResult { id: format!("c{i}"), output: format!("page {i}"), is_error: false }],
+                Origin::Untrusted(Source::Tool("read".into())),
+            ));
+        }
+        m
+    }
+
+    #[test]
+    fn a_single_long_job_can_end_a_summary_between_rounds_and_keeps_its_instruction() {
+        let job = one_long_job(6);
+        assert_eq!(summary_boundary(&job, 2), None, "by turns alone there is nothing to summarise");
+        let rounds = round_starts(&job);
+        assert_eq!(rounds, vec![0, 3, 5, 7, 9, 11], "the model's call after each round of results");
+        assert!(rounds.iter().all(|&i| i == 0 || job[i - 1].content().iter().any(|c| matches!(c, Content::ToolResult { .. }))));
+        let boundary = boundary_in(&rounds, 2).unwrap();
+        assert_eq!(boundary, 9);
+        let mut with_summary = job.clone();
+        with_summary.push(Message::summary("read pages 0-3 [source s1]".into(), boundary, Origin::Model));
+        let policy = Compaction { within_turn: true, ..Compaction::default() };
+        let view = context_view(&with_summary, &policy);
+        assert_eq!(view[0].text(), "research Acme in depth", "the job stays in view");
+        assert!(view[1].summary_of().is_some());
+        assert_eq!(view.len(), 2 + (job.len() - boundary));
+        let turns_only = context_view(&with_summary, &Compaction::default());
+        assert!(turns_only[0].summary_of().is_some(), "without within_turn the view is as before");
     }
 
 }

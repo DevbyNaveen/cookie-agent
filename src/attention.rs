@@ -62,6 +62,8 @@ pub const BREAK_AFTER: f64 = 10.0 * 60.0;
 /// day passed), then anything else.
 pub const HOLD_HARD: f64 = 30.0 * 60.0;
 pub const HOLD_MAX: f64 = 4.0 * 3600.0;
+/// Notices one person is sent in a day, at most.
+pub const PER_PERSON_DAILY: i64 = 3;
 
 /// One write, as attention sees it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -462,6 +464,43 @@ pub fn deliver(m: &Moment, now: f64) -> Option<&'static str> {
     }
 }
 
+/// One person, now: their local time and quiet hours, and what they were
+/// sent today.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Person {
+    /// Minutes past midnight in their own time.
+    pub local_minutes: i64,
+    /// Quiet from this hour to that hour, local (20 → 8 spans midnight). Equal = never quiet.
+    pub quiet_from: i64,
+    pub quiet_to: i64,
+    pub sent_today: i64,
+    /// They turned notices off.
+    pub off: bool,
+}
+
+/// Send a released notice to this person now? `Err(why not)` — it stays
+/// waiting while they are in quiet hours, and is not sent at all once they
+/// had their day's share or turned notices off.
+pub fn send_to(p: &Person) -> Result<(), &'static str> {
+    if p.off {
+        return Err("off");
+    }
+    if p.sent_today >= PER_PERSON_DAILY {
+        return Err("enough today");
+    }
+    let hour = (p.local_minutes.rem_euclid(1440)) / 60;
+    let quiet = match (p.quiet_from, p.quiet_to) {
+        (f, t) if f == t => false,
+        (f, t) if f < t => hour >= f && hour < t,
+        (f, t) => hour >= f || hour < t,
+    };
+    if quiet {
+        return Err("quiet hours");
+    }
+    Ok(())
+}
+
 /// Why this notice, in one sentence a person reads first: the hard cue that
 /// fired it, else what built up.
 pub fn why_now(n: &Notice) -> String {
@@ -514,6 +553,8 @@ fn field<T: serde::de::DeserializeOwned>(m: &Value, k: &str) -> Result<T, String
 ///   each one it has not signalled before.
 /// * `deliver` — `{moment, now}`: put a held notice in front of the team now?
 ///   → `{release, because?}`.
+/// * `send` — `{person}`: send a released notice to this person now? →
+///   `{send, why?, later?}` (`later`: quiet hours; try again after).
 ///
 /// Replies `{subject, signal?, verdict?}`; the client stores `subject`. A
 /// notice in a verdict carries `why_now`, the sentence it opens with.
@@ -572,6 +613,13 @@ pub fn rpc(m: &Value) -> Result<Value, String> {
             Ok(match deliver(&moment, now) {
                 Some(why) => json!({"release": true, "because": why}),
                 None => json!({"release": false}),
+            })
+        }
+        "send" => {
+            let person: Person = field(m, "person")?;
+            Ok(match send_to(&person) {
+                Ok(()) => json!({"send": true}),
+                Err(why) => json!({"send": false, "why": why, "later": why == "quiet hours"}),
             })
         }
         "classify" => {
@@ -803,4 +851,20 @@ mod tests {
         n.cues.push(cue("past_due", "Past its day: Quote", true));
         assert_eq!(why_now(&n), "Past its day: Quote");
     }
+
+    #[test]
+    fn a_person_is_sent_a_notice_outside_quiet_hours_and_three_a_day_at_most() {
+        let at = |h: i64| Person { local_minutes: h * 60, quiet_from: 20, quiet_to: 8, ..Person::default() };
+        assert_eq!(send_to(&at(10)), Ok(()));
+        assert_eq!(send_to(&at(22)), Err("quiet hours"), "quiet spans midnight");
+        assert_eq!(send_to(&at(3)), Err("quiet hours"));
+        assert_eq!(send_to(&at(8)), Ok(()), "the window ends at eight");
+        assert_eq!(send_to(&Person { sent_today: PER_PERSON_DAILY, ..at(10) }), Err("enough today"));
+        assert_eq!(send_to(&Person { off: true, ..at(10) }), Err("off"));
+        assert_eq!(send_to(&Person { local_minutes: 23 * 60, quiet_from: 0, quiet_to: 0, ..Person::default() }), Ok(()), "never quiet");
+        assert_eq!(send_to(&Person { local_minutes: 13 * 60, quiet_from: 12, quiet_to: 14, ..Person::default() }), Err("quiet hours"));
+        let r = rpc(&json!({"op": "send", "person": {"local_minutes": 1380, "quiet_from": 20, "quiet_to": 8}})).unwrap();
+        assert_eq!((r["send"].as_bool(), r["later"].as_bool()), (Some(false), Some(true)));
+    }
+
 }

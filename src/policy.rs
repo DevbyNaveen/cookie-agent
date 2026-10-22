@@ -104,7 +104,15 @@ fn leaves(value: &Value, out: &mut Vec<String>) -> bool {
             out.push(n.to_string());
             true
         }
-        Value::Array(items) => items.iter().fold(true, |ok, v| leaves(v, out) && ok),
+        // Every leaf is collected, so no short-circuit: a later bad leaf
+        // must not hide an earlier value from the check.
+        Value::Array(items) => {
+            let mut ok = true;
+            for v in items {
+                ok &= leaves(v, out);
+            }
+            ok
+        }
         Value::Object(map) => map.iter().fold(true, |ok, (key, v)| {
             out.push(key.clone());
             leaves(v, out) && ok
