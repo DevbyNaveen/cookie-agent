@@ -498,7 +498,9 @@ pub fn strip_html(html: &str) -> String {
     let mut s = html.to_string();
     for tag in ["script", "style", "noscript", "svg", "head", "template"] {
         loop {
-            let lower = s.to_lowercase();
+            // ASCII-only lowering keeps every byte where it was, so positions
+            // found in `lower` are positions in `s` (`to_lowercase` can grow a string).
+            let lower = s.to_ascii_lowercase();
             let Some(start) = lower.find(&format!("<{tag}")) else { break };
             let end = lower[start..].find(&format!("</{tag}>")).map_or(s.len(), |e| start + e + tag.len() + 3);
             s.replace_range(start..end, " ");
@@ -556,6 +558,13 @@ fn decode_entities(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn html_in_any_language_strips_without_breaking() {
+        let page = "<p>İstanbul ÄRI</p><SCRIPT>x()</SCRIPT><p>Tööäpäev 東京</p><style>a{}</style>";
+        let text = strip_html(page);
+        assert!(text.contains("İstanbul ÄRI") && text.contains("Tööäpäev 東京") && !text.contains("x()"), "{text}");
+    }
 
     #[test]
     fn html_reads_as_text_without_scripts_styles_or_tags() {

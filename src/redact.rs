@@ -185,7 +185,12 @@ fn after_secret_name(before: &str) -> bool {
     let trimmed = b.trim_end_matches(['"', '\'', ' ']);
     let Some(sep) = trimmed.chars().last().filter(|c| matches!(c, '=' | ':')) else { return false };
     let name = trimmed[..trimmed.len() - sep.len_utf8()].trim_end_matches(['"', '\'', ' ']);
-    let word_start = name.rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')).map_or(0, |i| i + 1);
+    // Step past the whole character found, never one byte: a name may follow `ä`.
+    let word_start = name
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !(c.is_ascii_alphanumeric() || *c == '_' || *c == '-'))
+        .map_or(0, |(i, c)| i + c.len_utf8());
     let word = &name[word_start..];
     SECRET_KEYS.iter().any(|k| word == *k || word.ends_with(&format!("_{k}")) || word.ends_with(&format!("-{k}")))
 }
@@ -334,7 +339,16 @@ mod tests {
     }
 
     #[test]
-    fn the_rpc_masks_text_and_values() {
+    fn text_in_any_language_never_breaks_masking() {
+        // Found on a live job: a page with `ä` right before a `key:` crashed the run.
+        for text in ["Tööäpäev: api_key=sk-abcdefghijklmnopqrstuvwx", "Mäsä token: 12", "ä:", "Ärikliendid=", "naïve façade — 東京: ok", "😀=x"] {
+            let _ = secrets(text);
+        }
+        assert!(secrets("Tööäpäev api_key=sk-abcdefghijklmnopqrstuvwx").contains("[secret removed]") || !secrets("Tööäpäev api_key=sk-abcdefghijklmnopqrstuvwx").contains("abcdefghijklmnop"));
+    }
+
+    #[test]
+        fn the_rpc_masks_text_and_values() {
         let r = rpc(&serde_json::json!({"text": "key sk_live_51HxAbCdEfGhIjKl", "value": {"a": "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"}})).unwrap();
         assert_eq!(r["text"], "key sk_liv…IjKl");
         assert_eq!(r["value"]["a"], "ghp_Ab…6789");
