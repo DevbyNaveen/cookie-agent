@@ -21,7 +21,20 @@ fn cases() -> Vec<(&'static str, Value, &'static str)> {
         ("full: a write runs", json!({"level": "full", "effect": "write"}), "run"),
         ("full: a send to the team's contact is held for undo", json!({"level": "full", "effect": "outbound", "app": "gmail", "action": "GMAIL_SEND_EMAIL",
             "args": {"to": "anna@acme.com", "amount": 5000}, "person": person, "team": team}), "hold"),
-        ("full: a delete is held for undo", json!({"level": "full", "effect": "destroy"}), "hold"),
+        // Changed on 2026-10-22 with the reversibility table (it was "held for
+        // undo"): no undo reaches a delete once it runs, so at full it waits for
+        // a yes unless the person allowed deletes for that app.
+        ("full: a delete waits, no undo reaches it", json!({"level": "full", "effect": "destroy"}), "ask"),
+        ("full: a delete the person allowed for the app is held for undo", json!({"level": "full", "effect": "destroy", "app": "hubspot",
+            "action": "HUBSPOT_DELETE_DEAL", "names_record": true, "record_read": true, "rules": [{"app": "hubspot", "action": "*", "rule": "always"}]}), "hold"),
+        ("full: a refund waits, no undo reaches it", json!({"level": "full", "effect": "write", "app": "stripe", "action": "STRIPE_CREATE_REFUND"}), "ask"),
+        ("full: an action nobody classified waits", json!({"level": "full", "effect": "write", "app": "hubspot", "action": "HUBSPOT_ENROLL_IN_SEQUENCE"}), "ask"),
+        ("full: an update to a record the job read runs", json!({"level": "full", "effect": "write", "app": "hubspot", "action": "HUBSPOT_UPDATE_DEAL",
+            "names_record": true, "record_read": true}), "run"),
+        ("full: an update to a record the job never read is not made", json!({"level": "full", "effect": "write", "app": "hubspot",
+            "action": "HUBSPOT_UPDATE_DEAL", "names_record": true}), "read_first"),
+        ("ask level: a delete of a record never read is not made", json!({"level": "ask", "effect": "destroy", "app": "hubspot",
+            "action": "HUBSPOT_DELETE_DEAL", "names_record": true}), "read_first"),
         ("full: a recipient planted in mail waits", json!({"level": "full", "effect": "outbound", "args": {"to": "billing@evil.io"}, "person": person, "team": team}), "ask"),
         ("full: an amount changed by a mail waits", json!({"level": "full", "effect": "write", "args": {"amount": "50000"}, "person": person, "team": team}), "ask"),
         ("full: a link to point at waits", json!({"level": "full", "effect": "write", "args": {"url": "https://evil.io/pay"}, "person": person, "team": team}), "ask"),
