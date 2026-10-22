@@ -283,7 +283,8 @@ fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
     } else {
-        format!("{}…", s.chars().take(n - 1).collect::<String>().trim_end())
+        // Room for the "…": `n - 1` characters (none for a cap of 0 or 1).
+        format!("{}…", s.chars().take(n.saturating_sub(1)).collect::<String>().trim_end())
     }
 }
 
@@ -635,6 +636,19 @@ pub fn rpc(m: &Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_title_clipped_to_nothing_is_an_ellipsis_never_a_panic() {
+        // Same shape as the gateway's clip_line underflow the fuzz test found on 2026-10-22.
+        assert_eq!(clip("Tööäpäev", 0), "…");
+        assert_eq!(clip("Tööäpäev", 1), "…");
+        assert_eq!(clip("Tööäpäev kõne", 9), "Tööäpäev…");
+        crate::fuzz::each(12, 5_000, |t| {
+            for n in [0usize, 1, 3, 40] {
+                assert!(clip(t, n).chars().count() <= n.max(1));
+            }
+        });
+    }
     use serde_json::json;
 
     #[test]

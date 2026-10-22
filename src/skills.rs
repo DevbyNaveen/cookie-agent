@@ -161,6 +161,14 @@ pub fn read_agents_md(dir: impl AsRef<Path>) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_skill_file_in_any_language_parses_or_says_why() {
+        crate::fuzz::each(11, 5_000, |t| {
+            let _ = parse(t, Path::new("SKILL.md"));
+            let _ = parse(&format!("---\nname: {t}\ndescription: {t}\n---\n{t}"), Path::new("SKILL.md"));
+        });
+    }
     use crate::tool::{Effect, Tool};
     use serde_json::json;
 
