@@ -96,6 +96,8 @@ pub enum Event {
     Closing { reason: String },
     /// A reply cut off at the output limit is being continued.
     Continued { times: usize },
+    /// The person's words, added while the run worked, reached the model.
+    Steered { text: String },
 }
 
 /// How many times a cut-off reply is continued before the run gives up.
@@ -118,11 +120,34 @@ pub(crate) enum Turn {
 }
 
 /// Two ways to stop a run: `cancel` stops now; `finish_turn` lets the
-/// current turn's tools finish and be recorded, then stops.
+/// current turn's tools finish and be recorded, then stops. `steer` carries
+/// what the person adds while it works.
 #[derive(Debug, Clone, Default)]
 pub struct RunControl {
     pub cancel: CancellationToken,
     pub finish_turn: CancellationToken,
+    pub steer: Steers,
+}
+
+/// What the person says to a run while it works, waiting for the next model
+/// call. Shared by the client that hears it and the run that reads it.
+#[derive(Debug, Clone, Default)]
+pub struct Steers(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl Steers {
+    pub fn push(&self, text: impl Into<String>) {
+        self.0.lock().expect("steer lock").push(text.into());
+    }
+    /// Everything said since the last take, oldest first.
+    pub fn take(&self) -> Vec<String> {
+        std::mem::take(&mut *self.0.lock().expect("steer lock"))
+    }
+}
+
+/// How a person's steer reaches the model: their own words, marked as said
+/// while the run was working, so it knows to take them from here on.
+pub(crate) fn steer_message(text: &str) -> Message {
+    Message::user(format!("While you were working, I added this. Take it into account from here on:\n{text}"))
 }
 
 impl Agent {
@@ -132,7 +157,7 @@ impl Agent {
     }
 
     pub async fn run_in(&self, session: &mut Session, input: Message, cancel: &CancellationToken) -> Result<String> {
-        let control = RunControl { cancel: cancel.clone(), finish_turn: CancellationToken::new() };
+        let control = RunControl { cancel: cancel.clone(), ..Default::default() };
         self.run_streaming(session, input, &control, &mut |_| {}).await
     }
 
@@ -252,6 +277,18 @@ impl Agent {
                     session.append(Message::harness_note(close_note(&why))).await?;
                     on_event(Event::Closing { reason: why.clone() });
                     closing = Some(why);
+                }
+            }
+            // What the person added while the run worked: their own words,
+            // at this boundary between calls, never in the middle of a batch.
+            // Once the run is writing its last answer, steers wait (the
+            // client reports them unread).
+            if closing.is_none() {
+                for text in control.steer.take() {
+                    let message = steer_message(&text);
+                    provenance.observe(&message);
+                    session.append(message).await?;
+                    on_event(Event::Steered { text });
                 }
             }
             let specs: Vec<_> = match &searcher {
@@ -420,6 +457,17 @@ impl Agent {
                 })
                 .collect();
             let names = calls.iter().map(|(_, name, _)| name.as_str()).collect::<Vec<_>>().join(",");
+            // Secrets a tool turned up are masked here, once: before the model
+            // reads them, before the session file keeps them, before provenance.
+            let results = results
+                .into_iter()
+                .map(|r| match r {
+                    Content::ToolResult { id, output, is_error } => {
+                        Content::ToolResult { id, output: crate::redact::secrets(&output).into_owned(), is_error }
+                    }
+                    other => other,
+                })
+                .collect();
             let message = Message::tool_results(results, Origin::Untrusted(Source::Tool(names)));
             provenance.observe(&message);
             // Recorded before stopping, so a stopped run never forgets what already happened.
@@ -493,6 +541,48 @@ mod tests {
     fn agent(script: Vec<crate::provider::ModelResponse>) -> (Agent, Arc<Scripted>) {
         let provider = Arc::new(Scripted::new(script));
         (Agent::with_provider(provider.clone(), "test-model"), provider)
+    }
+
+    fn logged(name: &'static str, log: Arc<std::sync::Mutex<Vec<String>>>, parallel: bool) -> impl Tool {
+        let t = tool(name, "logs when it runs", json!({"type": "object"}), Effect::Read, move |_| {
+            let log = log.clone();
+            async move {
+                log.lock().unwrap().push(format!("start {name}"));
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                log.lock().unwrap().push(format!("end {name}"));
+                Ok(name.to_string())
+            }
+        });
+        if parallel { t.parallel_safe() } else { t }
+    }
+
+    #[tokio::test]
+    async fn a_batch_runs_in_segments_one_unsafe_call_never_serialises_the_rest() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (a, p) = agent(vec![
+            Scripted::call_many(&[("1", "r1", json!({})), ("2", "r2", json!({})), ("3", "alone", json!({})), ("4", "r3", json!({})), ("5", "r4", json!({}))]),
+            Scripted::text("done"),
+        ]);
+        let a = a
+            .tool(logged("r1", log.clone(), true))
+            .tool(logged("r2", log.clone(), true))
+            .tool(logged("alone", log.clone(), false))
+            .tool(logged("r3", log.clone(), true))
+            .tool(logged("r4", log.clone(), true));
+        assert_eq!(a.run("go").await.unwrap(), "done");
+        let log = log.lock().unwrap().clone();
+        let at = |e: &str| log.iter().position(|x| x == e).unwrap();
+        assert!(at("start r2") < at("end r1"), "r1 and r2 run side by side: {log:?}");
+        assert!(at("start alone") > at("end r1").max(at("end r2")), "the unsafe call waits for what came before: {log:?}");
+        assert!(at("start r3") > at("end alone") && at("start r4") < at("end r3"), "and r3, r4 run together after it: {log:?}");
+        let results: Vec<String> = p.seen()[1]
+            .last()
+            .unwrap()
+            .content()
+            .iter()
+            .filter_map(|c| if let Content::ToolResult { output, .. } = c { Some(output.clone()) } else { None })
+            .collect();
+        assert_eq!(results, ["r1", "r2", "alone", "r3", "r4"], "results keep the batch's order");
     }
 
     #[tokio::test]

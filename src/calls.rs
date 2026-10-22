@@ -178,27 +178,25 @@ impl Agent {
             }
             .instrument(span)
         };
-        let parallel = approved.iter().all(|(_, tool)| tool.spec().parallel_safe);
-        if parallel {
-            let running: Vec<usize> = approved.iter().map(|(index, _)| *index).collect();
-            let all = futures::future::join_all(approved.into_iter().map(|(i, t)| run_one(i, t)));
+        // In order, in segments: calls that are safe side by side run
+        // together; one that is not runs alone, after what came before it
+        // and before what comes after. One `remember` no longer makes a batch
+        // of lookups wait for each other.
+        for segment in segments(approved) {
+            if cancel.is_cancelled() {
+                for (index, _) in segment {
+                    outcomes[index] = Some((NOT_RUN_CANCELLED.into(), true));
+                }
+                continue;
+            }
+            let running: Vec<usize> = segment.iter().map(|(index, _)| *index).collect();
+            let all = futures::future::join_all(segment.into_iter().map(|(i, t)| run_one(i, t)));
             tokio::select! {
                 done = all => record(&mut outcomes, done),
                 _ = cancel.cancelled() => {
                     for index in running {
                         outcomes[index] = Some((INTERRUPTED.into(), true));
                     }
-                }
-            }
-        } else {
-            for (index, tool) in approved {
-                if cancel.is_cancelled() {
-                    outcomes[index] = Some((NOT_RUN_CANCELLED.into(), true));
-                    continue;
-                }
-                tokio::select! {
-                    done = run_one(index, tool) => record(&mut outcomes, vec![done]),
-                    _ = cancel.cancelled() => outcomes[index] = Some((INTERRUPTED.into(), true)),
                 }
             }
         }
@@ -261,6 +259,20 @@ impl Agent {
         }
         Ok(())
     }
+}
+
+/// Consecutive parallel-safe calls make one segment; any other call is a
+/// segment of its own. Order is kept.
+fn segments(approved: Vec<(usize, Arc<dyn Tool>)>) -> Vec<Vec<(usize, Arc<dyn Tool>)>> {
+    let mut out: Vec<Vec<(usize, Arc<dyn Tool>)>> = Vec::new();
+    for (index, tool) in approved {
+        let safe = tool.spec().parallel_safe;
+        match out.last_mut() {
+            Some(last) if safe && last.iter().all(|(_, t)| t.spec().parallel_safe) => last.push((index, tool)),
+            _ => out.push(vec![(index, tool)]),
+        }
+    }
+    out
 }
 
 fn record(outcomes: &mut [Option<(String, bool)>], finished: Vec<(usize, std::result::Result<String, String>)>) {
