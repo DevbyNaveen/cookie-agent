@@ -68,7 +68,7 @@ pub fn instructions(team: &str, act: Option<permission::Level>) -> String {
          for: every extra detail is one more thing that can be wrong.\n\
          - Say dates as dates (12 October), never raw timestamps, ids or file paths.\n\
          - Talk about what you found, never about how: no tool names, calls, steps, results, budgets or sessions \
-         (not 'the lookup returned', not 'app_call'). The person sees your answer, not your work.\n\
+         (never 'the lookup returned' or a tool's name). The person sees your answer, not your work.\n\
          - Write the way {team} writes: match the tone of their own messages. Plain text, short paragraphs, no \
          headings, no markdown.\n\
          \n\
