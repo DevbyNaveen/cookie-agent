@@ -103,7 +103,8 @@ impl Agent {
         use crate::{agent::{RunControl, Start}, budget::Meter, session::Session};
         use tracing::Instrument;
         let mut session = Session::in_memory();
-        let control = RunControl { cancel: context.cancel.clone(), finish_turn: tokio_util::sync::CancellationToken::new() };
+        // A person steers the run they asked, never its helpers directly.
+        let control = RunControl { cancel: context.cancel.clone(), ..Default::default() };
         let budget = self.budget.min(&context.budget);
         let mut events = Vec::new();
         let extra = match self.enkeon_tools(true, &context.cancel, &mut |e| events.push(e)).await {

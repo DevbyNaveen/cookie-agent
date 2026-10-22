@@ -105,6 +105,42 @@ pub struct RunRequest {
     /// a `lessons` line before the run starts.
     #[serde(default)]
     pub lessons: Option<LessonsDecl>,
+    /// Seconds without progress (no text, no tool result, no tool call;
+    /// a wait for a person's yes does not count) before the run is asked to
+    /// finish with what it has; as long again and it is stopped as `stalled`.
+    /// Absent: [`STALL_AFTER`].
+    #[serde(default)]
+    pub stall_after_secs: Option<u64>,
+}
+
+/// Seconds without progress before a run is asked to finish (`stall_after_secs`).
+pub const STALL_AFTER: u64 = 150;
+
+/// When a run last moved, shared by its events and its wire: the clock that
+/// tells a stuck run from a slow one. A wait for a person's yes holds it still.
+#[derive(Debug)]
+struct Progress {
+    began: std::time::Instant,
+    last_ms: AtomicU64,
+    waiting_person: std::sync::atomic::AtomicUsize,
+}
+
+impl Progress {
+    fn new() -> Self {
+        Self { began: std::time::Instant::now(), last_ms: AtomicU64::new(0), waiting_person: Default::default() }
+    }
+    fn touch(&self) {
+        self.last_ms.store(self.began.elapsed().as_millis() as u64, Ordering::Relaxed);
+    }
+    /// How long since the run last moved; zero while it waits for a person.
+    fn idle(&self) -> std::time::Duration {
+        if self.waiting_person.load(Ordering::Relaxed) > 0 {
+            self.touch();
+            return std::time::Duration::ZERO;
+        }
+        let now = self.began.elapsed().as_millis() as u64;
+        std::time::Duration::from_millis(now.saturating_sub(self.last_ms.load(Ordering::Relaxed)))
+    }
 }
 
 /// The lessons a client keeps, offered to one run.
@@ -154,7 +190,10 @@ pub struct HistoryTurn {
 
 fn history_message(turn: &HistoryTurn) -> std::result::Result<Message, String> {
     match turn.role.as_str() {
-        "user" | "assistant" => Ok(Message::earlier(turn.role == "user", &turn.text, turn.untrusted)),
+        // Untrusted context (synced mail, the team's notes) has its secrets
+        // masked like any tool result; the person's own words never do.
+        "user" | "assistant" if turn.untrusted => Ok(Message::earlier(turn.role == "user", &crate::redact::secrets(&turn.text), true)),
+        "user" | "assistant" => Ok(Message::earlier(turn.role == "user", &turn.text, false)),
         other => Err(format!("history role `{other}`: use user or assistant")),
     }
 }
@@ -354,6 +393,7 @@ struct Wire {
     /// The tools this run has used so far (a call that came back, or a
     /// helper handed a task), for `OrderDecl`.
     used: Mutex<std::collections::HashSet<String>>,
+    progress: Arc<Progress>,
 }
 
 /// Takes an id off the waiting list however its wait ends.
@@ -379,10 +419,21 @@ impl Wire {
         message["id"] = json!(id);
         message["run"] = json!(self.run);
         let _ = self.out.send(message);
-        tokio::select! {
+        // A person deciding is not a stuck run.
+        let person = prefix == "a";
+        if person {
+            self.progress.waiting_person.fetch_add(1, Ordering::Relaxed);
+        }
+        self.progress.touch();
+        let reply = tokio::select! {
             reply = rx => reply.ok(),
             _ = self.cancel.cancelled() => None,
+        };
+        if person {
+            self.progress.waiting_person.fetch_sub(1, Ordering::Relaxed);
         }
+        self.progress.touch();
+        reply
     }
 }
 
@@ -717,6 +768,7 @@ where
                     run: request.id.clone(),
                     cancel: control.cancel.clone(),
                     used: Mutex::default(),
+                    progress: Arc::new(Progress::new()),
                 });
                 let make_child = || make_agent(&request).map_err(|e| e.to_string());
                 let (agent, servers) = match make_agent(&request).map_err(|e| e.to_string()).and_then(|base| build(base, &request, &wire, &make_child)) {
@@ -727,7 +779,8 @@ where
                     }
                 };
                 busy.store(true, Ordering::SeqCst);
-                let task = tokio::spawn(run_one(agent, servers, request, control.clone(), out.clone(), busy.clone()));
+                let progress = wire.progress.clone();
+                let task = tokio::spawn(run_one(agent, servers, request, control.clone(), out.clone(), busy.clone(), progress));
                 current = Some((control, task));
             }
             kind @ ("approve" | "tool_result") => {
@@ -752,9 +805,10 @@ where
             // State in, state out: the client keeps what Cookie pays
             // attention to and what it learned, and asks where a mail or
             // Slack answer goes; these never wait on a run.
-            kind @ ("attention" | "lessons" | "profile" | "sources" | "permission" | "plan" | "watch" | "breaker" | "channel" | "mail" | "slack") => {
+            kind @ ("attention" | "lessons" | "profile" | "sources" | "permission" | "plan" | "watch" | "breaker" | "channel" | "mail" | "slack" | "redact") => {
                 let result = match kind {
                     "attention" => crate::attention::rpc(&message),
+                    "redact" => crate::redact::rpc(&message),
                     "lessons" => crate::lessons::rpc(&message),
                     "mail" => crate::cookie::mail::rpc(&message),
                     "slack" => crate::cookie::slack::rpc(&message),
@@ -805,6 +859,23 @@ where
                     control.finish_turn.cancel();
                 }
             }
+            // The person's words for the run that is working: read before its
+            // next model call. Refused when no run is going (start a new one).
+            "steer" => {
+                let text = message["text"].as_str().unwrap_or_default().trim().to_string();
+                match &current {
+                    _ if text.is_empty() => {
+                        let _ = out.send(json!({"type": "error", "id": named, "message": "a steer needs `text`"}));
+                    }
+                    Some((control, _)) if running => {
+                        control.steer.push(text);
+                        let _ = out.send(json!({"type": "steer", "id": named, "queued": true}));
+                    }
+                    _ => {
+                        let _ = out.send(json!({"type": "error", "id": named, "message": "no run is going, so there is nothing to steer: start a new run"}));
+                    }
+                }
+            }
             other => {
                 let _ = out.send(json!({"type": "error", "run": named, "message": format!("unknown message type `{other}`")}));
             }
@@ -821,17 +892,62 @@ where
     Ok(())
 }
 
-async fn run_one(agent: Agent, servers: Vec<McpServer>, request: RunRequest, control: RunControl, out: Out, busy: Arc<std::sync::atomic::AtomicBool>) {
+async fn run_one(
+    agent: Agent,
+    servers: Vec<McpServer>,
+    request: RunRequest,
+    control: RunControl,
+    out: Out,
+    busy: Arc<std::sync::atomic::AtomicBool>,
+    progress: Arc<Progress>,
+) {
     use futures::FutureExt;
     let id = request.id.clone();
+    let stall = std::time::Duration::from_secs(request.stall_after_secs.filter(|s| *s > 0).unwrap_or(STALL_AFTER));
+    let stalled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // The watch: no progress for `stall` → asked to finish with what it has;
+    // as long again → stopped. Ends with the run.
+    let watch = tokio::spawn({
+        let (control, progress, stalled, out, id) = (control.clone(), progress.clone(), stalled.clone(), out.clone(), id.clone());
+        async move {
+            let tick = (stall / 10).clamp(std::time::Duration::from_millis(20), std::time::Duration::from_secs(5));
+            let mut asked = false;
+            loop {
+                tokio::time::sleep(tick).await;
+                let idle = progress.idle();
+                if !asked && idle >= stall {
+                    asked = true;
+                    let _ = out.send(json!({"type": "stalled", "run": id, "stage": "finishing", "idle_secs": idle.as_secs()}));
+                    control.finish_turn.cancel();
+                } else if asked && idle >= stall * 2 {
+                    stalled.store(true, Ordering::SeqCst);
+                    control.cancel.cancel();
+                    return;
+                }
+            }
+        }
+    });
+    progress.touch();
     // A panic inside the run still ends it with an `error` line.
-    let ended = std::panic::AssertUnwindSafe(run_inner(agent, servers, request, control, out.clone())).catch_unwind().await;
+    let ended = std::panic::AssertUnwindSafe(run_inner(agent, servers, request, control.clone(), out.clone(), progress)).catch_unwind().await;
+    watch.abort();
+    // What the person said too late for this run to read: theirs to send again.
+    let unread = control.steer.take();
+    if !unread.is_empty() {
+        let _ = out.send(json!({"type": "steer_unread", "run": id, "texts": unread}));
+    }
     let last = match ended {
         Ok(last) => last,
         Err(panic) => {
             let why = panic.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| panic.downcast_ref::<String>().cloned()).unwrap_or_default();
             json!({"type": "error", "run": id, "message": format!("the run crashed: {why}")})
         }
+    };
+    let last = if stalled.load(Ordering::SeqCst) && last["type"] == "error" {
+        json!({"type": "error", "run": id, "kind": "stalled",
+               "message": format!("the run made no progress for {} seconds and was stopped", stall.as_secs() * 2)})
+    } else {
+        last
     };
     busy.store(false, Ordering::SeqCst);
     let _ = out.send(last);
@@ -975,7 +1091,7 @@ async fn judge(agent: Agent, m: Value, out: Out) {
 }
 
 /// The run itself; returns its last line (`done` or `error`).
-async fn run_inner(mut agent: Agent, servers: Vec<McpServer>, request: RunRequest, control: RunControl, out: Out) -> Value {
+async fn run_inner(mut agent: Agent, servers: Vec<McpServer>, request: RunRequest, control: RunControl, out: Out, progress: Arc<Progress>) -> Value {
     let mut inputs = vec![Message::user(&request.input)];
     match images_message(&request.images) {
         Ok(images) => inputs.extend(images),
@@ -1030,6 +1146,7 @@ async fn run_inner(mut agent: Agent, servers: Vec<McpServer>, request: RunReques
     let run = request.id.clone();
     let result = agent
         .run_streaming_all(&mut session, inputs, &control, &mut |event| {
+            progress.touch();
             let _ = events.send(json!({"type": "event", "run": run, "event": event}));
         })
         .await;
@@ -1589,6 +1706,63 @@ mod tests {
         async fn complete(&self, _: crate::provider::ModelRequest<'_>) -> crate::Result<crate::provider::ModelResponse> {
             std::future::pending().await
         }
+    }
+
+    #[tokio::test]
+    async fn a_steer_reaches_the_model_at_its_next_call_as_the_persons_words() {
+        let tools = json!([{"name": "lookup", "description": "", "schema": {"type": "object"}, "effect": "read"}]);
+        let p = Arc::new(Scripted::new(vec![Scripted::call("c1", "lookup", json!({})), Scripted::text("done")]));
+        let mut c = start(p.clone());
+        c.send(run("find leads", tools)).await;
+        let call = c.next().await;
+        assert_eq!(call["type"], "tool_call");
+        c.send(json!({"type": "steer", "id": "s1", "text": "only companies in Riga"})).await;
+        let ack = c.next().await;
+        assert_eq!((ack["type"].as_str(), ack["queued"].as_bool()), (Some("steer"), Some(true)), "{ack}");
+        c.send(json!({"type": "tool_result", "id": call["id"], "output": "42"})).await;
+        assert_eq!(c.next().await["answer"], "done");
+        let second = &p.seen()[1];
+        let said = second.last().unwrap();
+        assert_eq!(said.origin(), &crate::Origin::User, "the steer is the person's own words, after the tool's result");
+        assert!(said.text().contains("only companies in Riga"));
+    }
+
+    #[tokio::test]
+    async fn a_steer_with_no_run_going_is_refused() {
+        let mut c = start(Arc::new(Scripted::new(vec![])));
+        c.send(json!({"type": "steer", "id": "s1", "text": "faster"})).await;
+        let no = c.next().await;
+        assert_eq!(no["type"], "error");
+        assert!(no["message"].as_str().unwrap().contains("no run is going"), "{no}");
+    }
+
+    #[tokio::test]
+    async fn a_run_that_makes_no_progress_is_asked_to_finish_then_stopped_as_stalled() {
+        let mut c = start(Arc::new(Hangs));
+        let mut request = run("think", json!([]));
+        request["stall_after_secs"] = json!(1);
+        c.send(request).await;
+        let asked = c.next().await;
+        assert_eq!((asked["type"].as_str(), asked["stage"].as_str()), (Some("stalled"), Some("finishing")), "{asked}");
+        let end = c.next().await;
+        assert_eq!((end["type"].as_str(), end["kind"].as_str()), (Some("error"), Some("stalled")), "{end}");
+    }
+
+    #[tokio::test]
+    async fn waiting_for_a_persons_yes_is_never_a_stall() {
+        let p = Arc::new(Scripted::new(vec![Scripted::call("e1", "send_email", json!({"to": "anna@x.com"})), Scripted::text("sent")]));
+        let mut c = start(p);
+        let mut request = run("email anna@x.com the notes", email_tools());
+        request["stall_after_secs"] = json!(1);
+        c.send(request).await;
+        let ask = c.next().await;
+        assert_eq!(ask["type"], "approval", "{ask}");
+        tokio::time::sleep(std::time::Duration::from_millis(2_500)).await;
+        c.send(json!({"type": "approve", "id": ask["id"], "allow": true})).await;
+        let call = c.next().await;
+        assert_eq!(call["type"], "tool_call", "no stall while the person decided: {call}");
+        c.send(json!({"type": "tool_result", "id": call["id"], "output": "ok"})).await;
+        assert_eq!(c.next().await["answer"], "sent");
     }
 
     #[tokio::test]
