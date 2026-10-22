@@ -195,7 +195,7 @@ impl Agent {
         // together; one that is not runs alone, after what came before it
         // and before what comes after. One `remember` no longer makes a batch
         // of lookups wait for each other.
-        for segment in segments(approved) {
+        for segment in segments(approved, &self.check_after) {
             if cancel.is_cancelled() {
                 for (index, _) in segment {
                     outcomes[index] = Some((NOT_RUN_CANCELLED.into(), true));
@@ -276,12 +276,14 @@ impl Agent {
 
 /// Consecutive parallel-safe calls make one segment; any other call is a
 /// segment of its own. Order is kept.
-fn segments(approved: Vec<(usize, Arc<dyn Tool>)>) -> Vec<Vec<(usize, Arc<dyn Tool>)>> {
+fn segments(approved: Vec<(usize, Arc<dyn Tool>)>, check_after: &[String]) -> Vec<Vec<(usize, Arc<dyn Tool>)>> {
     let mut out: Vec<Vec<(usize, Arc<dyn Tool>)>> = Vec::new();
     for (index, tool) in approved {
-        let safe = tool.spec().parallel_safe;
+        // A verification read must happen after its write, even when the
+        // adapter ordinarily permits that write to execute in parallel.
+        let safe = tool.spec().parallel_safe && !check_after.contains(&tool.spec().name);
         match out.last_mut() {
-            Some(last) if safe && last.iter().all(|(_, t)| t.spec().parallel_safe) => last.push((index, tool)),
+            Some(last) if safe && last.iter().all(|(_, t)| t.spec().parallel_safe && !check_after.contains(&t.spec().name)) => last.push((index, tool)),
             _ => out.push(vec![(index, tool)]),
         }
     }
