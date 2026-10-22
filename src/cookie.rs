@@ -158,10 +158,21 @@ pub fn helper_decls(search: bool) -> Value {
     json!([{
         "name": "researcher",
         "description": "Hand one company or one question to a researcher with its own fresh context: it looks it up in the team's context and on the web, reads the pages, and reports back what it found. Give it the whole task in one go — it sees nothing else. For several companies, start several at once, one each. Its report keeps the [sN] tags of what it read: end your paragraphs with those tags. Do small lookups yourself.",
-        "instructions": HELPER_INSTRUCTIONS,
+        "instructions": if search { HELPER_INSTRUCTIONS.to_string() } else { HELPER_INSTRUCTIONS.replace(HELPER_SEARCHING, HELPER_NO_SEARCH) },
         "tools": tools,
     }])
 }
+
+/// Without a search backend there is no `web_search`, and a model told to
+/// "search the web" anyway writes search-page addresses into `read_url` (a
+/// live job did, 2026-10-22: Google and TechCrunch search URLs, refused one
+/// after another). It is told what it has instead.
+const SEARCHING: &str = "research it: search the web, then read the pages you rely on (`read_site` for one company's own site).";
+const NO_SEARCH: &str = "research it on the pages whose address is in the job, the mail or a result (`read_site` for one company's own site). \
+You cannot search the web here, so never make up an address, a search page included; say plainly what you could not look up.";
+const HELPER_SEARCHING: &str = "then the web: search, then read the pages you rely on (`read_site` for one company's own site).";
+const HELPER_NO_SEARCH: &str = "then the pages whose address is in your task or a result (`read_site` for one company's own site). \
+You cannot search the web, so never make up an address, a search page included.";
 
 const HELPER_INSTRUCTIONS: &str = "You research one thing for Cookie, a teammate who answers the team's jobs. \
 Check the team's own context with `recall` first, then the web: search, then read the pages you rely on (`read_site` for one company's own site). \
@@ -278,6 +289,9 @@ pub struct Options {
 /// with, `{n}` standing for its step.
 pub fn profile(o: &Options) -> Value {
     let mut instructions = instructions(&o.team, o.act.then_some(o.permission));
+    if !o.search {
+        instructions = instructions.replace(SEARCHING, NO_SEARCH);
+    }
     let mut tools = tool_decls(o.search, o.ask_first, o.save, o.act.then_some(o.permission));
     if o.plan {
         // Before the closing paragraph, with the other ways of working.
@@ -371,6 +385,8 @@ mod tests {
         let tools = |d: Value| d[0]["tools"].as_array().unwrap().iter().map(|t| t.as_str().unwrap().to_string()).collect::<Vec<_>>();
         assert_eq!(tools(helper_decls(false)), ["recall", "read_url", "read_site"]);
         assert_eq!(tools(helper_decls(true)), ["recall", "read_url", "read_site", "web_search"]);
+        assert!(helper_decls(false)[0]["instructions"].as_str().unwrap().contains(HELPER_NO_SEARCH), "a helper without search is told so");
+        assert!(helper_decls(true)[0]["instructions"].as_str().unwrap().contains(HELPER_SEARCHING));
         let d = helper_decls(true);
         assert_eq!(d.as_array().unwrap().len(), 1);
         assert_eq!(d[0]["name"], "researcher");
@@ -384,6 +400,11 @@ mod tests {
     #[test]
     fn instructions_are_stable_for_a_team() {
         assert_eq!(instructions("Honeyb", None), instructions("Honeyb", None), "same bytes every run → prompt cache reuse");
+        assert!(instructions("Honeyb", None).contains(SEARCHING), "the no-search swap finds its sentence");
+        let no_search = profile(&Options { team: "Honeyb".into(), ..Options::default() });
+        assert!(no_search["instructions"].as_str().unwrap().contains(NO_SEARCH) && !no_search["instructions"].as_str().unwrap().contains(SEARCHING));
+        let search = profile(&Options { team: "Honeyb".into(), search: true, ..Options::default() });
+        assert!(search["instructions"].as_str().unwrap().contains(SEARCHING));
         assert!(instructions("Honeyb", None).contains("recall"));
         assert!(!instructions("Honeyb", None).contains("app_call"), "no acting unless it is on");
         assert!(instructions("Honeyb", Some(permission::Level::Smart)).contains("app_call"));
