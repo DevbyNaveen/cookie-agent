@@ -676,6 +676,7 @@ private struct PeekView: View {
     @ObservedObject private var work = WorkStore.shared
     @ObservedObject private var calendar = CookieCalendar.shared
     @ObservedObject private var recorder = CookieRecorder.shared
+    @ObservedObject private var cookie = CookieAPI.shared
 
     private var lines: [PeekLine] {
         var notes: PeekLines.MeetingNotes?
@@ -688,7 +689,8 @@ private struct PeekView: View {
             PeekLines.latest(threads: companionManager.threads, work: work.items, meetingNotes: notes, chatsLocked: lock.isLocked),
             PeekLines.now(working: companionManager.isWorking, step: companionManager.workingStep,
                           threadTitle: companionManager.currentThread?.title, approval: approval, work: work.items,
-                          voiceState: companionManager.voiceState, dozing: companionManager.isDozing),
+                          voiceState: companionManager.voiceState, dozing: companionManager.isDozing,
+                          boardNeeds: cookie.needs.map(\.title)),
             PeekLines.upNext(access: calendar.access, meeting: meeting, recalled: meeting.flatMap { calendar.recalled[$0.id] },
                              work: work.items),
         ]
@@ -713,7 +715,10 @@ private struct PeekView: View {
             audioLevel: companionManager.currentAudioPowerLevel,
             gaze: companionManager.gazeTowardPointer
         )
-        .onAppear { calendar.refresh() }
+        .onAppear {
+            calendar.refresh()
+            cookie.refreshIfRunning()
+        }
         .overlay(alignment: .topTrailing) {
             if navigation.showsShortcuts {
                 ShortcutsCard()

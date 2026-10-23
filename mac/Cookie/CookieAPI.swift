@@ -28,6 +28,20 @@ final class CookieAPI: ObservableObject {
         var approvals: [Approval]?
         var routines: [Routine]?
         var chases: [Chase]?
+        var viewer: Viewer?
+    }
+
+    struct Viewer: Decodable {
+        var prefs: Prefs?
+    }
+
+    /// When Cookie's notices reach the person; Enkeon replaces all of it on each PUT.
+    struct Prefs: Codable, Equatable {
+        var notices = true
+        var tz_offset_min = 0
+        var tz: String?
+        var quiet_from = 22
+        var quiet_to = 7
     }
 
     struct Run: Decodable, Identifiable, Equatable {
@@ -140,6 +154,7 @@ final class CookieAPI: ObservableObject {
     @Published private(set) var session: Session?
 
     private var watching: Set<String> = []
+    private var zoneSent = false
     private var accountChange: AnyCancellable?
     let localPage = LocalCookiePage()
 
@@ -149,6 +164,7 @@ final class CookieAPI: ObservableObject {
                 self?.overview = nil
                 self?.session = nil
                 self?.needsSignIn = false
+                self?.zoneSent = false
                 await self?.refresh()
             }
         }
@@ -171,11 +187,23 @@ final class CookieAPI: ObservableObject {
 
     // MARK: Calls
 
+    /// For the notch peek: reads the board when doing so starts nothing (signed
+    /// in, or this Mac's page already running), so a hover never launches a helper.
+    func refreshIfRunning() {
+        guard CookieAccount.shared.isSignedIn || localPage.isRunning else { return }
+        Task { await refresh() }
+    }
+
     func refresh() async {
         do {
             overview = try JSONDecoder().decode(Overview.self, from: try await call("GET", ""))
             problem = nil
             for run in working { watch(run.id) }
+            // Once a launch: the person's zone, so routines and quiet hours follow their clock.
+            if !zoneSent {
+                zoneSent = true
+                await sendTimeZone()
+            }
         } catch {
             show(error)
         }
@@ -212,8 +240,15 @@ final class CookieAPI: ObservableObject {
 
     /// The person's zone, so routines and quiet hours follow their clock.
     func sendTimeZone() async {
+        if overview == nil { await refresh() }
         let zone = TimeZone.current
-        await act("PUT", "/prefs", ["tz": zone.identifier, "tz_offset_min": zone.secondsFromGMT() / 60], refreshAfter: false)
+        let current = overview?.viewer?.prefs ?? Prefs()
+        var prefs = current
+        prefs.tz = zone.identifier
+        prefs.tz_offset_min = zone.secondsFromGMT() / 60
+        guard prefs != current || overview?.viewer?.prefs == nil else { return }
+        await act("PUT", "/prefs", ["notices": prefs.notices, "tz": zone.identifier, "tz_offset_min": prefs.tz_offset_min,
+                                    "quiet_from": prefs.quiet_from, "quiet_to": prefs.quiet_to], refreshAfter: true)
     }
 
     /// The SOUL. Enkeon keeps the team's in the Console (the app gets 403); on this Mac it is the person's own.
@@ -378,6 +413,8 @@ final class LocalCookiePage {
     private var quitObserver: NSObjectProtocol?
 
     static var home: URL { ChatVault.directory.appendingPathComponent("page", isDirectory: true) }
+
+    var isRunning: Bool { process?.isRunning == true }
 
     func ensure() async throws -> Int {
         let model = CookieModelSettings.model
