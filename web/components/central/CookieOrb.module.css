@@ -1,0 +1,36 @@
+/* Cookie's orb. The still form is CSS; the live form paints its canvas over it. */
+
+.orb {
+  position: relative; display: inline-grid; place-items: center; flex: none; border-radius: 50%;
+  background: radial-gradient(circle at 36% 26%, #fffaf2 0%, #ffe2bd 20%, #f0a35c 52%, #c9631f 80%, #9e4612 100%);
+  box-shadow:
+    0 0 0 0.5px rgb(0 0 0 / .4),
+    0 calc(var(--lift, 6) * 1px) calc(var(--lift, 6) * 2.4px) calc(var(--lift, 6) * -0.8px) rgb(214 118 43 / .55);
+  isolation: isolate;
+}
+.orb[data-live="true"] { background: #e8954a; }
+/* Glass: a fine bright rim and a soft highlight, over both forms. */
+.orb::after {
+  content: ""; position: absolute; inset: 0; z-index: 2; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(circle at 33% 22%, rgb(255 255 255 / .34), rgb(255 255 255 / 0) 34%);
+  box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / .42), inset 0 -0.08em 0.2em rgb(110 50 6 / .3);
+}
+.gl { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 50%; }
+
+.eyes {
+  position: relative; z-index: 3; display: flex; align-items: center;
+  transition: transform .45s cubic-bezier(.2, .8, .2, 1);
+}
+.eyes i {
+  display: block; border-radius: 999px; background: #2a1406;
+  box-shadow: 0 0.5px 0 rgb(255 255 255 / .25);
+  transform-origin: 50% 55%;
+  transition: transform .09s ease-in-out;
+}
+
+.orb[data-thinking="true"] { animation: breathe 2.4s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { transform: scale(.955); } 50% { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) {
+  .orb[data-thinking="true"] { animation: none; }
+  .eyes { transition: none; }
+}

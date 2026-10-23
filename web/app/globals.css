@@ -1,0 +1,151 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #111111;
+  --panel: #1E1E1E;
+  --panel-2: #27272A;
+  /** Floating menus — one step above panel so they read over headers/sidebars. */
+  --dropdown: #2C2C31;
+  --border: #333338;
+  --text: #FAFAFA;
+  --muted: #A1A1AA;
+  --accent: #FFFFFF;
+  --accent-2: #3B82F6;
+  --danger: #EF4444;
+  --ring: #3f3f46;
+
+  /* Soft white overlays (dark chrome) */
+  --fill-02: rgba(255, 255, 255, 0.02);
+  --fill-04: rgba(255, 255, 255, 0.04);
+  --fill-05: rgba(255, 255, 255, 0.05);
+  --fill-06: rgba(255, 255, 255, 0.06);
+  --fill-08: rgba(255, 255, 255, 0.08);
+  --fill-10: rgba(255, 255, 255, 0.1);
+
+  /* Split-shell: underlay = page chrome; only the right workspace floats as a card */
+  --shell-underlay: #090909;
+  --ask-rail: #111111;
+
+  /* Primary buttons */
+  --btn-primary-bg: #FFFFFF;
+  --btn-primary-fg: #111111;
+  --btn-primary-hover: #E4E4E7;
+
+  /* Brand + charts — landing teal, no purple */
+  --brand: #4A8FAE;
+  --brand-light: #79b6cf;
+  --brand-muted: rgba(74, 143, 174, 0.35);
+  --chart-compile: #4A8FAE;
+  --chart-query: #0066FF;
+  --chart-ask: #0D9488;
+  --chart-mcp: #D97706;
+  --chart-success: #34D399;
+
+  /* Sidebar matches underlay — not its own card; the right workspace floats */
+  --sidebar-bg: #090909;
+  --sidebar-section: #5c5c66;
+  --sidebar-inactive: #94949e;
+  --sidebar-hover: #e4e4e7;
+  --sidebar-active: #fafafa;
+  --sidebar-item-hover: rgba(255, 255, 255, 0.04);
+  --sidebar-item-active: rgba(255, 255, 255, 0.07);
+  --dropdown-shadow: none;
+
+  /* Soft elevated control (project switcher, range chip) */
+  --control-bg: #181818;
+  --control-hover: #222222;
+
+  --heatmap-empty: rgba(255, 255, 255, 0.05);
+  --heatmap-context: rgba(255, 255, 255, 0.028);
+  --heatmap-future: rgba(255, 255, 255, 0.034);
+  --heatmap-focus: rgba(255, 255, 255, 0.03);
+  --heatmap-focus-ring: rgba(255, 255, 255, 0.08);
+  --heatmap-hover-ring: rgba(255, 255, 255, 0.28);
+  --heatmap-today-ring: rgba(255, 255, 255, 0.45);
+  --spark-opacity: 0.14;
+  --spark-opacity-hover: 0.24;
+
+  /* Skeleton bones — contrast against --bg in both themes */
+  --skeleton-from: rgba(255, 255, 255, 0.035);
+  --skeleton-mid: rgba(255, 255, 255, 0.08);
+  --skeleton-base: rgba(255, 255, 255, 0.04);
+
+  /* Status chips — keyed to `data-theme`, never Tailwind `dark:` (OS ≠ console). */
+  --status-pending-bg: color-mix(in srgb, #f59e0b 18%, var(--bg));
+  --status-pending-fg: #fde68a;
+  --status-pending-ring: color-mix(in srgb, #f59e0b 34%, transparent);
+}
+
+/**
+ * Console light — white chrome + white workspace.
+ * Neutral stone for muted / borders; underlay is pure white (no cream).
+ */
+html[data-theme="light"] {
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f5f5f4;
+  --dropdown: #ffffff;
+  --border: #e7e5e4;
+  --text: #1c1917;
+  --muted: #57534e;
+  --accent: #1c1917;
+  --accent-2: #2563eb;
+  --danger: #dc2626;
+  --ring: #d6d3d1;
+
+  --fill-02: rgba(28, 25, 23, 0.03);
+  --fill-04: rgba(28, 25, 23, 0.05);
+  --fill-05: rgba(28, 25, 23, 0.06);
+  --fill-06: rgba(28, 25, 23, 0.08);
+  --fill-08: rgba(28, 25, 23, 0.1);
+  --fill-10: rgba(28, 25, 23, 0.14);
+
+  --shell-underlay: #ffffff;
+  --ask-rail: #ffffff;
+
+  --btn-primary-bg: #1c1917;
+  --btn-primary-fg: #ffffff;
+  --btn-primary-hover: #292524;
+
+  /* Sidebar matches underlay — only the workspace card floats */
+  --sidebar-bg: #ffffff;
+  --sidebar-section: #78716c;
+  --sidebar-inactive: #57534e;
+  --sidebar-hover: #1c1917;
+  --sidebar-active: #1c1917;
+  --sidebar-item-hover: rgba(28, 25, 23, 0.05);
+  --sidebar-item-active: rgba(28, 25, 23, 0.09);
+  --dropdown-shadow: none;
+
+  /* Soft elevated control (project switcher, range chip) */
+  --control-bg: #ffffff;
+  --control-hover: #f5f5f4;
+
+  --heatmap-empty: rgba(28, 25, 23, 0.08);
+  --heatmap-context: rgba(28, 25, 23, 0.045);
+  --heatmap-future: rgba(28, 25, 23, 0.055);
+  --heatmap-focus: rgba(28, 25, 23, 0.03);
+  --heatmap-focus-ring: rgba(28, 25, 23, 0.1);
+  --heatmap-hover-ring: rgba(28, 25, 23, 0.22);
+  --heatmap-today-ring: rgba(28, 25, 23, 0.35);
+  --spark-opacity: 0.58;
+  --spark-opacity-hover: 0.82;
+
+  --skeleton-from: rgba(28, 25, 23, 0.05);
+  --skeleton-mid: rgba(28, 25, 23, 0.12);
+  --skeleton-base: rgba(28, 25, 23, 0.07);
+
+  --status-pending-bg: color-mix(in srgb, #ea580c 9%, #ffffff);
+  --status-pending-fg: #9a3412;
+  --status-pending-ring: color-mix(in srgb, #ea580c 36%, transparent);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  overflow-x: clip;
+  font-family: var(--font-inter), "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+}

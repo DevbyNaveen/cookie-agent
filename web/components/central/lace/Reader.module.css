@@ -1,0 +1,69 @@
+/* What Cookie wrote, on its own sheet: quiet, wide margins, sources under each line. */
+
+.backdrop {
+  position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; overflow: hidden;
+  padding: 6vh 16px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(14px) saturate(1.1);
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
+  animation: fade .2s ease-out both;
+}
+@keyframes fade { from { opacity: 0; } }
+/* The sheet stays put; only what Cookie wrote scrolls, under its title. */
+.sheet {
+  width: min(760px, 100%); max-height: 88vh; display: flex; flex-direction: column; overflow: hidden;
+  padding: 22px 40px 0; border-radius: 22px; outline: none; color: var(--text);
+  background: color-mix(in srgb, var(--bg) 88%, var(--text));
+  animation: rise .32s cubic-bezier(.2, .9, .25, 1) both;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(14px) scale(.985); } }
+.head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+.kind { font-size: 12px; font-weight: 600; color: #e3a65c; letter-spacing: .01em; }
+.close {
+  width: 28px; height: 28px; border-radius: 14px; display: grid; place-items: center; color: var(--muted);
+  background: color-mix(in srgb, var(--text) 7%, transparent); transition: color .15s, background-color .15s;
+}
+.close:hover { color: var(--text); background: color-mix(in srgb, var(--text) 12%, transparent); }
+.title { font-size: 26px; line-height: 1.2; font-weight: 650; letter-spacing: -0.02em; text-wrap: balance; }
+.facts { margin-top: 8px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.content {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin: 0 -40px; padding: 0 40px 40px;
+  scrollbar-width: thin;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 calc(100% - 24px), transparent 100%);
+}
+.body { margin-top: 26px; display: flex; flex-direction: column; gap: 18px; }
+.para { font-size: 15.5px; line-height: 1.65; color: color-mix(in srgb, var(--text) 92%, transparent); text-wrap: pretty; }
+.para p + p, .para ul, .para ol { margin-top: 8px; }
+.para ul { padding-left: 20px; list-style: disc; }
+.para ol { padding-left: 22px; list-style: decimal; }
+.para strong { font-weight: 600; color: var(--text); }
+.para a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, var(--text) 35%, transparent); }
+
+.sources { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px; height: 21px; max-width: 100%; padding: 0 9px; border-radius: 11px;
+  font-size: 11.5px; color: color-mix(in srgb, var(--text) 70%, transparent); background: color-mix(in srgb, var(--text) 7%, transparent);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.intro { margin-top: 22px; font-size: 15px; line-height: 1.6; color: color-mix(in srgb, var(--text) 88%, transparent); }
+.after { margin-top: 18px; font-size: 13px; line-height: 1.55; color: var(--muted); }
+.tableWrap { margin-top: 22px; overflow-x: auto; }
+.table { width: 100%; min-width: 620px; border-collapse: collapse; font-size: 13px; line-height: 1.45; }
+.table th {
+  padding: 0 14px 10px 0; text-align: left; font-size: 11.5px; font-weight: 500; color: var(--muted);
+  border-bottom: 0.5px solid color-mix(in srgb, var(--text) 14%, transparent);
+}
+.table td { padding: 12px 14px 12px 0; vertical-align: top; border-bottom: 0.5px solid color-mix(in srgb, var(--text) 8%, transparent); color: color-mix(in srgb, var(--text) 86%, transparent); }
+.table td:first-child { width: 28%; }
+.table b { display: block; font-size: 13.5px; font-weight: 600; color: var(--text); letter-spacing: -0.01em; }
+.site { display: block; margin-top: 1px; font-size: 11.5px; color: var(--muted); }
+.what { display: block; margin-top: 6px; font-size: 12px; color: color-mix(in srgb, var(--text) 70%, transparent); }
+
+@media (max-width: 640px) {
+  .sheet { padding: 18px 20px 0; }
+  .content { margin: 0 -20px; padding: 0 20px 28px; }
+  .title { font-size: 21px; }
+}
+@media (prefers-reduced-motion: reduce) { .backdrop, .sheet { animation: none; } }

@@ -1,0 +1,384 @@
+/* The floating panel — a borderless sheet over the canvas, a dock beneath it. */
+
+.panel {
+  --sheet: color-mix(in srgb, var(--bg) 88%, var(--text));
+  position: absolute; z-index: 5; top: 16px; right: 16px; bottom: 80px; width: 440px;
+  display: flex; flex-direction: column; overflow: hidden; border-radius: 26px;
+  background: var(--sheet);
+  box-shadow: 0 30px 80px -24px rgb(0 0 0 / .6);
+  animation: rise .28s cubic-bezier(.2, .8, .2, 1);
+}
+@keyframes rise { from { opacity: 0; transform: translateY(10px) scale(.985); } }
+
+/* The dock: always there, under the panel. */
+.dock {
+  position: absolute; z-index: 5; right: 16px; bottom: 16px; height: 52px; padding: 0 6px;
+  display: flex; align-items: center; gap: 2px; border-radius: 26px;
+  background: color-mix(in srgb, var(--bg) 88%, var(--text));
+  box-shadow: 0 16px 40px -16px rgb(0 0 0 / .55);
+}
+.dock button {
+  position: relative; width: 44px; height: 40px; border-radius: 20px; display: grid; place-items: center;
+  color: color-mix(in srgb, var(--text) 55%, transparent); transition: color .15s, background-color .2s;
+}
+.dock button:hover { color: var(--text); }
+.dock button[aria-pressed="true"] { color: var(--text); background: color-mix(in srgb, var(--text) 10%, transparent); }
+.dockBadge {
+  position: absolute; top: 4px; right: 6px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px;
+  display: grid; place-items: center; font-style: normal; font-size: 10px; font-weight: 700; color: #1a1206; background: var(--cookie);
+}
+
+/* Header: what you're looking at, credits, fold. */
+.top { display: flex; align-items: center; gap: 4px; padding: 14px 14px 8px 22px; }
+.heading { margin-right: auto; font-size: 17px; font-weight: 600; letter-spacing: -0.02em; color: var(--text); }
+.credits { position: relative; display: flex; align-items: center; }
+.ringBtn { height: 32px; padding: 0 10px; border-radius: 16px; display: inline-flex; align-items: center; transition: background-color .15s; }
+.ringBtn svg, .icon svg { display: block; }
+.ringBtn:hover, .ringBtn:focus-visible { background: color-mix(in srgb, var(--text) 8%, transparent); outline: none; }
+.ring { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--text); }
+.pop {
+  position: absolute; z-index: 2; top: calc(100% + 8px); right: 0; width: max-content; max-width: 260px;
+  padding: 10px 12px; border-radius: 14px; display: flex; flex-direction: column; gap: 3px;
+  font-size: 12px; line-height: 1.4; color: var(--muted); text-align: left;
+  background: color-mix(in srgb, var(--bg) 76%, var(--text));
+  box-shadow: 0 16px 40px -12px rgb(0 0 0 / .6);
+  opacity: 0; transform: translateY(-4px); pointer-events: none; transition: opacity .15s, transform .15s;
+}
+.pop b { font-size: 13px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.pop b span { font-weight: 400; color: var(--muted); }
+.credits:hover .pop, .credits:focus-within .pop { opacity: 1; transform: none; }
+.icon {
+  width: 32px; height: 32px; display: grid; place-items: center; border-radius: 16px; color: var(--muted);
+  transition: color .15s, background-color .15s;
+}
+.icon:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+
+.scroll {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 20px 20px; scrollbar-width: thin;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 12px), transparent 100%);
+}
+
+/* Empty states. */
+.empty { height: 100%; min-height: 240px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 24px; }
+.emptyTitle { margin-top: 14px; font-size: 17px; font-weight: 600; letter-spacing: -0.015em; color: var(--text); }
+.emptyLead { margin-top: 6px; font-size: 13.5px; line-height: 1.5; color: var(--muted); text-wrap: balance; }
+.emptyLead b { color: var(--text); font-weight: 500; }
+
+/* The conversation. */
+.thread { display: flex; flex-direction: column; gap: 22px; padding-top: 6px; }
+.day { margin: 4px 0 14px; text-align: center; font-size: 11.5px; font-weight: 500; color: var(--muted); letter-spacing: .01em; }
+.me { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.bubble {
+  max-width: 82%; padding: 9px 14px; border-radius: 18px 18px 6px 18px; white-space: pre-wrap; word-break: break-word;
+  font-size: 14.5px; line-height: 1.45; color: var(--text); background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+.when { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.cookie { margin-top: 12px; cursor: pointer; }
+.cookie[data-shown="true"] { cursor: auto; }
+
+.reply { display: flex; flex-direction: column; }
+/* The words flow: a soft band of light runs through them, left to right. */
+.flow {
+  --dim: color-mix(in srgb, var(--text) 50%, transparent);
+  background: linear-gradient(90deg, var(--dim) 0%, var(--dim) 25%, #ffe9cf 42%, #fff 50%, #ffe9cf 58%, var(--dim) 75%, var(--dim) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: flow 2s ease-in-out infinite;
+}
+@keyframes flow { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+.reading { display: flex; align-items: center; gap: 12px; padding: 2px 0; font-size: 14px; font-weight: 500; letter-spacing: -0.005em; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+
+.disclosure {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; margin-bottom: 10px;
+  font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; transition: color .15s;
+}
+.disclosure:hover { color: var(--text); }
+.disclosure svg { transition: transform .2s; }
+.disclosure[aria-expanded="true"] svg { transform: rotate(90deg); }
+
+.details {
+  margin: -2px 0 14px; padding: 10px 12px; border-radius: 12px; cursor: auto;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.steps { display: flex; flex-direction: column; gap: 6px; }
+.steps li { display: grid; grid-template-columns: 86px minmax(0, 1fr) auto; gap: 10px; font-size: 12.5px; line-height: 1.4; }
+.steps li[data-ok="false"] { opacity: .5; }
+.stepKind { color: var(--muted); }
+.stepWhat { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stepFrom { font-style: normal; color: var(--cookie); }
+.stepMs { color: var(--muted); font-variant-numeric: tabular-nums; }
+.detailFoot {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin-top: 10px; padding-top: 9px;
+  border-top: 0.5px solid color-mix(in srgb, var(--text) 10%, transparent);
+  font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.detailFoot > span { margin-right: auto; }
+.detailFoot button { color: var(--muted); transition: color .15s; }
+.detailFoot button:hover { color: var(--text); }
+.detailFoot button:disabled { opacity: .45; }
+.fine { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+
+/* Cookie's words. */
+.answer { display: flex; flex-direction: column; gap: 12px; }
+.para {
+  font-size: 14.5px; line-height: 1.6; color: color-mix(in srgb, var(--text) 92%, transparent);
+  word-break: break-word; border-radius: 8px; margin: -3px -8px; padding: 3px 8px;
+  transition: background-color .2s, color .2s;
+}
+.para[data-sourced="true"]:hover { background: color-mix(in srgb, var(--cookie) 8%, transparent); }
+.para[data-lit="true"] { color: var(--text); background: color-mix(in srgb, var(--cookie) 12%, transparent); }
+.para p + p, .para ul, .para ol { margin-top: 8px; }
+.para strong { font-weight: 600; color: var(--text); }
+.para em { font-style: italic; }
+.para a { color: var(--text); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--text) 35%, transparent); text-underline-offset: 2px; }
+.para ul, .draft ul { padding-left: 18px; list-style: disc; display: flex; flex-direction: column; gap: 4px; }
+.para ol, .draft ol { padding-left: 20px; list-style: decimal; display: flex; flex-direction: column; gap: 4px; }
+.para li::marker { color: var(--muted); }
+.para h1, .para h2, .para h3, .para h4 { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--text); }
+.para code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .88em; padding: 1px 5px; border-radius: 5px; background: color-mix(in srgb, var(--text) 8%, transparent); }
+.para pre { margin-top: 8px; padding: 10px 12px; border-radius: 10px; overflow-x: auto; background: color-mix(in srgb, var(--text) 6%, transparent); }
+.para pre code { padding: 0; background: none; }
+.para table { width: 100%; margin-top: 6px; border-collapse: collapse; font-size: 13px; }
+.para th, .para td { padding: 6px 8px 6px 0; text-align: left; vertical-align: top; border-bottom: 0.5px solid color-mix(in srgb, var(--text) 12%, transparent); }
+.para th { font-weight: 500; color: var(--muted); }
+
+.outcome { margin-top: 10px; font-size: 12px; color: var(--muted); }
+.outcome[data-warn="true"] { color: color-mix(in srgb, var(--cookie) 85%, var(--text)); }
+
+/* Asked first, or a draft waiting: a card that wants you. */
+.ask {
+  margin-top: 12px; padding: 12px 14px; border-radius: 14px; cursor: auto;
+  background: color-mix(in srgb, var(--cookie) 8%, transparent);
+}
+.askHead { font-size: 12px; font-weight: 500; color: var(--cookie); }
+.ask ul { margin-top: 8px; padding-left: 18px; list-style: disc; display: flex; flex-direction: column; gap: 5px; font-size: 14px; line-height: 1.5; }
+.ask textarea {
+  width: 100%; margin-top: 10px; min-height: 64px; resize: vertical; padding: 10px 12px; border: 0; border-radius: 10px;
+  font: inherit; font-size: 14px; line-height: 1.45; color: var(--text); background: color-mix(in srgb, var(--bg) 60%, transparent);
+}
+.ask textarea:focus { outline: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cookie) 50%, transparent); }
+/* A change in an app: exactly what would be sent, then Yes / No. Decided ones go quiet. */
+.ask[data-quiet="true"] { background: color-mix(in srgb, var(--text) 4%, transparent); box-shadow: none; }
+.ask[data-quiet="true"] .askHead { color: var(--muted); }
+/* What a change did, field by field: before struck out, after beside it. */
+.diff { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; line-height: 1.45; }
+.diff > div { display: grid; grid-template-columns: minmax(70px, 30%) 1fr; gap: 10px; }
+.diff dt { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff dd { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; color: var(--text); word-break: break-word; }
+.diff del { color: var(--muted); text-decoration-color: color-mix(in srgb, var(--text) 40%, transparent); }
+.diff ins { text-decoration: none; }
+.diff dd > span { color: var(--muted); }
+.changeEnd .changeDone { margin-top: 0; }
+.changeEnd { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; }
+.changeEnd > button {
+  flex: none; height: 28px; padding: 0 12px; border-radius: 9px; font-size: 12px; font-weight: 500;
+  color: var(--text); background: color-mix(in srgb, var(--text) 9%, transparent); transition: background-color .15s;
+}
+.changeEnd > button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 14%, transparent); }
+.changeEnd > button:disabled { opacity: .5; cursor: default; }
+/* A follow-up Cookie keeps on a mail, and its Stop. */
+.chase {
+  margin-top: 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border-radius: 12px;
+  font-size: 12.5px; color: var(--muted); background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.chase button { flex: none; font-size: 12px; font-weight: 500; color: var(--text); }
+.chase button:disabled { opacity: .5; }
+.change {
+  margin-top: 8px; max-height: 180px; overflow: auto; padding: 8px 10px; border-radius: 10px;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word;
+  color: var(--text); background: color-mix(in srgb, var(--bg) 60%, transparent);
+}
+.changeDone { margin-top: 4px; font-size: 13px; color: var(--text); }
+.draft { margin-top: 8px; font-size: 14px; line-height: 1.55; color: var(--text); }
+.draft p + p { margin-top: 8px; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; }
+.actions button {
+  height: 30px; padding: 0 14px; border-radius: 15px; font-size: 13px; font-weight: 500;
+  color: var(--text); background: color-mix(in srgb, var(--text) 9%, transparent); transition: background-color .15s, opacity .15s;
+}
+.actions button:hover { background: color-mix(in srgb, var(--text) 14%, transparent); }
+.actions .primary { color: var(--bg); background: var(--text); }
+.actions .primary:hover { background: var(--text); opacity: .88; }
+.actions button:disabled { opacity: .4; cursor: default; }
+.err { font-size: 12px; color: #f87171; }
+
+/* The composer: text on top, a quiet bar under it. */
+.composer { padding: 8px 14px 14px; }
+.composerNote { margin: 0 8px 8px; font-size: 12px; color: var(--cookie); }
+.field {
+  display: flex; flex-direction: column; gap: 6px; padding: 14px 10px 10px 16px; border-radius: 20px; cursor: text;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  transition: background-color .2s, box-shadow .2s;
+}
+.field:focus-within { background: color-mix(in srgb, var(--text) 8%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 14%, transparent); }
+.field textarea {
+  width: 100%; min-height: 24px; max-height: 160px; padding: 0 6px 0 0; border: 0; resize: none; background: transparent;
+  font: inherit; font-size: 15px; line-height: 1.45; color: var(--text);
+}
+.field textarea::placeholder { color: color-mix(in srgb, var(--text) 40%, transparent); }
+.field textarea:focus { outline: none; }
+.fieldBar { display: flex; align-items: center; gap: 10px; cursor: default; }
+.reads {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px 0 8px; border-radius: 13px;
+  font-size: 12px; color: var(--muted); background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+.hint { margin-left: auto; font-size: 11.5px; color: color-mix(in srgb, var(--text) 38%, transparent); }
+.send {
+  flex: none; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center;
+  color: var(--bg); background: var(--text); transition: opacity .15s, transform .15s;
+}
+.send:hover:not(:disabled) { transform: scale(1.06); }
+.send:disabled { opacity: .2; cursor: default; }
+.stop {
+  flex: none; margin-left: auto; height: 28px; padding: 0 11px; border-radius: 14px; display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 500; color: var(--text); background: color-mix(in srgb, var(--text) 9%, transparent); transition: background-color .15s, opacity .15s;
+}
+.stop:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 14%, transparent); }
+.stop:disabled { opacity: .55; cursor: default; }
+.spin { width: 13px; height: 13px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Inbox. */
+.inbox { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
+.card { border-radius: 14px; transition: background-color .2s; }
+.card:hover, .card[data-open="true"] { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.cardHead { width: 100%; display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; text-align: left; }
+.src {
+  flex: none; width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.cardText { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.cardText b { font-size: 14px; font-weight: 600; letter-spacing: -0.005em; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cardText span { font-size: 12px; line-height: 1.4; color: var(--muted); }
+.dot { flex: none; margin-top: 6px; width: 8px; height: 8px; border-radius: 50%; background: var(--cookie); }
+.cardBody { padding: 0 14px 14px 50px; }
+
+/* Settings — grouped rows. */
+.settings { padding-top: 4px; }
+.groupLabel { margin: 18px 4px 6px; font-size: 11.5px; font-weight: 500; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); }
+.groupLabel:first-child { margin-top: 6px; }
+.group { border-radius: 14px; background: color-mix(in srgb, var(--text) 5%, transparent); }
+.row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
+.row + .row { border-top: 0.5px solid color-mix(in srgb, var(--text) 8%, transparent); }
+.rowText { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.rowText b { font-size: 14px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.rowText b span { color: var(--muted); font-weight: 400; }
+.rowText em { font-style: normal; font-size: 12px; line-height: 1.45; color: var(--muted); }
+.row > button {
+  flex: none; height: 32px; padding: 0 14px; border-radius: 9px; font-size: 12.5px; font-weight: 500;
+  color: var(--text); background: color-mix(in srgb, var(--text) 9%, transparent); transition: background-color .15s;
+}
+.row > button:hover { background: color-mix(in srgb, var(--text) 14%, transparent); }
+.row > button:disabled { opacity: .4; cursor: default; }
+/* The permission picker: rows of one group, the chosen one ticked. */
+.choice {
+  display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; text-align: left;
+  border: 0; background: none; color: inherit; cursor: pointer; transition: background-color .15s;
+}
+.choice + .choice { border-top: 0.5px solid color-mix(in srgb, var(--text) 8%, transparent); }
+.choice:first-child { border-radius: 14px 14px 0 0; }
+.choice:last-child { border-radius: 0 0 14px 14px; }
+.choice:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 4%, transparent); }
+.choice:disabled { cursor: default; }
+.choice:disabled:not([data-on]) .rowText { opacity: .5; }
+.choice:focus-visible { outline: 2px solid color-mix(in srgb, var(--cookie) 60%, transparent); outline-offset: -2px; }
+.tick { flex: none; width: 18px; text-align: center; font-size: 14px; color: var(--cookie); }
+.choiceErr { margin: 6px 4px 0; font-size: 12px; }
+/* Fields: one quiet surface, no outline, all 32px tall so they line up. */
+.ruleInputs { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
+.ruleInput {
+  flex: 1 1 0; min-width: 0; height: 32px; padding: 0 12px; border: 0; border-radius: 9px; font-size: 12.5px; color: var(--text);
+  background: color-mix(in srgb, var(--text) 7%, transparent); transition: background-color .15s;
+}
+.ruleInput::placeholder { color: var(--muted); }
+.ruleInput:hover { background: color-mix(in srgb, var(--text) 10%, transparent); }
+.ruleInput:focus { outline: none; background: color-mix(in srgb, var(--text) 11%, transparent); }
+.soul {
+  width: 100%; min-height: 96px; margin-top: 10px; resize: vertical; padding: 10px 12px; border: 0; border-radius: 9px;
+  font: inherit; font-size: 13px; line-height: 1.5; color: var(--text);
+  background: color-mix(in srgb, var(--text) 7%, transparent); transition: background-color .15s;
+}
+.soul::placeholder { color: var(--muted); }
+.soul:focus { outline: none; background: color-mix(in srgb, var(--text) 10%, transparent); }
+.soulBar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
+.soulBar i { font-style: normal; font-size: 12px; color: var(--muted); }
+.ruleAdd {
+  flex: none; height: 32px; padding: 0 14px; border-radius: 9px; font-size: 12.5px; font-weight: 500;
+  color: var(--bg); background: var(--text); transition: opacity .15s;
+}
+.ruleAdd:disabled { color: var(--muted); background: color-mix(in srgb, var(--text) 7%, transparent); cursor: default; }
+.changeWhy { margin: 4px 0 0; font-size: 12px; line-height: 1.45; color: var(--muted); }
+.bar { height: 4px; margin: 6px 0 2px; border-radius: 2px; overflow: hidden; background: color-mix(in srgb, var(--text) 10%, transparent); }
+.bar span { display: block; height: 100%; border-radius: 2px; background: var(--text); transition: width .4s; }
+.bar[data-tone="low"] span { background: var(--cookie); }
+.bar[data-tone="out"] span { background: #f87171; }
+.pin {
+  flex: none; width: 92px; height: 32px; padding: 0 10px; border: 0; border-radius: 9px; text-align: center;
+  letter-spacing: .3em; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--text);
+  background: color-mix(in srgb, var(--text) 7%, transparent); transition: background-color .15s;
+}
+.pin:focus { outline: none; background: color-mix(in srgb, var(--text) 11%, transparent); }
+.pin::placeholder { color: color-mix(in srgb, var(--text) 25%, transparent); }
+
+@media (prefers-reduced-motion: reduce) { .panel { animation: none; } .spin, .flow { animation: none; } .flow { background: none; color: var(--muted); } }
+
+/* Phone: the panel becomes a sheet over the lower part of the screen. */
+@media (max-width: 760px) {
+  .panel { top: 38%; left: 8px; right: 8px; bottom: 72px; width: auto; border-radius: 22px; }
+  .dock { right: 50%; transform: translateX(50%); bottom: 10px; }
+}
+
+.talkBar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 18px 0;
+  font-size: 11.5px; color: var(--muted);
+}
+.talkBar span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.talkBar button {
+  flex: none; padding: 3px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 500; color: var(--text);
+  background: color-mix(in srgb, var(--text) 8%, transparent); transition: background-color .15s;
+}
+.talkBar button:hover { background: color-mix(in srgb, var(--text) 14%, transparent); }
+
+/* Waiting for a turn: still, not shimmering. */
+.flow[data-still="true"] { animation: none; background: none; color: var(--muted); }
+
+/* Helpers at work on this job, one line each. */
+.helpers { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 2px 42px; }
+.helpers li { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); min-width: 0; }
+.helpers li span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.helpers i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--cookie); animation: pulse 1.4s ease-in-out infinite; }
+.helpers li[data-state="done"] i { animation: none; background: color-mix(in srgb, var(--text) 40%, transparent); }
+.helpers li[data-state="failed"] i { animation: none; background: color-mix(in srgb, #f87171 80%, var(--text)); }
+
+/* The answer while it is written: a caret at its end. */
+.answer[data-live="true"] { margin-top: 10px; }
+.para[data-caret="true"] > :last-child::after {
+  content: ""; display: inline-block; width: 2px; height: 1.05em; margin-left: 2px; vertical-align: -2px;
+  border-radius: 1px; background: var(--cookie); animation: caret 1.05s steps(2, jump-none) infinite;
+}
+@keyframes caret { 0% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .helpers i, .para[data-caret="true"] > :last-child::after { animation: none; }
+}
+
+/* Cookie noticed (watch-only): quiet cards that ask for a label. */
+.noticed { margin: 4px 0 14px; }
+.noticedHead { font-size: 12px; font-weight: 600; letter-spacing: .02em; color: var(--cookie); }
+.noticedLead { margin-top: 2px; font-size: 12px; line-height: 1.45; color: var(--muted); }
+.noticedList { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+/* Same surface as a settings group: no outline, no tint fighting the text. */
+.notice { padding: 14px; border-radius: 14px; background: color-mix(in srgb, var(--text) 5%, transparent); }
+.notice[data-labelled="true"] { background: color-mix(in srgb, var(--text) 3%, transparent); }
+.noticeTop { display: flex; flex-direction: column; gap: 2px; }
+.noticeTop b { font-size: 14px; font-weight: 500; color: var(--text); }
+.noticeTop span { font-size: 12px; color: var(--muted); }
+.noticeWhy { margin: 6px 0 0; font-size: 13px; line-height: 1.45; color: var(--text); }
+.cues { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; line-height: 1.45; color: var(--text); }
+.cues em { font-style: normal; font-weight: 500; color: var(--muted); margin-right: 4px; }
+.cueFrom, .cueMore { color: var(--muted); }
+.noticeSaid { margin-top: 8px; font-size: 12px; color: var(--muted); }
+
+/* What Cookie learned. */
+.row[data-dim="true"] { opacity: .55; }
+.lessonText { white-space: normal !important; line-height: 1.45; }

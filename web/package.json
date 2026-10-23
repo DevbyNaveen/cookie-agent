@@ -1,0 +1,27 @@
+{
+  "name": "cookie-page",
+  "private": true,
+  "description": "Cookie's page: the board, the conversations and the chat, served on your own machine.",
+  "scripts": {
+    "dev": "next dev -p 4748",
+    "build": "next build",
+    "start": "next start -p 4748",
+    "test": "node --test --experimental-strip-types components/central/lace/*.test.ts"
+  },
+  "dependencies": {
+    "next": "16.2.4",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "swr": "^2.4.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tailwindcss": "^4.1.0",
+    "typescript": "^5.7.0"
+  }
+}

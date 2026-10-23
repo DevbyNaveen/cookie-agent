@@ -1,0 +1,124 @@
+/* The conversations sheet: always there, top left, the same material as the
+   panel on the right — one surface, no border, no shadow. */
+
+.sheet {
+  --cookie: #e3a65c;
+  position: absolute; z-index: 5; top: 16px; left: 16px; width: 272px; max-height: min(440px, calc(100% - 112px));
+  display: flex; flex-direction: column; overflow: hidden; border-radius: 20px;
+  background: color-mix(in srgb, var(--bg) 88%, var(--text));
+  color: var(--text);
+}
+.top { display: flex; align-items: center; gap: 7px; min-height: 44px; padding: 10px 10px 4px 14px; }
+.name { font-size: 14.5px; font-weight: 600; letter-spacing: -0.02em; }
+.now {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; margin-right: auto;
+  font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.now i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: color-mix(in srgb, var(--text) 28%, transparent); }
+.now[data-live="true"] { color: var(--text); }
+.now[data-live="true"] i { background: var(--cookie); animation: beat 1.4s ease-in-out infinite; }
+@keyframes beat { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.needs {
+  flex: none; height: 22px; padding: 0 9px; border-radius: 11px; font-size: 11.5px; font-weight: 500;
+  color: var(--cookie); background: color-mix(in srgb, var(--cookie) 14%, transparent); transition: background-color .15s;
+}
+.needs:hover { background: color-mix(in srgb, var(--cookie) 22%, transparent); }
+.scope { display: flex; margin: 2px 8px 2px; padding: 2px; border-radius: 9px; background: color-mix(in srgb, var(--text) 5%, transparent); }
+.scope button {
+  flex: 1; height: 24px; border-radius: 7px; font-size: 12px; font-weight: 500; color: var(--muted);
+  transition: background-color .15s, color .15s;
+}
+.scope button[aria-selected="true"] { color: var(--text); background: color-mix(in srgb, var(--text) 10%, transparent); }
+/* A teammate's row: their initials. Cookie's own notice: its face. */
+.person, .self { flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; }
+.person { font-size: 10px; font-weight: 600; letter-spacing: .02em; color: var(--text); background: color-mix(in srgb, var(--text) 12%, transparent); }
+@media (prefers-reduced-motion: reduce) { .now[data-live="true"] i { animation: none; } }
+@media (max-width: 760px) {
+  .sheet { right: 16px; width: auto; bottom: auto; max-height: 38vh; }
+}
+.empty { padding: 8px 14px 14px; font-size: 12px; line-height: 1.45; color: var(--muted); }
+.list {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 6px 6px; scrollbar-width: none;
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent);
+}
+.row {
+  width: 100%; min-height: 42px; display: flex; align-items: center; gap: 9px; padding: 5px 8px; border-radius: 10px; text-align: left;
+  transition: background-color .15s;
+}
+.row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.row[aria-current="true"] { background: color-mix(in srgb, #e3a65c 13%, transparent); }
+/* Where a job came from: an app-style tile, a soft gradient and a lit top edge. */
+.src {
+  flex: none; position: relative; width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; color: #fff;
+  box-shadow: inset 0 0.5px 0 rgb(255 255 255 / .35), inset 0 0 0 0.5px rgb(0 0 0 / .18), 0 2px 6px -2px rgb(0 0 0 / .5);
+}
+.src[data-src="chat"] { background: linear-gradient(160deg, #f6bd78, #d9772b); }
+.src[data-src="email"] { background: linear-gradient(160deg, #6bb5ff, #2f6fe0); }
+.src[data-src="tool"] { background: linear-gradient(160deg, #a99bff, #6a55e8); }
+.src[data-src="slack"] { background: linear-gradient(160deg, #ffffff, #e9e6ef); }
+.row:hover .src { transform: scale(1.04); }
+.src { transition: transform .2s cubic-bezier(.2, .8, .2, 1); }
+.text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.text b { font-size: 12.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.text span { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.text i { font-style: normal; }
+.text i[data-tone="wait"] { color: #e3a65c; }
+.text i[data-tone="bad"] { color: color-mix(in srgb, #f87171 80%, var(--text)); }
+/* The live status icon at the end of a row. */
+.status { flex: none; width: 18px; height: 18px; display: grid; place-items: center; color: color-mix(in srgb, var(--text) 45%, transparent); }
+.status[data-tone="wait"] { color: #e3a65c; }
+.status[data-tone="bad"] { color: color-mix(in srgb, #f87171 80%, var(--text)); }
+.row:hover .status, .row[aria-current="true"] .status { color: var(--text); }
+.status[data-tone="wait"] { color: #e3a65c !important; }
+.live { display: grid; place-items: center; }
+
+/* Done: drawn once when it appears, again when you point at the row. */
+.ring, .draw, .trail { stroke-dasharray: 1 1; }
+.ring { animation: draw .55s cubic-bezier(.4, 0, .2, 1) both; }
+.draw { animation: draw .4s cubic-bezier(.4, 0, .2, 1) .35s both; }
+.row:hover .ring { animation-name: redraw; }
+.row:hover .draw { animation-name: redraw; }
+@keyframes draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes redraw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+
+.plane { transform-box: fill-box; transform-origin: center; animation: lift .7s cubic-bezier(.3, .7, .3, 1) both; }
+.trail { animation: draw .5s ease-out .25s both; }
+.row:hover .plane { animation-name: lift2; }
+@keyframes lift { from { transform: translate(-5px, 5px) scale(.7); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes lift2 { 0% { transform: none; } 45% { transform: translate(4px, -4px); opacity: 0; } 46% { transform: translate(-5px, 5px) scale(.7); opacity: 0; } 100% { transform: none; opacity: 1; } }
+
+.dot1, .dot2, .dot3 { animation: type 1.2s ease-in-out 2 both; }
+.dot2 { animation-delay: .15s; }
+.dot3 { animation-delay: .3s; }
+.row:hover .dot1, .row:hover .dot2, .row:hover .dot3 { animation-name: type2; animation-iteration-count: infinite; }
+@keyframes type { 0%, 60%, 100% { opacity: 1; transform: none; } 30% { opacity: .3; transform: translateY(-1.2px); } }
+@keyframes type2 { 0%, 60%, 100% { opacity: 1; transform: none; } 30% { opacity: .3; transform: translateY(-1.2px); } }
+
+.z1, .z2 { animation: drift 2.6s ease-in-out 1 both; }
+.z2 { animation-delay: .4s; }
+.row:hover .z1, .row:hover .z2 { animation-name: drift2; animation-iteration-count: infinite; }
+@keyframes drift { 0% { opacity: 0; transform: translateY(2px); } 40%, 100% { opacity: 1; transform: none; } }
+@keyframes drift2 { 0% { opacity: 0; transform: translateY(2px); } 40% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateY(-3px); } }
+
+/* Waiting for you: keeps moving, gently. */
+.line { stroke-dasharray: 1 1; animation: write 2.4s ease-in-out infinite; }
+.pen { transform-box: view-box; animation: scribble 2.4s ease-in-out infinite; }
+@keyframes write { 0% { stroke-dashoffset: 1; } 60%, 85% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: 1; opacity: 0; } }
+@keyframes scribble { 0% { transform: translate(-7px, 0) rotate(-6deg); } 60% { transform: translate(0, 0) rotate(0); } 85% { transform: translate(0, 0); } 100% { transform: translate(-7px, 0) rotate(-6deg); } }
+.bob { transform-box: fill-box; transform-origin: center bottom; animation: bob 1.8s ease-in-out infinite; }
+@keyframes bob { 0%, 100% { transform: translateY(0) rotate(0); } 30% { transform: translateY(-1.6px) rotate(-6deg); } 60% { transform: translateY(0) rotate(4deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .ring, .draw, .trail, .plane, .dot1, .dot2, .dot3, .z1, .z2, .line, .pen, .bob { animation: none !important; stroke-dashoffset: 0; opacity: 1; }
+}
+
+/* "Open" and "Earlier": what still needs Cookie or you, then the rest. */
+.group { padding: 10px 8px 3px; font-size: 10.5px; font-weight: 600; letter-spacing: .02em; color: var(--muted); }
+.group:first-child { padding-top: 6px; }
+
+/* Waiting for a turn: the sand keeps falling. */
+.grain { animation: fall 1.6s ease-in infinite; }
+.sand { stroke-dasharray: 1 1; animation: pile 1.6s ease-out infinite; }
+@keyframes fall { 0% { transform: translateY(-2px); opacity: 0; } 30% { opacity: 1; } 100% { transform: translateY(3.5px); opacity: 0; } }
+@keyframes pile { 0%, 40% { opacity: .35; } 100% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .grain, .sand { animation: none; } }

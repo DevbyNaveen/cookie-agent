@@ -1,0 +1,30 @@
+/* Cookie's own choice field: the same quiet surface as its inputs. */
+.field {
+  flex: 1 1 0; min-width: 0; height: 32px; padding: 0 10px 0 12px; border-radius: 9px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 12.5px; color: var(--text); text-align: left;
+  background: color-mix(in srgb, var(--text) 7%, transparent); transition: background-color .15s;
+}
+.field span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.field svg { flex: none; color: var(--muted); transition: transform .2s cubic-bezier(.2, .8, .2, 1); }
+.field:hover { background: color-mix(in srgb, var(--text) 10%, transparent); }
+.field[aria-expanded="true"] { background: color-mix(in srgb, var(--text) 11%, transparent); }
+.field[aria-expanded="true"] svg { transform: rotate(180deg); }
+.field:focus-visible { outline: 1.5px solid color-mix(in srgb, var(--text) 35%, transparent); outline-offset: 1px; }
+.field:disabled { opacity: .45; cursor: default; }
+
+.sheet {
+  position: fixed; z-index: 50; max-height: 228px; overflow-y: auto; overscroll-behavior: contain; padding: 4px;
+  border-radius: 12px; scrollbar-width: none; color: var(--text);
+  background: color-mix(in srgb, var(--bg) 78%, var(--text));
+  animation: open .16s cubic-bezier(.2, .9, .25, 1) both;
+}
+.sheet li {
+  height: 30px; padding: 0 10px; border-radius: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 12.5px; font-variant-numeric: tabular-nums; cursor: default;
+}
+.sheet li[data-at="true"] { background: color-mix(in srgb, var(--text) 9%, transparent); }
+.sheet li[aria-selected="true"] { font-weight: 500; }
+.sheet li svg { color: var(--cookie, #e3a65c); }
+@keyframes open { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .sheet { animation: none; } .field svg { transition: none; } }
