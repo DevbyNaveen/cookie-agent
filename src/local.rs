@@ -175,7 +175,7 @@ fn clip(s: &str, n: usize) -> String {
 /// came from something Cookie read goes to the person first.
 pub fn tools(root: Option<PathBuf>, search: Option<Search>, ask: bool) -> Vec<Arc<dyn Tool>> {
     let http = reqwest::Client::builder()
-        .user_agent(concat!("cookie/", env!("CARGO_PKG_VERSION"), " (+https://github.com/DevbyNaveen/cookie-harness)"))
+        .user_agent(concat!("cookie/", env!("CARGO_PKG_VERSION"), " (+https://github.com/DevbyNaveen/cookie-agent)"))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap_or_default();

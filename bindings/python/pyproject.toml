@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.urls]
-Repository = "https://github.com/DevbyNaveen/cookie-harness"
+Repository = "https://github.com/DevbyNaveen/cookie-agent"
 
 [tool.setuptools.packages.find]
 where = ["src"]

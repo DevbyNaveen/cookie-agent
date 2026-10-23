@@ -1,17 +1,41 @@
-# Cookie Agent Harness
+<p align="center">
+  <img src="web/public/cookie/cookie-512.png" width="140" alt="Cookie, an orange orb with two eyes">
+</p>
 
-A tiny agent loop where text the model read can never, on its own, decide
-who gets sent what.
+<h1 align="center">Cookie Agent</h1>
+<p align="center"><b>by <a href="https://enkeon.com">Enkeon</a></b></p>
 
-```rust
-let agent = Agent::new("anthropic:claude-sonnet-4-6")?.tool(weather);
-println!("{}", agent.run("Weather in Riga?").await?);
-```
+<p align="center">
+An AI teammate that does the job — the drafts, the list, the plan — not an offer to do it.<br>
+And text it reads can never, on its own, decide who gets sent what.
+</p>
 
-## Cookie on your own machine, in a minute
+---
+
+## What Cookie is
+
+Give Cookie a job the way you would give it to a teammate: *"find five
+companies we should talk to this week"*, *"what did we decide about pricing?"*,
+*"summarise this page"*. It looks in your context, searches the web, reads
+pages, and answers with where each fact came from.
+
+Three things it holds to:
+
+- **It does the work.** An answer that ends by offering the work ("want me
+  to draft them?") or handing the job back is sent back once to do it.
+- **What it reads is never an instruction.** Mail, pages, files and other
+  agents are untrusted. A recipient, an address or an amount must come from
+  your own words, and sending, deleting or paying always asks you first.
+- **It says where things came from**, and says plainly what it could not
+  confirm.
+
+Cookie is the open-source agent behind [Enkeon](https://enkeon.com)'s
+teammate: the same loop, the same rules, the same tests.
+
+## Start in a minute
 
 ```sh
-cargo install --git https://github.com/DevbyNaveen/cookie-harness --locked   # or a binary from Releases
+cargo install --git https://github.com/DevbyNaveen/cookie-agent --locked
 export ANTHROPIC_API_KEY=sk-ant-...
 export TINYFISH_API_KEY=...      # optional: free web search (or EXA_API_KEY, BRAVE_SEARCH_API_KEY)
 cd ~/your-project && cookie local
@@ -33,6 +57,37 @@ below); `--session talk.jsonl` keeps the conversation to pick up later.
 
 Pages are read over https only, never from an address on your machine or
 network, only where the site's `robots.txt` allows, at most 2 MB each.
+
+## Cookie's page
+
+`web/` is Cookie's page as Enkeon's teammates use it: the board where each
+job grows out of Cookie, the conversations sheet, the chat with Stop, the
+cards you can pin and read. It is the same code as Enkeon's, file for file.
+
+```sh
+cd web && npm install && npm run dev    # http://localhost:4748
+```
+
+The page talks to a Cookie at `COOKIE_URL` (default `http://127.0.0.1:4747`).
+The local endpoints it needs from `cookie` are being built now; until they
+land, the page runs against Enkeon.
+
+## Open source, and what Enkeon adds
+
+| In this repo | With Enkeon |
+|---|---|
+| The agent loop, tools, MCP servers, skills, helpers | The same loop, run for your whole team |
+| The trust rules and the approval card | Who may instruct Cookie: team members only, checked per message |
+| `cookie local` on your folder | Your team's shared context, across everyone and every AI tool |
+| Bring your own: Slack bot token, mailbox, MCP servers | One-click Gmail, Slack, Drive, Notion, Linear and more |
+| Cookie's page, on your machine | Jobs by email, Slack and the page; answers where they were asked |
+
+Set `ENKEON_API_KEY` and any agent built here reads and saves to Enkeon (see
+*Enkeon* below).
+
+---
+
+# Reference
 
 ## The library
 
@@ -233,8 +288,8 @@ let agent = Agent::new("anthropic:claude-sonnet-4-6")?;                 // with 
 let agent = Agent::new("anthropic:claude-sonnet-4-6")?.without_enkeon(); // off
 ```
 
-What `recall` returns is tool output: untrusted, so a stored memory can't
-choose who gets sent what. A memory may hold text from a web page, so once a
+What `recall` returns is tool output: untrusted, so saved context can't
+choose who gets sent what. Saved context may hold text from a web page, so once a
 run has recalled or read anything, `remember` asks a person first — set an
 `approver`, or the default declines and nothing is saved. Sub-agents can
 recall but not save. If Enkeon can't be reached within 10 s the run still
@@ -399,7 +454,7 @@ What this does and doesn't show:
   should recover most of that; not built yet.
 - One model, one suite, one attack, one run. Not a ranking.
 
-## How Cookie decides what it may do in someone's apps
+## What Cookie may do in someone's apps
 
 `cookie serve` is how Enkeon runs Cookie as a team's AI teammate, and the
 same rules ship here (`src/cookie/permission.rs`, one `permission` line per
