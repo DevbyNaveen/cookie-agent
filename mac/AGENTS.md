@@ -19,7 +19,7 @@ No key ships in the app: model keys are the person's own, or their Enkeon sign-i
 - **Text-to-Speech**: ElevenLabs with the person's key, else `AVSpeechSynthesizer`
 - **Screen Capture**: ScreenCaptureKit, multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
-- **Element Pointing**: Cookie's answer embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
+- **Element Pointing**: Cookie's answer embeds a `[POINT:x,y:label:screenN]` tag inline, after the words naming the element. The overlay maps the coordinates to the correct monitor and animates the cursor along a bezier arc to the target when speech reaches the tag.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: none; `CookieAnalytics.swift` sends nothing
 
@@ -53,7 +53,7 @@ The compact composer swaps its typing controls for `CookieVoiceMedallion` during
 
 **What Cookie saw**: `CookieScreenMemory` OCRs the redacted cursor-screen capture of every look (Vision, off main) and keeps the text for a day, sealed; the `recall_screen` tool answers "what was that number an hour ago" with when and where. Privacy & safety has the switch and "Forget".
 
-**Drawing on screen**: the model puts up to six `[DRAW:kind:…:label]` tags before its `[POINT:…]` tag (circle, arrow, underline, bracket, note, number), in screenshot pixel space or anchored to a `look` element id (`#12`). `CookieDrawing.parse` strips them from the spoken text; `CookieDrawingResolver.resolve` maps them to AppKit global points per display (the same scale and flip as pointing) and snaps pixel marks to the control under them via `AXUIElementCopyElementAtPosition`. `CompanionManager.showMarks` publishes them, shows the overlay if hidden, and clears them on any key or click, Escape, the next turn, or after 45 s. `CookieMarksLayer` draws them on each display's overlay as hand-drawn strokes in Cookie's blue, animated in order, click-through.
+**Drawing on screen**: the model writes up to six `[DRAW:kind:…:label]` tags inline, right after the words they illustrate (circle, arrow, underline, bracket, note, number), in screenshot pixel space or anchored to a `look` element id (`#12`). `CookieReplyTags.split` takes every tag out of the reply (`[KIND:body]`, or `[KIND {json}]` for kinds still to come) and keeps each one's UTF-16 offset in the spoken text, which is exactly what the voice speaks. `CookieDrawingResolver.resolve` maps marks to AppKit global points per display (the same scale and flip as pointing) and snaps pixel marks to the control under them via `AXUIElementCopyElementAtPosition`. When Cookie speaks, `onPlaybackStarted` schedules each mark, and the pointer, on the speech clock at its offset; stopped or talked-over speech drops what it hasn't reached. Typed replies (or a voice that never starts) reveal marks at once in order. `CompanionManager.revealMark` adds one mark (0.3 s after the one before when they arrive together), shows the overlay if hidden, and marks clear on any key or click, Escape, the next turn, or 45 s after the latest. `CookieMarksLayer` inks them with `CookieInk` (a Swift port of Rough.js perturbation and perfect-freehand outlines, seeded per mark) in the orb's amber under one soft shadow, drawing each stroke's revealed prefix on frames from the overlay's `NSView.displayLink` at `NSScreen.maximumFramesPerSecond`, paused when the ink is dry. Reduce Motion shows each mark whole on its word. Click-through.
 
 **Faces**: `characterMood` adds `.sleeping` after an idle hour (`isDozing`); `gazeTowardPointer` turns the eyes toward what Cookie points at; listening eyes look at the person. Pressing the hotkey while Cookie speaks stops speech and listens (push-to-talk is the interrupt; there is no open microphone).
 
@@ -81,7 +81,7 @@ The compact composer swaps its typing controls for `CookieVoiceMedallion` during
 | File | Lines | Purpose |
 |------|-------|---------|
 | `CookieApp.swift` | ~100 | Menu bar app entry point; wires notch, status menu and first-run setup; reopening routes to the appropriate surface. |
-| `CompanionManager.swift` | ~1205 | Central voice/chat state machine. Owns dictation, shortcuts, captures, model replies, speech and overlays; coordinates cancellation and keeps responding active through audio completion. |
+| `CompanionManager.swift` | ~1380 | Central voice/chat state machine. Owns dictation, shortcuts, captures, model replies, speech and overlays; coordinates cancellation and keeps responding active through audio completion. |
 | `MenuBarPanelManager.swift` | ~75 | Status item (the Cookie creature rendered via `ImageRenderer`, coloured, not a template) opens the notch; native secondary menu routes Settings, shortcuts, setup replay and Quit. |
 | `CookieSetupController.swift` | ~75 | First-run/replay window lifecycle, app activation and completion routing. |
 | `CookieSetupState.swift` | ~45 | Resumable setup progress and completion state, isolated for tests. |
@@ -101,8 +101,10 @@ The compact composer swaps its typing controls for `CookieVoiceMedallion` during
 | `CookieBackgroundRuns.swift` | ~175 | Up to three background Cookies (routines, watchers, hand-offs, meeting follow-ups), the scheduler, the `hand_off` tool. |
 | `CookieTeach.swift` | ~230 | Teach by doing: event-tap recorder, SKILL.md writer, merged skills folder. |
 | `CookieScreenMemory.swift` | ~125 | OCR of what Cookie looked at, kept a day, the `recall_screen` tool. |
-| `CookieMarks.swift` | ~210 | Drawing tags, the per-display resolver with AX snapping. |
-| `CookieMarksLayer.swift` | ~190 | Hand-drawn marks on the overlay: rings, arrows, underlines, brackets, notes, numbers. |
+| `CookieMarks.swift` | ~245 | DRAW tag bodies into marks (with their spoken offset), the per-display resolver with AX snapping. |
+| `CookieReplyTags.swift` | ~125 | Splits a reply into the spoken text and its inline tags, each with its UTF-16 offset in that text; `[KIND:body]` and `[KIND {json}]`. |
+| `CookieInk.swift` | ~450 | Cookie's pen: Rough.js line/ellipse perturbation and perfect-freehand outlines ported to Swift (MIT, see THIRD_PARTY_NOTICES.md); strokes reveal by prefix. |
+| `CookieMarksLayer.swift` | ~300 | Inks marks on each overlay as they're revealed: one Canvas, display-link frames at the screen's top rate, labels, notes and numbers. |
 | `CookieAgentDock.swift` | ~235 | Fixed floating panel, stable foreground identity, background-run routing, animated hit regions and pointer/keyboard dismissal. |
 | `CookieDockPresentation.swift` | ~235 | One clipped face-to-card surface, shared voice indicator, inline activity and controls; native previews isolated from voice execution. |
 | `CookieDockInteraction.swift` | ~65 | Testable dock hover intent, screen geometry and rounded pointer containment. |
