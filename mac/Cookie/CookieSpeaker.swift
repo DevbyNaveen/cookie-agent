@@ -2,10 +2,12 @@
 //  CookieSpeaker.swift
 //  Cookie
 //
-//  Speaks Cookie's replies. With an ElevenLabs key in Settings, the reply's
-//  text goes to ElevenLabs and comes back as speech with the time each
-//  character is heard; without one, the best voice installed on this Mac
-//  speaks it, on this Mac. Either way `CookieSpeechClock` knows which
+//  Speaks Cookie's replies. Signed in to Enkeon with its voice on (GET
+//  /v1/cookie/session says `speech`), the reply goes to Enkeon's speech route
+//  and no key of the person's is needed; else, with an ElevenLabs key in
+//  Settings, straight to ElevenLabs. Either answers with the time each
+//  character is heard. Without either, the best voice installed on this Mac
+//  speaks it, on this Mac. Every way, `CookieSpeechClock` knows which
 //  character is being spoken now.
 //
 
@@ -48,15 +50,79 @@ final class CookieSpeaker {
     private var completion: CheckedContinuation<Void, Never>?
     private var activeRequestID: UUID?
     private let makePlayback: @MainActor () -> CookieSpeechPlayback
-    private let keyProvider: () -> String?
-    private let fetchAudio: (String, String) async throws -> CookieSpeechAudio
+    private let sourceProvider: () async -> Source?
+    private let fetchAudio: (String, Source) async throws -> CookieSpeechAudio
+
+    /// Where a cloud voice comes from; nil = this Mac's voice.
+    enum Source: Equatable {
+        case enkeon
+        case personal(key: String)
+    }
 
     init(makePlayback: @escaping @MainActor () -> CookieSpeechPlayback = { NativeCookieSpeechPlayback() },
-         keyProvider: @escaping () -> String? = { CookieModelSettings.value(CookieModelSettings.elevenLabsField) },
-         fetchAudio: @escaping (String, String) async throws -> CookieSpeechAudio = { try await CookieSpeaker.elevenLabs($0, key: $1) }) {
+         sourceProvider: @escaping () async -> Source? = { await CookieSpeaker.source() },
+         fetchAudio: @escaping (String, Source) async throws -> CookieSpeechAudio = { try await CookieSpeaker.audio($0, from: $1) }) {
         self.makePlayback = makePlayback
-        self.keyProvider = keyProvider
+        self.sourceProvider = sourceProvider
         self.fetchAudio = fetchAudio
+    }
+
+    /// Enkeon's voice when signed in and it's set up there, else the person's key, else none.
+    static func source() async -> Source? {
+        if CookieAccount.shared.isSignedIn, await CookieAPI.shared.loadSession()?.speech == true { return .enkeon }
+        return CookieModelSettings.value(CookieModelSettings.elevenLabsField).map { .personal(key: $0) }
+    }
+
+    /// The voice chosen in Settings, only when one was chosen: Enkeon then uses
+    /// its own default rather than the app's.
+    static var chosenVoice: String? {
+        let chosen = (UserDefaults.standard.string(forKey: elevenLabsVoiceKey) ?? "").trimmingCharacters(in: .whitespaces)
+        return isVoiceID(chosen) ? chosen : nil
+    }
+
+    static func audio(_ text: String, from source: Source) async throws -> CookieSpeechAudio {
+        switch source {
+        case .personal(let key): return try await elevenLabs(text, key: key)
+        case .enkeon: return try await enkeon(text)
+        }
+    }
+
+    /// Enkeon takes at most 2,000 characters a request: a longer reply is
+    /// asked for in pieces split after a sentence, and the MP3s are played as
+    /// one, each piece's character times moved by the length of those before.
+    static let enkeonLimit = 2_000
+
+    private static func enkeon(_ text: String) async throws -> CookieSpeechAudio {
+        var audio = Data()
+        var starts: [CookieSpeechAudio.CharacterStart] = []
+        var elapsed = 0.0
+        for (offset, piece) in pieces(text, limit: enkeonLimit) {
+            let part = try decodeTimestampedSpeech(try await CookieAPI.shared.speech(piece, voice: chosenVoice))
+            starts += part.characterStarts.map { .init(offset: $0.offset + offset, seconds: $0.seconds + elapsed) }
+            elapsed += (try? AVAudioPlayer(data: part.data).duration) ?? 0
+            audio.append(part.data)
+        }
+        return CookieSpeechAudio(data: audio, characterStarts: starts)
+    }
+
+    /// `text` in pieces of at most `limit` UTF-16 units, cut after a sentence
+    /// (else a space) where one is near; each with its UTF-16 offset.
+    static func pieces(_ text: String, limit: Int) -> [(Int, String)] {
+        var out: [(Int, String)] = []
+        var rest = Substring(text)
+        var offset = 0
+        while rest.utf16.count > limit {
+            var units = 0
+            let head = String(rest.prefix { units += $0.utf16.count; return units <= limit })
+            let cut = head.lastIndex(where: { ".!?\n".contains($0) }).map { head.index(after: $0) }
+                ?? head.lastIndex(of: " ").map { head.index(after: $0) } ?? head.endIndex
+            let piece = String(head[..<cut])
+            out.append((offset, piece))
+            offset += piece.utf16.count
+            rest = rest.dropFirst(piece.count)
+        }
+        if !rest.isEmpty { out.append((offset, String(rest))) }
+        return out
     }
 
     /// The best enhanced or premium voice for `language` (same language family
@@ -103,9 +169,9 @@ final class CookieSpeaker {
             await withCheckedContinuation { continuation in
                 completion = continuation
                 fetch = Task {
-                    if let key = keyProvider() {
+                    if let source = await sourceProvider() {
                         do {
-                            let audio = try await fetchAudio(text, key)
+                            let audio = try await fetchAudio(text, source)
                             try Task.checkCancellation()
                             guard activeRequestID == requestID else { return }
                             try output.playAudio(audio, text: text)

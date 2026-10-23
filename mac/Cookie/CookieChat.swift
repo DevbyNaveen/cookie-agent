@@ -406,6 +406,7 @@ extension HarnessAction {
     var question: String {
         if let mac = MacOperator.shared.question(for: self) { return mac }
         if let handoff = CookieHandoff.question(for: self) { return handoff }
+        if let routine = CookieRoutineWords.question(for: self) { return routine }
         switch openTarget {
         case .settings?: return "Open System Settings?"
         case .app(let url)?: return "Open \(url.deletingPathExtension().lastPathComponent)?"
@@ -416,6 +417,7 @@ extension HarnessAction {
 
     var consequence: String {
         if tool == "start_task" { return "One yes covers this task in these apps. Sending, paying or deleting still asks. Esc stops it." }
+        if tool == CookieRoutineWords.tool.name { return "Cookie gives itself this job at those times; it shows on your Board, where you can pause it." }
         switch openTarget {
         case .web?: return "In your browser. Nothing opens unless you allow it."
         case .some: return "On this Mac. Nothing opens unless you allow it."

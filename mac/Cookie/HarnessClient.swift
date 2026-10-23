@@ -231,7 +231,7 @@ final class HarnessClient {
         let request = HarnessRequest.Run(
             id: "cookie-\(runCounter)", model: model, input: text, instructions: instructions,
             // open, and the Mac tools: acting needs a task the person approved.
-            tools: [CookieOpen.tool, CookieHandoff.tool, CookieScreenMemory.tool] + MacOperator.tools,
+            tools: [CookieOpen.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieRoutineWords.tool] + MacOperator.tools,
             images: images,
             history: history,
             // On: left out, so the helper uses ENKEON_API_KEY from its environment.
@@ -441,6 +441,14 @@ final class HarnessClient {
                     let answer = CookieScreenMemory.shared.answer(args["query"] as? String ?? "")
                     run.onStep("Remembering what was on screen")
                     self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: answer, is_error: false)))
+                }
+                return
+            }
+            if name == CookieRoutineWords.tool.name {
+                Task { @MainActor in
+                    let result = await CookieRoutineWords.perform(args)
+                    if !result.1 { run.onStep("Made a routine") }
+                    self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.0, is_error: result.1)))
                 }
                 return
             }
