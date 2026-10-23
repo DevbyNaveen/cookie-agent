@@ -4,7 +4,7 @@
   "description": "Cookie's page: the board, the conversations and the chat, served on your own machine.",
   "scripts": {
     "dev": "next dev -p 4748",
-    "build": "next build",
+    "build": "COOKIE_EXPORT=1 next build",
     "start": "next start -p 4748",
     "test": "node --test --experimental-strip-types components/central/lace/*.test.ts"
   },

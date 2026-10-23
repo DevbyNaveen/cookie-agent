@@ -72,8 +72,16 @@ conversations on the left, the chat on the right with Stop, and cards you
 pin and read. It is the same page Enkeon teams use every day.
 
 ```sh
-cd web && npm install && npm run dev    # http://localhost:4748
+cd web && npm install && npm run build   # once: the page, built
+cd .. && cookie page ~/your-project      # http://localhost:4747/me/local/cookie
 ```
+
+Give Cookie a job and watch it work on the board: every file it opens, every
+search and page, live, with the answer beside them. Ask a follow-up and it
+carries on in the same conversation. A link it found inside a page waits for
+your yes on the page. Write how Cookie should be in Settings, and it reads
+that before every job. Jobs and conversations are kept in `~/.cookie`, one
+file each, on your machine.
 
 ## Start in a minute
 

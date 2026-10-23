@@ -22,6 +22,7 @@ pub mod label;
 pub mod lessons;
 pub mod local;
 pub mod mcp;
+pub mod page;
 pub mod message;
 pub mod model_id;
 pub mod policy;

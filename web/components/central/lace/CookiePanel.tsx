@@ -293,7 +293,8 @@ export function CookiePanel({
     <aside className={s.panel} aria-label="Cookie">
       <header className={s.top}>
         <h2 className={s.heading}>{TAB_NAME[tab]}</h2>
-        <div className={s.credits}>
+        {/* Cookie on your own computer has no credits: no ring. */}
+        {overview.credits.allowance > 0 && <div className={s.credits}>
           <button className={s.ringBtn} onClick={() => onTab("settings")} aria-describedby="cookie-credits">
             <CreditRing used={overview.credits.used} allowance={overview.credits.allowance} />
           </button>
@@ -303,7 +304,7 @@ export function CookiePanel({
             </b>
             <span>This month · resets {resets}</span>
           </div>
-        </div>
+        </div>}
         <button className={s.icon} onClick={() => onOpen(false)} aria-label="Fold the panel">
           <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden>
             <path d="M3.5 5.25 7 8.75l3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />

@@ -22,6 +22,7 @@ use tokio::{
 
 const USAGE: &str = "usage:
   cookie local [folder] [--model provider:model] [--permission ask|full] [--session FILE] [--instructions TEXT] [--no-enkeon]
+  cookie page [folder] [--model provider:model] [--permission ask|full] [--port 4747] [--home DIR] [--page DIR]
   cookie run <provider:model> <prompt> [--session FILE] [--instructions TEXT] [--no-enkeon] [-- <prompt starting with ->]
   cookie chat <provider:model> [--session FILE] [--instructions TEXT] [--no-enkeon]
   cookie replay <session.jsonl>
@@ -224,6 +225,76 @@ async fn local_command(args: &[String]) -> Result<(), Failure> {
     chat(&agent, &mut session, input, &mut std::io::stdout(), &mut interrupts, prompt).await.map_err(failed)
 }
 
+const PAGE_HELP: &str = "cookie page [folder] — Cookie's page on your own machine.
+
+The board, the conversations and the chat, as Enkeon's teams use them, for the
+folder you open it in (read only; default: this one). Jobs run as in `cookie
+local`; a page address Cookie found in what it read waits for your yes on the
+page. Everything is kept in --home (default ~/.cookie): one file per job, one
+per conversation, and SOUL.md, your own words on how Cookie should be.
+
+  --model provider:model   the model (default: Anthropic when ANTHROPIC_API_KEY is set)
+  --permission ask|full    ask before opening an address from what it read (default: ask)
+  --port 4747              where it listens, on 127.0.0.1 only
+  --home DIR               where jobs and conversations are kept
+  --page DIR               the built page (cd web && npm run build → web/out); default: COOKIE_PAGE_DIR, else ./web/out
+  --origin URL             another page origin allowed to ask (the dev server: http://localhost:4748 is allowed already)";
+
+async fn page_command(args: &[String]) -> Result<(), Failure> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{PAGE_HELP}");
+        return Ok(());
+    }
+    let (mut model, mut ask, mut port, mut home, mut page, mut origins, mut folder) = (None, true, 4747u16, None, None, Vec::new(), None);
+    let mut it = args.iter();
+    let value = |flag: &str, v: Option<&String>| v.cloned().ok_or_else(|| Failure::Usage(format!("{flag} needs a value")));
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--model" => model = Some(value("--model", it.next())?),
+            "--permission" => {
+                ask = match it.next().map(String::as_str) {
+                    Some("ask") => true,
+                    Some("full") => false,
+                    _ => return Err(Failure::Usage("--permission is `ask` or `full`".into())),
+                }
+            }
+            "--port" => port = value("--port", it.next())?.parse().map_err(|_| Failure::Usage("--port is a number".into()))?,
+            "--home" => home = Some(std::path::PathBuf::from(value("--home", it.next())?)),
+            "--page" => page = Some(std::path::PathBuf::from(value("--page", it.next())?)),
+            "--origin" => origins.push(value("--origin", it.next())?.trim_end_matches('/').to_string()),
+            flag if flag.starts_with("--") => return Err(Failure::Usage(format!("cookie page doesn't take {flag}"))),
+            _ if folder.is_none() => folder = Some(arg.clone()),
+            _ => return Err(Failure::Usage("cookie page takes one folder".into())),
+        }
+    }
+    let folder = folder.unwrap_or_else(|| ".".into());
+    let root = std::path::PathBuf::from(&folder);
+    if !root.is_dir() {
+        return Err(Failure::Usage(format!("`{folder}` isn't a folder")));
+    }
+    let model = match model {
+        Some(m) => m,
+        None => local::default_model().map_err(Failure::Run)?,
+    };
+    // A model that can't be reached is said now, not on the first job.
+    Agent::new(&model).map_err(failed)?;
+    let home = match home.or_else(|| std::env::var_os("COOKIE_HOME").map(Into::into)) {
+        Some(home) => home,
+        None => std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cookie")).ok_or_else(|| Failure::Usage("set --home".into()))?,
+    };
+    let page_dir = page
+        .or_else(|| std::env::var_os("COOKIE_PAGE_DIR").map(Into::into))
+        .or_else(|| Some(std::path::PathBuf::from("web/out")).filter(|d| d.join("me").is_dir()));
+    origins.extend(["http://localhost:4748".to_string(), "http://127.0.0.1:4748".to_string()]);
+    match &page_dir {
+        Some(_) => eprintln!("Cookie's page: http://localhost:{port}{}", cookie_harness::page::PAGE_PATH),
+        None => eprintln!("Cookie answers on http://127.0.0.1:{port}. For the page: cd web && npm run dev, then open http://localhost:4748"),
+    }
+    cookie_harness::page::serve(cookie_harness::page::PageOptions { root, model, ask, home, port, page_dir, origins })
+        .await
+        .map_err(failed)
+}
+
 async fn replay(args: &[String]) -> Result<(), Failure> {
     let [path] = args else { return Err(Failure::Usage("cookie replay needs one session file".into())) };
     let recorded = Session::load(path).await.map_err(|e| failed(format!("{path}: {e}")))?;
@@ -255,6 +326,7 @@ async fn main() {
             serve(BufReader::new(tokio::io::stdin()), tokio::io::stdout(), |request| Agent::new(&request.model)).await.map_err(failed)
         }
         Some("local") => local_command(rest).await,
+        Some("page") => page_command(rest).await,
         Some("run") => run(rest).await,
         Some("chat") => chat_command(rest).await,
         Some("replay") => replay(rest).await,

@@ -17,6 +17,11 @@ bedrock = ["dep:aws-sigv4", "dep:aws-credential-types", "dep:aws-smithy-async", 
 [dependencies]
 async-trait = "0.1"
 base64 = "0.22"
+# `cookie page`: the page and its answers on 127.0.0.1 (already in the tree through reqwest).
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 aws-credential-types = { version = "=1.2.13", optional = true }
 aws-sigv4 = { version = "=1.4.1", optional = true }
 aws-smithy-async = { version = "=1.2.13", optional = true }
