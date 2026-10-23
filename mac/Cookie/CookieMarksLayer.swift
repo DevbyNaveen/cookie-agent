@@ -2,44 +2,89 @@
 //  CookieMarksLayer.swift
 //  Cookie
 //
-//  Draws Cookie's marks on one display's overlay: hand-drawn strokes in
-//  Cookie's blue, animated on in the order they were written, labels in
-//  small pills, numbers in filled discs. Everything is click-through.
+//  Draws Cookie's marks on one display's overlay in Cookie's amber ink: each
+//  stroke roughened and inked as a pen would (`CookieInk`), drawn on from the
+//  moment its mark is shown (on its word, when Cookie speaks), labels in small
+//  pills, numbers in filled discs. Frames come from the overlay window's own
+//  display link at the screen's top rate (120 Hz on ProMotion) and stop when
+//  the ink is dry. Reduce Motion shows each mark whole, still on its word.
+//  Everything is click-through.
 //
 
+import AppKit
+import QuartzCore
 import SwiftUI
 
 struct CookieMarksLayer: View {
     let marks: [CookieResolvedDrawing]
     let screenFrame: CGRect
-    /// Everything at once, no strokes animating: previews, and people who asked for less motion.
+    /// Everything at once, no strokes animating: previews.
     var instant = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var drawn: Set<UUID> = []
+    @StateObject private var clock = CookieInkClock()
+    @State private var cache = CookieInkCache()
+
+    /// The orb's mid amber (the `mid` colour of CookieOrb's fluid).
+    static let ink = Color(red: 0.93, green: 0.56, blue: 0.24)
+    /// Text on ink: the orb's eye brown, readable on the amber.
+    static let onInk = Color(red: 42 / 255, green: 20 / 255, blue: 6 / 255)
 
     private var mine: [CookieResolvedDrawing] { marks.filter { $0.displayFrame == screenFrame } }
 
     var body: some View {
+        let now = clock.now
         ZStack {
-            ForEach(Array(mine.enumerated()), id: \.element.id) { index, mark in
-                MarkView(mark: mark, local: local, progress: drawn.contains(mark.id) ? 1 : 0)
+            Canvas { context, _ in
+                // One soft shadow under all the ink, so overlapping passes don't darken each other:
+                // the amber holds on white pages, the shadow lifts it off dark ones.
+                context.addFilter(.shadow(color: .black.opacity(0.38), radius: 2.5, x: 0, y: 1))
+                context.drawLayer { ink in
+                    for mark in mine {
+                        let strokes = cache.strokes(for: mark, local: local)
+                        let total = strokes.reduce(0) { $0 + $1.length }
+                        var reach = total * CGFloat(progress(of: mark, at: now, length: total))
+                        for stroke in strokes where reach > 0 {
+                            if let outline = stroke.outline(revealed: min(stroke.length, reach)) {
+                                ink.fill(Path(outline), with: .color(Self.ink))
+                            }
+                            reach -= stroke.length
+                        }
+                    }
+                }
             }
+            ForEach(mine) { mark in
+                let length = cache.strokes(for: mark, local: local).reduce(0) { $0 + $1.length }
+                MarkDecoration(mark: mark, local: local, progress: progress(of: mark, at: now, length: length))
+            }
+            CookieInkClockDriver(clock: clock).frame(width: 1, height: 1)
         }
         .allowsHitTesting(false)
-        .onAppear { reveal() }
-        .onChange(of: marks.map(\.id)) { _, _ in reveal() }
+        .onAppear { run() }
+        .onChange(of: marks.map(\.revealedAt)) { _, _ in run() }
     }
 
-    /// Each mark draws itself over 0.55 s, starting 0.3 s after the one before.
-    private func reveal() {
-        if instant || reduceMotion {
-            drawn = Set(mine.map(\.id))
-            return
-        }
-        drawn = []
-        for (index, mark) in mine.enumerated() {
-            withAnimation(.easeOut(duration: 0.55).delay(Double(index) * 0.3)) { _ = drawn.insert(mark.id) }
-        }
+    /// How long a mark's ink takes: about a thousand points a second, never under a third of a
+    /// second or over 0.9 s (brief motion; the voice is still the main channel).
+    private func duration(length: CGFloat) -> Double {
+        length > 0 ? min(0.9, max(0.35, Double(length) / 1000)) : 0.3
+    }
+
+    /// 0 until the mark is shown, then the pen's progress along all its strokes, eased.
+    private func progress(of mark: CookieResolvedDrawing, at now: Double, length: CGFloat) -> Double {
+        if instant || mark.revealedAt == 0 { return 1 }
+        guard now >= mark.revealedAt else { return 0 }
+        if reduceMotion { return 1 }
+        let t = min(1, (now - mark.revealedAt) / duration(length: length))
+        return t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
+    }
+
+    /// Keep frames coming until every mark shown so far is drawn and labelled.
+    private func run() {
+        guard !instant else { return }
+        let end = mine.map { mark in
+            mark.revealedAt + duration(length: cache.strokes(for: mark, local: local).reduce(0) { $0 + $1.length }) + 0.1
+        }.max() ?? 0
+        clock.run(until: end)
     }
 
     /// AppKit global (bottom-left) → this overlay's SwiftUI coordinates (top-left).
@@ -48,31 +93,78 @@ struct CookieMarksLayer: View {
     }
 }
 
-private struct MarkView: View {
+/// Each mark's pen strokes, worked out once: the same seed gives the same wobble, so a mark
+/// never shimmers between frames.
+final class CookieInkCache {
+    private var strokes: [UUID: [CookieInkStroke]] = [:]
+    private static let pen: CGFloat = 3.4
+
+    func strokes(for mark: CookieResolvedDrawing, local: (CGPoint) -> CGPoint) -> [CookieInkStroke] {
+        if let known = strokes[mark.id] { return known }
+        var rough = CookieRough(seed: mark.seed)
+        let pen = Self.pen
+        // A pass and its echo: the echo a finer pen, as a hand going over it again.
+        func passes(_ lines: [[CGPoint]]) -> [CookieInkStroke] {
+            lines.enumerated().map { CookieInkStroke($0.element, size: $0.offset % 2 == 0 ? pen : pen * 0.7) }
+        }
+        func firstPasses(_ lines: [[CGPoint]]) -> [CookieInkStroke] {
+            lines.enumerated().filter { $0.offset % 2 == 0 }.map { CookieInkStroke($0.element, size: pen) }
+        }
+        let made: [CookieInkStroke]
+        switch mark.geometry {
+        case .circle(let rect):
+            let topLeft = local(CGPoint(x: rect.minX, y: rect.maxY))
+            made = passes(rough.ellipse(center: CGPoint(x: topLeft.x + rect.width / 2, y: topLeft.y + rect.height / 2),
+                                        width: rect.width, height: rect.height))
+        case .arrow(let from, let to):
+            let a = local(from), b = local(to)
+            let length = max(1, hypot(b.x - a.x, b.y - a.y))
+            // A gentle bow, then an open head drawn out from the tip.
+            let bow = min(18, length * 0.08)
+            let mid = CGPoint(x: (a.x + b.x) / 2 - (b.y - a.y) / length * bow, y: (a.y + b.y) / 2 + (b.x - a.x) / length * bow)
+            let angle = atan2(b.y - mid.y, b.x - mid.x)
+            let head: CGFloat = 14
+            let barbs = [CGFloat(0.5), -0.5].flatMap { side in
+                firstPasses(rough.line(b, CGPoint(x: b.x - head * cos(angle + side), y: b.y - head * sin(angle + side))))
+            }
+            made = passes(rough.curve(through: [a, mid, b])) + barbs
+        case .underline(let from, let to):
+            made = passes(rough.line(local(from), local(to)))
+        case .bracket(let x, let top, let bottom):
+            let t = local(CGPoint(x: x, y: top)), b = local(CGPoint(x: x, y: bottom))
+            made = firstPasses(rough.linearPath([CGPoint(x: t.x + 8, y: t.y), t, b, CGPoint(x: b.x + 8, y: b.y)]))
+        case .note, .number:
+            made = []
+        }
+        strokes[mark.id] = made
+        return made
+    }
+}
+
+/// Labels, notes and numbers: SwiftUI views that arrive as the ink nears its end.
+private struct MarkDecoration: View {
     let mark: CookieResolvedDrawing
     let local: (CGPoint) -> CGPoint
     var progress: Double
 
-    private let ink = DS.Colors.overlayCursorBlue
-    private let stroke = StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round)
+    private let ink = CookieMarksLayer.ink
+    private let onInk = CookieMarksLayer.onInk
+    /// A label shows over the last half of its stroke.
+    private var labelProgress: Double { max(0, min(1, (progress - 0.5) * 2)) }
 
     var body: some View {
         switch mark.geometry {
         case .circle(let rect):
-            let r = localRect(rect)
-            HandDrawn.ring(in: r).trim(from: 0, to: progress).stroke(ink, style: stroke).glow(ink)
-            label(at: CGPoint(x: r.maxX + 8, y: r.minY - 6), leading: true)
+            let topLeft = local(CGPoint(x: rect.minX, y: rect.maxY))
+            label(at: CGPoint(x: topLeft.x + rect.width + 8, y: topLeft.y - 6), leading: true)
         case .arrow(let from, let to):
             let a = local(from), b = local(to)
-            HandDrawn.arrow(from: a, to: b).trim(from: 0, to: progress).stroke(ink, style: stroke).glow(ink)
-            label(at: CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 14), leading: false)
-        case .underline(let from, let to):
-            let a = local(from), b = local(to)
-            HandDrawn.line(from: a, to: b, wave: 1.6).trim(from: 0, to: progress).stroke(ink, style: stroke).glow(ink)
+            label(at: CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 16), leading: false)
+        case .underline(_, let to):
+            let b = local(to)
             label(at: CGPoint(x: b.x + 8, y: b.y), leading: true)
         case .bracket(let x, let top, let bottom):
             let t = local(CGPoint(x: x, y: top)), b = local(CGPoint(x: x, y: bottom))
-            HandDrawn.bracket(x: t.x, top: t.y, bottom: b.y).trim(from: 0, to: progress).stroke(ink, style: stroke).glow(ink)
             label(at: CGPoint(x: t.x - 10, y: (t.y + b.y) / 2), leading: false, trailing: true)
         case .note(let point):
             let p = local(point)
@@ -81,30 +173,26 @@ private struct MarkView: View {
             let p = local(point)
             ZStack {
                 Circle().fill(ink).frame(width: 24, height: 24)
-                Text(mark.text).font(.system(size: 12, weight: .bold, design: .rounded)).foregroundStyle(.white)
+                Text(mark.text).font(.system(size: 12, weight: .bold, design: .rounded)).foregroundStyle(onInk)
             }
-            .shadow(color: ink.opacity(0.55), radius: 6)
+            .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
             .position(x: p.x - 2, y: p.y - 2)
             .scaleEffect(progress, anchor: .center)
             .opacity(progress)
         }
     }
 
-    private func localRect(_ rect: CGRect) -> CGRect {
-        let topLeft = local(CGPoint(x: rect.minX, y: rect.maxY))
-        return CGRect(x: topLeft.x, y: topLeft.y, width: rect.width, height: rect.height)
-    }
-
     @ViewBuilder
     private func label(at point: CGPoint, leading: Bool, trailing: Bool = false) -> some View {
         if !mark.text.isEmpty {
             Text(mark.text)
-                .font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
+                .font(.system(size: 11, weight: .semibold)).foregroundStyle(onInk)
                 .padding(.horizontal, 7).padding(.vertical, 3)
                 .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(ink))
+                .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
                 .fixedSize()
                 .modifier(Anchored(point: point, leading: leading, trailing: trailing))
-                .opacity(progress)
+                .opacity(labelProgress)
         }
     }
 
@@ -112,11 +200,11 @@ private struct MarkView: View {
         HStack(spacing: 6) {
             Rectangle().fill(ink).frame(width: 14, height: 2)
             Text(mark.text)
-                .font(.system(size: 11.5, weight: .medium)).foregroundStyle(.white)
+                .font(.system(size: 11.5, weight: .medium)).foregroundStyle(onInk)
                 .padding(.horizontal, 8).padding(.vertical, 5)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(ink))
-                .shadow(color: ink.opacity(0.5), radius: 6)
         }
+        .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
         .fixedSize()
         .modifier(Anchored(point: .zero, leading: true, trailing: false))
     }
@@ -137,68 +225,74 @@ private struct Anchored: ViewModifier {
     }
 }
 
-private extension View {
-    func glow(_ color: Color) -> some View {
-        shadow(color: color.opacity(0.55), radius: 5)
+// MARK: - Frames
+
+/// The time the ink is drawn at, ticked by the overlay window's display link while ink is wet.
+@MainActor
+final class CookieInkClock: ObservableObject {
+    /// `CACurrentMediaTime()` seconds: the frame being drawn.
+    @Published private(set) var now = CACurrentMediaTime()
+    private(set) var until: Double = 0
+    fileprivate weak var view: CookieInkClockView?
+
+    func run(until end: Double) {
+        until = max(until, end)
+        now = CACurrentMediaTime()
+        view?.wake()
+    }
+
+    fileprivate func tick(_ time: Double) -> Bool {
+        now = time
+        return time <= until
     }
 }
 
-/// Strokes with a little life in them: a hand's wobble, never a ruler's line.
-enum HandDrawn {
-    /// A ring that overshoots its start a touch, like a pen circling twice.
-    static func ring(in rect: CGRect) -> Path {
-        var path = Path()
-        let steps = 64
-        let cx = rect.midX, cy = rect.midY
-        for index in 0...steps {
-            let t = Double(index) / Double(steps)
-            let angle = -Double.pi / 2 + t * (Double.pi * 2 + 0.35)
-            let wobble = 1 + 0.028 * sin(t * 13.0 + 0.7) + 0.018 * sin(t * 29.0)
-            let rx = (rect.width / 2) * wobble, ry = (rect.height / 2) * wobble
-            let point = CGPoint(x: cx + rx * cos(angle), y: cy + ry * sin(angle))
-            if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
-        }
-        return path
+private struct CookieInkClockDriver: NSViewRepresentable {
+    let clock: CookieInkClock
+
+    func makeNSView(context: Context) -> CookieInkClockView {
+        let view = CookieInkClockView()
+        view.clock = clock
+        clock.view = view
+        return view
     }
 
-    /// A line that bows a little and wavers along its length.
-    static func line(from a: CGPoint, to b: CGPoint, wave: CGFloat = 1.2, bow: CGFloat = 0) -> Path {
-        var path = Path()
-        let steps = 32
-        let dx = b.x - a.x, dy = b.y - a.y
-        let length = max(1, hypot(dx, dy))
-        let nx = -dy / length, ny = dx / length
-        for index in 0...steps {
-            let t = CGFloat(index) / CGFloat(steps)
-            let along = CGPoint(x: a.x + dx * t, y: a.y + dy * t)
-            let offset = wave * sin(t * 17) * 0.6 + bow * sin(t * .pi)
-            let point = CGPoint(x: along.x + nx * offset, y: along.y + ny * offset)
-            if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
-        }
-        return path
+    func updateNSView(_ view: CookieInkClockView, context: Context) {}
+
+    static func dismantleNSView(_ view: CookieInkClockView, coordinator: ()) {
+        view.stop()
+    }
+}
+
+/// Owns the display link: `NSView.displayLink` follows the display the overlay is on, and asks
+/// for that screen's top rate (`maximumFramesPerSecond`); the system may still slow it for Low
+/// Power Mode or heat. Paused whenever no ink is wet.
+fileprivate final class CookieInkClockView: NSView {
+    weak var clock: CookieInkClock?
+    private var link: CADisplayLink?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        stop()
+        guard let window else { return }
+        let link = displayLink(target: self, selector: #selector(tick(_:)))
+        let top = Float(max(60, window.screen?.maximumFramesPerSecond ?? 60))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: top, preferred: top)
+        link.isPaused = (clock?.until ?? 0) < CACurrentMediaTime()
+        link.add(to: .main, forMode: .common)
+        self.link = link
     }
 
-    /// A gently curved shaft with an open head.
-    static func arrow(from a: CGPoint, to b: CGPoint) -> Path {
-        var path = line(from: a, to: b, wave: 1.0, bow: 10)
-        let angle = atan2(b.y - a.y, b.x - a.x)
-        let head: CGFloat = 13
-        for side in [CGFloat(0.5), -0.5] {
-            let tip = CGPoint(x: b.x - head * cos(angle + side), y: b.y - head * sin(angle + side))
-            path.move(to: tip)
-            path.addLine(to: b)
-        }
-        return path
+    func wake() { link?.isPaused = false }
+
+    /// The link holds this view; invalidating it breaks that hold.
+    func stop() {
+        link?.invalidate()
+        link = nil
     }
 
-    /// A square bracket on the left of a block.
-    static func bracket(x: CGFloat, top: CGFloat, bottom: CGFloat) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: x + 8, y: top))
-        path.addLine(to: CGPoint(x: x, y: top + 1))
-        path.addLine(to: CGPoint(x: x + 0.8, y: (top + bottom) / 2))
-        path.addLine(to: CGPoint(x: x, y: bottom - 1))
-        path.addLine(to: CGPoint(x: x + 8, y: bottom))
-        return path
+    @objc private func tick(_ link: CADisplayLink) {
+        guard let clock else { return stop() }
+        if !clock.tick(link.targetTimestamp) { link.isPaused = true }
     }
 }
