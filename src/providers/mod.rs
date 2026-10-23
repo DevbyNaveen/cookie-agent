@@ -10,6 +10,7 @@ pub mod bedrock;
 #[cfg(feature = "bedrock")]
 pub mod eventstream;
 mod fence;
+pub mod fallback;
 pub mod gemini;
 pub mod openai;
 pub mod scripted;
@@ -50,7 +51,22 @@ pub fn http_error(status: u16, body: &str) -> Error {
         return Error::ContextFull;
     }
     let detail: String = body.chars().take(500).collect();
-    Error::Provider(format!("HTTP {status}: {detail}"))
+    let said = format!("HTTP {status}: {detail}");
+    // Throttled, timed out, overloaded (529) or broken on their side.
+    if matches!(status, 408 | 429 | 500..=599) {
+        return Error::Unavailable(said);
+    }
+    Error::Provider(said)
+}
+
+/// A request that never got an HTTP answer, or a reply cut off on the way:
+/// the provider was out of reach, unless the request itself could not be built.
+pub(crate) fn send_error(e: reqwest::Error) -> Error {
+    if e.is_builder() {
+        Error::Provider(e.to_string())
+    } else {
+        Error::Unavailable(e.to_string())
+    }
 }
 
 /// How each API words "the input is longer than the window": a 400 (413 for
@@ -84,7 +100,24 @@ mod tests {
             assert!(matches!(super::http_error(status, body), Error::ContextFull), "{body}");
         }
         assert!(matches!(super::http_error(400, r#"{"message":"messages: field required"}"#), Error::Provider(_)));
-        assert!(matches!(super::http_error(500, "prompt is too long"), Error::Provider(_)), "only a refusal of the request says so");
+        assert!(matches!(super::http_error(500, "prompt is too long"), Error::Unavailable(_)), "only a refusal of the request says so");
+    }
+
+    #[test]
+    fn only_a_provider_out_of_reach_may_fall_back() {
+        for status in [408, 429, 500, 502, 503, 504, 529] {
+            let e = super::http_error(status, "busy");
+            assert!(e.may_fall_back(), "{status}");
+            assert_eq!(e.kind(), "provider", "the kind a client counts is unchanged");
+            assert!(e.to_string().contains(&status.to_string()));
+        }
+        for status in [400, 401, 403, 404, 422] {
+            assert!(!super::http_error(status, "no").may_fall_back(), "{status}");
+        }
+        assert!(!super::http_error(400, "prompt is too long").may_fall_back(), "a full context is full everywhere");
+        for e in [Error::ContextFull, Error::Cancelled, Error::MaxTokens, Error::Budget("x".into()), Error::Provider("x".into())] {
+            assert!(!e.may_fall_back(), "{e}");
+        }
     }
 
     #[test]

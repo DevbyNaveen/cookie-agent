@@ -6,6 +6,11 @@ pub enum Error {
     UnknownProvider(String),
     #[error("provider: {0}")]
     Provider(String),
+    /// Throttled, overloaded, a server error, or no answer in time, after the
+    /// provider's own retries: the request itself was fine, so another model
+    /// may answer it (`Agent::fallback_models`).
+    #[error("provider: {0}")]
+    Unavailable(String),
     #[error("budget reached: {0}")]
     Budget(String),
     #[error("the model ran out of output tokens before finishing")]
@@ -46,7 +51,7 @@ impl Error {
     pub fn kind(&self) -> &'static str {
         match self {
             Error::ModelId(_) | Error::UnknownProvider(_) => "setup",
-            Error::Provider(_) => "provider",
+            Error::Provider(_) | Error::Unavailable(_) => "provider",
             Error::Budget(_) => "budget",
             Error::MaxTokens => "max_tokens",
             Error::ContextFull => "context_full",
@@ -63,6 +68,15 @@ impl Error {
             Error::Image(_) => "image",
             Error::Json(_) => "json",
         }
+    }
+}
+
+impl Error {
+    /// May the same request go to the next model? Only when the provider
+    /// was out of reach: a refusal (auth, validation), a full context or a
+    /// cancelled run would fail the same way anywhere.
+    pub fn may_fall_back(&self) -> bool {
+        matches!(self, Error::Unavailable(_))
     }
 }
 

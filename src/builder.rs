@@ -55,6 +55,29 @@ impl Agent {
         }
     }
 
+    /// Models to ask, in order, when the one before is out of reach
+    /// (throttled, overloaded, broken on its side, silent) and none of its
+    /// reply has arrived yet; each `provider:model`. Every fallback is an
+    /// `Event::FellBack`.
+    pub fn fallback_models<S: AsRef<str>>(self, ids: impl IntoIterator<Item = S>) -> Result<Self> {
+        let then = ids
+            .into_iter()
+            .map(|id| {
+                let id = ModelId::parse(id.as_ref())?;
+                Ok((id.model.clone(), providers::resolve(&id)?))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(self.fallbacks(then))
+    }
+
+    /// The same with providers already made: `(model, provider)`.
+    pub fn fallbacks(mut self, then: Vec<(String, Arc<dyn Provider>)>) -> Self {
+        if !then.is_empty() {
+            self.provider = Arc::new(providers::fallback::Fallback::new(self.provider, then));
+        }
+        self
+    }
+
     pub fn instructions(mut self, text: impl Into<String>) -> Self {
         self.instructions = text.into();
         self

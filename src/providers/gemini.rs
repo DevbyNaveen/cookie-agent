@@ -59,7 +59,7 @@ impl GeminiProvider {
             .json(&request_body(request, self.max_tokens)?)
             .send()
             .await
-            .map_err(|e| Error::Provider(e.to_string()))?;
+            .map_err(super::send_error)?;
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
@@ -325,7 +325,7 @@ impl Provider for GeminiProvider {
         let mut bytes = self.post(url, &request).await?.bytes_stream();
         let mut stream = SseStream::default();
         while let Some(chunk) = bytes.next().await {
-            stream.feed(&chunk.map_err(|e| Error::Provider(e.to_string()))?, on)?;
+            stream.feed(&chunk.map_err(super::send_error)?, on)?;
         }
         stream.finish(on)
     }

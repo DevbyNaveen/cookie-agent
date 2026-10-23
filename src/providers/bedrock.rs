@@ -336,7 +336,14 @@ impl StreamAssembler {
                 Some("exception") => {
                     let kind = frame.header(":exception-type").unwrap_or("unknown");
                     let detail: String = String::from_utf8_lossy(&frame.payload).chars().take(500).collect();
-                    return Err(Error::Provider(format!("bedrock stream error: {kind}: {detail}")));
+                    let said = format!("bedrock stream error: {kind}: {detail}");
+                    // Busy or broken on their side, mid-reply: the request was fine.
+                    return Err(match kind {
+                        "throttlingException" | "serviceUnavailableException" | "internalServerException" | "modelStreamErrorException" => {
+                            Error::Unavailable(said)
+                        }
+                        _ => Error::Provider(said),
+                    });
                 }
                 other => {
                     let code = frame.header(":error-code").unwrap_or(other.unwrap_or("unknown"));
@@ -496,7 +503,7 @@ impl BedrockProvider {
                 Ok(response) => response,
                 Err(e) => {
                     if !retry_send_error(e.is_timeout()) {
-                        return Err(Error::Provider(format!("bedrock did not answer in time: {e}")));
+                        return Err(Error::Unavailable(format!("bedrock did not answer in time: {e}")));
                     }
                     last_error = e.to_string();
                     continue;
@@ -516,7 +523,7 @@ impl BedrockProvider {
             }
             last_error = format!("HTTP {status}: {}", text.chars().take(300).collect::<String>());
         }
-        Err(Error::Provider(format!("bedrock gave up after {attempt} attempts: {last_error}")))
+        Err(Error::Unavailable(format!("bedrock gave up after {attempt} attempts: {last_error}")))
     }
 
     fn prepare(&self, request: &ModelRequest) -> Result<(String, Vec<u8>)> {
@@ -547,7 +554,7 @@ impl Provider for BedrockProvider {
         let mut assembler = StreamAssembler::default();
         let mut bytes = response.bytes_stream();
         while let Some(chunk) = bytes.next().await {
-            assembler.feed(&chunk.map_err(|e| Error::Provider(e.to_string()))?, on)?;
+            assembler.feed(&chunk.map_err(super::send_error)?, on)?;
         }
         assembler.finish()
     }
@@ -771,7 +778,7 @@ mod tests {
             &[(":exception-type", "throttlingException"), (":content-type", "application/json"), (":message-type", "exception")],
             b"{\"message\":\"Too many requests\"}",
         ));
-        assert!(matches!(run_stream(&thrown, 64).0, Err(Error::Provider(m)) if m.contains("throttlingException") && m.contains("Too many")));
+        assert!(matches!(run_stream(&thrown, 64).0, Err(Error::Unavailable(m)) if m.contains("throttlingException") && m.contains("Too many")));
         let mut unmodeled = stream_bytes("tool_use", false);
         unmodeled.extend(crate::providers::eventstream::tests::frame(
             &[(":error-code", "InternalFailure"), (":error-message", "boom"), (":message-type", "error")],

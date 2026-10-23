@@ -141,7 +141,7 @@ impl AnthropicProvider {
         if self.context_editing.is_some() {
             call = call.header("anthropic-beta", "context-management-2025-06-27");
         }
-        let response = call.json(body).send().await.map_err(|e| Error::Provider(e.to_string()))?;
+        let response = call.json(body).send().await.map_err(super::send_error)?;
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
@@ -403,7 +403,12 @@ impl SseAssembler {
             }
             Some("message_stop") => self.ended = true,
             Some("error") => {
-                return Err(Error::Provider(format!("stream error: {}", event["error"]["message"].as_str().unwrap_or("unknown"))));
+                let said = format!("stream error: {}", event["error"]["message"].as_str().unwrap_or("unknown"));
+                // Overloaded or broken on their side: the request was fine.
+                return Err(match event["error"]["type"].as_str() {
+                    Some("overloaded_error" | "api_error" | "rate_limit_error") => Error::Unavailable(said),
+                    _ => Error::Provider(said),
+                });
             }
             _ => {}
         }
@@ -460,7 +465,7 @@ impl Provider for AnthropicProvider {
         let mut assembler = SseAssembler::default();
         let mut bytes = self.post(&body).await?.bytes_stream();
         while let Some(chunk) = bytes.next().await {
-            assembler.feed(&chunk.map_err(|e| Error::Provider(e.to_string()))?, on)?;
+            assembler.feed(&chunk.map_err(super::send_error)?, on)?;
         }
         assembler.end(on)?;
         assembler.finish()
@@ -600,7 +605,7 @@ mod tests {
     #[test]
     fn an_error_page_that_is_not_json_keeps_its_status() {
         let e = http_error(502, "<html>Bad Gateway</html>");
-        assert!(matches!(&e, Error::Provider(m) if m.contains("502") && m.contains("Bad Gateway")), "{e}");
+        assert!(matches!(&e, Error::Unavailable(m) if m.contains("502") && m.contains("Bad Gateway")), "{e}");
     }
 
     /// A real stream's shape: text, then a tool call whose JSON arrives in pieces.
@@ -657,7 +662,7 @@ mod tests {
         let mut asm = SseAssembler::default();
         let raw = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n";
         let out = asm.feed(raw.as_bytes(), &mut |_| {});
-        assert!(matches!(out, Err(Error::Provider(m)) if m.contains("Overloaded")));
+        assert!(matches!(out, Err(Error::Unavailable(m)) if m.contains("Overloaded")));
     }
 
     #[test]

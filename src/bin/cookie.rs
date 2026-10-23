@@ -21,10 +21,10 @@ use tokio::{
 };
 
 const USAGE: &str = "usage:
-  cookie local [folder] [--model provider:model] [--permission ask|full] [--session FILE] [--instructions TEXT] [--no-enkeon]
+  cookie local [folder] [--model provider:model] [--permission ask|full] [--session FILE] [--instructions TEXT] [--no-enkeon] [--fallback-model provider:model]...
   cookie page [folder] [--model provider:model] [--permission ask|full] [--port 4747] [--home DIR] [--page DIR]
-  cookie run <provider:model> <prompt> [--session FILE] [--instructions TEXT] [--no-enkeon] [-- <prompt starting with ->]
-  cookie chat <provider:model> [--session FILE] [--instructions TEXT] [--no-enkeon]
+  cookie run <provider:model> <prompt> [--session FILE] [--instructions TEXT] [--no-enkeon] [--fallback-model provider:model]... [-- <prompt starting with ->]
+  cookie chat <provider:model> [--session FILE] [--instructions TEXT] [--no-enkeon] [--fallback-model provider:model]...
   cookie replay <session.jsonl>
   cookie serve
   cookie --version";
@@ -46,10 +46,12 @@ struct Options {
     session: Option<String>,
     instructions: Option<String>,
     enkeon: bool,
+    /// Asked in order when the model before is out of reach.
+    fallbacks: Vec<String>,
 }
 
 fn options(args: &[String]) -> Result<Options, Failure> {
-    let mut options = Options { positional: Vec::new(), session: None, instructions: None, enkeon: true };
+    let mut options = Options { positional: Vec::new(), session: None, instructions: None, enkeon: true, fallbacks: Vec::new() };
     let mut args = args.iter();
     let mut flags = true;
     while let Some(arg) = args.next() {
@@ -61,6 +63,9 @@ fn options(args: &[String]) -> Result<Options, Failure> {
                 options.instructions = Some(args.next().ok_or(Failure::Usage("--instructions needs text".into()))?.clone())
             }
             "--no-enkeon" if flags => options.enkeon = false,
+            "--fallback-model" if flags => {
+                options.fallbacks.push(args.next().ok_or(Failure::Usage("--fallback-model needs provider:model".into()))?.clone())
+            }
             flag if flags && flag.starts_with("--") => return Err(Failure::Usage(format!("unknown flag `{flag}`"))),
             value => options.positional.push(value.to_string()),
         }
@@ -71,7 +76,7 @@ fn options(args: &[String]) -> Result<Options, Failure> {
 /// The agent and session the options describe, asking on the terminal
 /// through `input`, the one reader of stdin.
 async fn setup(model: &str, options: &Options, input: &Input<BufReader<Stdin>>) -> Result<(Agent, Session), Failure> {
-    let mut agent = Agent::new(model).map_err(failed)?.approver(LineApprover::new(input.clone(), std::io::stdin().is_terminal()));
+    let mut agent = Agent::new(model).map_err(failed)?.fallback_models(&options.fallbacks).map_err(failed)?.approver(LineApprover::new(input.clone(), std::io::stdin().is_terminal()));
     if let Some(text) = &options.instructions {
         agent = agent.instructions(text.clone());
     }

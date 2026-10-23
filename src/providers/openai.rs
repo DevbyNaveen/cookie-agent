@@ -319,7 +319,7 @@ impl OpenAiProvider {
         if let Some(key) = &self.api_key {
             call = call.bearer_auth(key);
         }
-        let response = call.send().await.map_err(|e| Error::Provider(e.to_string()))?;
+        let response = call.send().await.map_err(super::send_error)?;
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
@@ -348,7 +348,7 @@ impl Provider for OpenAiProvider {
         let mut bytes = self.post(&body).await?.bytes_stream();
         let mut assembler = ChunkAssembler::default();
         while let Some(chunk) = bytes.next().await {
-            assembler.feed(&chunk.map_err(|e| Error::Provider(e.to_string()))?, on)?;
+            assembler.feed(&chunk.map_err(super::send_error)?, on)?;
         }
         assembler.finish(on)
     }
@@ -498,7 +498,7 @@ mod tests {
             provider.complete(ModelRequest { model: "m", system: "", messages: &history, tools: vec![], ..Default::default() }),
         )
         .await;
-        assert!(matches!(out, Ok(Err(Error::Provider(_)))), "{out:?}");
+        assert!(matches!(out, Ok(Err(Error::Unavailable(_)))), "out of reach, so another model may answer: {out:?}");
     }
 
     /// A real stream's shape: text in pieces, two calls whose fragments

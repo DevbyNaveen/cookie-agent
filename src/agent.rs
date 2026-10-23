@@ -103,6 +103,9 @@ pub enum Event {
     Continued { times: usize },
     /// The person's words, added while the run worked, reached the model.
     Steered { text: String },
+    /// `from` was out of reach, so `to` was asked the same turn
+    /// (`Agent::fallback_models`).
+    FellBack { from: String, to: String, reason: String },
 }
 
 /// How many times a cut-off reply is continued before the run gives up.
@@ -345,6 +348,7 @@ impl Agent {
                         open.push(id.clone());
                         Event::ToolCallStarted { id, name }
                     }
+                    ProviderEvent::FellBack { from, to, reason } => Event::FellBack { from, to, reason },
                 })
             };
             let chat = telemetry::chat_span(&self.model, self.provider_name.as_deref());
@@ -1190,6 +1194,22 @@ mod tests {
         let out = a.run_streaming(&mut Session::in_memory(), Message::user("hi"), &RunControl::default(), &mut on).await;
         assert!(matches!(out, Err(Error::ContextFull)), "{out:?}");
         assert!(events.lock().unwrap().iter().any(|e| matches!(e, Event::CompactionFailed { .. })));
+    }
+
+    #[tokio::test]
+    async fn a_turn_another_model_answered_is_reported_and_the_run_goes_on() {
+        struct Busy;
+        #[async_trait::async_trait]
+        impl Provider for Busy {
+            async fn complete(&self, _: ModelRequest<'_>) -> Result<crate::provider::ModelResponse> {
+                Err(Error::Unavailable("HTTP 503: busy".into()))
+            }
+        }
+        let backup = Arc::new(Scripted::new(vec![Scripted::text("from the backup")]));
+        let a = Agent::with_provider(Arc::new(Busy), "agent-busy").fallbacks(vec![("agent-backup".into(), backup.clone() as Arc<dyn Provider>)]);
+        let (events, mut on) = collect();
+        assert_eq!(a.run_streaming(&mut Session::in_memory(), Message::user("hi"), &RunControl::default(), &mut on).await.unwrap(), "from the backup");
+        assert!(events.lock().unwrap().iter().any(|e| matches!(e, Event::FellBack { from, to, .. } if from == "agent-busy" && to == "agent-backup")));
     }
 
     #[tokio::test]

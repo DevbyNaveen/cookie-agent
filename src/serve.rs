@@ -43,6 +43,11 @@ pub struct RunRequest {
     kind: String,
     pub id: String,
     pub model: String,
+    /// Models asked, in order, when the one before is out of reach and
+    /// nothing of its reply has arrived (`Agent::fallback_models`). Absent:
+    /// `COOKIE_FALLBACK_MODELS` (comma-separated), else none.
+    #[serde(default)]
+    pub fallback_models: Option<Vec<String>>,
     pub input: String,
     #[serde(default)]
     pub instructions: Option<String>,
@@ -661,6 +666,8 @@ fn build(
     make_child: &dyn Fn() -> std::result::Result<Agent, String>,
 ) -> std::result::Result<(Agent, Vec<McpServer>), String> {
     let mut agent = base.approver(WireApprover(wire.clone()));
+    let fallbacks = request.fallback_models.clone().unwrap_or_else(|| fallback_models_from(std::env::var("COOKIE_FALLBACK_MODELS").ok()));
+    agent = agent.fallback_models(&fallbacks).map_err(|e| format!("fallback_models: {e}"))?;
     if let Some(limits) = &request.budget {
         let default = Budget::default();
         agent = agent.budget(Budget {
@@ -715,6 +722,11 @@ fn build(
     // Checked here, so a bad entry is refused before the run starts.
     let servers = request.mcp.iter().map(McpDecl::server).collect::<std::result::Result<_, _>>()?;
     Ok((agent, servers))
+}
+
+/// `a:x, b:y` → `["a:x", "b:y"]`; empty or unset is none.
+fn fallback_models_from(var: Option<String>) -> Vec<String> {
+    var.unwrap_or_default().split(',').map(str::trim).filter(|m| !m.is_empty()).map(String::from).collect()
 }
 
 /// Serve runs over a line-delimited JSON stream until the input ends.
@@ -1176,16 +1188,26 @@ async fn run_inner(mut agent: Agent, servers: Vec<McpServer>, request: RunReques
     }
     let events = out.clone();
     let run = request.id.clone();
+    // Every turn another model answered, on the last line too, so a client
+    // that reads only `done` can say a fallback answered.
+    let mut fell_back = Vec::new();
     let result = agent
         .run_streaming_all(&mut session, inputs, &control, &mut |event| {
             progress.touch();
+            if let crate::agent::Event::FellBack { from, to, reason } = &event {
+                fell_back.push(json!({"from": from, "to": to, "reason": reason}));
+            }
             let _ = events.send(json!({"type": "event", "run": run, "event": event}));
         })
         .await;
-    match result {
+    let mut last = match result {
         Ok(answer) => json!({"type": "done", "run": request.id, "answer": answer}),
         Err(e) => json!({"type": "error", "run": request.id, "message": e.to_string(), "kind": e.kind()}),
+    };
+    if !fell_back.is_empty() {
+        last["fallbacks"] = json!(fell_back);
     }
+    last
 }
 
 #[cfg(test)]
@@ -1874,6 +1896,51 @@ mod tests {
             assert!(refused["message"].as_str().unwrap().contains(expected), "{refused}");
         }
         assert!(p.seen().is_empty());
+    }
+
+    /// Reports that it fell back, then answers: what `Fallback` would send.
+    struct FellBack;
+
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for FellBack {
+        async fn complete(&self, _: crate::provider::ModelRequest<'_>) -> crate::Result<crate::provider::ModelResponse> {
+            unreachable!()
+        }
+        async fn stream(
+            &self,
+            _: crate::provider::ModelRequest<'_>,
+            on: &mut (dyn FnMut(crate::provider::ProviderEvent) + Send),
+        ) -> crate::Result<crate::provider::ModelResponse> {
+            on(crate::provider::ProviderEvent::FellBack { from: "m".into(), to: "small".into(), reason: "provider: HTTP 529".into() });
+            Ok(Scripted::text("answered"))
+        }
+    }
+
+    #[tokio::test]
+    async fn the_last_line_says_which_turns_another_model_answered() {
+        let mut c = start(Arc::new(FellBack));
+        c.send(run("hi", json!([]))).await;
+        let done = c.next().await;
+        assert_eq!(done["type"], "done", "{done}");
+        assert_eq!(done["fallbacks"], json!([{"from": "m", "to": "small", "reason": "provider: HTTP 529"}]));
+        let mut c = start(Arc::new(Scripted::new(vec![Scripted::text("ok")])));
+        c.send(run("hi", json!([]))).await;
+        assert!(c.next().await.get("fallbacks").is_none(), "no fallback, no field");
+    }
+
+    #[tokio::test]
+    async fn a_fallback_model_that_cannot_be_made_is_refused_before_the_run() {
+        let p = Arc::new(Scripted::new(vec![Scripted::text("never")]));
+        let mut c = start(p.clone());
+        let mut request = run("hi", json!([]));
+        request["fallback_models"] = json!(["nope"]);
+        c.send(request).await;
+        let refused = c.next().await;
+        assert_eq!(refused["type"], "error");
+        assert!(refused["message"].as_str().unwrap().contains("fallback_models"), "{refused}");
+        assert!(p.seen().is_empty());
+        assert_eq!(fallback_models_from(Some(" bedrock:a , ,bedrock:b".into())), ["bedrock:a", "bedrock:b"]);
+        assert!(fallback_models_from(Some(String::new())).is_empty() && fallback_models_from(None).is_empty());
     }
 
     #[tokio::test]

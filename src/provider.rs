@@ -113,6 +113,9 @@ pub struct ModelResponse {
 pub enum ProviderEvent {
     TextDelta(String),
     ToolCallStarted { id: String, name: String },
+    /// `from` was out of reach before any of its reply arrived, so the same
+    /// request went to `to` (`providers::fallback`).
+    FellBack { from: String, to: String, reason: String },
 }
 
 #[async_trait]
