@@ -151,7 +151,7 @@ enum CookieNavigationPreview {
 
     private static var generalSettings: some View {
         CookieSettingsScaffold(page: .general, subtitle: "Make Cookie feel at home on your Mac.") {
-            CookieGeneralSettingsContent(showInDock: .constant(false),
+            CookieGeneralSettingsContent(showInDock: .constant(false), showInRecordings: .constant(true),
                                          peekOnHover: .constant(true), sounds: .constant(true), openAtLogin: .constant(false))
         }
     }

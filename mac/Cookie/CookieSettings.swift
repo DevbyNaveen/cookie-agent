@@ -242,13 +242,14 @@ private struct AccountPage: View {
 
 private struct GeneralPage: View {
     @AppStorage(CK.Key.showInDock) private var showInDock = false
+    @AppStorage(CK.Key.showInRecordings) private var showInRecordings = true
     @AppStorage(CK.Key.peekOnHover) private var peekOnHover = true
     @AppStorage(CK.Key.sounds) private var sounds = true
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
 
     var body: some View {
-        CookieGeneralSettingsContent(showInDock: $showInDock,
+        CookieGeneralSettingsContent(showInDock: $showInDock, showInRecordings: $showInRecordings,
                                      peekOnHover: $peekOnHover, sounds: $sounds,
                                      openAtLogin: Binding(get: { openAtLogin }, set: setOpenAtLogin),
                                      loginError: loginError)
@@ -268,6 +269,7 @@ private struct GeneralPage: View {
 
 struct CookieGeneralSettingsContent: View {
     @Binding var showInDock: Bool
+    @Binding var showInRecordings: Bool
     @Binding var peekOnHover: Bool
     @Binding var sounds: Bool
     @Binding var openAtLogin: Bool
@@ -277,6 +279,11 @@ struct CookieGeneralSettingsContent: View {
         SettingsGroup(label: "On your Mac") {
             SettingsRow(title: "Show in Dock", caption: "Keep Cookie in the Dock as well as the notch.", symbol: "macwindow", tint: CK.accent) {
                 SettingsSwitch(title: "Show in Dock", isOn: $showInDock)
+            }
+            // The stored key keeps its old meaning (true = visible, the default); the switch reads as "hide".
+            SettingsRow(title: "Hide from screen sharing", caption: "Cookie asks macOS to leave its windows out of other apps' screen shares and recordings. Some apps still capture them (QuickTime and macOS screen recording do), so check before you share anything sensitive.", symbol: "eye.slash", tint: CK.accent) {
+                SettingsSwitch(title: "Hide from screen sharing",
+                               isOn: Binding(get: { !showInRecordings }, set: { showInRecordings = !$0 }))
             }
             SettingsRow(title: "Peek on hover", caption: "Pause over the notch to see your recent chats.", symbol: "cursorarrow", tint: CK.accent) {
                 SettingsSwitch(title: "Peek on hover", isOn: $peekOnHover)

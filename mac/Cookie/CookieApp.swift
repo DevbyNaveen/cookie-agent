@@ -44,6 +44,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         companionManager.start()
         notchPanelManager = NotchPanelManager(companionManager: companionManager)
+        CookieCaptureShield.start()
         CookieNotifications.shared.start { [weak self] thread in self?.notchPanelManager?.openFromNotification(thread) }
         setupController = CookieSetupController(companionManager: companionManager) { [weak self] configureModel in
             self?.notchPanelManager?.showHome(settingsPage: configureModel ? .voice : nil)
