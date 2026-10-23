@@ -42,14 +42,51 @@ pub(crate) fn http_client() -> reqwest::Client {
         .expect("a TLS backend is compiled in")
 }
 
-/// An HTTP failure, keeping the status even when the body isn't JSON.
+/// An HTTP failure, keeping the status even when the body isn't JSON. A
+/// request refused because the conversation is longer than the model's
+/// window is said as itself, so the run can summarise and send it again.
 pub fn http_error(status: u16, body: &str) -> Error {
+    if context_full(status, body) {
+        return Error::ContextFull;
+    }
     let detail: String = body.chars().take(500).collect();
     Error::Provider(format!("HTTP {status}: {detail}"))
 }
 
+/// How each API words "the input is longer than the window": a 400 (413 for
+/// some) whose message says so. Providers give no code of their own for it
+/// except OpenAI's `context_length_exceeded`.
+fn context_full(status: u16, body: &str) -> bool {
+    const SAID: [&str; 6] = [
+        "context_length_exceeded",
+        "maximum context length",
+        "prompt is too long",
+        "input is too long",
+        "exceeds the maximum number of tokens",
+        "model_context_window_exceeded",
+    ];
+    let body = body.to_lowercase();
+    matches!(status, 400 | 413) && SAID.iter().any(|s| body.contains(s))
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::Error;
+
+    #[test]
+    fn every_providers_full_context_refusal_is_context_full() {
+        for (status, body) in [
+            (400, r#"{"error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}"#),
+            (400, r#"{"error":{"message":"This model's maximum context length is 128000 tokens.","code":"context_length_exceeded"}}"#),
+            (400, r#"{"error":{"code":400,"message":"The input token count (1200000) exceeds the maximum number of tokens allowed (1048576)."}}"#),
+            (400, r#"{"message":"Input is too long for requested model."}"#),
+        ] {
+            assert!(matches!(super::http_error(status, body), Error::ContextFull), "{body}");
+        }
+        assert!(matches!(super::http_error(400, r#"{"message":"messages: field required"}"#), Error::Provider(_)));
+        assert!(matches!(super::http_error(500, "prompt is too long"), Error::Provider(_)), "only a refusal of the request says so");
+    }
+
     #[test]
     fn gemini_is_a_known_provider_that_needs_its_key() {
         let id = crate::model_id::ModelId::parse("gemini:gemini-3.8-flash").unwrap();

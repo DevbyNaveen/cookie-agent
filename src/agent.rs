@@ -108,6 +108,17 @@ pub enum Event {
 /// How many times a cut-off reply is continued before the run gives up.
 const CONTINUE_AT_MOST: usize = 3;
 
+/// How many times a conversation the model said no longer fits is summarised
+/// and sent again before the run ends as `context_full`.
+const COMPACT_WHEN_FULL_AT_MOST: usize = 3;
+
+/// What a run without its own compaction summarises with once the model
+/// says the conversation no longer fits: a single long job can be summarised
+/// between tool rounds, its instruction kept in view.
+fn when_full(policy: Option<&Compaction>) -> Compaction {
+    Compaction { within_turn: true, ..policy.cloned().unwrap_or_default() }
+}
+
 /// What a run that must stop is told before its last call.
 fn close_note(reason: &str) -> String {
     format!(
@@ -266,6 +277,10 @@ impl Agent {
         let mut rounds = 0usize;
         // An answer that ended on an offer was sent back once already.
         let mut sent_back = false;
+        // What the model is sent; set by the first `context_full` when the
+        // agent has no compaction of its own.
+        let mut compaction = self.compaction.clone();
+        let mut compacted_when_full = 0usize;
 
         loop {
             if cancel.is_cancelled() {
@@ -302,11 +317,11 @@ impl Agent {
                 Some(searcher) => searcher.offered(&tools),
                 None => tools.iter().map(|t| t.spec()).collect(),
             };
-            let view = match &self.compaction {
+            let view = match &compaction {
                 Some(policy) => {
                     // A failed summary must not block the session: report it and
                     // send the full view (cancellation still stops the run).
-                    match self.compact(session, policy, &system, &specs, meter, &budget, cancel, on_event).await {
+                    match self.compact(session, policy, false, &system, &specs, meter, &budget, cancel, on_event).await {
                         Ok(()) => {}
                         Err(Error::Cancelled) => return Err(Error::Cancelled),
                         Err(error) => on_event(Event::CompactionFailed { reason: error.to_string() }),
@@ -322,7 +337,7 @@ impl Agent {
             } else {
                 meter.begin_call(&budget)?;
             }
-            let request = ModelRequest { model: &self.model, system: &system, messages: &view, tools: specs, reasoning: self.reasoning, output_schema: self.output_schema.as_ref() };
+            let request = ModelRequest { model: &self.model, system: &system, messages: &view, tools: specs.clone(), reasoning: self.reasoning, output_schema: self.output_schema.as_ref() };
             let mut forward = |event: ProviderEvent| {
                 on_event(match event {
                     ProviderEvent::TextDelta(text) => Event::TextDelta(text),
@@ -352,6 +367,29 @@ impl Agent {
                          Make the call again with less in it, or in smaller steps.",
                     ))
                     .await?;
+                    continue;
+                }
+                // The conversation no longer fits: summarise the older rounds
+                // (keeping fewer word for word each time) and send the same
+                // turn again. Nothing of this call was kept, so nothing repeats.
+                Err(Error::ContextFull) if compacted_when_full < COMPACT_WHEN_FULL_AT_MOST => {
+                    compacted_when_full += 1;
+                    let base = when_full(compaction.as_ref());
+                    let forced = Compaction {
+                        keep_recent_turns: base.keep_recent_turns.max(1).saturating_sub(compacted_when_full - 1).max(1),
+                        ..base.clone()
+                    };
+                    match self.compact(session, &forced, true, &system, &specs, meter, &budget, cancel, on_event).await {
+                        Ok(()) => {}
+                        Err(Error::Cancelled) => return Err(Error::Cancelled),
+                        // Nothing left to summarise, or the summary failed: the
+                        // conversation still does not fit, and the run says so.
+                        Err(error) => {
+                            on_event(Event::CompactionFailed { reason: error.to_string() });
+                            return Err(Error::ContextFull);
+                        }
+                    }
+                    compaction = Some(base);
                     continue;
                 }
                 other => other?,
@@ -1091,6 +1129,67 @@ mod tests {
         });
         let out = tokio::time::timeout(std::time::Duration::from_secs(2), a.run_in(&mut s, Message::user("next"), &cancel)).await;
         assert!(matches!(out, Ok(Err(Error::Cancelled))), "returned promptly as cancelled");
+    }
+
+    /// Says the conversation no longer fits until what it is sent carries a
+    /// summary (or always, with `never_fits`); writes any summary asked for.
+    struct FullUntilSummarised {
+        never_fits: bool,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for FullUntilSummarised {
+        async fn complete(&self, request: ModelRequest<'_>) -> Result<crate::provider::ModelResponse> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if request.system == crate::compaction::SUMMARY_PROMPT {
+                return Ok(Scripted::text("they asked earlier questions"));
+            }
+            if self.never_fits || !request.messages.iter().any(|m| m.summary_of().is_some()) {
+                return Err(Error::ContextFull);
+            }
+            Ok(Scripted::text("done"))
+        }
+    }
+
+    fn full(never_fits: bool) -> Arc<FullUntilSummarised> {
+        Arc::new(FullUntilSummarised { never_fits, calls: AtomicUsize::new(0) })
+    }
+
+    #[tokio::test]
+    async fn a_full_context_is_summarised_and_the_same_turn_sent_again() {
+        let mut history = chat_turn("first", "one");
+        history.extend(chat_turn("second", "two"));
+        let mut s = prefilled(history).await;
+        let p = full(false);
+        // No compaction set: the run still survives a full context.
+        let a = Agent::with_provider(p.clone(), "m");
+        let (events, mut on) = collect();
+        assert_eq!(a.run_streaming(&mut s, Message::user("next"), &RunControl::default(), &mut on).await.unwrap(), "done");
+        assert!(events.lock().unwrap().iter().any(|e| matches!(e, Event::Compacted { covered: 4, .. })), "{:?}", events.lock().unwrap());
+        assert_eq!(p.calls.load(Ordering::SeqCst), 3, "the full call, the summary, the same turn again");
+        assert_eq!(s.messages().iter().filter(|m| m.summary_of().is_some()).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_context_still_full_after_summarising_ends_as_context_full() {
+        let history: Vec<Message> = (0..5).flat_map(|i| chat_turn(&format!("q{i}"), "a")).collect();
+        let mut s = prefilled(history).await;
+        let p = full(true);
+        let a = Agent::with_provider(p.clone(), "m").compaction(crate::Compaction { keep_recent_turns: 4, ..Default::default() });
+        let out = a.run_in(&mut s, Message::user("next"), &CancellationToken::new()).await;
+        assert!(matches!(out, Err(Error::ContextFull)), "{out:?}");
+        assert_eq!(s.messages().iter().filter(|m| m.summary_of().is_some()).count(), COMPACT_WHEN_FULL_AT_MOST, "fewer turns kept each time");
+        assert_eq!(p.calls.load(Ordering::SeqCst), 1 + 2 * COMPACT_WHEN_FULL_AT_MOST, "bounded: never a loop");
+    }
+
+    #[tokio::test]
+    async fn a_full_context_with_nothing_to_summarise_says_so() {
+        let a = Agent::with_provider(full(false), "m");
+        let (events, mut on) = collect();
+        let out = a.run_streaming(&mut Session::in_memory(), Message::user("hi"), &RunControl::default(), &mut on).await;
+        assert!(matches!(out, Err(Error::ContextFull)), "{out:?}");
+        assert!(events.lock().unwrap().iter().any(|e| matches!(e, Event::CompactionFailed { .. })));
     }
 
     #[tokio::test]

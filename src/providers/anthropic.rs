@@ -273,7 +273,10 @@ pub fn request_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> V
 fn stop_reason(reason: Option<&str>) -> Result<StopReason> {
     match reason {
         Some("tool_use") => Ok(StopReason::ToolUse),
-        Some("max_tokens" | "model_context_window_exceeded") => Ok(StopReason::MaxTokens),
+        Some("max_tokens") => Ok(StopReason::MaxTokens),
+        // Not a long answer: the window is full. Continuing it would only
+        // send more, so it is said as itself and the run summarises.
+        Some("model_context_window_exceeded") => Err(Error::ContextFull),
         Some("pause_turn") => Ok(StopReason::PauseTurn),
         Some("refusal") => Err(Error::Provider("the model stopped without an answer: refusal".into())),
         _ => Ok(StopReason::EndTurn),
@@ -737,6 +740,13 @@ data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_
         let raw = json!({"content": [{"type": "text", "text": "Searching"}], "stop_reason": "pause_turn", "usage": {}});
         assert_eq!(parse_response(&raw).unwrap().stop, StopReason::PauseTurn);
         assert_eq!(run(&format!("{START}{}", STOP.replace("end_turn", "pause_turn"))).unwrap().stop, StopReason::PauseTurn);
+    }
+
+    #[test]
+    fn a_full_window_is_context_full_never_a_reply_to_continue() {
+        let raw = json!({"content": [{"type": "text", "text": "The"}], "stop_reason": "model_context_window_exceeded", "usage": {}});
+        assert!(matches!(parse_response(&raw), Err(Error::ContextFull)));
+        assert!(matches!(run(&format!("{START}{}", STOP.replace("end_turn", "model_context_window_exceeded"))), Err(Error::ContextFull)));
     }
 
     /// Records every tracing event's fields.

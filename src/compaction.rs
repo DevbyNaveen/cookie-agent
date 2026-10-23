@@ -171,12 +171,14 @@ impl crate::agent::Agent {
     /// When the request is over the limit, summarise everything before the
     /// kept turns into one appended message. Provenance still reads the full
     /// session, so the person's earlier words stay credited and the summary
-    /// is never mistaken for them.
+    /// is never mistaken for them. `force` summarises even under the limit:
+    /// the provider said the conversation no longer fits.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn compact(
         &self,
         session: &mut crate::session::Session,
         policy: &Compaction,
+        force: bool,
         system: &str,
         tools: &[&crate::tool::ToolSpec],
         meter: &mut crate::budget::Meter,
@@ -191,7 +193,7 @@ impl crate::agent::Agent {
             provider::{ModelRequest, StopReason},
         };
         let tokens_before = estimate_request_tokens(system, tools, &context_view(session.messages(), policy));
-        if tokens_before <= policy.summarize_above_tokens {
+        if !force && tokens_before <= policy.summarize_above_tokens {
             return Ok(());
         }
         let messages = session.messages();
