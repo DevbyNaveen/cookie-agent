@@ -1,0 +1,29 @@
+[package]
+name = "cookie-recorder"
+version = "0.1.0"
+description = "Records a meeting on the Mac — microphone and system audio on two channels, Opus in Ogg — and uploads it to Enkeon a minute at a time. No bot joins the call."
+edition = "2021"
+rust-version = "1.85"
+license = "LicenseRef-Proprietary"
+publish = false
+
+# Its own workspace: never pulled into anything around it.
+[workspace]
+
+[dependencies]
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+# Meetings: the call from the system, the person from the microphone.
+# Same crates and versions as apps/desktop/src-tauri (thinkingrootdbcloud).
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSError", "NSObject"] }
+objc2-screen-capture-kit = { version = "0.3", default-features = false, features = ["std", "SCStream", "SCShareableContent", "SCError", "block2", "dispatch2", "objc2-core-media"] }
+objc2-core-media = { version = "0.3", features = ["CMSampleBuffer", "CMTime"] }
+block2 = "0.6"
+cpal = "0.17"
+opus = "0.4"
+ogg = "0.9"
+
+[profile.release]
+strip = true
+lto = "thin"

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Cookie shows your next meeting in the notch with a line of prep. It reads your calendars on this Mac and never changes or uploads them.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Cookie uses your microphone so you can talk to it</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Cookie needs screen recording access to see your screen and help you.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Cookie uses speech recognition to transcribe your voice when you talk to it</string>
+	<key>VoiceTranscriptionProvider</key>
+	<string>apple</string>
+</dict>
+</plist>

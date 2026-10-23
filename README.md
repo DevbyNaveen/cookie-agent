@@ -31,7 +31,7 @@ Cookie has no app you have to open. It comes to you.
 | **Email** | Write to Cookie like you would a colleague. It replies on the same thread. |
 | **Its page** | A live board of everything Cookie is working on: each job, its steps, its answer. |
 | **Your AI tools** | Claude Code, Cursor and any MCP client can hand Cookie a job. |
-| **Your Mac** *(coming soon)* | Hold a key and talk. Cookie answers out loud and points to it on your screen. |
+| **Your Mac** | Hold a key and talk. Cookie answers out loud and points to it on your screen. Build it from [`mac/`](mac/). |
 
 Wherever a job starts, it shows up on the page, so the whole team sees what Cookie is doing.
 

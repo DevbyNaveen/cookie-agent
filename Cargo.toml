@@ -6,6 +6,8 @@ rust-version = "1.89"
 license = "MIT"
 repository = "https://github.com/DevbyNaveen/cookie-agent"
 description = "A tiny agent loop where text the model read can never decide who gets sent what."
+# The page, the Mac app and the evals live beside the crate, not in it.
+exclude = ["mac/", "web/", "evals/"]
 
 [features]
 default = []
