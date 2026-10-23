@@ -1,7 +1,7 @@
 //! Watching a page. A person asks Cookie to keep an eye on a page (a pricing
 //! page, a changelog, a job board); the client fetches it now and then, and
 //! only when the words changed is that news — the model never runs to find
-//! out nothing happened (Hermes's monitor mode does the same with a hash).
+//! out nothing happened.
 //! What counts as a change, and how it is said, live here.
 
 use serde_json::{json, Value};

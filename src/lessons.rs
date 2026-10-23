@@ -1,10 +1,8 @@
 //! Lessons: what Cookie learns from a team's finished jobs, and how a lesson
 //! earns its place in the next one.
 //!
-//! Hermes Agent learns by having a hidden reviewer write notes and skills
-//! every few turns, told that a pass which writes nothing is a missed
-//! opportunity — and nothing ever measures whether what it wrote helped.
-//! These lessons work the other way round:
+//! A lesson is never written just because a job ended, and every lesson is
+//! measured on the jobs that follow:
 //!
 //! * **Proposed only on evidence.** A lesson is distilled ([`DISTILL_PROMPT`])
 //!   from a finished job that ended [`clean`] with real [`work`] in it, or from

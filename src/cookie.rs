@@ -31,8 +31,7 @@ pub fn is_source(tool: &str) -> bool {
 /// prompt cache is reused run after run.
 pub fn instructions(team: &str, act: Option<permission::Level>) -> String {
     let acting = act.map(permission::acting).unwrap_or("");
-    // A behaviour spec, not a rulebook (after Hermes' SOUL/identity, read
-    // 2026-10-22): a few principles the model judges with, then only the
+    // A behaviour spec, not a rulebook: a few principles the model judges with, then only the
     // mechanics it must know. Situation-specific know-how lives in the tool
     // descriptions and in skills, loaded when relevant; safety lives in code.
     format!(
