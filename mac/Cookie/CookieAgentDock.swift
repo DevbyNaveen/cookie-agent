@@ -98,10 +98,6 @@ final class CookieAgentDock {
             .store(in: &cancellables)
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
             .sink { [weak self] _ in self?.layout() }.store(in: &cancellables)
-        NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.applySharingPreference() }.store(in: &cancellables)
-        applySharingPreference()
     }
 
     deinit {
@@ -136,11 +132,6 @@ final class CookieAgentDock {
         }
         panel.orderFrontRegardless()
         updatePointer()
-    }
-
-    private func applySharingPreference() {
-        let visible = UserDefaults.standard.object(forKey: CK.Key.showInRecordings) as? Bool ?? true
-        panel.sharingType = visible ? .readOnly : .none
     }
 
     private func expand(_ id: UUID) {

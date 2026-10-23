@@ -26,7 +26,6 @@ enum CK {
 
     enum Key {
         static let showInDock = "cookie.showInDock"
-        static let showInRecordings = "cookie.showInRecordings"
         static let peekOnHover = "cookie.peekOnHover"
         static let sounds = "cookie.sounds"
     }
