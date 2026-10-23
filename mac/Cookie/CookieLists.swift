@@ -139,19 +139,19 @@ final class ListStore: ObservableObject {
     // MARK: Disk
 
     private func load() {
-        guard let sealed = try? Data(contentsOf: file) else { return }
         do {
-            lists = try JSONDecoder().decode([CookieList].self, from: ChatVault.open(sealed))
+            if let saved = try ChatVault.openStore(file, name: "lists", decode: { try JSONDecoder().decode([CookieList].self, from: $0) }) {
+                lists = saved
+            }
+        } catch ChatVault.StoreError.keyWithheld {
+            problem = ChatVault.withheldProblem("lists")
         } catch {
-            // Never overwrite lists we couldn't read: set them aside for recovery.
-            let aside = ChatVault.directory.appendingPathComponent("lists.unreadable-\(Int(Date().timeIntervalSince1970)).sealed")
-            try? FileManager.default.moveItem(at: file, to: aside)
             problem = "Couldn't open your saved lists; they were set aside, not deleted."
         }
     }
 
     private func save() {
-        guard connected else { return }
+        guard connected, !ChatVault.isWithheld(file) else { return }
         do {
             try FileManager.default.createDirectory(at: ChatVault.directory, withIntermediateDirectories: true)
             try ChatVault.seal(JSONEncoder().encode(lists)).write(to: file, options: .atomic)

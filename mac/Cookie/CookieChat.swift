@@ -102,7 +102,7 @@ struct CookieChatView: View {
 // MARK: - Empty state
 
 private struct GreetingView: View {
-    let mood: ClayCookie.Mood
+    let mood: CookieOrb.Mood
     var agent: CookieAgent? = nil
     @State private var appeared = false
 

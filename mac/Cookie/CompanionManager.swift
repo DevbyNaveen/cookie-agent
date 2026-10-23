@@ -97,7 +97,7 @@ final class CompanionManager: ObservableObject {
     private var dozeTimer: Timer?
 
     /// The face everywhere: the voice state, or asleep after an idle hour.
-    var characterMood: ClayCookie.Mood { isDozing ? .sleeping : voiceState.cookieMood }
+    var characterMood: CookieOrb.Mood { isDozing ? .sleeping : voiceState.cookieMood }
 
     /// Where the eyes look while pointing: toward the target, -1 (far left) to 1 (far right) across its display.
     var gazeTowardPointer: CGFloat? {

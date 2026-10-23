@@ -71,7 +71,7 @@ fi
 codesign --force --options runtime $TIMESTAMP --sign "$SIGN_ID" --entitlements Cookie/Cookie.entitlements "$APP"
 codesign --verify --strict --deep "$APP"
 for BIN in "$APP" "$APP/Contents/Helpers/cookie"; do
-  codesign -dv "$BIN" 2>&1 | grep -q "flags=0x10000(runtime)" || { echo "hardened runtime missing: $BIN"; exit 1; }
+  codesign -dv "$BIN" 2>&1 | grep -Eq "flags=0x[0-9a-f]+\([^)]*runtime" || { echo "hardened runtime missing: $BIN"; exit 1; }
 done
 echo "built $APP"
 

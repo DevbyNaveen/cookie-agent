@@ -312,6 +312,45 @@ enum ChatVault {
         try AES.GCM.open(AES.GCM.SealedBox(combined: sealed), using: key())
     }
 
+    enum StoreError: Error {
+        /// The Keychain would not hand over the key: a build it has not been told to trust, a
+        /// denied or missed prompt. The file is untouched and must not be saved over this session.
+        case keyWithheld(Error)
+        /// The file did not open with the key, or did not decode; it was set aside, not deleted.
+        case setAside
+    }
+
+    /// Stores whose file could not be opened because the key was withheld. Saving one would
+    /// write what is in memory (nothing) over chats that are fine, once a later prompt is allowed.
+    private static var withheld: Set<URL> = []
+
+    static func isWithheld(_ file: URL) -> Bool { withheld.contains(file) }
+
+    /// A store's sealed file, opened and decoded; nil when there is none yet. Only a file that
+    /// fails to open with the key, or to decode, is set aside (`<name>.unreadable-<time>.sealed`).
+    static func openStore<Value>(_ file: URL, name: String, decode: (Data) throws -> Value) throws -> Value? {
+        guard let sealed = try? Data(contentsOf: file) else { return nil }
+        let key: SymmetricKey
+        do {
+            key = try self.key()
+        } catch {
+            withheld.insert(file)
+            throw StoreError.keyWithheld(error)
+        }
+        do {
+            return try decode(AES.GCM.open(AES.GCM.SealedBox(combined: sealed), using: key))
+        } catch {
+            let aside = directory.appendingPathComponent("\(name).unreadable-\(Int(Date().timeIntervalSince1970)).sealed")
+            try? FileManager.default.moveItem(at: file, to: aside)
+            throw StoreError.setAside
+        }
+    }
+
+    /// What a store says when its key was withheld.
+    static func withheldProblem(_ what: String) -> String {
+        "Cookie couldn't get its key from the Keychain, so your \(what) stay closed and untouched. Quit Cookie, open it again and choose Always Allow."
+    }
+
     static func write(_ data: Data) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])

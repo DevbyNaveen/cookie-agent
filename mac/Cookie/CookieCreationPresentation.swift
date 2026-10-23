@@ -27,7 +27,7 @@ struct CookieCreationSurface<Details: View, Actions: View>: View {
     @State private var holding = false
 
     private var busy: Bool { phase != .ready || preparingSpeech }
-    private var mood: ClayCookie.Mood {
+    private var mood: CookieOrb.Mood {
         switch phase {
         case .listening: return .listening
         case .thinking: return .thinking

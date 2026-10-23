@@ -281,7 +281,7 @@ private struct MagicTrailView: View {
             Canvas { ctx, _ in
                 draw(in: &ctx, t: t)
             } symbols: {
-                ChocoChip(size: 15).tag(0)
+                CookiePointer(size: 15).tag(0)
             }
         }
         .opacity(model.opacity)

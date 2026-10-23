@@ -27,7 +27,7 @@ struct PeekLine: Equatable, Identifiable {
     var action: PeekAction = .none
     /// A live reply is in progress; tracked work alone does not set this.
     var busy = false
-    var characterMood: ClayCookie.Mood = .idle
+    var characterMood: CookieOrb.Mood = .idle
     var id: String { kind.rawValue }
 
     var label: String {

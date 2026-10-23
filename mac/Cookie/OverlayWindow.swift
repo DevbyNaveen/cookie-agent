@@ -354,10 +354,9 @@ struct BlueCursorView: View {
             // During cursor following: fast spring animation for snappy tracking.
             // During navigation: NO implicit animation — the frame-by-frame bezier
             // timer controls position directly at 60fps for a smooth arc flight.
-            // One chocolate chip rides next to the pointer; its tip points
+            // Cookie's triangle rides next to the pointer; its tip points
             // where Cookie is looking, and turns toward a target in flight.
-            ChocoChip(size: 13)
-                .rotationEffect(.degrees(triangleRotationDegrees))
+            CookiePointer(size: 16, degrees: triangleRotationDegrees)
                 .scaleEffect(buddyFlightScale)
                 .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle
                     || companionManager.voiceState == .responding && buddyNavigationMode != .followingCursor) && !pointerAway ? cursorOpacity : 0)

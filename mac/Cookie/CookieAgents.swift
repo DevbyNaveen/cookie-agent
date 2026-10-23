@@ -234,18 +234,19 @@ final class CookieAgentStore: ObservableObject {
     // MARK: Disk
 
     private func load() {
-        guard let sealed = try? Data(contentsOf: file) else { return }
         do {
-            agents = try JSONDecoder().decode([CookieAgent].self, from: ChatVault.open(sealed))
+            if let saved = try ChatVault.openStore(file, name: "agents", decode: { try JSONDecoder().decode([CookieAgent].self, from: $0) }) {
+                agents = saved
+            }
+        } catch ChatVault.StoreError.keyWithheld {
+            problem = ChatVault.withheldProblem("agents")
         } catch {
-            let aside = ChatVault.directory.appendingPathComponent("agents.unreadable-\(Int(Date().timeIntervalSince1970)).sealed")
-            try? FileManager.default.moveItem(at: file, to: aside)
             problem = "Couldn't open your saved agents; they were set aside, not deleted."
         }
     }
 
     private func save() {
-        guard connected else { return }
+        guard connected, !ChatVault.isWithheld(file) else { return }
         do {
             try FileManager.default.createDirectory(at: ChatVault.directory, withIntermediateDirectories: true)
             try ChatVault.seal(JSONEncoder().encode(agents)).write(to: file, options: .atomic)
