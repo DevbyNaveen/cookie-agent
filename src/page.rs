@@ -76,6 +76,8 @@ const ROUTINE_TICK: Duration = Duration::from_secs(30);
 /// A run missed while Cookie was off still runs once if it is no later than
 /// this; an older one is skipped (Enkeon's rule).
 const ROUTINE_LATE_SECS: i64 = 12 * 3_600;
+/// As many routines as the board lists; one more would run where nobody could pause it.
+const MOST_ROUTINES: usize = 20;
 /// A routine's job, as long as a job may be.
 const JOB_CHARS: usize = 4_000;
 /// A comment line on an open stream, so nothing between closes it as idle.
@@ -433,7 +435,21 @@ fn create_routine(state: &Arc<State>, body: &Value) -> Response<Body> {
     if job.is_empty() || !matches!(cadence, "daily" | "weekly" | "hourly") {
         return error(StatusCode::BAD_REQUEST, "bad_routine", "A routine needs a job and a cadence: daily, weekly or hourly.");
     }
+    let mut routines = state.routines.lock().expect("routines lock");
+    // The same routine asked again while it's active is the one already there, as in Enkeon.
     let now = SystemTime::now();
+    if let Some(same) = routines.iter().find(|r| {
+        r.state == "active" && r.job == job && r.cadence == cadence && r.weekday == weekday && r.hour == hour && r.minute == minute
+    }) {
+        return ok(routine_view(same, unix(now)));
+    }
+    if routines.iter().filter(|r| r.state != "declined").count() >= MOST_ROUTINES {
+        return error(
+            StatusCode::CONFLICT,
+            "conflict",
+            &format!("You have {MOST_ROUTINES} routines already. Stop one on the Board first."),
+        );
+    }
     let routine = Routine {
         id: format!("cr_{}", token(10)),
         job,
@@ -449,7 +465,6 @@ fn create_routine(state: &Arc<State>, body: &Value) -> Response<Body> {
         fired: 0,
     };
     let view = routine_view(&routine, unix(now));
-    let mut routines = state.routines.lock().expect("routines lock");
     routines.push(routine);
     save_routines(state, &routines);
     ok(view)

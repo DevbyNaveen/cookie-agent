@@ -27,6 +27,7 @@ struct BoardView: View {
     @ObservedObject var navigation: CookieNavigation
     @ObservedObject private var recorder = CookieRecorder.shared
     @ObservedObject private var cookie = CookieAPI.shared
+    @ObservedObject private var agents = CookieAgentStore.shared
     @State private var search = ""
     @State private var job = ""
     @State private var jobProblem: String?
@@ -37,6 +38,7 @@ struct BoardView: View {
     private var items: [WorkItem] { CookieWorkSort.matching(store.items, query: query) }
     private var isEmpty: Bool {
         store.items.isEmpty && lists.lists.allSatisfy(\.rows.isEmpty) && (cookie.overview?.runs.isEmpty ?? true) && cookie.routines.isEmpty
+            && localRoutines.isEmpty
     }
 
     private func matches(_ text: String) -> Bool {
@@ -46,6 +48,10 @@ struct BoardView: View {
     private var working: [CookieAPI.Run] { cookie.working.filter { matches($0.subject) } }
     private var chases: [CookieAPI.Chase] { cookie.openChases.filter { matches($0.about + " " + $0.to.joined(separator: " ")) } }
     private var routines: [CookieAPI.Routine] { cookie.routines.filter { matches($0.job) } }
+    /// Named Cookies' own routines, which run on this Mac only (see `CookieRoutineWords.perform`).
+    private var localRoutines: [(agent: CookieAgent, routine: CookieRoutine)] {
+        agents.agents.filter { !$0.builtIn }.flatMap { agent in agent.routines.map { (agent, $0) } }.filter { matches($0.routine.instruction) }
+    }
     private var finishedRuns: [CookieAPI.Run] { cookie.finished.filter { matches($0.subject + " " + ($0.answer ?? "")) } }
 
     var body: some View {
@@ -63,7 +69,7 @@ struct BoardView: View {
                         if isEmpty {
                             emptyBoard
                         } else if items.isEmpty && !query.isEmpty && matchingLists.isEmpty && needs.isEmpty && working.isEmpty
-                                    && chases.isEmpty && routines.isEmpty && finishedRuns.isEmpty {
+                                    && chases.isEmpty && routines.isEmpty && localRoutines.isEmpty && finishedRuns.isEmpty {
                             WorkEmptyState(symbol: "magnifyingglass", title: "Nothing matches", detail: "Try a title, a person or a next step.")
                         } else {
                             ForEach([WorkColumn.needsYou, .cookie, .waiting]) { column in
@@ -154,11 +160,11 @@ struct BoardView: View {
     }
 
     @ViewBuilder private var routineSection: some View {
-        if !routines.isEmpty {
+        if !routines.isEmpty || !localRoutines.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Image(systemName: "repeat").font(.system(size: 12, weight: .medium)).foregroundStyle(CK.tertiary)
-                    WorkSectionHeading(title: "Routines", count: routines.count)
+                    WorkSectionHeading(title: "Routines", count: routines.count + localRoutines.count)
                 }
                 .padding(.horizontal, 4).frame(height: 26)
                 VStack(spacing: 4) {
@@ -169,10 +175,21 @@ struct BoardView: View {
                                             ? .init(title: "Resume") { await cookie.routine(routine.id, "resume") }
                                             : .init(title: "Pause") { await cookie.routine(routine.id, "pause") }])
                     }
+                    ForEach(localRoutines, id: \.routine.id) { agent, routine in
+                        CookieRow(tint: CK.tertiary, title: routine.instruction,
+                                  detail: "\(routine.cadence.title) · \(agent.name), on this Mac only",
+                                  actions: [.init(title: "Remove") { removeLocal(routine.id, from: agent.id) }])
+                    }
                 }
             }
             .padding(6)
         }
+    }
+
+    private func removeLocal(_ routineID: UUID, from agentID: UUID) {
+        guard var agent = agents.agent(agentID) else { return }
+        agent.routines.removeAll { $0.id == routineID }
+        agents.update(agent)
     }
 
     // MARK: Header

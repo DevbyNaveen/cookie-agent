@@ -228,13 +228,22 @@ final class CookieAPI: ObservableObject {
     func routine(_ id: String, _ action: String) async { await act("POST", "/routines/\(id)", ["action": action]) }
     func stopChase(_ id: String) async { await act("POST", "/chases/\(id)/stop") }
 
-    /// A routine the person asked for (`weekday` 1 = Monday). Enkeon has no route
-    /// for one made from the app yet; it answers 404/405 and the person is told.
+    /// A routine the person asked for (`weekday` 1 = Monday). Asked again while it's
+    /// active, both backends hand back the one already there rather than a second.
     func makeRoutine(job: String, cadence: String, weekday: Int, hour: Int, minute: Int) async throws {
         do {
             _ = try await call("POST", "/routines", ["job": job, "cadence": cadence, "weekday": weekday, "hour": hour, "minute": minute])
-        } catch let failure as Failure where CookieAccount.shared.isSignedIn && [404, 405].contains(failure.status) {
-            throw Failure(status: failure.status, code: failure.code, message: "Enkeon doesn't take routines from the app yet. Ask on Cookie's page in the Console, or give the job a few times and Cookie offers one.")
+        } catch let failure as Failure {
+            switch failure.status {
+            case 400:
+                throw Failure(status: 400, code: failure.code, message: "Cookie couldn't read that schedule: \(failure.message)")
+            case 404 where CookieAccount.shared.isSignedIn:
+                throw Failure(status: 404, code: failure.code, message: "Cookie isn't on for this Enkeon project, so it can't keep a routine there. An admin turns it on in the Console.")
+            case 409:
+                throw Failure(status: 409, code: failure.code, message: "You have 20 routines already, as many as the Board can show. Pause or decline one there first.")
+            default:
+                throw failure
+            }
         }
     }
 
@@ -566,15 +575,32 @@ enum CookieRoutineWords {
             : Plan(job: job, cadence: "weekly", weekdays: picked, hour: hour, minute: minute)
     }
 
+    /// The named Cookie whose reply is in flight; nil for Cookie herself.
+    static var namedCookie: CookieAgent? {
+        guard let name = CookieHandoff.currentAgentName?() else { return nil }
+        return CookieAgentStore.shared.agents.first { !$0.builtIn && $0.name == name }
+    }
+
     static func question(for action: HarnessAction) -> String? {
         guard action.tool == tool.name else { return nil }
-        return plan(MacOperator.args(of: action)).map { "Make a routine? \($0.sentence)" } ?? "Make a routine?"
+        let ask = namedCookie.map { "Make a routine for \($0.name)?" } ?? "Make a routine?"
+        return plan(MacOperator.args(of: action)).map { "\(ask) \($0.sentence)" } ?? ask
     }
 
     /// After the yes: one routine per day. The answer the model reads, and whether it failed.
+    ///
+    /// Cookie herself keeps hers through the API, so they are on the web page's board too. A named
+    /// Cookie's stay on this Mac with it: neither Enkeon's routines nor the local page's say which
+    /// Cookie runs them, so the API would run the job as Cookie, without its brief.
     static func perform(_ args: [String: Any]) async -> (String, Bool) {
         guard let plan = plan(args) else {
             return ("make_routine needs a job, days (weekday names, \"every day\", \"weekdays\" or \"every hour\") and a time as HH:MM.", true)
+        }
+        if var agent = namedCookie {
+            let fresh = localRoutines(plan).filter { new in !agent.routines.contains { $0.instruction == new.instruction && $0.cadence == new.cadence } }
+            agent.routines += fresh
+            CookieAgentStore.shared.update(agent)
+            return ("Made: \(plan.sentence). \(agent.name) runs it on this Mac; it's on the Board under Routines, where it can be removed.", false)
         }
         let api = CookieAPI.shared
         await api.sendTimeZone()
@@ -591,5 +617,17 @@ enum CookieRoutineWords {
         }
         await api.refresh()
         return ("Made: \(plan.sentence). It's on the Board under Routines, where it can be paused.", false)
+    }
+
+    /// The plan as a named Cookie's own routines (the Mac's calendar counts Sunday as 1).
+    static func localRoutines(_ plan: Plan) -> [CookieRoutine] {
+        func routine(_ cadence: CookieRoutine.Cadence) -> CookieRoutine { CookieRoutine(instruction: plan.job, cadence: cadence) }
+        switch plan.cadence {
+        case "hourly": return [routine(.every(minutes: 60))]
+        case "daily": return [routine(.daily(hour: plan.hour, minute: plan.minute))]
+        default:
+            if plan.weekdays == Array(1...5) { return [routine(.weekdays(hour: plan.hour, minute: plan.minute))] }
+            return plan.weekdays.map { routine(.weekly(weekday: $0 % 7 + 1, hour: plan.hour, minute: plan.minute)) }
+        }
     }
 }

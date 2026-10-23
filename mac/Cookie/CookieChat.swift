@@ -417,7 +417,10 @@ extension HarnessAction {
 
     var consequence: String {
         if tool == "start_task" { return "One yes covers this task in these apps. Sending, paying or deleting still asks. Esc stops it." }
-        if tool == CookieRoutineWords.tool.name { return "Cookie gives itself this job at those times; it shows on your Board, where you can pause it." }
+        if tool == CookieRoutineWords.tool.name {
+            if let agent = CookieRoutineWords.namedCookie { return "\(agent.name) does this job at those times on this Mac; it shows on your Board, where you can remove it." }
+            return "Cookie gives itself this job at those times; it shows on your Board, where you can pause it."
+        }
         switch openTarget {
         case .web?: return "In your browser. Nothing opens unless you allow it."
         case .some: return "On this Mac. Nothing opens unless you allow it."
