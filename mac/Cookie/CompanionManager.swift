@@ -56,10 +56,26 @@ final class CompanionManager: ObservableObject {
     private var markMonitors: [Any] = []
     private var marksTimeout: Task<Void, Never>?
 
-    func showMarks(_ resolved: [CookieResolvedDrawing]) {
-        clearMarks()
-        guard !resolved.isEmpty else { return }
-        marks = resolved
+    /// Marks waiting on the speech clock for their word; dropped with the marks.
+    private var markSchedules: [CookieSpeechClock.Scheduled] = []
+
+    /// Shows one mark: its ink starts now, or 0.3 s after the mark before it when they come
+    /// together, so marks written side by side still draw one after another.
+    func revealMark(_ mark: CookieResolvedDrawing) {
+        var mark = mark
+        mark.revealedAt = max(CACurrentMediaTime(), (marks.last?.revealedAt ?? 0) + 0.3)
+        if marks.isEmpty { beginMarks() }
+        marks.append(mark)
+        // Time runs from the latest mark: a long answer keeps its first marks up while it speaks.
+        marksTimeout?.cancel()
+        marksTimeout = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(45))
+            guard !Task.isCancelled else { return }
+            self?.clearMarks()
+        }
+    }
+
+    private func beginMarks() {
         if !isOverlayVisible {
             overlayWindowManager.hasShownOverlayBefore = true
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
@@ -74,14 +90,11 @@ final class CompanionManager: ObservableObject {
             }
         }
         if let keys { markMonitors.append(keys) }
-        marksTimeout = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(45))
-            guard !Task.isCancelled else { return }
-            self?.clearMarks()
-        }
     }
 
     func clearMarks() {
+        markSchedules.forEach(speechClock.cancel)
+        markSchedules = []
         markMonitors.forEach(NSEvent.removeMonitor)
         markMonitors = []
         marksTimeout?.cancel()
@@ -888,31 +901,18 @@ final class CompanionManager: ObservableObject {
         ] }
     }
 
-    /// The reply as it streams, without [NEXT:]/[POINT:] tags or a half-written one.
+    /// The reply as it streams, without its tags or a half-written one.
     static func visibleReply(_ text: String) -> String {
-        var visible = text
-        for tag in ["[NEXT:", "[POINT:"] {
-            if let range = visible.range(of: tag) { visible = String(visible[..<range.lowerBound]) }
-        }
-        if let open = visible.lastIndex(of: "["), !visible[open...].contains("]") {
-            visible = String(visible[..<open])
-        }
-        return visible.trimmingCharacters(in: .whitespacesAndNewlines)
+        CookieReplyTags.split(text, streaming: true).spoken
     }
 
-    /// Splits [NEXT:...] suggestion tags out of a reply. At most two are kept.
-    static func extractNextSteps(from text: String) -> (String, [String]) {
-        let pattern = #"\[NEXT:([^\]]+)\]"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return (text, []) }
-        let range = NSRange(text.startIndex..., in: text)
-        let suggestions = regex.matches(in: text, range: range).compactMap { match in
-            Range(match.range(at: 1), in: text).map { String(text[$0]).trimmingCharacters(in: .whitespaces) }
-        }
-        let stripped = regex.stringByReplacingMatches(in: text, range: range, withTemplate: "")
+    /// The reply's [NEXT:...] suggestions. At most two are kept.
+    static func nextSteps(from tags: [CookieReplyTag]) -> [String] {
+        let suggestions = tags.filter { $0.kind == "NEXT" }.map { $0.body.trimmingCharacters(in: .whitespaces) }
         // A chip becomes your words when clicked, so keep it short and plain:
         // long ones are where injected text would hide.
-        let safe = suggestions.filter { $0.count <= 48 && !$0.contains("http") && !$0.contains("@") }
-        return (stripped.trimmingCharacters(in: .whitespacesAndNewlines), Array(safe.prefix(2)))
+        let safe = suggestions.filter { !$0.isEmpty && $0.count <= 48 && !$0.contains("http") && !$0.contains("@") }
+        return Array(safe.prefix(2))
     }
 
     // MARK: - AI Response Pipeline
@@ -1090,19 +1090,16 @@ final class CompanionManager: ObservableObject {
                 guard !Task.isCancelled else { return }
 
                 finishStep("Thought it through")
-                // Pull out [NEXT:...] suggestions first, then [DRAW:...] marks, then the [POINT:...] tag at the end.
-                let (responseWithoutNext, nextSteps) = Self.extractNextSteps(from: fullResponseText)
-                let (responseWithoutMarks, drawnMarks) = CookieDrawing.parse(from: responseWithoutNext)
-                let parseResult = Self.parsePointingCoordinates(from: responseWithoutMarks)
-                if !drawnMarks.isEmpty {
-                    let resolved = CookieDrawingResolver.resolve(drawnMarks, captures: screenCaptures,
-                                                              elementFrame: { MacOperator.shared.frameOfElement($0) })
-                    if !resolved.isEmpty {
-                        showMarks(resolved)
-                        finishStep("Drew on your screen")
-                    }
-                }
-                let spokenText = parseResult.spokenText
+                // Tags come out of the words, each kept with its place in them: marks and the
+                // pointer happen as the voice reaches that place.
+                let tagged = CookieReplyTags.split(fullResponseText)
+                let nextSteps = Self.nextSteps(from: tagged.tags)
+                let drawnMarks = Array(tagged.tags.compactMap(CookieDrawing.init(tag:)).prefix(CookieDrawing.maxMarks))
+                let parseResult = tagged.tags.last { $0.kind == "POINT" }.map(Self.parsePointing) ?? .noTag
+                let spokenText = tagged.spoken
+                let resolvedMarks = drawnMarks.isEmpty ? [] : CookieDrawingResolver.resolve(
+                    drawnMarks, captures: screenCaptures, elementFrame: { MacOperator.shared.frameOfElement($0) })
+                if !resolvedMarks.isEmpty { finishStep("Drew on your screen") }
 
                 // Handle element pointing if Claude returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
@@ -1123,40 +1120,22 @@ final class CompanionManager: ObservableObject {
                     return screenCaptures.first(where: { $0.isCursorScreen })
                 }()
 
+                var pointAt: (location: CGPoint, display: CGRect)?
                 if let pointCoordinate = parseResult.coordinate,
                    let targetScreenCapture {
                     // Claude's coordinates are in the screenshot's pixel space
-                    // (top-left origin, e.g. 1280x831). Scale to the display's
-                    // point space (e.g. 1512x982), then convert to AppKit global coords.
-                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-                    let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
-                    let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
-                    let displayFrame = targetScreenCapture.displayFrame
-
-                    // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-
-                    // Scale from screenshot pixels to display points
-                    let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                    let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-
-                    // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
-                    let appKitY = displayHeight - displayLocalY
-
-                    // Convert display-local coords to global screen coords
-                    let globalLocation = CGPoint(
-                        x: displayLocalX + displayFrame.origin.x,
-                        y: appKitY + displayFrame.origin.y
-                    )
-
-                    detectedElementScreenLocation = globalLocation
-                    detectedElementDisplayFrame = displayFrame
+                    // (top-left origin, e.g. 1280x831), scaled to the display's
+                    // points and flipped to AppKit global, as marks are.
+                    pointAt = (CookieDrawingResolver.global(pointCoordinate, in: targetScreenCapture), targetScreenCapture.displayFrame)
                     CookieAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
+                }
+                let point = { [pointAt] in
+                    guard let pointAt else { return }
+                    self.detectedElementScreenLocation = pointAt.location
+                    self.detectedElementDisplayFrame = pointAt.display
                 }
 
                 // Save this exchange to conversation history (with the point tag
@@ -1197,15 +1176,28 @@ final class CompanionManager: ObservableObject {
                 // Play the response via TTS. Keep the spinner (processing state)
                 // until the audio actually starts playing, then switch to responding.
                 // A typed question gets a written answer: Cookie speaks only when you talked.
-                if speakReply, !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                var heard = false
+                if speakReply, !spokenText.isEmpty {
                     workingStep = "Preparing voice"
                     // The response task already holds self; a weak capture here would only differ from it.
                     await elevenLabsTTSClient.speakText(spokenText, onPlaybackStarted: {
+                        heard = true
                         self.workingStep = nil
                         self.voiceState = .responding
+                        // Each mark, and the pointer, on the word it was written at. Speech
+                        // stopped or talked over drops whatever it hasn't reached yet.
+                        for mark in resolvedMarks {
+                            self.markSchedules.append(self.speechClock.schedule(atOffset: mark.offset) { self.revealMark(mark) })
+                        }
+                        self.speechClock.schedule(atOffset: parseResult.offset, point)
                     })
                 }
                 guard !Task.isCancelled else { return }
+                // Not spoken (typed, or the voice never started): everything shows now, marks in order.
+                if !heard {
+                    resolvedMarks.forEach(revealMark)
+                    point()
+                }
                 replyFinished.send((threadID, reply))
             } catch is CancellationError {
                 // User spoke again — response was interrupted
@@ -1276,59 +1268,35 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Point Tag Parsing
 
-    /// Result of parsing a [POINT:...] tag from Claude's response.
+    /// What a [POINT:...] tag says.
     struct PointingParseResult {
-        /// The response text with the [POINT:...] tag removed — this is what gets spoken.
-        let spokenText: String
         /// The parsed pixel coordinate, or nil if Claude said "none" or no tag was found.
         let coordinate: CGPoint?
         /// Short label describing the element (e.g. "run button"), or "none".
         let elementLabel: String?
         /// Which screen the coordinate refers to (1-based), or nil to default to cursor screen.
         let screenNumber: Int?
+        /// Where the tag sat in the spoken text: the pointer flies when speech reaches it.
+        var offset = 0
+
+        static let noTag = PointingParseResult(coordinate: nil, elementLabel: nil, screenNumber: nil)
     }
 
-    /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of Claude's response.
-    /// Returns the spoken text (tag removed) and the optional coordinate + label + screen number.
-    static func parsePointingCoordinates(from responseText: String) -> PointingParseResult {
-        // Match [POINT:none] or [POINT:123,456:label] or [POINT:123,456:label:screen2]
-        let pattern = #"\[POINT:(?:none|(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?)\]\s*$"#
-
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
-              let match = regex.firstMatch(in: responseText, range: NSRange(responseText.startIndex..., in: responseText)) else {
-            // No tag found at all
-            return PointingParseResult(spokenText: responseText, coordinate: nil, elementLabel: nil, screenNumber: nil)
+    /// Reads a POINT tag's body: "none", "x,y", "x,y:label" or "x,y:label:screenN".
+    static func parsePointing(_ tag: CookieReplyTag) -> PointingParseResult {
+        let body = tag.body
+        let pattern = #"^\s*(?:none|(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?)\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: body, range: NSRange(body.startIndex..., in: body)) else {
+            return PointingParseResult(coordinate: nil, elementLabel: nil, screenNumber: nil, offset: tag.offset)
         }
-
-        // Remove the tag from the spoken text
-        let tagRange = Range(match.range, in: responseText)!
-        let spokenText = String(responseText[..<tagRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Check if it's [POINT:none]
-        guard match.numberOfRanges >= 3,
-              let xRange = Range(match.range(at: 1), in: responseText),
-              let yRange = Range(match.range(at: 2), in: responseText),
-              let x = Double(responseText[xRange]),
-              let y = Double(responseText[yRange]) else {
-            return PointingParseResult(spokenText: spokenText, coordinate: nil, elementLabel: "none", screenNumber: nil)
+        guard let xRange = Range(match.range(at: 1), in: body), let yRange = Range(match.range(at: 2), in: body),
+              let x = Double(body[xRange]), let y = Double(body[yRange]) else {
+            return PointingParseResult(coordinate: nil, elementLabel: "none", screenNumber: nil, offset: tag.offset)
         }
-
-        var elementLabel: String? = nil
-        if match.numberOfRanges >= 4, let labelRange = Range(match.range(at: 3), in: responseText) {
-            elementLabel = String(responseText[labelRange]).trimmingCharacters(in: .whitespaces)
-        }
-
-        var screenNumber: Int? = nil
-        if match.numberOfRanges >= 5, let screenRange = Range(match.range(at: 4), in: responseText) {
-            screenNumber = Int(responseText[screenRange])
-        }
-
-        return PointingParseResult(
-            spokenText: spokenText,
-            coordinate: CGPoint(x: x, y: y),
-            elementLabel: elementLabel,
-            screenNumber: screenNumber
-        )
+        let label = Range(match.range(at: 3), in: body).map { String(body[$0]).trimmingCharacters(in: .whitespaces) }
+        let screen = Range(match.range(at: 4), in: body).flatMap { Int(body[$0]) }
+        return PointingParseResult(coordinate: CGPoint(x: x, y: y), elementLabel: label, screenNumber: screen, offset: tag.offset)
     }
 
     // MARK: - Onboarding Video
