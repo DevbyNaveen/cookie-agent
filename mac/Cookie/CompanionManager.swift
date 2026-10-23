@@ -220,7 +220,8 @@ final class CompanionManager: ObservableObject {
             !NSApp.windows.contains { $0.isVisible && !$0.ignoresMouseEvents && $0.frame.contains(point) }
         }
         controller.onCancel = { [weak self] in self?.cancelCurrentInteraction() }
-        controller.onShortcutReleased = { [weak self] in self?.handleShortcutTransition(.released) }
+        // Through the monitor, so it doesn't stay "pressed" and swallow the next press.
+        controller.onShortcutReleased = { [weak self] in self?.globalPushToTalkShortcutMonitor.releaseIfNotHeld() }
         controller.onRegion = { [weak self] rect in
             guard let self else { return }
             print("⭕️ Circled \(Int(rect.width))×\(Int(rect.height)) at (\(Int(rect.minX)), \(Int(rect.minY)))")

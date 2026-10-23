@@ -104,6 +104,12 @@ enum BuddyPushToTalkShortcut {
         return flags.contains(required) && spacePressed
     }
 
+    /// The keys as they are now, not as the last event said.
+    static var isPhysicallyHeld: Bool {
+        isHeld(modifierFlagsRawValue: CGEventSource.flagsState(.combinedSessionState).rawValue,
+               spacePressed: CGEventSource.keyState(.combinedSessionState, key: 49))
+    }
+
     static func shortcutTransition(
         for event: NSEvent,
         wasShortcutPreviouslyPressed: Bool

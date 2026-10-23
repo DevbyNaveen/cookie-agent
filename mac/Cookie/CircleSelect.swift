@@ -72,10 +72,7 @@ final class CircleSelectController {
         }
     }
 
-    private var shortcutIsHeld: Bool {
-        BuddyPushToTalkShortcut.isHeld(modifierFlagsRawValue: CGEventSource.flagsState(.combinedSessionState).rawValue,
-                                      spacePressed: CGEventSource.keyState(.combinedSessionState, key: 49))
-    }
+    private var shortcutIsHeld: Bool { BuddyPushToTalkShortcut.isPhysicallyHeld }
 
     /// Cancel never submits the unfinished selection and immediately gives input back.
     func cancel() {
