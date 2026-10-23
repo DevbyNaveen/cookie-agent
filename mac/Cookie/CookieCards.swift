@@ -250,10 +250,15 @@ struct CookieCard: Equatable {
     /// Where on the speech clock each element appears: the first at the tag, the rest spread
     /// evenly over the sentence after it (to that sentence's end, or the next card's tag).
     func revealOffsets(in spoken: String, nextCardOffset: Int?) -> [Int] {
+        Self.beats(elements.count, from: offset, in: spoken, until: nextCardOffset)
+    }
+
+    /// `count` places on the speech clock: the first at `offset`, the rest spread evenly over the
+    /// sentence after it (to that sentence's end, or `next` if sooner). Scenes keep time the same way.
+    static func beats(_ count: Int, from offset: Int, in spoken: String, until next: Int?) -> [Int] {
         let units = Array(spoken.utf16)
         let start = min(offset, units.count)
-        let end = min(nextCardOffset ?? units.count, Self.sentenceEnd(in: units, from: start))
-        let count = elements.count
+        let end = min(next ?? units.count, sentenceEnd(in: units, from: start))
         guard count > 1 else { return [start] }
         let span = max(0, end - start)
         return (0..<count).map { start + span * $0 / count }

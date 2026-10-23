@@ -58,6 +58,8 @@ final class CompanionManager: ObservableObject {
 
     /// The reply's explainer card, beside the notch or beside the marks; one at a time.
     let cardPresenter = CookieCardPresenter()
+    /// The reply's 3D scene, placed like a card; one at a time, and a reply with one shows no card.
+    let scenePresenter = CookieScenePresenter()
 
     /// Marks waiting on the speech clock for their word; dropped with the marks.
     private var markSchedules: [CookieSpeechClock.Scheduled] = []
@@ -691,6 +693,12 @@ final class CompanionManager: ObservableObject {
     {"kind":"number","value":"...","label":"...","caption":"..."} caption optional
     for example: "a request goes through three hops [CARD {"kind":"flow","title":"where a request goes","nodes":[{"id":"b","label":"browser"},{"id":"g","label":"gateway"},{"id":"e","label":"engine"}],"edges":[{"from":"b","to":"g"},{"from":"g","to":"e"}]}] your browser hands it to the gateway, which checks who you are and passes it to the engine."
 
+    3d models:
+    only for a physical thing whose shape matters (how an engine is laid out, what sits inside a pump, how gears mesh), build a small model from simple parts: [SCENE {json}] inline at the word where it should appear. its labels appear one by one as you say the sentence after the tag, so that sentence names the labelled parts in the order you listed them. the user can turn it and zoom. a model or a card, never both, usually neither; never for ideas, numbers or anything on the screen. exact shape, nothing else:
+    {"title":"...","parts":[{"id":"a","label":"...","shape":"box","size":[1,1,1],"position":[0,0,0],"rotation":[0,0,0],"color":"amber","cut":true}],"explode":true,"spin":true}
+    shapes: box (size [width,height,depth]), sphere ([radius]), cylinder, cone, capsule ([radius,height], standing along y, a cone's point up; a capsule's height counts its round ends, at least twice its radius). up to 24 parts, ids unique; metres, every number within ten; rotation in degrees, optional; colors amber, cream, graphite, sky, mint, rose, steel, glass; label optional, a few words, only on parts you'll name; cut makes a part see-through to show what's inside; explode pulls the parts apart from the middle as the model appears; spin turns it slowly. explode, spin and cut are optional.
+    for example: "a jet engine is a row of stages in a tube [SCENE {"title":"inside a jet engine","parts":[{"id":"case","shape":"cylinder","size":[0.55,2.3],"position":[0,0,0],"rotation":[0,0,90],"color":"steel","cut":true},{"id":"fan","label":"fan","shape":"cylinder","size":[0.5,0.08],"position":[-1,0,0],"rotation":[0,0,90],"color":"graphite"},{"id":"comp","label":"compressor","shape":"cone","size":[0.42,0.6],"position":[-0.55,0,0],"rotation":[0,0,-90],"color":"sky"},{"id":"burn","label":"combustor","shape":"cylinder","size":[0.3,0.5],"position":[0,0,0],"rotation":[0,0,90],"color":"amber"},{"id":"turb","label":"turbine","shape":"cylinder","size":[0.34,0.3],"position":[0.45,0,0],"rotation":[0,0,90],"color":"rose"},{"id":"nozzle","label":"nozzle","shape":"cone","size":[0.3,0.45],"position":[0.85,0,0],"rotation":[0,0,-90],"color":"graphite"}],"spin":true}] air comes in through the fan, the compressor squeezes it, it burns in the combustor, spins the turbine, and leaves through the nozzle."
+
     follow-ups:
     when there's a natural next thing the user might ask you to do, put up to two short suggestions at the end, each as [NEXT:a few words in the user's voice], for example [NEXT:show me the shortcut]. skip them when nothing obvious follows. they are shown as buttons, never spoken.
 
@@ -807,6 +815,7 @@ final class CompanionManager: ObservableObject {
         clearDetectedElementLocation()
         clearMarks()
         cardPresenter.dismiss()
+        scenePresenter.dismiss()
         scheduleTransientHideIfNeeded()
         if hadReply, let id = currentThreadID {
             append(CompanionChatMessage(role: .note, text: "Stopped by you"), to: id)
@@ -946,6 +955,7 @@ final class CompanionManager: ObservableObject {
         noteActivity()
         clearMarks()
         cardPresenter.dismiss()
+        scenePresenter.dismiss()
         let threadID = append(CompanionChatMessage(role: .user, text: transcript, attachments: attachments))
         workingThreadID = threadID
         workingHistory = []
@@ -1119,9 +1129,12 @@ final class CompanionManager: ObservableObject {
                     drawnMarks, captures: screenCaptures, elementFrame: { MacOperator.shared.frameOfElement($0) })
                 if !resolvedMarks.isEmpty { finishStep("Drew on your screen") }
                 // A card that doesn't fit the catalog is dropped here; the words still go out.
-                let cards = tagged.tags.compactMap(CookieCard.init(tag:))
+                // A scene is the reply's one picture: with one, cards are left out (they'd share the spot).
+                let scene = tagged.tags.lazy.compactMap(CookieScene.init(tag:)).first
+                let cards = scene != nil ? [] : tagged.tags.compactMap(CookieCard.init(tag:))
                 let cardRegion = CookieCardPresenter.region(of: resolvedMarks)
                 if !cards.isEmpty { finishStep("Made a card") }
+                if scene != nil { finishStep("Built a model") }
 
                 // Handle element pointing if Claude returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
@@ -1215,6 +1228,9 @@ final class CompanionManager: ObservableObject {
                         if !cards.isEmpty {
                             self.cardPresenter.schedule(cards, spoken: spokenText, near: cardRegion, clock: self.speechClock)
                         }
+                        if let scene {
+                            self.scenePresenter.schedule(scene, spoken: spokenText, near: cardRegion, clock: self.speechClock)
+                        }
                     })
                 }
                 guard !Task.isCancelled else { return }
@@ -1223,6 +1239,7 @@ final class CompanionManager: ObservableObject {
                     resolvedMarks.forEach(revealMark)
                     point()
                     if let card = cards.first { cardPresenter.showNow(card, near: cardRegion) }
+                    if let scene { scenePresenter.showNow(scene, near: cardRegion) }
                 }
                 replyFinished.send((threadID, reply))
             } catch is CancellationError {

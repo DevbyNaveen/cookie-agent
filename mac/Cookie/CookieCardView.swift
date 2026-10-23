@@ -140,12 +140,15 @@ struct CookieCardView: View {
     static let closeSize: CGFloat = 22
     static let closeInset: CGFloat = 10
 
-    private var paper: Color {
-        colorScheme == .dark ? Color(red: 0.17, green: 0.15, blue: 0.13) : Color(red: 0.985, green: 0.965, blue: 0.93)
+    /// Warm paper (charcoal in Dark Mode) and the text on it; scenes use the same.
+    static func paper(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(red: 0.17, green: 0.15, blue: 0.13) : Color(red: 0.985, green: 0.965, blue: 0.93)
     }
-    private var inkText: Color {
-        colorScheme == .dark ? Color(red: 0.95, green: 0.92, blue: 0.86) : Color(red: 0.20, green: 0.13, blue: 0.08)
+    static func inkText(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(red: 0.95, green: 0.92, blue: 0.86) : Color(red: 0.20, green: 0.13, blue: 0.08)
     }
+    private var paper: Color { Self.paper(colorScheme) }
+    private var inkText: Color { Self.inkText(colorScheme) }
     private var quietText: Color { inkText.opacity(0.58) }
     private let ink = CookieMarksLayer.ink
 
@@ -576,7 +579,7 @@ final class CookieCardPresenter {
 
     /// Beside the marks when there are any (right, else left, else below or above them), else
     /// beside the notch, hanging from the menu bar. Kept on the screen's visible area.
-    private static func frame(for panelSize: CGSize, near region: (rect: CGRect, display: CGRect)?) -> CGRect {
+    static func frame(for panelSize: CGSize, near region: (rect: CGRect, display: CGRect)?) -> CGRect {
         let margin = CookieCardView.shadowMargin
         let size = CGSize(width: panelSize.width - margin * 2, height: panelSize.height - margin * 2)
         let gap: CGFloat = 24
@@ -646,8 +649,8 @@ final class CookieCardPresenter {
     }
 }
 
-/// Borderless, never key or main, on every Space, above ordinary windows.
-private final class CookieCardPanel: NSPanel {
+/// Borderless, never key or main, on every Space, above ordinary windows. Scenes float in one too.
+final class CookieCardPanel: NSPanel {
     init(contentRect: CGRect) {
         super.init(contentRect: contentRect, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isOpaque = false
