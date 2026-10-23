@@ -10,16 +10,15 @@ import AppKit
 ///    and says not to rely on it to hide content from capture
 ///    (https://developer.apple.com/documentation/appkit/nswindow/sharingtype-swift.enum/none);
 ///    capture built on ScreenCaptureKit ignores it, but legacy CoreGraphics capture and some apps still respect it.
-/// 2. The private `CGSSetWindowCaptureExcludeShape`, which Chromium switched to for screenshot
-///    protection in Nov 2024 (https://chromium-review.googlesource.com/c/chromium/src/+/5982882,
-///    components/remote_cocoa/app_shim/native_widget_ns_window_bridge.mm). It is resolved with
-///    dlsym, never linked: a macOS without it skips this step. As in Chromium the shape is the
-///    window's own frame at origin zero, re-applied on resize, and a NULL region clears it.
-/// QuickTime and macOS's own screen recording still capture Cookie. Cookie's own captures leave
-/// its windows out separately (`CompanionScreenCaptureUtility`, SCContentFilter), unaffected here.
+/// 2. The private `CGSSetWindowCaptureExcludeShape`, which browsers have used for screenshot
+///    protection since 2024. It is resolved with dlsym, never linked: a macOS without it skips
+///    this step. The shape is the window's own frame at origin zero, re-applied on resize, and a
+///    NULL region clears it.
+/// macOS's own screen recorders still capture Cookie. Cookie's own captures leave its windows out
+/// separately (`CompanionScreenCaptureUtility`, SCContentFilter), unaffected here.
 @MainActor
 enum CookieCaptureShield {
-    // Chromium's declarations, verbatim in C:
+    // The private declarations, in C:
     //   using CGSConnectionID = uint32_t; using CGSWindowID = NSInteger; using CGRegionRef = CFTypeRef;
     //   CG_EXTERN CGSConnectionID CGSMainConnectionID(void);
     //   CG_EXTERN CGError CGSSetWindowCaptureExcludeShape(CGSConnectionID cid, CGSWindowID wid, CGRegionRef region);
