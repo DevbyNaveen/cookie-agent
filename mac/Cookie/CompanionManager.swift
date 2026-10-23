@@ -180,8 +180,10 @@ final class CompanionManager: ObservableObject {
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
-    /// Replies are spoken with the Mac's own voice (the ElevenLabs path needed the worker).
+    /// Replies are spoken with ElevenLabs (the person's key) or the Mac's own voice.
     private let elevenLabsTTSClient = CookieSpeaker()
+    /// Which character of the reply is being heard now; schedule work at a place in the spoken text.
+    var speechClock: CookieSpeechClock { elevenLabsTTSClient.clock }
 
     /// The bundled `cookie serve` helper every reply goes through.
     private let harness = HarnessClient()
@@ -1196,10 +1198,11 @@ final class CompanionManager: ObservableObject {
                 // A typed question gets a written answer: Cookie speaks only when you talked.
                 if speakReply, !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     workingStep = "Preparing voice"
-                    await elevenLabsTTSClient.speakText(spokenText) { [weak self] in
-                        self?.workingStep = nil
-                        self?.voiceState = .responding
-                    }
+                    // The response task already holds self; a weak capture here would only differ from it.
+                    await elevenLabsTTSClient.speakText(spokenText, onPlaybackStarted: {
+                        self.workingStep = nil
+                        self.voiceState = .responding
+                    })
                 }
                 guard !Task.isCancelled else { return }
                 replyFinished.send((threadID, reply))
@@ -1265,9 +1268,9 @@ final class CompanionManager: ObservableObject {
     /// failure row (it can be a settings path, which reads badly aloud).
     private func speakCreditsErrorFallback() async {
         let utterance = "I can't answer that yet. The reason is in the chat."
-        await elevenLabsTTSClient.speakText(utterance) { [weak self] in
+        await elevenLabsTTSClient.speakText(utterance, onPlaybackStarted: { [weak self] in
             self?.voiceState = .responding
-        }
+        })
     }
 
     // MARK: - Point Tag Parsing

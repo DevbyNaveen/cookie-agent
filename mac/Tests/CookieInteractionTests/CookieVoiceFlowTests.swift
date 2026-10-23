@@ -26,11 +26,11 @@ enum CookieVoiceFlowTests {
         }
         await waitUntil { output.localStarts == 1 }
         precondition(speaker.state == .preparing && !finished && !started)
-        output.onProgress?(0.4)
+        output.onProgress?(1, 0.4)
         precondition(progress == 0, "Words must not animate before audio starts")
         output.onStarted?()
         precondition(speaker.isPlaying && started && !finished)
-        output.onProgress?(0.4)
+        output.onProgress?(1, 0.4)
         precondition(progress == 0.4)
         let staleProgress = output.onProgress
         try? await Task.sleep(for: .milliseconds(30))
@@ -38,13 +38,13 @@ enum CookieVoiceFlowTests {
         output.onFinished?()
         await task.value
         precondition(finished && speaker.state == .idle)
-        staleProgress?(0.9)
+        staleProgress?(2, 0.9)
         precondition(progress == 0.4, "Late progress must not change completed speech")
     }
 
     private static func cancelledDownloadNeverStartsFallbackSpeech() async {
         let output = FakeSpeechPlayback()
-        var pending: CheckedContinuation<Data, Error>?
+        var pending: CheckedContinuation<CookieSpeechAudio, Error>?
         let speaker = CookieSpeaker(makePlayback: { output }, keyProvider: { "test-only" }, fetchAudio: { _, _ in
             try await withCheckedThrowingContinuation { pending = $0 }
         })
@@ -168,13 +168,13 @@ enum CookieVoiceFlowTests {
 @MainActor
 private final class FakeSpeechPlayback: CookieSpeechPlayback {
     var onStarted: (() -> Void)?
-    var onProgress: ((Double) -> Void)?
+    var onProgress: ((_ spokenOffset: Int, _ progress: Double) -> Void)?
     var onFinished: (() -> Void)?
     var localStarts = 0
     var audioStarts = 0
     var stops = 0
     func speakLocally(_ text: String) { localStarts += 1 }
-    func playAudio(_ data: Data) throws { audioStarts += 1; onStarted?() }
+    func playAudio(_ audio: CookieSpeechAudio, text: String) throws { audioStarts += 1; onStarted?() }
     func stop() { stops += 1 }
 }
 
