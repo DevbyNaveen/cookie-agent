@@ -47,8 +47,10 @@ enum CookieModelSettings {
         Provider(name: "bedrock", title: "Amazon Bedrock", fields: [
             Field(variable: "AWS_ACCESS_KEY_ID", label: "Access key ID"),
             Field(variable: "AWS_SECRET_ACCESS_KEY", label: "Secret access key"),
+            // Read by src/providers/bedrock.rs `from_env`: the session token only for temporary credentials.
+            Field(variable: "AWS_SESSION_TOKEN", label: "Session token", required: false),
             Field(variable: "AWS_REGION", label: "Region", secret: false, required: false),
-        ], note: "Region is needed only for models without an eu. or us. profile, for example eu-central-1."),
+        ], note: "Session token only for temporary credentials. Region only for a model id without an eu. or us. inference profile (eu. is called in eu-central-1, us. in us-east-1), for example eu-north-1."),
         Provider(name: "ollama", title: "Ollama", fields: [], note: "None needed — Ollama runs on this Mac."),
     ]
 

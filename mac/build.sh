@@ -3,10 +3,16 @@
 set -e
 cd "$(dirname "$0")"
 # Cookie thinks through `cookie serve`, this repo's core, bundled as a helper.
-# Build it first from the repo root: `cargo build --release --bin cookie`; COOKIE_HARNESS_BIN overrides the path.
-HARNESS="${COOKIE_HARNESS_BIN:-../target/release/cookie}"
+# Built here with Amazon Bedrock (the `bedrock` cargo feature, Rust 1.91+), so every
+# provider Settings offers can answer. COOKIE_HARNESS_BIN uses a binary you built instead.
+if [ -n "$COOKIE_HARNESS_BIN" ]; then
+  HARNESS="$COOKIE_HARNESS_BIN"
+else
+  (cd .. && cargo build --release --bin cookie --features bedrock)
+  HARNESS=../target/release/cookie
+fi
 [ -x "$HARNESS" ] || { echo "error: harness binary not found or not executable: $HARNESS" >&2
-  echo "       build it (cargo build --release --bin cookie) or set COOKIE_HARNESS_BIN" >&2; exit 1; }
+  echo "       build it (cargo build --release --bin cookie --features bedrock) or set COOKIE_HARNESS_BIN" >&2; exit 1; }
 # Your Developer ID (security find-identity -v -p codesigning) keeps the signature
 # stable across rebuilds; without one the app is signed ad hoc (macOS then asks for
 # its permissions again after each rebuild).
