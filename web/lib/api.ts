@@ -211,6 +211,8 @@ export interface CookiePrefs {
   notices: boolean;
   /** Offset from UTC in minutes (local = UTC + offset). */
   tz_offset_min: number;
+  /** Time zone by name (`Europe/Riga`), so local hours hold across clock changes; "" when unknown. */
+  tz?: string;
   quiet_from: number;
   quiet_to: number;
 }

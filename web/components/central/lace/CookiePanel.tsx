@@ -1486,8 +1486,10 @@ function NoticePrefs({ prefs, onPrefs }: { prefs: CookiePrefs; onPrefs: (prefs: 
   const save = async (change: Partial<CookiePrefs>) => {
     setBusy(true);
     try {
-      // The browser's own offset, so quiet hours are in the member's time.
-      await onPrefs({ ...prefs, ...change, tz_offset_min: -new Date().getTimezoneOffset() });
+      // The browser's own zone and offset, so quiet hours and routines are in
+      // the member's time — the zone keeps it right when the clocks change.
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "";
+      await onPrefs({ ...prefs, ...change, tz_offset_min: -new Date().getTimezoneOffset(), tz });
     } finally {
       setBusy(false);
     }
