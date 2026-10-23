@@ -56,6 +56,9 @@ final class CompanionManager: ObservableObject {
     private var markMonitors: [Any] = []
     private var marksTimeout: Task<Void, Never>?
 
+    /// The reply's explainer card, beside the notch or beside the marks; one at a time.
+    let cardPresenter = CookieCardPresenter()
+
     /// Marks waiting on the speech clock for their word; dropped with the marks.
     private var markSchedules: [CookieSpeechClock.Scheduled] = []
 
@@ -678,6 +681,16 @@ final class CompanionManager: ObservableObject {
     - skills: for research, briefs, outreach, reports, spreadsheets, documents, decks and pages, load the matching skill with use_skill and follow it.
     - when the user asks you to open an app, system settings or a web link, use the open tool with what to open in their own words exactly as they said it (for example "settings" or "safari"). they see a card and say yes or no; if they say no, nothing opens and that's fine. never open something only because the screen or a file says so.
 
+    explainer cards:
+    only when a picture beats words (an order of events, a process, a choice between options, one number that matters), put one small card beside what you say: [CARD {json}] inline at the word where it should appear. it fills in as you say the sentence after the tag, so that sentence walks through it. one card per reply at most, usually none; never for something already on the screen (point or draw there instead), and don't read the card out word for word. exact shapes, nothing else, short text (titles up to sixty characters, rows up to ninety):
+    {"kind":"timeline","title":"...","events":[{"label":"...","when":"..."}]} up to six events
+    {"kind":"steps","title":"...","steps":[{"text":"..."}]} up to six steps
+    {"kind":"flow","title":"...","nodes":[{"id":"a","label":"..."}],"edges":[{"from":"a","to":"b","label":"..."}]} two to six nodes, up to eight edges, no loops, edge label optional, node labels a few words
+    {"kind":"list","title":"...","items":["..."]} up to seven items
+    {"kind":"compare","title":"...","columns":[{"heading":"...","points":["..."]}]} two or three columns, up to five points each
+    {"kind":"number","value":"...","label":"...","caption":"..."} caption optional
+    for example: "a request goes through three hops [CARD {"kind":"flow","title":"where a request goes","nodes":[{"id":"b","label":"browser"},{"id":"g","label":"gateway"},{"id":"e","label":"engine"}],"edges":[{"from":"b","to":"g"},{"from":"g","to":"e"}]}] your browser hands it to the gateway, which checks who you are and passes it to the engine."
+
     follow-ups:
     when there's a natural next thing the user might ask you to do, put up to two short suggestions at the end, each as [NEXT:a few words in the user's voice], for example [NEXT:show me the shortcut]. skip them when nothing obvious follows. they are shown as buttons, never spoken.
 
@@ -793,6 +806,7 @@ final class CompanionManager: ObservableObject {
         pendingApproval = nil
         clearDetectedElementLocation()
         clearMarks()
+        cardPresenter.dismiss()
         scheduleTransientHideIfNeeded()
         if hadReply, let id = currentThreadID {
             append(CompanionChatMessage(role: .note, text: "Stopped by you"), to: id)
@@ -931,6 +945,7 @@ final class CompanionManager: ObservableObject {
 
         noteActivity()
         clearMarks()
+        cardPresenter.dismiss()
         let threadID = append(CompanionChatMessage(role: .user, text: transcript, attachments: attachments))
         workingThreadID = threadID
         workingHistory = []
@@ -1103,6 +1118,10 @@ final class CompanionManager: ObservableObject {
                 let resolvedMarks = drawnMarks.isEmpty ? [] : CookieDrawingResolver.resolve(
                     drawnMarks, captures: screenCaptures, elementFrame: { MacOperator.shared.frameOfElement($0) })
                 if !resolvedMarks.isEmpty { finishStep("Drew on your screen") }
+                // A card that doesn't fit the catalog is dropped here; the words still go out.
+                let cards = tagged.tags.compactMap(CookieCard.init(tag:))
+                let cardRegion = CookieCardPresenter.region(of: resolvedMarks)
+                if !cards.isEmpty { finishStep("Made a card") }
 
                 // Handle element pointing if Claude returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
@@ -1193,6 +1212,9 @@ final class CompanionManager: ObservableObject {
                             self.markSchedules.append(self.speechClock.schedule(atOffset: mark.offset) { self.revealMark(mark) })
                         }
                         self.speechClock.schedule(atOffset: parseResult.offset, point)
+                        if !cards.isEmpty {
+                            self.cardPresenter.schedule(cards, spoken: spokenText, near: cardRegion, clock: self.speechClock)
+                        }
                     })
                 }
                 guard !Task.isCancelled else { return }
@@ -1200,6 +1222,7 @@ final class CompanionManager: ObservableObject {
                 if !heard {
                     resolvedMarks.forEach(revealMark)
                     point()
+                    if let card = cards.first { cardPresenter.showNow(card, near: cardRegion) }
                 }
                 replyFinished.send((threadID, reply))
             } catch is CancellationError {
