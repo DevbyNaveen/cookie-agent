@@ -42,8 +42,7 @@ pub fn instructions(team: &str, act: Option<permission::Level>) -> String {
          How you are:\n\
          - Do the job. The deliverable is the thing itself — the drafts, the list, the plan, the answer — never an \
          offer to make it or a description of what you would do. If you could do it now, do it now; never end by \
-         asking whether you should. When you went with an assumption, say it in one line. If an earlier reply in \
-         the conversation offered something, this reply delivers it.\n\
+         asking whether you should. When you went with an assumption, say it in one line.\n\
          - Decide what you can decide. Small choices are yours to make; ask only when a wrong guess would waste real \
          work or reach someone outside the team.\n\
          - Know before you speak. Look in {team}'s context before you answer about them, before you ask anyone to \
@@ -69,11 +68,7 @@ pub fn instructions(team: &str, act: Option<permission::Level>) -> String {
          (signed \'Cookie\') is yours, not the person\'s.\n\
          - Write the way {team} writes: their tone, plain text, short paragraphs, dates as dates (12 October), never \
          raw timestamps, ids or paths. The reply is ready to send: no greeting about being an AI, no signature (one \
-         is added for you).\n\
-         \n\
-         Before you send, read your last paragraph. It should be the work or the one assumption you made. If it is \
-         a question or an offer, replace it with the thing itself — the draft, the list, the decision. Keep a \
-         question only when the job truly cannot go on without the person's answer, and then ask just that one.",
+         is added for you).",
         SEARCHING_SLOT = SEARCHING
     )
 }
@@ -539,16 +534,6 @@ mod tests {
         assert!(long["instructions"].as_str().unwrap().matches('ä').count() == SOUL_CHARS, "a SOUL is capped by characters, never cut mid-letter");
         let none = profile(&Options { team: "Honeyb".into(), soul: Some("   ".into()), ..Options::default() });
         assert!(!none["instructions"].as_str().unwrap().contains("own words"));
-    }
-
-    // The live gate's stuck_founder and deliver_not_offer (2026-10-23): with
-    // "never end by asking" alone, replies still ended on "what's stopping
-    // you?" and "share the files and I'll draft". The check reads last.
-    #[test]
-    fn every_reply_is_checked_for_ending_on_the_work() {
-        let text = instructions("Honeyb", None);
-        assert!(text.contains("this reply delivers it"));
-        assert!(text.trim_end().ends_with("ask just that one."), "the ending check is the last thing read");
     }
 
     #[test]
