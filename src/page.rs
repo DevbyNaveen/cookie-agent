@@ -301,7 +301,7 @@ async fn cookie_api(state: &Arc<State>, method: Method, rest: &str, query: &str,
                 let text = body["text"].as_str().unwrap_or_default();
                 match start_job(state, text, body["conversation"].as_str(), "page") {
                     Ok(id) => ok(json!({"run_id": id, "steered": false})),
-                    Err(e) => e,
+                    Err(e) => *e,
                 }
             }
             Err(e) => e,
@@ -384,10 +384,10 @@ fn run_view(state: &State, run: &Run) -> Value {
 
 /// Start a job (`trigger`: `page`, or `routine` for one a routine started);
 /// its id, or the refusal to send.
-fn start_job(state: &Arc<State>, text: &str, conversation: Option<&str>, trigger: &str) -> Result<String, Response<Body>> {
+fn start_job(state: &Arc<State>, text: &str, conversation: Option<&str>, trigger: &str) -> Result<String, Box<Response<Body>>> {
     let text = text.trim().to_string();
     if text.is_empty() {
-        return Err(error(StatusCode::BAD_REQUEST, "empty", "Give Cookie a job first."));
+        return Err(Box::new(error(StatusCode::BAD_REQUEST, "empty", "Give Cookie a job first.")));
     }
     let id = format!("ck_{}", token(12));
     // A follow-up continues its conversation: the same session file, so the
