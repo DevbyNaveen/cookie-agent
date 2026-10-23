@@ -29,7 +29,8 @@ struct CookieChatView: View {
                 GreetingView(mood: companionManager.voiceState.cookieMood, agent: companionManager.currentAgent)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                MessageList(companionManager: companionManager, navigation: navigation, roomy: roomy) { suggestion in
+                MessageList(companionManager: companionManager, navigation: navigation, roomy: roomy,
+                            onShowScreen: { companionManager.showScreenForLastRequest() }) { suggestion in
                     companionManager.sendTypedMessage(suggestion)
                 }
             }
@@ -149,6 +150,7 @@ private struct MessageList: View {
     @ObservedObject var companionManager: CompanionManager
     @ObservedObject var navigation: CookieNavigation
     let roomy: Bool
+    let onShowScreen: () -> Void
     let onSuggestion: (String) -> Void
 
     var body: some View {
@@ -165,7 +167,7 @@ private struct MessageList: View {
                                 .padding(.top, index == 0 ? 4 : 10)
                         }
                         MessageRow(message: message, isLast: index == messages.count - 1,
-                                   navigation: navigation, onSuggestion: onSuggestion)
+                                   navigation: navigation, onShowScreen: onShowScreen, onSuggestion: onSuggestion)
                             .id(message.id)
                             .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 8)), removal: .opacity))
                     }
@@ -201,6 +203,7 @@ private struct MessageRow: View {
     let message: CompanionChatMessage
     let isLast: Bool
     @ObservedObject var navigation: CookieNavigation
+    let onShowScreen: () -> Void
     let onSuggestion: (String) -> Void
     @State private var hovering = false
     @State private var copied = false
@@ -266,6 +269,11 @@ private struct MessageRow: View {
                 .buttonStyle(.plain)
                 .help("Copy")
                 .opacity(hovering || copied ? 1 : 0)
+            }
+
+            if isLast && message.wantsScreen == true {
+                PillButton(title: "Show my screen", symbol: "rectangle.dashed", primary: true, action: onShowScreen)
+                    .padding(.top, 2)
             }
 
             if isLast && !message.nextSteps.isEmpty {

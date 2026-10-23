@@ -24,7 +24,7 @@ enum CookieReplyTags {
     /// The tags a reply may carry. A tag is "[KIND:body]", or "[KIND {json}]" when its body is
     /// a JSON object (brackets inside JSON strings are fine). A new kind is one more name here
     /// plus a reader for its body.
-    static let kinds = ["NEXT", "DRAW", "POINT", "CARD", "SCENE"]
+    static let kinds = ["NEXT", "DRAW", "POINT", "CARD", "SCENE", "LOOK"]
 
     /// Splits a reply into the words to speak and its tags, in order.
     ///

@@ -56,6 +56,9 @@ struct CompanionChatMessage: Identifiable, Codable, Equatable {
     /// The reply was built from a screenshot or file, so on later turns it is
     /// untrusted context, never your words. Nil: saved before this was recorded.
     var readUntrusted: Bool?
+    /// Cookie needs to see the screen for this ([LOOK:screen] in a reply made without it): the
+    /// chat offers "Show my screen", which asks again with a screenshot. The person decides.
+    var wantsScreen: Bool?
 }
 
 /// Each chat is handled by one specialist, picked from its first message.
