@@ -126,6 +126,38 @@ pub struct RunRequest {
     /// Absent: [`STALL_AFTER`].
     #[serde(default)]
     pub stall_after_secs: Option<u64>,
+    /// Keep a tamper-evident log of this run's actions (`TraceDecl`); the last
+    /// line then carries `trace: {head, count, key}` for the client to store.
+    #[serde(default)]
+    pub trace: Option<TraceDecl>,
+}
+
+/// Where a run's action log goes and what signs it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TraceDecl {
+    pub path: PathBuf,
+    /// A file holding the signing key (64 hex characters); absent:
+    /// `COOKIE_TRACE_KEY`, the same 64 characters.
+    #[serde(default)]
+    pub key: Option<PathBuf>,
+    /// The head stored when this log's last run ended; required to go on
+    /// with a log that has records.
+    #[serde(default)]
+    pub after: Option<crate::trace::Head>,
+}
+
+impl TraceDecl {
+    fn open(&self, run: &str) -> std::result::Result<crate::trace::Tracer, String> {
+        use crate::trace::{SigningKey, TraceLog, Tracer};
+        let key = match &self.key {
+            Some(path) => SigningKey::from_file(path).map_err(|e| format!("trace key {}: {e}", path.display()))?,
+            None => SigningKey::from_hex(&std::env::var("COOKIE_TRACE_KEY").map_err(|_| "trace: set `key` or COOKIE_TRACE_KEY".to_string())?)
+                .map_err(|e| e.to_string())?,
+        };
+        let log = TraceLog::open(&self.path, key, self.after.as_ref()).map_err(|e| e.to_string())?;
+        Ok(Tracer::new(Arc::new(Mutex::new(log)), run))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1186,6 +1218,13 @@ async fn run_inner(mut agent: Agent, servers: Vec<McpServer>, request: RunReques
             }
         }
     }
+    let tracer = match request.trace.as_ref().map(|t| t.open(&request.id)).transpose() {
+        Ok(tracer) => tracer,
+        Err(message) => return json!({"type": "error", "run": request.id, "message": message}),
+    };
+    if let Some(tracer) = &tracer {
+        agent = agent.trace(tracer.clone());
+    }
     let events = out.clone();
     let run = request.id.clone();
     // Every turn another model answered, on the last line too, so a client
@@ -1206,6 +1245,9 @@ async fn run_inner(mut agent: Agent, servers: Vec<McpServer>, request: RunReques
     };
     if !fell_back.is_empty() {
         last["fallbacks"] = json!(fell_back);
+    }
+    if let Some(tracer) = &tracer {
+        last["trace"] = tracer.anchor();
     }
     last
 }
@@ -1941,6 +1983,34 @@ mod tests {
         assert!(p.seen().is_empty());
         assert_eq!(fallback_models_from(Some(" bedrock:a , ,bedrock:b".into())), ["bedrock:a", "bedrock:b"]);
         assert!(fallback_models_from(Some(String::new())).is_empty() && fallback_models_from(None).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_traced_run_ends_with_the_head_to_store_and_goes_on_only_from_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (log, key) = (dir.path().join("t.jsonl"), dir.path().join("k"));
+        std::fs::write(&key, "03".repeat(32)).unwrap();
+        let mut c = start(Arc::new(Scripted::new(vec![Scripted::text("one"), Scripted::text("two")])));
+        let mut request = run("hi", json!([]));
+        request["trace"] = json!({"path": log, "key": key});
+        c.send(request.clone()).await;
+        let done = c.next().await;
+        assert_eq!(done["trace"]["count"], 1, "{done}");
+        let public = crate::trace::SigningKey::from_file(&key).unwrap().public();
+        assert_eq!(done["trace"]["key"], public.as_str());
+        let head: crate::trace::Head = serde_json::from_value(json!({"hash": done["trace"]["head"], "count": 1})).unwrap();
+        // The same log again without its head is refused; with it, it goes on.
+        c.send(request.clone()).await;
+        let refused = c.next().await;
+        assert_eq!(refused["type"], "error");
+        assert!(refused["message"].as_str().unwrap().contains("head"), "{refused}");
+        request["trace"]["after"] = json!(head);
+        c.send(request).await;
+        let again = c.next().await;
+        assert_eq!(again["trace"]["count"], 2, "{again}");
+        let text = std::fs::read_to_string(&log).unwrap();
+        let end = crate::trace::verify_text(&text, &public, None).unwrap();
+        assert_eq!(end.hash, again["trace"]["head"].as_str().unwrap());
     }
 
     #[tokio::test]

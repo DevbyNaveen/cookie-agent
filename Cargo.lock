@@ -251,6 +251,7 @@ dependencies = [
  "hyper-util",
  "psl",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "sha2",

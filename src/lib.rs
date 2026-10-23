@@ -39,6 +39,7 @@ pub mod subagent;
 pub mod telemetry;
 pub mod tool;
 pub mod tool_search;
+pub mod trace;
 pub mod trust;
 pub mod verification;
 

@@ -89,6 +89,7 @@ impl Agent {
             let agent: &Agent = next.as_deref().unwrap_or(self);
             let (provenance, budget, depth, ceiling) = (start.provenance.clone(), start.budget, start.depth, start.ceiling.clone());
             let approver = agent.approver.clone().or(start.inherited_approver.clone());
+            let trace = start.trace.clone();
             match agent.turns(session, std::mem::take(&mut inputs), control, on_event, open, start, meter).await? {
                 Turn::Answer(answer) => return Ok(answer),
                 Turn::HandOff(name, to) => {
@@ -100,7 +101,7 @@ impl Agent {
                     let extra = to.enkeon_tools(depth > 0, &control.cancel, on_event).await?;
                     // The next agent's own limits apply too: the stricter of each.
                     let budget = budget.min(&to.budget);
-                    start = Start { provenance, budget, depth, extra, ceiling, inherited_approver: approver };
+                    start = Start { provenance, budget, depth, extra, ceiling, inherited_approver: approver, trace };
                     next = Some(to);
                 }
             }

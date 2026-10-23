@@ -104,6 +104,9 @@ struct Run {
     member_id: Option<String>,
     mine: bool,
     block: Option<String>,
+    /// Where the job's action log ends (`runs/<id>.trace.jsonl`): `{head, count, key}`.
+    #[serde(default)]
+    trace: Option<Value>,
 }
 
 /// A working job: what the stream sends, and how to stop it.
@@ -349,6 +352,7 @@ fn start_job(state: &Arc<State>, body: &Value) -> Response<Body> {
         member_id: Some(MEMBER.into()),
         mine: true,
         block: None,
+        trace: None,
     };
     let (changed, _) = watch::channel(0);
     let live = Arc::new(Live { state: Mutex::new(LiveState::default()), changed, cancel: CancellationToken::new() });
@@ -359,12 +363,27 @@ fn start_job(state: &Arc<State>, body: &Value) -> Response<Body> {
     ok(json!({"run_id": id}))
 }
 
+/// The key that signs this machine's action logs, made once in `home`.
+pub fn trace_key(home: &Path) -> crate::Result<crate::trace::SigningKey> {
+    crate::trace::SigningKey::load_or_create(home.join("trace.key"))
+}
+
+/// A job's own action log, next to its record, from nothing.
+fn job_trace(home: &Path, id: &str) -> crate::Result<crate::trace::Tracer> {
+    let log = crate::trace::TraceLog::open(home.join("runs").join(format!("{id}.trace.jsonl")), trace_key(home)?, None)?;
+    Ok(crate::trace::Tracer::new(Arc::new(Mutex::new(log)), id))
+}
+
 async fn work(state: Arc<State>, id: String, conversation: String, text: String, live: Arc<Live>) {
-    let outcome = run_job(&state, &id, &conversation, &text, &live).await;
+    let (outcome, trace) = match job_trace(&state.opts.home, &id) {
+        Ok(tracer) => (run_job(&state, &id, &conversation, &text, &live, tracer.clone()).await, Some(tracer.anchor())),
+        Err(e) => (Err(e), None),
+    };
     let steps = live.state.lock().expect("live lock").steps.clone();
     let mut runs = state.runs.lock().expect("runs lock");
     let Some(run) = runs.get_mut(&id) else { return };
     run.steps = steps;
+    run.trace = trace;
     run.finished_at = Some(utc_iso(SystemTime::now()));
     match outcome {
         Ok(answer) => {
@@ -390,7 +409,7 @@ async fn work(state: Arc<State>, id: String, conversation: String, text: String,
     state.live.lock().expect("live lock").remove(&id);
 }
 
-async fn run_job(state: &Arc<State>, id: &str, conversation: &str, text: &str, live: &Arc<Live>) -> crate::Result<String> {
+async fn run_job(state: &Arc<State>, id: &str, conversation: &str, text: &str, live: &Arc<Live>, trace: crate::trace::Tracer) -> crate::Result<String> {
     let opts = &state.opts;
     let mut instructions = local::LOCAL_INSTRUCTIONS.to_string();
     if let Some(soul) = read_soul(&opts.home) {
@@ -405,7 +424,8 @@ async fn run_job(state: &Arc<State>, id: &str, conversation: &str, text: &str, l
     let mut agent = Agent::new(&opts.model)?
         .instructions(instructions)
         .tools(tools)
-        .approver(PageApprover { state: state.clone(), run: id.to_string() });
+        .approver(PageApprover { state: state.clone(), run: id.to_string() })
+        .trace(trace);
     if opts.ask {
         agent = agent.policy(Policy::default().confirm_data());
     }

@@ -31,6 +31,9 @@ aws-smithy-http = { version = "=0.63.5", optional = true }
 aws-smithy-runtime-api = { version = "=1.11.5", optional = true }
 aws-smithy-types = { version = "=1.4.5", optional = true }
 futures = "0.3"
+# Signing `trace` logs (Ed25519) and their keys' randomness: already in the
+# tree through rustls, so no new crate is built.
+ring = { version = "0.17", default-features = false }
 # The public suffix list, for DMARC alignment (cookie::mail::org_domain).
 psl = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

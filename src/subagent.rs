@@ -118,6 +118,7 @@ impl Agent {
             extra,
             ceiling: context.policy.clone(),
             inherited_approver: context.approver.clone(),
+            trace: None,
         };
         // Charged live to the parent's batch, so siblings share what is left.
         let pools = context.pools.iter().cloned().chain([(context.spend.clone(), context.budget)]).collect();

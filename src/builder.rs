@@ -52,6 +52,7 @@ impl Agent {
             action_ledger: None,
             close_with_answer: false,
             finish_check: false,
+            trace: None,
         }
     }
 
@@ -75,6 +76,12 @@ impl Agent {
         if !then.is_empty() {
             self.provider = Arc::new(providers::fallback::Fallback::new(self.provider, then));
         }
+        self
+    }
+
+    /// Keep a tamper-evident log of this run's actions (`trace::TraceLog`).
+    pub fn trace(mut self, tracer: crate::trace::Tracer) -> Self {
+        self.trace = Some(tracer);
         self
     }
 

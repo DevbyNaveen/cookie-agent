@@ -58,7 +58,9 @@ impl Agent {
         Ok(Toolset { tools, searcher, artifacts, foreign })
     }
 
-    /// Returns every call's result (in order) and whether the run must stop.
+    /// Returns every call's result (in order), whether the run must stop, and
+    /// what was decided about each call that reached the policy: `allowed`,
+    /// `earned_trust`, `approved`, `declined`, `refused` or `not_run`.
     /// A call that finished keeps its real result either way.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_calls(
@@ -71,8 +73,9 @@ impl Agent {
         loop_guard: &mut LoopGuard,
         context: &ToolContext,
         on_event: &mut (dyn FnMut(Event) + Send),
-    ) -> (Vec<Content>, Stop) {
+    ) -> (Vec<Content>, Stop, Vec<(usize, &'static str)>) {
         let cancel = &context.cancel;
+        let mut decided: Vec<(usize, &'static str)> = Vec::new();
         let mut outcomes: Vec<Option<(String, bool)>> = vec![None; calls.len()];
         let mut approved: Vec<(usize, Arc<dyn Tool>)> = Vec::new();
         let mut stop = Stop::No;
@@ -114,12 +117,19 @@ impl Agent {
                 }
             }
             match policy.decide(tool.spec(), args, provenance, tool.preview(args)) {
-                Decision::Allow => approved.push((index, tool)),
+                Decision::Allow => {
+                    decided.push((index, "allowed"));
+                    approved.push((index, tool));
+                }
                 // A cancelled run asks no one; a wait for a person stops on cancel.
-                Decision::Ask { .. } if cancel.is_cancelled() => outcomes[index] = Some((NOT_RUN_CANCELLED.into(), true)),
+                Decision::Ask { .. } if cancel.is_cancelled() => {
+                    decided.push((index, "not_run"));
+                    outcomes[index] = Some((NOT_RUN_CANCELLED.into(), true));
+                }
                 // Earned trust answers only for values the person wrote; data is always put to them.
                 Decision::Ask { ref from_data, .. } if from_data.is_empty() && self.trust.as_ref().is_some_and(|t| t.allows(tool.spec())) => {
                     on_event(Event::RanOnEarnedTrust { tool: name.clone() });
+                    decided.push((index, "earned_trust"));
                     approved.push((index, tool));
                 }
                 Decision::Ask { preview, reason, from_data } => {
@@ -127,7 +137,10 @@ impl Agent {
                     let request = ApprovalRequest { tool: name.clone(), effect: tool.spec().effect, preview, reason, from_data };
                     asks.push((index, tool, request));
                 }
-                Decision::Deny(reason) => outcomes[index] = Some((reason, true)),
+                Decision::Deny(reason) => {
+                    decided.push((index, "refused"));
+                    outcomes[index] = Some((reason, true));
+                }
             }
         }
         // A loop stop already answered every call ("Not run"): nobody is asked.
@@ -150,6 +163,7 @@ impl Agent {
                 }
                 // Only the person's own noes count toward stopping.
                 let stop_now = approver.is_person() && !cancel.is_cancelled() && loop_guard.answered(yes);
+                decided.push((index, if yes { "approved" } else { "declined" }));
                 if yes {
                     approved.push((index, tool));
                 } else {
@@ -238,7 +252,8 @@ impl Agent {
                 Content::ToolResult { id: id.clone(), output, is_error }
             })
             .collect();
-        (results, stop)
+        decided.sort_by_key(|(index, _)| *index);
+        (results, stop, decided)
     }
 
     /// Tool names must be unique (otherwise providers refuse the request, or

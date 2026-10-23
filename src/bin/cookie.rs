@@ -26,6 +26,7 @@ const USAGE: &str = "usage:
   cookie run <provider:model> <prompt> [--session FILE] [--instructions TEXT] [--no-enkeon] [--fallback-model provider:model]... [-- <prompt starting with ->]
   cookie chat <provider:model> [--session FILE] [--instructions TEXT] [--no-enkeon] [--fallback-model provider:model]...
   cookie replay <session.jsonl>
+  cookie trace verify <file> --key <public key> [--head HASH --count N]
   cookie serve
   cookie --version";
 
@@ -291,6 +292,9 @@ async fn page_command(args: &[String]) -> Result<(), Failure> {
         .or_else(|| std::env::var_os("COOKIE_PAGE_DIR").map(Into::into))
         .or_else(|| Some(std::path::PathBuf::from("web/out")).filter(|d| d.join("me").is_dir()));
     origins.extend(["http://localhost:4748".to_string(), "http://127.0.0.1:4748".to_string()]);
+    std::fs::create_dir_all(&home).map_err(|e| failed(format!("{}: {e}", home.display())))?;
+    let key = cookie_harness::page::trace_key(&home).map_err(failed)?.public();
+    eprintln!("Each job's actions are signed into {}/runs/<job>.trace.jsonl (cookie trace verify <file> --key {key})", home.display());
     match &page_dir {
         Some(_) => eprintln!("Cookie's page: http://localhost:{port}{}", cookie_harness::page::PAGE_PATH),
         None => eprintln!("Cookie answers on http://127.0.0.1:{port}. For the page: cd web && npm run dev, then open http://localhost:4748"),
@@ -316,6 +320,37 @@ async fn replay(args: &[String]) -> Result<(), Failure> {
     }
 }
 
+/// `cookie trace verify <file> --key <public key>`: every record hashed,
+/// chained and signed by that key; with `--head` and `--count` (as stored
+/// when the run ended) the log must also end exactly there.
+fn trace_command(args: &[String]) -> Result<(), Failure> {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let ["verify", path, rest @ ..] = &args[..] else {
+        return Err(Failure::Usage("cookie trace verify <file> --key <public key>".into()));
+    };
+    let (mut key, mut hash, mut count) = (None, None, None);
+    let mut it = rest.iter();
+    while let Some(flag) = it.next() {
+        let value = it.next().ok_or_else(|| Failure::Usage(format!("{flag} needs a value")))?.to_string();
+        match *flag {
+            "--key" => key = Some(value),
+            "--head" => hash = Some(value),
+            "--count" => count = Some(value.parse::<u64>().map_err(|_| Failure::Usage("--count is a number".into()))?),
+            other => return Err(Failure::Usage(format!("cookie trace verify doesn't take {other}"))),
+        }
+    }
+    let key = key.ok_or(Failure::Usage("cookie trace verify needs --key".into()))?;
+    let head = match (hash, count) {
+        (Some(hash), Some(count)) => Some(cookie_harness::trace::Head { hash, count }),
+        (None, None) => None,
+        _ => return Err(Failure::Usage("--head and --count go together".into())),
+    };
+    let text = std::fs::read_to_string(path).map_err(|e| failed(format!("{path}: {e}")))?;
+    let end = cookie_harness::trace::verify_text(&text, &key, head.as_ref()).map_err(|e| failed(format!("{path}: {e}")))?;
+    println!("ok: {} records, head {}", end.count, end.hash);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -335,6 +370,7 @@ async fn main() {
         Some("run") => run(rest).await,
         Some("chat") => chat_command(rest).await,
         Some("replay") => replay(rest).await,
+        Some("trace") => trace_command(rest),
         _ => Err(Failure::Usage(String::new())),
     };
     let code = match ended {

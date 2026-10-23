@@ -55,6 +55,8 @@ pub struct Agent {
     /// A top-level answer that ends by offering work it could do, or by
     /// handing the job back, is sent back once to do it (`Agent::finish_check`).
     pub(crate) finish_check: bool,
+    /// Every action of a run, hashed, chained and signed (`trace`).
+    pub(crate) trace: Option<crate::trace::Tracer>,
 }
 
 /// Where a run starts from: what is trusted, what it may spend, how deep it
@@ -68,6 +70,9 @@ pub(crate) struct Start {
     /// A sub-agent's parent policy and approver.
     pub(crate) ceiling: Option<Policy>,
     pub(crate) inherited_approver: Option<Arc<dyn Approver>>,
+    /// The run's action log, when it keeps one; a sub-agent's work is its
+    /// parent's one call, so it gets none.
+    pub(crate) trace: Option<crate::trace::Tracer>,
 }
 
 /// What a run reports while it happens. New kinds of event may be added,
@@ -204,9 +209,19 @@ impl Agent {
         let mut open = Vec::new();
         let mut meter = Meter::default();
         let extra = self.enkeon_tools(false, &control.cancel, on_event).await?;
-        let start = Start { provenance: Provenance::default(), budget: self.budget, depth: 0, extra, ceiling: None, inherited_approver: None };
+        let start = Start { provenance: Provenance::default(), budget: self.budget, depth: 0, extra, ceiling: None, inherited_approver: None, trace: self.trace.clone() };
         let span = telemetry::agent_span(None, &self.model, self.provider_name.as_deref());
         let result = self.drive(session, inputs, control, on_event, &mut open, start, &mut meter).instrument(span.clone()).await;
+        // The log's last word: the answer's digest, or how the run ended. A
+        // log that could not say it fails the run.
+        let result = match (&self.trace, result) {
+            (Some(trace), Ok(answer)) => trace.record("answer", serde_json::json!({"answer": crate::trace::digest(&answer)})).map(|()| answer),
+            (Some(trace), Err(error)) => {
+                let _ = trace.record("ended", serde_json::json!({"kind": error.kind()}));
+                Err(error)
+            }
+            (None, result) => result,
+        };
         if let Err(error) = &result {
             span.record("error.type", telemetry::error_type(error));
             // The person's turn got no answer: say so in the session, so the next
@@ -237,6 +252,7 @@ impl Agent {
     ) -> Result<Turn> {
         let cancel = &control.cancel;
         let budget = start.budget;
+        let trace = start.trace.clone();
         if budget.max_dollars.is_some() && self.price.is_none() {
             return Err(Error::Budget("a dollar cap needs Agent::prices for this agent's model".into()));
         }
@@ -341,6 +357,7 @@ impl Agent {
                 meter.begin_call(&budget)?;
             }
             let request = ModelRequest { model: &self.model, system: &system, messages: &view, tools: specs.clone(), reasoning: self.reasoning, output_schema: self.output_schema.as_ref() };
+            let mut fell_back: Vec<(String, String)> = Vec::new();
             let mut forward = |event: ProviderEvent| {
                 on_event(match event {
                     ProviderEvent::TextDelta(text) => Event::TextDelta(text),
@@ -348,7 +365,10 @@ impl Agent {
                         open.push(id.clone());
                         Event::ToolCallStarted { id, name }
                     }
-                    ProviderEvent::FellBack { from, to, reason } => Event::FellBack { from, to, reason },
+                    ProviderEvent::FellBack { from, to, reason } => {
+                        fell_back.push((from.clone(), to.clone()));
+                        Event::FellBack { from, to, reason }
+                    }
                 })
             };
             let chat = telemetry::chat_span(&self.model, self.provider_name.as_deref());
@@ -360,6 +380,11 @@ impl Agent {
                 }
             };
             telemetry::record_chat(&chat, &response);
+            if let Some(trace) = &trace {
+                for (from, to) in fell_back {
+                    trace.record("fallback", serde_json::json!({"from": from, "to": to}))?;
+                }
+            }
             let response = match response {
                 // Cut off inside a tool call (its arguments are incomplete): not
                 // run; the model is asked to make it again, smaller.
@@ -447,6 +472,11 @@ impl Agent {
             let calls: Vec<_> = reply.tool_calls().map(|(id, name, args)| (id.into(), name.into(), args.clone())).collect();
             let answer = reply.text();
             session.append(reply).await?;
+            if let Some(trace) = &trace {
+                for (id, name, args) in &calls {
+                    trace.record("call", serde_json::json!({"id": id, "tool": name, "args": crate::trace::digest(args.to_string())}))?;
+                }
+            }
             match (calls.is_empty(), response.stop) {
                 // Paused: the same conversation goes again and the turn continues;
                 // what was said so far is part of the answer.
@@ -500,7 +530,7 @@ impl Agent {
                 handoff: Default::default(),
                 artifacts: artifacts.clone(),
             };
-            let (results, stop) = self
+            let (results, stop, decided) = self
                 .run_calls(&tools, &calls, &provenance, &policy, approver.as_ref(), &mut loop_guard, &context, on_event)
                 .await;
             meter.absorb(*context.spend.lock().expect("spend lock"));
@@ -530,6 +560,17 @@ impl Agent {
             provenance.observe(&message);
             // Recorded before stopping, so a stopped run never forgets what already happened.
             session.append(message).await?;
+            if let Some(trace) = &trace {
+                for (index, verdict) in &decided {
+                    let (id, name, _) = &calls[*index];
+                    trace.record("decision", serde_json::json!({"id": id, "tool": name, "verdict": verdict}))?;
+                }
+                for result in session.messages().last().map(Message::content).unwrap_or_default() {
+                    if let Content::ToolResult { id, output, is_error } = result {
+                        trace.record("result", serde_json::json!({"id": id, "error": is_error, "output": crate::trace::digest(output)}))?;
+                    }
+                }
+            }
             for (id, is_error) in finished {
                 open.retain(|open_id| *open_id != id);
                 on_event(Event::ToolFinished { id, is_error });
@@ -590,7 +631,7 @@ mod tests {
         tool::{tool, Effect},
     };
     use crate::{label::{Origin, Source}, provider::Usage};
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn weather() -> impl Tool {
@@ -1210,6 +1251,31 @@ mod tests {
         let (events, mut on) = collect();
         assert_eq!(a.run_streaming(&mut Session::in_memory(), Message::user("hi"), &RunControl::default(), &mut on).await.unwrap(), "from the backup");
         assert!(events.lock().unwrap().iter().any(|e| matches!(e, Event::FellBack { from, to, .. } if from == "agent-busy" && to == "agent-backup")));
+    }
+
+    #[tokio::test]
+    async fn a_traced_run_logs_each_action_as_digests_and_the_log_verifies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        let key = || crate::trace::SigningKey::from_hex(&"05".repeat(32)).unwrap();
+        let log = crate::trace::TraceLog::open(&path, key(), None).unwrap();
+        let tracer = crate::trace::Tracer::new(Arc::new(std::sync::Mutex::new(log)), "r1");
+        let (a, _) = agent(vec![
+            Scripted::call_many(&[("c1", "weather", json!({"city": "Riga"})), ("c2", "send_email", json!({"to": "anna@x.com"}))]),
+            Scripted::text("It's 9°C; I did not send it."),
+        ]);
+        let a = a.tool(weather()).tool(send_email(Arc::new(AtomicUsize::new(0)))).trace(tracer.clone());
+        a.run("weather in Riga, and email anna@x.com").await.unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let head = crate::trace::verify_text(&text, &key().public(), Some(&tracer.head())).unwrap();
+        let kinds: Vec<(String, Value)> = text.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).map(|r| (r["kind"].as_str().unwrap().to_string(), r["fields"].clone())).collect();
+        let names: Vec<&str> = kinds.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(names, ["call", "call", "decision", "decision", "result", "result", "answer"]);
+        assert_eq!(head.count, 7);
+        assert_eq!(kinds[2].1["verdict"], "allowed");
+        assert_eq!(kinds[3].1["verdict"], "declined", "no approver: the send was put to no one and declined");
+        assert!(!text.contains("Riga") && !text.contains("anna@x.com") && !text.contains("9°C"), "digests, never content");
+        assert_eq!(kinds[6].1["answer"], crate::trace::digest("It's 9°C; I did not send it."));
     }
 
     #[tokio::test]
