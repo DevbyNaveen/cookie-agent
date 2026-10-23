@@ -526,7 +526,7 @@ pub(crate) fn ends_on_an_offer(answer: &str) -> bool {
     const WAITS: [&str; 5] = ["?", "let me know", "tell me", "just say", "say the word"];
     const OFFERS: [&str; 15] = [
         "want me to", "like me to", "should i ", "shall i ", "i can ", "i could ", "i'll ", "i will ", "happy to ",
-        "which of these", "what do you want", "which do you want", "what's stopping", "what is stopping", "what's blocking",
+        "which of these", "what do you want", "which do you want", "stopping you", "blocking you", "holding you back",
     ];
     WAITS.iter().any(|w| last.contains(w)) && OFFERS.iter().any(|o| last.contains(o))
 }
