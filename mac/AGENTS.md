@@ -63,7 +63,9 @@ The compact composer swaps its typing controls for `CookieVoiceMedallion` during
 
 **Cursor Overlay**: A full-screen transparent `NSPanel` hosts the blue cursor companion. It's non-activating, joins all Spaces, and never steals focus. The cursor position, response text, waveform, and pointing animations all render in this overlay via SwiftUI through `NSHostingView`.
 
-**Global Push-To-Talk Shortcut**: Background push-to-talk uses a listen-only `CGEvent` tap instead of an AppKit global monitor so modifier-based shortcuts like `ctrl + option` are detected more reliably while the app is running in the background.
+**Global Push-To-Talk Shortcut**: Background push-to-talk uses a listen-only `CGEvent` tap instead of an AppKit global monitor so modifier-based shortcuts like `ctrl + option` are detected more reliably while the app is running in the background. While pressed, a 0.12 s watchdog reads the keys' physical state so a dropped release ends the press; circle select's recovered release goes through the monitor too. A tap disabled by timeout or user input is re-enabled without cancelling the reply.
+
+**Speech Clock**: `CookieSpeaker.clock` (`CompanionManager.speechClock`) is fed by ElevenLabs' per-character start times against the player position (~60 Hz) or by the Mac voice's `willSpeakRangeOfSpeechString`. Offsets are UTF-16 into the spoken text. `schedule(atOffset:)` runs work when speech reaches it; schedule from `onPlaybackStarted`. Reply progress reads the clock. The voice id lives in UserDefaults (`cookie.elevenlabs.voice`), the key in the Keychain.
 
 **Voice Lifetime and Cancellation**: `CookieSpeaker.speakText` is asynchronous through download and actual playback completion, using speech/audio delegates. `CompanionManager` stays processing while voice is prepared and responding until playback ends; only then does a spoken reply become a compact notice. The compact/expanded composers, closed notch and cursor overlay reflect that shared state. Stop and global Escape cancel dictation, pending captures, model work and playback. An escaped hotkey must be released before it can start again. Session identifiers reject late transcription and playback callbacks.
 
@@ -124,8 +126,9 @@ The compact composer swaps its typing controls for `CookieVoiceMedallion` during
 | `OpenAIAudioTranscriptionProvider.swift` | ~317 | Upload-based transcription provider. Buffers push-to-talk audio locally, uploads as WAV on release, returns finalized transcript. |
 | `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
 | `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
-| `GlobalPushToTalkShortcutMonitor.swift` | ~170 | System-wide push-to-talk and Escape monitor. Publishes press/release/cancel and prevents an escaped held shortcut from restarting. |
-| `CookieSpeaker.swift` | ~255 | Awaitable speech lifecycle and playback progress using AVAudioPlayer/AVSpeechSynthesizer delegates, request identities and injected playback; supports configured cloud speech and local fallback. |
+| `GlobalPushToTalkShortcutMonitor.swift` | ~190 | System-wide push-to-talk and Escape monitor. Publishes press/release/cancel, recovers missed releases from the keys' physical state, and prevents an escaped held shortcut from restarting. |
+| `CookieSpeaker.swift` | ~350 | Awaitable speech lifecycle using AVAudioPlayer/AVSpeechSynthesizer delegates, request identities and injected playback; ElevenLabs `/with-timestamps` (per-character start times) with the chosen voice and the account's voice list, local fallback. |
+| `CookieSpeechClock.swift` | ~120 | The one speech clock both voices feed: the UTF-16 offset being heard now and work scheduled at an offset (runs on reach, all on finish, none on stop). |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `CookieAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
