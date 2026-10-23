@@ -880,7 +880,7 @@ where
             // State in, state out: the client keeps what Cookie pays
             // attention to and what it learned, and asks where a mail or
             // Slack answer goes; these never wait on a run.
-            kind @ ("attention" | "lessons" | "profile" | "sources" | "permission" | "plan" | "watch" | "breaker" | "channel" | "mail" | "slack" | "redact") => {
+            kind @ ("attention" | "lessons" | "profile" | "sources" | "permission" | "plan" | "watch" | "breaker" | "channel" | "mail" | "slack" | "redact" | "promises") => {
                 let result = match kind {
                     "attention" => crate::attention::rpc(&message),
                     "redact" => crate::redact::rpc(&message),
@@ -1355,6 +1355,10 @@ mod tests {
         c.send(json!({"type": "lessons", "id": "l1", "op": "similar", "asked": "When does Acme renew?", "candidates": [["r1", "Beta pricing"], ["r2", "Acme contract renewal date"]]})).await;
         let l = c.next().await;
         assert_eq!((l["id"].as_str(), l["run"].as_str()), (Some("l1"), Some("r2")), "{l}");
+        c.send(json!({"type": "promises", "id": "q1", "answer": "Found it. I'll send the draft tomorrow.", "now": 1_792_789_200.0})).await;
+        let q = c.next().await;
+        assert_eq!((q["type"].as_str(), q["id"].as_str()), (Some("promises"), Some("q1")), "{q}");
+        assert_eq!(q["promises"], json!([{"text": "I'll send the draft tomorrow", "due": "2026-10-24"}]));
     }
 
     #[tokio::test]

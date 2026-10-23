@@ -10,6 +10,7 @@ pub mod check;
 pub mod mail;
 pub mod permission;
 pub mod plan;
+pub mod promise;
 pub mod watch;
 pub mod slack;
 
@@ -443,6 +444,7 @@ pub fn rpc(m: &Value) -> Result<Value, String> {
         "watch" => watch::rpc(m),
         "breaker" => breaker::rpc(m),
         "channel" => channel::rpc(m),
+        "promises" => promise::rpc(m),
         other => Err(format!("unknown cookie line `{other}`")),
     }
 }
