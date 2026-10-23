@@ -169,6 +169,28 @@ final class CookieSpeaker {
         return try decodeTimestampedSpeech(data)
     }
 
+    /// A voice on the person's ElevenLabs account.
+    struct Voice: Identifiable, Decodable, Hashable {
+        let id: String
+        let name: String
+        private enum CodingKeys: String, CodingKey { case id = "voice_id", name }
+    }
+
+    /// The account's voices, by name (https://elevenlabs.io/docs/api-reference/voices/search).
+    static func voices(key: String) async throws -> [Voice] {
+        var request = URLRequest(url: URL(string: "https://api.elevenlabs.io/v2/voices?page_size=100&sort=name&sort_direction=asc&include_total_count=false")!)
+        request.timeoutInterval = 15
+        request.setValue(key, forHTTPHeaderField: "xi-api-key")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200...299).contains(status) else {
+            throw NSError(domain: "ElevenLabs", code: status, userInfo: [NSLocalizedDescriptionKey: "HTTP \(status)"])
+        }
+        struct Page: Decodable { let voices: [Voice] }
+        return try JSONDecoder().decode(Page.self, from: data).voices.filter { isVoiceID($0.id) }
+    }
+
     /// The with-timestamps response: `audio_base64`, and `alignment` over the original text.
     private struct TimestampedSpeech: Decodable {
         struct Alignment: Decodable {

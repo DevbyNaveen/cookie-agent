@@ -346,8 +346,71 @@ private struct VoicePage: View {
         }
         SettingsGroup(label: "Speaking") {
             CredentialRow(field: CookieModelSettings.elevenLabsField, title: "ElevenLabs key",
-                          caption: "Optional. With a key, Cookie's spoken replies use ElevenLabs, and the reply's text is sent to ElevenLabs to be spoken. Without one, the best voice installed on this Mac speaks, on this Mac.",
-                          divider: false)
+                          caption: "Optional. With a key, Cookie's spoken replies use ElevenLabs, and the reply's text is sent to ElevenLabs to be spoken. Without one, the best voice installed on this Mac speaks, on this Mac.") { savedKey += 1 }
+            ElevenLabsVoiceRow(hasKey: hasKey)
+        }
+    }
+
+    /// Bumped when the key is saved or removed, so the voice row reads the Keychain again.
+    @State private var savedKey = 0
+    private var hasKey: Bool { _ = savedKey; return CookieModelSettings.value(CookieModelSettings.elevenLabsField) != nil }
+}
+
+/// Which ElevenLabs voice speaks: an id typed in, or one picked from the
+/// account's voices (GET /v2/voices, asked only when the person presses the button).
+private struct ElevenLabsVoiceRow: View {
+    let hasKey: Bool
+    @AppStorage(CookieSpeaker.elevenLabsVoiceKey) private var voice = ""
+    @State private var voices: [CookieSpeaker.Voice] = []
+    @State private var loading = false
+    @State private var message: String?
+
+    private var caption: String {
+        if let message { return message }
+        let chosen = voice.trimmingCharacters(in: .whitespaces)
+        if !chosen.isEmpty && !CookieSpeaker.isVoiceID(chosen) {
+            return "That isn't a voice id (letters and digits only), so Jessica speaks. Copy the id from the voice in ElevenLabs."
+        }
+        return hasKey
+            ? "Empty speaks with Jessica, an ElevenLabs default voice. Pick one of your voices, or paste a voice id from ElevenLabs. Library voices need a paid ElevenLabs plan; default voices are retired on 31 December 2026."
+            : "Add your ElevenLabs key above to choose its voice."
+    }
+
+    var body: some View {
+        SettingsRow(title: "ElevenLabs voice", caption: caption, divider: false) {
+            HStack(spacing: 6) {
+                if voices.isEmpty {
+                    TextField("Jessica", text: $voice)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                        .frame(width: 170)
+                        .autocorrectionDisabled()
+                    PillButton(title: loading ? "Loading…" : "Your voices") { Task { await load() } }
+                        .disabled(!hasKey || loading)
+                } else {
+                    Picker("ElevenLabs voice", selection: $voice) {
+                        Text("Jessica (default)").tag("")
+                        if !voice.isEmpty && !voices.contains(where: { $0.id == voice }) { Text(voice).tag(voice) }
+                        ForEach(voices) { Text($0.name).tag($0.id) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 200)
+                }
+            }
+        }
+        .disabled(!hasKey)
+        .onChange(of: hasKey) { _, _ in voices = []; message = nil }
+    }
+
+    private func load() async {
+        guard let key = CookieModelSettings.value(CookieModelSettings.elevenLabsField) else { return }
+        loading = true
+        defer { loading = false }
+        do {
+            voices = try await CookieSpeaker.voices(key: key)
+            message = voices.isEmpty ? "Your ElevenLabs account has no voices to choose from; Jessica speaks." : nil
+        } catch {
+            message = "Couldn't list your voices: \(error.localizedDescription)"
         }
     }
 }
