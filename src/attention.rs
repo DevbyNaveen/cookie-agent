@@ -83,6 +83,11 @@ pub struct Signal {
     /// A person on the team wrote it (through an AI tool or the Console).
     pub by_person: bool,
     pub hard: bool,
+    /// What it is about, by name — the decision, the plan, the page's host —
+    /// for the notice's question ([`question`]). Empty: not known.
+    pub what: String,
+    /// A plan's day (epoch seconds); 0 = none.
+    pub due: f64,
 }
 
 /// How much the team wanted one kind of signal, and when that was set.
@@ -137,6 +142,11 @@ pub struct Notice {
     pub utility: f64,
     pub level: f64,
     pub cues: Vec<Signal>,
+    /// The one question the notice ends with, asked of the person
+    /// ([`question`]). `None`: none could be put from its cues, and the
+    /// notice is held, never sent with a generic line.
+    #[serde(default)]
+    pub question: Option<String>,
 }
 
 /// One memory write, as the client describes it.
@@ -306,6 +316,8 @@ pub fn signal_of(write: &Write, owed: &[(String, String, String)], now: f64) -> 
             outside: write.outside,
             by_person: write.by_person,
             hard: true,
+            what: plan_name.clone(),
+            due: 0.0,
         },
         _ => Signal {
             id: write.id.clone(),
@@ -316,6 +328,8 @@ pub fn signal_of(write: &Write, owed: &[(String, String, String)], now: f64) -> 
             outside: write.outside,
             by_person: write.by_person,
             hard: false,
+            what: write.name.clone(),
+            due: 0.0,
         },
     }
 }
@@ -374,6 +388,7 @@ pub fn consider(subject: &mut Subject, team: &Team, now: f64) -> Verdict {
         hard,
         utility: score,
         level,
+        question: question(&subject.cues),
         cues: std::mem::take(&mut subject.cues),
     };
     subject.level = 0.0;
@@ -432,6 +447,8 @@ pub fn due_cues(plans: &[Plan], now: f64) -> Vec<(Plan, Signal)> {
             outside: false,
             by_person: true,
             hard: true,
+            what: p.name.clone(),
+            due: p.due,
         };
         out.push((p.clone(), signal));
     }
@@ -518,6 +535,43 @@ pub fn why_now(n: &Notice) -> String {
     }
 }
 
+/// The one question a notice asks, put from the cue that fired it (a hard
+/// cue first, else the latest that names something a person can answer
+/// for): a contradicted decision — "Is “X” still the plan?"; a plan coming
+/// due — "Is “X” still on for Friday?"; one past its day — "Was “X” done,
+/// or does it need a new day?"; news about someone a plan is owed to —
+/// "Does this change “X”?"; a watched page — "Does the change on example.com
+/// matter for what you are working on?"; a build-up of decisions, plans or
+/// requirements — about the latest. `None` when no cue names its thing.
+pub fn question(cues: &[Signal]) -> Option<String> {
+    let ask = |c: &Signal| -> Option<String> {
+        let what = clip(&c.what, 80);
+        if what.is_empty() {
+            return None;
+        }
+        Some(match c.kind.as_str() {
+            "conflict" => format!("Is “{what}” still the plan?"),
+            "due_soon" if c.due > 0.0 => format!("Is “{what}” still on for {}?", weekday_name(c.due)),
+            "past_due" => format!("Was “{what}” done, or does it need a new day?"),
+            "plan_cue" => format!("Does this change “{what}”?"),
+            "page_change" => format!("Does the change on {what} matter for what you are working on?"),
+            "decision" => format!("Is “{what}” settled?"),
+            "plan" if c.due > 0.0 => format!("Is “{what}” still on for {}?", weekday_name(c.due)),
+            "plan" => format!("Is “{what}” still on?"),
+            "requirement" => format!("Does “{what}” still hold?"),
+            _ => return None,
+        })
+    };
+    cues.iter().filter(|c| c.hard).find_map(ask).or_else(|| cues.iter().rev().filter(|c| !c.hard).find_map(ask))
+}
+
+/// The weekday of an epoch time, in UTC.
+fn weekday_name(at: f64) -> &'static str {
+    const DAYS: [&str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+    // The epoch was a Thursday.
+    DAYS[((at / 86_400.0).floor() as i64 + 3).rem_euclid(7) as usize]
+}
+
 // ── Over `cookie serve` ───────────────────────────────────────────────────
 
 fn verdict_json(v: &Verdict) -> Value {
@@ -558,7 +612,8 @@ fn field<T: serde::de::DeserializeOwned>(m: &Value, k: &str) -> Result<T, String
 ///   `{send, why?, later?}` (`later`: quiet hours; try again after).
 ///
 /// Replies `{subject, signal?, verdict?}`; the client stores `subject`. A
-/// notice in a verdict carries `why_now`, the sentence it opens with.
+/// notice in a verdict carries `why_now`, the sentence it opens with, and
+/// `question`, the one it ends with (`null`: hold it, ask nothing).
 pub fn rpc(m: &Value) -> Result<Value, String> {
     let now = m.get("now").and_then(Value::as_f64).unwrap_or(0.0);
     let op = m.get("op").and_then(Value::as_str).unwrap_or_default();
@@ -864,6 +919,52 @@ mod tests {
         assert_eq!(why_now(&n), "2 new notes about Acme from your team");
         n.cues.push(cue("past_due", "Past its day: Quote", true));
         assert_eq!(why_now(&n), "Past its day: Quote");
+    }
+
+    #[test]
+    fn every_notice_asks_one_question_from_the_cue_that_fired_it() {
+        let cue = |kind: &str, what: &str, hard: bool| Signal { kind: kind.into(), what: what.into(), hard, by_person: true, ..Signal::default() };
+        // Friday 2026-10-30, noon UTC.
+        let friday = 1_793_361_600.0;
+        let q = |cues: Vec<Signal>| question(&cues);
+        assert_eq!(q(vec![cue("conflict", "Price stays at €79", true)]).as_deref(), Some("Is “Price stays at €79” still the plan?"));
+        assert_eq!(q(vec![Signal { due: friday, ..cue("due_soon", "Send Anna the quote", true) }]).as_deref(), Some("Is “Send Anna the quote” still on for Friday?"));
+        assert_eq!(q(vec![cue("past_due", "Send Anna the quote", true)]).as_deref(), Some("Was “Send Anna the quote” done, or does it need a new day?"));
+        assert_eq!(q(vec![cue("plan_cue", "Quote for Anna", true)]).as_deref(), Some("Does this change “Quote for Anna”?"));
+        assert_eq!(q(vec![cue("page_change", "example.com", true)]).as_deref(), Some("Does the change on example.com matter for what you are working on?"));
+        assert_eq!(q(vec![cue("decision", "Move to Postgres", false)]).as_deref(), Some("Is “Move to Postgres” settled?"));
+        assert_eq!(q(vec![cue("plan", "Launch the beta", false)]).as_deref(), Some("Is “Launch the beta” still on?"));
+        assert_eq!(q(vec![cue("requirement", "EU data stays in the EU", false)]).as_deref(), Some("Does “EU data stays in the EU” still hold?"));
+        // The hard cue asks before any build-up; within a build-up, the latest that can be asked about.
+        assert_eq!(q(vec![cue("decision", "A", false), cue("conflict", "B", true)]).as_deref(), Some("Is “B” still the plan?"));
+        assert_eq!(q(vec![cue("decision", "A", false), cue("plan", "B", false), cue("fact", "C", false)]).as_deref(), Some("Is “B” still on?"));
+        // Nothing to ask about: no question, and the notice is held.
+        assert_eq!(q(vec![cue("fact", "Acme has 40 staff", false), cue("metric", "MRR", false)]), None);
+        assert_eq!(q(vec![cue("conflict", "", true)]), None, "a cue that names nothing asks nothing");
+        assert_eq!(q(vec![cue("due_soon", "x", true)]), None, "no day to ask about");
+        assert_eq!(q(vec![]), None);
+        let long = q(vec![cue("decision", &"word ".repeat(40), false)]).unwrap();
+        assert!(long.chars().count() < 100 && long.ends_with("…” settled?"), "{long}");
+    }
+
+    #[test]
+    fn a_noticed_subject_carries_its_question_and_its_cues_their_names() {
+        let mut s = acme(0.0);
+        let plans = [Plan { id: "p1".into(), name: "Quote for Anna".into(), due: 1_793_361_600.0, ..Plan::default() }];
+        let (_, soon) = due_cues(&plans, 1_793_361_600.0 - 3600.0).remove(0);
+        assert_eq!((soon.what.as_str(), soon.due), ("Quote for Anna", 1_793_361_600.0));
+        add(&mut s, soon, 0.0);
+        let Verdict::Notice(n) = consider(&mut s, &Team::default(), 0.0) else { panic!("a hard cue is noticed") };
+        assert_eq!(n.question.as_deref(), Some("Is “Quote for Anna” still on for Friday?"));
+        assert_eq!(signal_of(&decision("m1"), &[], 0.0).what, "Decision m1");
+        let owed = [("renewal".to_string(), "p9".to_string(), "Renewal terms".to_string())];
+        assert_eq!(signal_of(&decision("m1"), &owed, 0.0).what, "Renewal terms");
+        // Over the wire, and a stored subject from before `what` still reads.
+        let r = rpc(&json!({"op": "signal", "branch": "acme", "about": ["Renewal"], "now": 0.0,
+            "signal": {"id": "c1", "kind": "conflict", "why": "w", "what": "Renewal at €79", "salience": 10.0, "hard": true, "by_person": true}})).unwrap();
+        assert_eq!(r["verdict"]["notice"]["question"], "Is “Renewal at €79” still the plan?");
+        let old: Subject = serde_json::from_value(json!({"key": "acme|renewal", "cues": [{"id": "x", "kind": "decision"}]})).unwrap();
+        assert_eq!(old.cues[0].what, "");
     }
 
     #[test]
