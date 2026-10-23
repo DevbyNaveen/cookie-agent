@@ -102,8 +102,10 @@ The compact composer swaps its typing controls for `CookieVoiceMedallion` during
 | `CookieTeach.swift` | ~230 | Teach by doing: event-tap recorder, SKILL.md writer, merged skills folder. |
 | `CookieScreenMemory.swift` | ~125 | OCR of what Cookie looked at, kept a day, the `recall_screen` tool. |
 | `CookieMarks.swift` | ~245 | DRAW tag bodies into marks (with their spoken offset), the per-display resolver with AX snapping. |
-| `CookieReplyTags.swift` | ~125 | Splits a reply into the spoken text and its inline tags, each with its UTF-16 offset in that text; `[KIND:body]` and `[KIND {json}]`. |
+| `CookieReplyTags.swift` | ~125 | Splits a reply into the spoken text and its inline tags (NEXT, DRAW, POINT, CARD), each with its UTF-16 offset in that text; `[KIND:body]` and `[KIND {json}]`. |
 | `CookieInk.swift` | ~450 | Cookie's pen: Rough.js line/ellipse perturbation and perfect-freehand outlines ported to Swift (MIT, see THIRD_PARTY_NOTICES.md); strokes reveal by prefix. |
+| `CookieCards.swift` | ~280 | Explainer cards from `[CARD {json}]`: the closed catalog (timeline, steps, flow, list, compare, number) as strict Swift types (an unknown kind, extra field or over-long text drops the card, never the reply), flow ranks, and each element's place on the speech clock across the sentence after the tag. |
+| `CookieCardView.swift` | ~670 | The card in Cookie's paper-card language with `CookieInk` rules, rings, boxes and arrows, element by element (whole under Reduce Motion); the presenter floats one at a time beside the notch or the marks, click-through except its close control, dismissed by Escape, a click elsewhere, the next turn or 45 s. |
 | `CookieMarksLayer.swift` | ~300 | Inks marks on each overlay as they're revealed: one Canvas, display-link frames at the screen's top rate, labels, notes and numbers. |
 | `CookieAgentDock.swift` | ~235 | Fixed floating panel, stable foreground identity, background-run routing, animated hit regions and pointer/keyboard dismissal. |
 | `CookieDockPresentation.swift` | ~235 | One clipped face-to-card surface, shared voice indicator, inline activity and controls; native previews isolated from voice execution. |
