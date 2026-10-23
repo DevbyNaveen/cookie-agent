@@ -523,7 +523,7 @@ const FINISH_NOTE: &str = "Before this goes out: your reply ends by offering wor
 /// ("what's up?") have only the first.
 pub(crate) fn ends_on_an_offer(answer: &str) -> bool {
     let last = answer.trim().rsplit("\n\n").find(|p| !p.trim().is_empty()).unwrap_or_default().to_lowercase().replace('\u{2019}', "'");
-    const WAITS: [&str; 5] = ["?", "let me know", "tell me", "just say", "say the word"];
+    const WAITS: [&str; 7] = ["?", "let me know", "tell me", "just say", "say the word", "give me", "say \""];
     const OFFERS: [&str; 15] = [
         "want me to", "like me to", "should i ", "shall i ", "i can ", "i could ", "i'll ", "i will ", "happy to ",
         "which of these", "what do you want", "which do you want", "stopping you", "blocking you", "holding you back",
@@ -742,6 +742,7 @@ mod tests {
             "The only blocker between you and more paying customers is sending. What do you want me to draft or prep to make that easier right now?",
             "And ask Honeyb for a one-line quote.\n\nWhat's actually stopping you from opening that file right now?",
             "Do you want me to write the first 5 emails now? I can do it against the company list.",
+            "Give me a name — one company from your lead list — and I'll write the email right now. Or say \"pick one\" and I'll pull a target.",
         ] {
             assert!(ends_on_an_offer(&format!("Here is the plan.\n\n{ending}")), "{ending}");
         }
