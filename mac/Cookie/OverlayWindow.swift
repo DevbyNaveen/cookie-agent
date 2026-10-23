@@ -139,6 +139,29 @@ enum BuddyNavigationMode {
     case navigatingToTarget
     /// Buddy has arrived at the target and is pointing at it with a speech bubble
     case pointingAtTarget
+    /// Cookie's hand at work: the tip rides the pen while a mark is inked, or rests on a card or
+    /// scene as it opens. Its position is set directly (no spring), frame by frame.
+    case drawing
+}
+
+/// Where Cookie's hand goes when something it shows opens in its own window (a card, a 3D scene).
+/// Presenters call `open(at:)` with the window's frame; the pointer on that display glides to the
+/// window's corner, rests while it opens, and goes back to the person's cursor.
+@MainActor
+final class CookieHand: ObservableObject {
+    static let shared = CookieHand()
+
+    struct Visit: Equatable {
+        let id = UUID()
+        /// AppKit global coordinates, just inside the window's top-left corner.
+        let point: CGPoint
+    }
+
+    @Published private(set) var visit: Visit?
+
+    func open(at frame: CGRect) {
+        visit = Visit(point: CGPoint(x: frame.minX + 14, y: frame.maxY - 18))
+    }
 }
 
 // SwiftUI view for the blue glowing cursor pointer.
@@ -175,6 +198,9 @@ struct BlueCursorView: View {
     @State private var bubbleOpacity: Double = 1.0
     @State private var cursorOpacity: Double = 0.0
     @ObservedObject private var presence = CursorPresence.shared
+    @ObservedObject private var hand = CookieHand.shared
+    /// The hand is resting on a card or scene that just opened.
+    @State private var handVisiting = false
 
     // MARK: - Buddy Navigation State
 
@@ -234,7 +260,7 @@ struct BlueCursorView: View {
 
             // Cookie's drawings on this display.
             if !companionManager.marks.isEmpty {
-                CookieMarksLayer(marks: companionManager.marks, screenFrame: screenFrame)
+                CookieMarksLayer(marks: companionManager.marks, screenFrame: screenFrame, onPen: { pen in follow(pen) })
                     .transition(.opacity)
             }
 
@@ -370,7 +396,7 @@ struct BlueCursorView: View {
                 )
                 .animation(.easeIn(duration: 0.25), value: companionManager.voiceState)
                 .animation(
-                    buddyNavigationMode == .navigatingToTarget ? nil : .easeInOut(duration: 0.3),
+                    buddyNavigationMode == .navigatingToTarget || buddyNavigationMode == .drawing ? nil : .easeInOut(duration: 0.3),
                     value: triangleRotationDegrees
                 )
 
@@ -439,6 +465,69 @@ struct BlueCursorView: View {
 
             startNavigatingToElement(screenLocation: screenLocation)
         }
+        .onReceive(hand.$visit) { visit in handOpens(visit) }
+    }
+
+    // MARK: - Cookie's hand
+
+    /// Cookie's hand while it draws on this display: the pointer's tip on the pen.
+    private func follow(_ pen: CookiePen?) {
+        guard let pen else {
+            if buddyNavigationMode == .drawing && !handVisiting { returnHandToCursor() }
+            return
+        }
+        // Flying to point at something comes first; the hand never fights it.
+        guard buddyNavigationMode == .followingCursor || buddyNavigationMode == .drawing else { return }
+        let centre = Self.centre(placingTipAt: pen.point, degrees: pen.degrees)
+        handVisiting = false
+        if pen.travelling || buddyNavigationMode != .drawing {
+            withAnimation(.spring(response: CookieMarksLayer.lead, dampingFraction: 0.9)) {
+                cursorPosition = centre
+                triangleRotationDegrees = pen.degrees
+            }
+        } else {
+            cursorPosition = centre
+            triangleRotationDegrees = pen.degrees
+        }
+        buddyNavigationMode = .drawing
+    }
+
+    /// A card or a scene opened on this display: the hand goes to its corner, rests while it
+    /// opens, then goes back. Reduce Motion keeps the hand with the person.
+    private func handOpens(_ visit: CookieHand.Visit?) {
+        guard let visit, screenFrame.contains(visit.point),
+              buddyNavigationMode == .followingCursor || buddyNavigationMode == .drawing,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let target = convertScreenPointToSwiftUICoordinates(visit.point)
+        let degrees = Double(atan2(target.y - cursorPosition.y, target.x - cursorPosition.x)) * 180 / .pi + 90
+        buddyNavigationMode = .drawing
+        handVisiting = true
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.88)) {
+            cursorPosition = Self.centre(placingTipAt: target, degrees: degrees)
+            triangleRotationDegrees = degrees
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+            guard self.handVisiting, self.hand.visit == visit else { return }
+            self.handVisiting = false
+            if self.buddyNavigationMode == .drawing { self.returnHandToCursor() }
+        }
+    }
+
+    private func returnHandToCursor() {
+        buddyNavigationMode = .followingCursor
+        let mouse = convertScreenPointToSwiftUICoordinates(NSEvent.mouseLocation)
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+            triangleRotationDegrees = -35
+            cursorPosition = CGPoint(x: mouse.x + 35, y: mouse.y + 25)
+        }
+    }
+
+    /// The pointer is drawn centred on its position; this puts its tip on a point instead.
+    /// Half its height: `CookiePointer(size: 16)` is 16 × 16·√3/2.
+    private static func centre(placingTipAt tip: CGPoint, degrees: Double) -> CGPoint {
+        let reach = 16 * 0.866 / 2
+        let turn = degrees * .pi / 180
+        return CGPoint(x: tip.x - reach * sin(turn), y: tip.y + reach * cos(turn))
     }
 
     /// Whether the buddy triangle should be visible on this screen.
@@ -462,7 +551,7 @@ struct BlueCursorView: View {
                 return false
             }
             return isCursorOnThisScreen
-        case .navigatingToTarget, .pointingAtTarget:
+        case .navigatingToTarget, .pointingAtTarget, .drawing:
             return true
         }
     }

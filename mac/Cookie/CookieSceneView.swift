@@ -437,6 +437,8 @@ final class CookieScenePresenter {
         newPanel.contentView = hosting
         newPanel.alphaValue = 0
         newPanel.orderFrontRegardless()
+        // Cookie's hand goes to it as it opens.
+        CookieHand.shared.open(at: newPanel.frame)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.22
             newPanel.animator().alphaValue = 1

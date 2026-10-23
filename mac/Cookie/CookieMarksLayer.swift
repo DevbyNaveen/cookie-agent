@@ -10,6 +10,11 @@
 //  the ink is dry. Reduce Motion shows each mark whole, still on its word.
 //  Everything is click-through.
 //
+//  Cookie's hand draws it: for each mark the pointer first glides to where the
+//  stroke begins (`lead`), the ink starts as it lands, the pointer rides the pen
+//  tip round the stroke, and rests at the end a moment (`hold`) before going
+//  back to the person's cursor. `onPen` reports the hand every frame.
+//
 
 import AppKit
 import QuartzCore
@@ -20,6 +25,12 @@ struct CookieMarksLayer: View {
     let screenFrame: CGRect
     /// Everything at once, no strokes animating: previews.
     var instant = false
+    /// Where Cookie's hand is, every frame; nil when it isn't drawing.
+    var onPen: ((CookiePen?) -> Void)? = nil
+    /// The hand's glide to a stroke before the ink starts.
+    static let lead = 0.24
+    /// How long the hand rests where a mark ends before it goes back.
+    static let hold = 0.5
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var clock = CookieInkClock()
     @State private var cache = CookieInkCache()
@@ -60,7 +71,12 @@ struct CookieMarksLayer: View {
         }
         .allowsHitTesting(false)
         .onAppear { run() }
-        .onChange(of: marks.map(\.revealedAt)) { _, _ in run() }
+        .onChange(of: marks.map(\.revealedAt)) { _, _ in
+            run()
+            onPen?(pen(at: CACurrentMediaTime()))
+        }
+        .onChange(of: clock.now) { _, now in onPen?(pen(at: now)) }
+        .onDisappear { onPen?(nil) }
     }
 
     /// How long a mark's ink takes: about a thousand points a second, never under a third of a
@@ -69,12 +85,14 @@ struct CookieMarksLayer: View {
         length > 0 ? min(0.9, max(0.35, Double(length) / 1000)) : 0.3
     }
 
-    /// 0 until the mark is shown, then the pen's progress along all its strokes, eased.
+    /// 0 until the hand has reached the mark, then the pen's progress along all its strokes, eased.
     private func progress(of mark: CookieResolvedDrawing, at now: Double, length: CGFloat) -> Double {
         if instant || mark.revealedAt == 0 { return 1 }
         guard now >= mark.revealedAt else { return 0 }
         if reduceMotion { return 1 }
-        let t = min(1, (now - mark.revealedAt) / duration(length: length))
+        let start = mark.revealedAt + Self.lead
+        guard now >= start else { return 0 }
+        let t = min(1, (now - start) / duration(length: length))
         return t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
     }
 
@@ -82,15 +100,61 @@ struct CookieMarksLayer: View {
     private func run() {
         guard !instant else { return }
         let end = mine.map { mark in
-            mark.revealedAt + duration(length: cache.strokes(for: mark, local: local).reduce(0) { $0 + $1.length }) + 0.1
+            mark.revealedAt + Self.lead + duration(length: cache.strokes(for: mark, local: local).reduce(0) { $0 + $1.length })
+                + Self.hold + 0.1
         }.max() ?? 0
         clock.run(until: end)
+    }
+
+    /// The hand on the mark shown most recently: travelling to its first stroke, on the pen tip
+    /// while it inks, then resting at its end; nil once that rest is over, or with Reduce Motion
+    /// (the marks simply appear, and the hand stays with the person).
+    private func pen(at now: Double) -> CookiePen? {
+        guard !instant, !reduceMotion,
+              let mark = mine.filter({ $0.revealedAt > 0 && now >= $0.revealedAt }).max(by: { $0.revealedAt < $1.revealedAt })
+        else { return nil }
+        let strokes = cache.strokes(for: mark, local: local)
+        let total = strokes.reduce(0) { $0 + $1.length }
+        let start = mark.revealedAt + Self.lead
+        guard now <= start + duration(length: total) + Self.hold else { return nil }
+        guard let first = strokes.first?.pen(at: 0) else {
+            // A note or a number has no stroke: the hand goes to its spot and stays a moment.
+            return spot(of: mark).map { CookiePen(point: $0, degrees: -35, travelling: now < start) }
+        }
+        if now < start { return CookiePen(point: first.point, degrees: Self.degrees(first.heading), travelling: true) }
+        var reach = total * CGFloat(progress(of: mark, at: now, length: total))
+        for stroke in strokes {
+            if reach <= stroke.length, let tip = stroke.pen(at: reach) {
+                return CookiePen(point: tip.point, degrees: Self.degrees(tip.heading), travelling: false)
+            }
+            reach -= stroke.length
+        }
+        guard let last = strokes.last, let end = last.pen(at: last.length) else { return nil }
+        return CookiePen(point: end.point, degrees: Self.degrees(end.heading), travelling: false)
+    }
+
+    /// A heading (radians) as the pointer's turn: its tip leads the way the pen moves.
+    private static func degrees(_ heading: CGFloat) -> Double { Double(heading) * 180 / .pi + 90 }
+
+    private func spot(of mark: CookieResolvedDrawing) -> CGPoint? {
+        switch mark.geometry {
+        case .note(let point), .number(let point): return local(point)
+        default: return nil
+        }
     }
 
     /// AppKit global (bottom-left) → this overlay's SwiftUI coordinates (top-left).
     private func local(_ point: CGPoint) -> CGPoint {
         CGPoint(x: point.x - screenFrame.origin.x, y: (screenFrame.origin.y + screenFrame.height) - point.y)
     }
+}
+
+/// Where Cookie's hand is while it draws, in the overlay's own coordinates: the pen point, the
+/// pointer's turn (CookiePointer degrees, 0 = tip up), and whether it is still gliding there.
+struct CookiePen: Equatable {
+    var point: CGPoint
+    var degrees: Double
+    var travelling: Bool
 }
 
 /// Each mark's pen strokes, worked out once: the same seed gives the same wobble, so a mark

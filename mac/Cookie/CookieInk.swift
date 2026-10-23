@@ -51,6 +51,17 @@ struct CookieInkStroke {
         self.lengths = lengths
     }
 
+    /// Where the pen is after `distance` along this stroke, and which way it is travelling (radians,
+    /// 0 = right, y down).
+    func pen(at distance: CGFloat) -> (point: CGPoint, heading: CGFloat)? {
+        guard points.count >= 2 else { return points.first.map { ($0, 0) } }
+        let reach = min(max(0, distance), length)
+        let index = max(1, lengths.firstIndex { $0 >= reach } ?? points.count - 1)
+        let a = points[index - 1], b = points[index]
+        let t = (reach - lengths[index - 1]) / max(0.0001, lengths[index] - lengths[index - 1])
+        return (CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t), atan2(b.y - a.y, b.x - a.x))
+    }
+
     /// The ink of the first `reveal` points of length: a closed outline to fill.
     func outline(revealed reveal: CGFloat) -> CGPath? {
         guard points.count >= 2, reveal > 0 else { return nil }
