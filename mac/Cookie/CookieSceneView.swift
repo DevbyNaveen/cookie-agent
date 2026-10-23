@@ -83,9 +83,15 @@ final class CookieSceneStage: ObservableObject {
         content.add(camera)
         lights.forEach { content.add($0) }
         let projector = content
+        // RealityKit doesn't document which thread delivers the update, so a frame runs where it lands
+        // when that's the main thread (in step with the render) and is handed to the main thread otherwise.
         subscription = content.subscribe(to: SceneEvents.Update.self, on: nil, componentType: nil) { [weak self] event in
-            MainActor.assumeIsolated {
-                self?.frame(Float(event.deltaTime)) { projector.project(point: $0, to: .local) }
+            let seconds = Float(event.deltaTime)
+            let step: @MainActor () -> Void = { self?.frame(seconds) { projector.project(point: $0, to: .local) } }
+            if Thread.isMainThread {
+                MainActor.assumeIsolated(step)
+            } else {
+                DispatchQueue.main.async { MainActor.assumeIsolated(step) }
             }
         }
     }
