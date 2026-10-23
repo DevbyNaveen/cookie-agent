@@ -83,6 +83,32 @@ your yes on the page. Write how Cookie should be in Settings, and it reads
 that before every job. Jobs and conversations are kept in `~/.cookie`, one
 file each, on your machine.
 
+## Cookie for Mac
+
+Cookie lives in your menu bar and in the notch. Hold Control + Option and
+talk; it answers out loud, and what it shows you lands on the word that
+names it.
+
+- **A voice with timing.** ElevenLabs or the Mac's own voice, timed word by
+  word, so the pointer and every mark arrive as Cookie says them.
+- **Marks on your screen.** Circles, arrows, underlines and notes, drawn on
+  by hand in amber ink at your display's frame rate, right on the control
+  it means.
+- **Cards that explain.** A timeline, steps, a flow, a list, a comparison or
+  one number, drawn beside the notch as Cookie talks it through. Esc puts
+  them away.
+- **Things in 3D.** Ask how something is built and Cookie puts a small model
+  beside you, labelled part by part as it names them. Drag to turn it.
+- **Routines by voice.** "Every Tuesday at 5, clean up my inbox" becomes a
+  routine after your yes, on the Board where you can pause it.
+- **One Cookie.** The Mac's Board and Cookie's page are the same list: on
+  your own computer with the bundled page, or your team's with an Enkeon
+  sign-in, where Enkeon also gives Cookie its voice.
+- **Hide from screen sharing.** One switch asks macOS to leave Cookie's
+  windows out of other apps' screen shares, wherever they honour it.
+
+Build it from [`mac/`](mac/).
+
 ## Start in a minute
 
 ```sh

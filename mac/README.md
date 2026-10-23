@@ -13,6 +13,14 @@ look at your screen when you ask it to, point at the button or line you need,
 and work on your Mac with the same rules as everywhere else: what it reads is
 never an order, and anything that sends, deletes or pays waits for your yes.
 
+Its voice is timed word by word (ElevenLabs, or the Mac's own), so the
+pointer, hand-inked marks, explainer cards and small 3D models each arrive
+on the word that names them. Say "every Tuesday at 5, clean up my inbox" and,
+after your yes, it's a routine on the Board. The Board is the same list as
+Cookie's page: this Mac's own when you're signed out, your team's in Enkeon
+when you're signed in. "Hide from screen sharing" in Settings asks macOS to
+leave Cookie's windows out of other apps' shares, wherever they honour it.
+
 It thinks through this repo's core (`cookie serve`), bundled inside the app,
 with your own model key or your Enkeon sign-in.
 
