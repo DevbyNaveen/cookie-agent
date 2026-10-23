@@ -81,8 +81,9 @@ fn own_sentences(answer: &str) -> Vec<String> {
         own.push_str(t);
         own.push('\n');
     }
-    own.split(|c: char| matches!(c, '.' | '!' | '?' | '\n'))
-        .zip(own.split_inclusive(|c: char| matches!(c, '.' | '!' | '?' | '\n')))
+    const ENDS: [char; 4] = ['.', '!', '?', '\n'];
+    own.split(ENDS)
+        .zip(own.split_inclusive(ENDS))
         // A question is never a promise: keep the mark that ended it.
         .filter(|(_, with_mark)| !with_mark.ends_with('?'))
         .map(|(s, _)| s.trim().trim_start_matches(['-', '*', '•']).trim().to_string())
