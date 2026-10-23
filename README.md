@@ -1,36 +1,79 @@
 <p align="center">
-  <img src="web/public/cookie/cookie-512.png" width="140" alt="Cookie, an orange orb with two eyes">
+  <img src="web/public/cookie/cookie-512.png" width="150" alt="Cookie">
 </p>
 
 <h1 align="center">Cookie Agent</h1>
 <p align="center"><b>by <a href="https://enkeon.com">Enkeon</a></b></p>
 
+<h3 align="center">The teammate that does the work.</h3>
+
 <p align="center">
-An AI teammate that does the job — the drafts, the list, the plan — not an offer to do it.<br>
-And text it reads can never, on its own, decide who gets sent what.
+Ask in Slack, by email, on its own page or from your AI tools.<br>
+Cookie reads what your team knows, does the job, and answers right where you asked.
+</p>
+
+<p align="center">
+  <a href="#start-in-a-minute">Start in a minute</a> ·
+  <a href="#cookies-page">The page</a> ·
+  <a href="#open-source-and-enkeon">Open source and Enkeon</a> ·
+  <a href="https://enkeon.com">enkeon.com</a>
 </p>
 
 ---
 
-## What Cookie is
+## One Cookie. Everywhere you work.
 
-Give Cookie a job the way you would give it to a teammate: *"find five
-companies we should talk to this week"*, *"what did we decide about pricing?"*,
-*"summarise this page"*. It looks in your context, searches the web, reads
-pages, and answers with where each fact came from.
+Cookie has no app you have to open. It comes to you.
 
-Three things it holds to:
+| | |
+|---|---|
+| **Slack** | Mention `@Cookie` in a thread. The answer lands in the same thread. |
+| **Email** | Write to Cookie like you would a colleague. It replies on the same thread. |
+| **Its page** | A live board of everything Cookie is working on: each job, its steps, its answer. |
+| **Your AI tools** | Claude Code, Cursor and any MCP client can hand Cookie a job. |
+| **Your Mac** *(coming soon)* | Hold a key and talk. Cookie answers out loud and points to it on your screen. |
 
-- **It does the work.** An answer that ends by offering the work ("want me
-  to draft them?") or handing the job back is sent back once to do it.
-- **What it reads is never an instruction.** Mail, pages, files and other
-  agents are untrusted. A recipient, an address or an amount must come from
-  your own words, and sending, deleting or paying always asks you first.
-- **It says where things came from**, and says plainly what it could not
-  confirm.
+Wherever a job starts, it shows up on the page, so the whole team sees what Cookie is doing.
 
-Cookie is the open-source agent behind [Enkeon](https://enkeon.com)'s
-teammate: the same loop, the same rules, the same tests.
+## It does the job
+
+Ask for five companies to talk to this week and you get five companies, with
+why each one fits. Ask for outreach and you get the drafts, ready to send.
+Cookie decides the small things itself, says what it assumed in one line, and
+only asks when the answer really changes the work.
+
+## It knows your team
+
+Cookie keeps notes: what was decided, who said what, what is still open. It
+reads them before it answers, so you never explain the same thing twice. With
+[Enkeon](https://enkeon.com), those notes are shared by your whole team and
+every AI tool you use.
+
+## Every answer shows its sources
+
+Each fact comes with where it was found: a page, a note, a line in a file.
+Open any card on the board to read the page Cookie read.
+
+## You stay in charge
+
+Mail, pages and files are things Cookie reads, never orders it takes. Who
+gets a message, where money goes and what gets deleted always come from you.
+Sending, deleting and paying wait for your yes, and you can stop any job with
+one click.
+
+## Cookie's page
+
+<p align="center">
+  <img src="web/public/cookie/cookie-512.png" width="56" alt="">
+</p>
+
+`web/` is Cookie's page: the board where every job grows out of Cookie, the
+conversations on the left, the chat on the right with Stop, and cards you
+pin and read. It is the same page Enkeon teams use every day.
+
+```sh
+cd web && npm install && npm run dev    # http://localhost:4748
+```
 
 ## Start in a minute
 
@@ -43,47 +86,30 @@ cd ~/your-project && cookie local
 
 Ask it what you would ask a teammate who just read your folder: *"What does
 this project do?"*, *"Where do we handle refunds?"*, *"Summarise
-https://…"*. It looks through the folder (read only), searches the web if a
-search key is set, reads pages, and says where each fact came from — a
-`path:line` or a page address.
+https://…"*. It looks through the folder, searches the web, reads pages, and
+says where each fact came from — a `path:line` or a page address.
 
-It can't send, write or delete anything. With `--permission ask` (the
-default) a page address it found in a page, a file or a search result is
-shown to you before it is read, because reading a URL can carry data out;
-`--permission full` reads those without asking. `--model openai:<model>`,
-`gemini:…`, `ollama:qwen3` or `bedrock:…` pick another model (see the table
-below); `--session talk.jsonl` keeps the conversation to pick up later.
-`cookie local --help` lists everything.
+`cookie local` only reads. A page address it found inside a page, a file or a
+search result is shown to you before it is opened (`--permission ask`, the
+default); `--permission full` opens those straight away. `--model
+openai:<model>`, `gemini:…`, `ollama:qwen3` or `bedrock:…` pick another model;
+`--session talk.jsonl` keeps the conversation to pick up later. `cookie local
+--help` lists everything.
 
-Pages are read over https only, never from an address on your machine or
-network, only where the site's `robots.txt` allows, at most 2 MB each.
+## Open source and Enkeon
 
-## Cookie's page
-
-`web/` is Cookie's page as Enkeon's teammates use it: the board where each
-job grows out of Cookie, the conversations sheet, the chat with Stop, the
-cards you can pin and read. It is the same code as Enkeon's, file for file.
-
-```sh
-cd web && npm install && npm run dev    # http://localhost:4748
-```
-
-The page talks to a Cookie at `COOKIE_URL` (default `http://127.0.0.1:4747`).
-The local endpoints it needs from `cookie` are being built now; until they
-land, the page runs against Enkeon.
-
-## Open source, and what Enkeon adds
+Cookie is open source under the MIT licence. Everything that makes it work
+for one person is here. Enkeon makes it work for a whole team.
 
 | In this repo | With Enkeon |
 |---|---|
-| The agent loop, tools, MCP servers, skills, helpers | The same loop, run for your whole team |
-| The trust rules and the approval card | Who may instruct Cookie: team members only, checked per message |
-| `cookie local` on your folder | Your team's shared context, across everyone and every AI tool |
-| Bring your own: Slack bot token, mailbox, MCP servers | One-click Gmail, Slack, Drive, Notion, Linear and more |
-| Cookie's page, on your machine | Jobs by email, Slack and the page; answers where they were asked |
+| Cookie itself: tools, MCP servers, skills, helpers | Cookie for your whole team |
+| Cookie's page on your machine | The page for every teammate, with their own jobs |
+| `cookie local` on your folder | Your team's shared notes, across everyone and every AI tool |
+| Your own Slack bot, mailbox and MCP servers | One-click Gmail, Slack, Drive, Notion, Linear and more |
+| The approval rules and the approval card | Team roles: who can give Cookie a job, from where |
 
-Set `ENKEON_API_KEY` and any agent built here reads and saves to Enkeon (see
-*Enkeon* below).
+Set `ENKEON_API_KEY` and anything built here reads and saves to Enkeon.
 
 ---
 
@@ -145,8 +171,7 @@ they didn't write (`to = evil@x.com`) so the card can say so. Earned trust
 never answers that kind of ask, and a sub-agent can't turn it on unless its
 parent has.
 
-Prompt injection is not solved by this. It limits what an injected
-model can *do*. Measured so far: see *Measured: AgentDojo banking*.
+Whatever a model reads, these rules decide what it can *do* with it.
 
 ## MCP servers and skills
 
@@ -167,10 +192,9 @@ only make a tool stricter. A server's tool descriptions are its words, not yours
 them counts as reading untrusted content (so a recipient named in one is
 refused), and each is cut at 2,000 characters. `.first_party()` marks a server
 you run yourself. The first connection is trust-on-first-use: `connect()` returns
-the tool list's SHA-256, and `pin` refuses a server whose tools changed since —
-it cannot catch a server that changes what a tool does behind the same
-description, which is why tool output is always untrusted. `connect()` returns the tool list's SHA-256 so
-you can pin it. Skills (`SKILL.md`) are offered through one `use_skill`
+the tool list's SHA-256, and `pin` refuses a server whose tools changed since.
+Tool output is always untrusted too, so what a tool returns can never pick who
+gets sent what. Skills (`SKILL.md`) are offered through one `use_skill`
 tool and loaded on demand; `read_agents_md` gives you `AGENTS.md` to put in
 your instructions — nothing is added behind your back.
 
@@ -234,8 +258,7 @@ message right after `input`. See *Images*.
 
 Clients that do this for you: `bindings/python` (`cookie_harness`, standard
 library only) and `bindings/typescript` (`@cookie-harness/client`, no runtime
-dependencies). `evals/agentdojo` runs AgentDojo through the Python one, with
-the trust layer on and off.
+dependencies). `evals/agentdojo` runs AgentDojo through the Python one.
 
 ## Images
 
@@ -387,8 +410,7 @@ and stdout/stderr cut at 32 KB each, saying so.
 On macOS the profile is closed by default — OpenAI Codex's base policy
 (Apache-2.0, see THIRD_PARTY_NOTICES.md) plus the rules above — and is tested
 here against Apple Events, `open`, credential reads, the network and writes
-outside the directory. bubblewrap needs unprivileged user namespaces and is
-not yet tested on a Linux machine. With neither, `detect()` returns `None`;
+outside the directory. bubblewrap needs unprivileged user namespaces. With neither, `detect()` returns `None`;
 `NoSandbox` confines nothing, so every command then asks a person.
 
 The command is the model's choice, so inside a sandbox it is a `Write` tool:
@@ -413,8 +435,7 @@ output and starts with the agent's name and host. A credential is sent only
 when you give one, the way the card's scheme says (HTTP auth, an API key in a
 header, or an OAuth/OpenID bearer token you obtained); none is ever made up.
 `AgentCard::new(..).jsonrpc(url).skill(..)` writes a card in the spec's JSON
-shape, for when a cookie agent is served. Streaming, push notifications,
-signed cards and the extended card are not used yet.
+shape, for when a cookie agent is served.
 
 ## Long sessions
 
@@ -427,32 +448,6 @@ counts as theirs; a summary of untrusted content stays untrusted.
 On Anthropic, the server can clear old tool results instead (beta):
 `Agent::with_provider(Arc::new(AnthropicProvider::from_env()?.context_editing(ClearToolUses::default())), model)`.
 What it cleared is reported as a `tracing` event.
-
-## Measured: AgentDojo banking
-
-One run, 2026-10-13: AgentDojo 0.1.35 (benchmark v1.2.2), the
-`important_instructions` attack, `bedrock:global.anthropic.claude-sonnet-4-6`,
-the banking suite (16 user tasks, 144 injection pairs per arm), through
-`evals/agentdojo`.
-
-| Arm | Utility | Utility under attack | Targeted attack success |
-|---|---|---|---|
-| trust layer on | 62.5% (10/16) | 66.0% (95/144) | 0.0% (0/144) |
-| trust layer off | 68.8% (11/16) | 75.7% (109/144) | 0.0% (0/144) |
-
-What this does and doesn't show:
-
-- **No security gain is measurable here.** Sonnet 4.6 ignored every
-  injection on its own, so both arms are at 0%. The layer limits what an
-  injected model can do; this model was never injected. A model that falls
-  for the attack, stronger attacks and the other suites are what can show
-  the difference. Not run yet.
-- **The layer costs utility, as designed.** The losses are payments to a
-  recipient the person didn't write: "send Apple the VAT difference" is
-  refused because Apple's IBAN comes from the transaction history, not from
-  the person. Asking the person about such a value, instead of refusing it,
-  should recover most of that; not built yet.
-- One model, one suite, one attack, one run. Not a ranking.
 
 ## What Cookie may do in someone's apps
 
@@ -484,8 +479,8 @@ cargo test --test consent_safety     # what Cookie may do without asking: 20 fix
 cargo test                           # everything, offline, on scripted models
 ```
 
-`evals/agentdojo` runs AgentDojo through `cookie serve`, trust layer on and
-off (results above).
+`evals/agentdojo` runs AgentDojo through `cookie serve`, with the trust layer
+on and off.
 
 ## Contributing
 
