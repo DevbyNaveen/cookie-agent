@@ -37,7 +37,7 @@ $P -c "Add :CFBundleExecutable string Cookie" -c "Add :CFBundleIdentifier string
    -c "Add :CFBundleName string Cookie" -c "Add :CFBundleDisplayName string Cookie" \
    -c "Add :CFBundlePackageType string APPL" -c "Add :CFBundleShortVersionString string 0.1.0" \
    -c "Add :CFBundleVersion string 1" -c "Add :CFBundleIconFile string AppIcon" \
-   -c "Add :NSAppleEventsUsageDescription string 'Cookie edits documents in this app only for a task you approved.'" -c "Add :LSMinimumSystemVersion string 14.2" "$APP/Contents/Info.plist"
+   -c "Add :NSAppleEventsUsageDescription string 'Cookie edits documents in this app only for a task you approved.'" -c "Add :LSMinimumSystemVersion string 15.0" "$APP/Contents/Info.plist"
 # A real identity keeps the signature stable across rebuilds, so macOS keeps the permission grants
 # (ad-hoc "-" pins grants to the cdhash, which changes every build). Override with COOKIE_SIGN_ID.
 # Hardened runtime with zero exception entitlements: code injected into Cookie

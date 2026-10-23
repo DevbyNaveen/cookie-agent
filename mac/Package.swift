@@ -4,7 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "Cookie",
-    platforms: [.macOS("14.2")],
+    platforms: [.macOS("15.0")],
     targets: [
         .executableTarget(
             name: "Cookie",

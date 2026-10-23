@@ -18,12 +18,21 @@ with your own model key or your Enkeon sign-in.
 
 ## Build
 
-Needs macOS 14.2+ and the Command Line Tools for Xcode (no full Xcode).
+Needs macOS 15 or later, Rust 1.91+ and the Command Line Tools for Xcode
+(no full Xcode). From `mac/`:
 
 ```sh
-cargo build --release --bin cookie   # from the repo root: Cookie's core
-cd mac && ./build.sh                  # → mac/build/Cookie.app
+(cd cookie-tools && cargo build --release)     # files: spreadsheets, documents, pages, CSV
+(cd cookie-recorder && cargo build --release)  # meeting recording
+scripts/bundle-python.sh                       # research and decks: Cookie's own Python
+./build.sh                                     # → build/Cookie.app
 ```
+
+`build.sh` builds Cookie's core itself (`cargo build --release --bin cookie
+--features bedrock`, so every model provider in Settings can answer) and
+bundles each helper it finds; a missing helper is left out with a note, and
+the feature it serves is off. `COOKIE_HARNESS_BIN`, `COOKIE_TOOLS_BIN` and
+`COOKIE_RECORDER_BIN` point it at binaries you built elsewhere.
 
 Set `COOKIE_SIGN_ID` to your Developer ID to keep macOS's permission grants
 across rebuilds; without it the app is signed ad hoc.

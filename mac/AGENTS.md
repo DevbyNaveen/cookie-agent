@@ -17,7 +17,7 @@ No key ships in the app: model keys are the person's own, or their Enkeon sign-i
 - **Thinking**: the bundled `cookie serve` (cookie-agent), one process per run, over its JSON-lines protocol (`HarnessProtocol.swift`)
 - **Speech-to-Text**: Apple Speech by default; OpenAI transcription when the person adds a key
 - **Text-to-Speech**: ElevenLabs with the person's key, else `AVSpeechSynthesizer`
-- **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
+- **Screen Capture**: ScreenCaptureKit, multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: Cookie's answer embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
@@ -137,7 +137,9 @@ The compact composer swaps its typing controls for `CookieVoiceMedallion` during
 ## Build & Run
 
 ```bash
-# Build Cookie.app with the Command Line Tools (no Xcode)
+# Build Cookie.app with the Command Line Tools (no Xcode). build.sh builds the
+# harness (--features bedrock) itself; build the helpers first or they are left out
+# (README.md, "Build"): cookie-tools, cookie-recorder, scripts/bundle-python.sh.
 ./build.sh
 
 # Run the native checks
