@@ -102,6 +102,10 @@ pub struct RunRequest {
     /// instead of an error (`Agent::close_with_answer`).
     #[serde(default)]
     pub close_with_answer: bool,
+    /// Send an answer that ends on an offer back once to do the work
+    /// (`Agent::finish_check`).
+    #[serde(default)]
+    pub finish_check: bool,
     /// Summarise older tool rounds once the request passes a size, so a long
     /// job keeps going (`Compaction` with `within_turn`).
     #[serde(default)]
@@ -685,6 +689,9 @@ fn build(
     agent = helpers(agent, request, wire, make_child)?;
     if request.close_with_answer {
         agent = agent.close_with_answer();
+    }
+    if request.finish_check {
+        agent = agent.finish_check();
     }
     if let Some(c) = &request.compaction {
         agent = agent.compaction(crate::Compaction {

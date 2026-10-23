@@ -51,6 +51,7 @@ impl Agent {
             verification: Vec::new(),
             action_ledger: None,
             close_with_answer: false,
+            finish_check: false,
         }
     }
 
@@ -173,6 +174,14 @@ impl Agent {
     /// the answer from what it found and says what it did not get to.
     pub fn close_with_answer(mut self) -> Self {
         self.close_with_answer = true;
+        self
+    }
+
+    /// Send a top-level answer back once when it ends by offering work it
+    /// could have done ("want me to draft them?") or by handing the job back
+    /// to the person, with a note to do that work now.
+    pub fn finish_check(mut self) -> Self {
+        self.finish_check = true;
         self
     }
 }

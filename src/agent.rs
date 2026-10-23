@@ -52,6 +52,9 @@ pub struct Agent {
     /// finish its turn ends with an answer made from what it found, in one
     /// more model call, instead of an error that loses the work.
     pub(crate) close_with_answer: bool,
+    /// A top-level answer that ends by offering work it could do, or by
+    /// handing the job back, is sent back once to do it (`Agent::finish_check`).
+    pub(crate) finish_check: bool,
 }
 
 /// Where a run starts from: what is trusted, what it may spend, how deep it
@@ -261,6 +264,8 @@ impl Agent {
         let mut cut = false;
         // Tool rounds finished: asked to finish, a run closes after its turn.
         let mut rounds = 0usize;
+        // An answer that ended on an offer was sent back once already.
+        let mut sent_back = false;
 
         loop {
             if cancel.is_cancelled() {
@@ -423,6 +428,15 @@ impl Agent {
                         _ => said.push(answer),
                     }
                     let answer = said.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+                    // Ended by offering the work instead of doing it: sent
+                    // back once, and the reply it writes replaces this one.
+                    if self.finish_check && start.depth == 0 && !sent_back && ends_on_an_offer(&answer) {
+                        sent_back = true;
+                        said = Vec::new();
+                        cut = false;
+                        session.append(Message::harness_note(FINISH_NOTE)).await?;
+                        continue;
+                    }
                     if let Some(schema) = &self.output_schema {
                         crate::provider::check_output(schema, &answer)?;
                     }
@@ -496,6 +510,27 @@ impl Agent {
 }
 
 /// What a run that changed something and checked nothing is told before it finishes.
+/// What an answer that ended on an offer is told (`Agent::finish_check`).
+const FINISH_NOTE: &str = "Before this goes out: your reply ends by offering work you could do, or by handing the job \
+    back. Do that work now: write the drafts, the list, the plan, the decision itself, and look things up first if \
+    you need to. Keep a question only for what you truly cannot decide, or before anything is sent, published or \
+    paid for, and then ask just that one. Write your whole reply again; it replaces the one above.";
+
+/// Does the answer's last paragraph offer work or hand the job back? Both
+/// halves must be there: it asks or waits for a word ("…?", "just say"),
+/// and what it asks about is the work itself ("want me to", "I'll") or the
+/// person's own blocker. A real question ("Which country?") and a greeting
+/// ("what's up?") have only the first.
+pub(crate) fn ends_on_an_offer(answer: &str) -> bool {
+    let last = answer.trim().rsplit("\n\n").find(|p| !p.trim().is_empty()).unwrap_or_default().to_lowercase().replace('\u{2019}', "'");
+    const WAITS: [&str; 5] = ["?", "let me know", "tell me", "just say", "say the word"];
+    const OFFERS: [&str; 15] = [
+        "want me to", "like me to", "should i ", "shall i ", "i can ", "i could ", "i'll ", "i will ", "happy to ",
+        "which of these", "what do you want", "which do you want", "what's stopping", "what is stopping", "what's blocking",
+    ];
+    WAITS.iter().any(|w| last.contains(w)) && OFFERS.iter().any(|o| last.contains(o))
+}
+
 fn check_note(tool: &str) -> String {
     format!(
         "Before you finish: you used `{tool}` and have not checked the result. Check it with a tool that reads \
@@ -695,6 +730,49 @@ mod tests {
         let (a, _) = agent(vec![Scripted::call("c1", "send_email", json!({"to": "anna@x.com"})), Scripted::text("Sent.")]);
         let a = a.tool(send_email(Arc::new(AtomicUsize::new(0)))).approver(FnApprover(|_: &ApprovalRequest| true));
         assert_eq!(a.run("email anna@x.com").await.unwrap(), "Sent.");
+    }
+
+    // The live gate, 2026-10-23: three runs of "help me get more paying
+    // customers this week" made no lookup and ended like these.
+    #[test]
+    fn an_answer_that_offers_the_work_is_told_apart_from_one_that_asks() {
+        for ending in [
+            "- Send the first 5 cold emails to the Riga list — tell me if you want me to draft them\n\nWhich of these do you want to move on first?",
+            "## What I can do right now\n\n- Write the outbound email template + follow-up\n\nJust say which and I\u{2019}ll do it immediately.",
+            "The only blocker between you and more paying customers is sending. What do you want me to draft or prep to make that easier right now?",
+            "And ask Honeyb for a one-line quote.\n\nWhat's actually stopping you from opening that file right now?",
+            "Do you want me to write the first 5 emails now? I can do it against the company list.",
+        ] {
+            assert!(ends_on_an_offer(&format!("Here is the plan.\n\n{ending}")), "{ending}");
+        }
+        for fine in [
+            "Hey — what's up?",
+            "Which country should the list cover? Germany changes who we can email cold.",
+            "1. Levelpath — Riga, hiring.\n\nI went with Riga and Tallinn only.",
+            "Should I want this? A question inside the report.\n\nThe report ends on a fact.",
+        ] {
+            assert!(!ends_on_an_offer(fine), "{fine}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_ends_on_an_offer_is_sent_back_once_to_do_the_work() {
+        let (a, p) = agent(vec![
+            Scripted::text("Here is a plan.\n\nWant me to draft the three emails?"),
+            Scripted::text("Here are the three emails.\n\nWant me to send them?"),
+        ]);
+        let answer = a.finish_check().run("get me customers").await.unwrap();
+        assert_eq!(answer, "Here are the three emails.\n\nWant me to send them?", "sent back once, never twice");
+        let note = p.seen()[1].last().unwrap().text();
+        assert!(note.starts_with("Before this goes out"), "{note}");
+        // Off by default: the first answer stands.
+        let (a, p) = agent(vec![Scripted::text("Want me to draft them?")]);
+        assert_eq!(a.run("get me customers").await.unwrap(), "Want me to draft them?");
+        assert_eq!(p.seen().len(), 1);
+        // An answer that does the work goes out as it is.
+        let (a, p) = agent(vec![Scripted::text("Here are the three emails.")]);
+        assert_eq!(a.finish_check().run("get me customers").await.unwrap(), "Here are the three emails.");
+        assert_eq!(p.seen().len(), 1);
     }
 
     #[tokio::test]

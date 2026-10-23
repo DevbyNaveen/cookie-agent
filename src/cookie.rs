@@ -419,6 +419,8 @@ pub fn profile(o: &Options) -> Value {
         "helpers": if o.helpers { helper_decls(o.search) } else { json!([]) },
         "skills": skills_dir(),
         "check_after": if o.act { json!(["app_call"]) } else { json!([]) },
+        // An answer that ends by offering the work is sent back once to do it.
+        "finish_check": true,
         "source_tools": SOURCE_TOOLS,
         "tag": "[source s{n}]",
     })
