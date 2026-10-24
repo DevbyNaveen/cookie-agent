@@ -59,12 +59,13 @@ class OverlayWindow: NSWindow {
 final class CursorPresence: ObservableObject {
     static let shared = CursorPresence()
     @Published private(set) var isAway = false
+    /// Keys are going down (not ⌘-shortcuts) and the pointer hasn't moved since.
+    @Published private(set) var typing = false
 
     // ponytail: 2.5s rest before fading; make it a setting if people ask
     private let restDelay: TimeInterval = 2.5
     private var lastLocation = NSEvent.mouseLocation
     private var lastMoveAt = Date()
-    private var typing = false
     private var monitors: [Any] = []
     private var timer: Timer?
 
@@ -72,7 +73,10 @@ final class CursorPresence: ObservableObject {
         let keyDown: (NSEvent) -> Void = { [weak self] event in
             // ⌘-shortcuts don't hide the pointer; typing does.
             guard !event.modifierFlags.contains(.command) else { return }
-            MainActor.assumeIsolated { self?.typing = true; self?.update() }
+            MainActor.assumeIsolated {
+                if self?.typing == false { self?.typing = true }
+                self?.update()
+            }
         }
         if let m = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: keyDown) { monitors.append(m) }
         if let m = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { keyDown($0); return $0 }) { monitors.append(m) }
@@ -86,7 +90,7 @@ final class CursorPresence: ObservableObject {
         if hypot(location.x - lastLocation.x, location.y - lastLocation.y) > 0.5 {
             lastLocation = location
             lastMoveAt = Date()
-            typing = false
+            if typing { typing = false }
         }
         update()
     }
@@ -161,6 +165,11 @@ final class CookieHand: ObservableObject {
 
     func open(at frame: CGRect) {
         visit = Visit(point: CGPoint(x: frame.minX + 14, y: frame.maxY - 18))
+    }
+
+    /// The spotlight's cut-out opened: the hand rests just outside its bottom-right corner.
+    func rest(beside rect: CGRect) {
+        visit = Visit(point: CGPoint(x: rect.maxX + 4, y: rect.minY - 4))
     }
 }
 
@@ -257,6 +266,9 @@ struct BlueCursorView: View {
         ZStack {
             // Nearly transparent background (helps with compositing)
             Color.black.opacity(0.001)
+
+            // The rest of the screen dims while Cookie explains one part of it; marks ink over it.
+            CookieSpotlightLayer(spotlight: companionManager.spotlight, screenFrame: screenFrame, typing: presence.typing)
 
             // Cookie's drawings on this display.
             if !companionManager.marks.isEmpty {

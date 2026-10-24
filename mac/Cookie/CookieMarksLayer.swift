@@ -54,9 +54,11 @@ struct CookieMarksLayer: View {
                         let strokes = cache.strokes(for: mark, local: local)
                         let total = strokes.reduce(0) { $0 + $1.length }
                         var reach = total * CGFloat(progress(of: mark, at: now, length: total))
+                        // The reading pen is a highlighter: the words show through it.
+                        let colour = mark.readSeconds == nil ? Self.ink : Self.ink.opacity(0.7)
                         for stroke in strokes where reach > 0 {
                             if let outline = stroke.outline(revealed: min(stroke.length, reach)) {
-                                ink.fill(Path(outline), with: .color(Self.ink))
+                                ink.fill(Path(outline), with: .color(colour))
                             }
                             reach -= stroke.length
                         }
@@ -80,19 +82,23 @@ struct CookieMarksLayer: View {
     }
 
     /// How long a mark's ink takes: about a thousand points a second, never under a third of a
-    /// second or over 0.9 s (brief motion; the voice is still the main channel).
-    private func duration(length: CGFloat) -> Double {
-        length > 0 ? min(0.9, max(0.35, Double(length) / 1000)) : 0.3
+    /// second or over 0.9 s (brief motion; the voice is still the main channel). The reading pen
+    /// takes as long as its words take to say.
+    private func duration(of mark: CookieResolvedDrawing, length: CGFloat) -> Double {
+        if let seconds = mark.readSeconds { return seconds }
+        return length > 0 ? min(0.9, max(0.35, Double(length) / 1000)) : 0.3
     }
 
-    /// 0 until the hand has reached the mark, then the pen's progress along all its strokes, eased.
+    /// 0 until the hand has reached the mark, then the pen's progress along all its strokes, eased;
+    /// the reading pen moves at the voice's even pace.
     private func progress(of mark: CookieResolvedDrawing, at now: Double, length: CGFloat) -> Double {
         if instant || mark.revealedAt == 0 { return 1 }
         guard now >= mark.revealedAt else { return 0 }
         if reduceMotion { return 1 }
         let start = mark.revealedAt + Self.lead
         guard now >= start else { return 0 }
-        let t = min(1, (now - start) / duration(length: length))
+        let t = min(1, (now - start) / duration(of: mark, length: length))
+        if mark.readSeconds != nil { return t }
         return t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
     }
 
@@ -100,7 +106,7 @@ struct CookieMarksLayer: View {
     private func run() {
         guard !instant else { return }
         let end = mine.map { mark in
-            mark.revealedAt + Self.lead + duration(length: cache.strokes(for: mark, local: local).reduce(0) { $0 + $1.length })
+            mark.revealedAt + Self.lead + duration(of: mark, length: cache.strokes(for: mark, local: local).reduce(0) { $0 + $1.length })
                 + Self.hold + 0.1
         }.max() ?? 0
         clock.run(until: end)
@@ -116,7 +122,7 @@ struct CookieMarksLayer: View {
         let strokes = cache.strokes(for: mark, local: local)
         let total = strokes.reduce(0) { $0 + $1.length }
         let start = mark.revealedAt + Self.lead
-        guard now <= start + duration(length: total) + Self.hold else { return nil }
+        guard now <= start + duration(of: mark, length: total) + Self.hold else { return nil }
         guard let first = strokes.first?.pen(at: 0) else {
             // A note or a number has no stroke: the hand goes to its spot and stays a moment.
             return spot(of: mark).map { CookiePen(point: $0, degrees: -35, travelling: now < start) }
@@ -192,6 +198,11 @@ final class CookieInkCache {
                 firstPasses(rough.line(b, CGPoint(x: b.x - head * cos(angle + side), y: b.y - head * sin(angle + side))))
             }
             made = passes(rough.curve(through: [a, mid, b])) + barbs
+        case .underline(let from, let to) where mark.readSeconds != nil:
+            // The reading pen: one steady pass of a broad nib, as a highlighter goes under a line.
+            var steady = rough
+            steady.roughness = 0.35
+            made = steady.line(local(from), local(to)).prefix(1).map { CookieInkStroke($0, size: 6) }
         case .underline(let from, let to):
             made = passes(rough.line(local(from), local(to)))
         case .bracket(let x, let top, let bottom):

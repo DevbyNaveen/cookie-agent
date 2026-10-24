@@ -828,21 +828,22 @@ final class MacOperator {
     }
 
     // MARK: AX helpers
+    // Pure reads of another app's tree, safe off the main thread (the reading pen walks it there).
 
-    static func attribute(_ element: AXUIElement, _ name: String) -> AnyObject? {
+    nonisolated static func attribute(_ element: AXUIElement, _ name: String) -> AnyObject? {
         var value: AnyObject?
         guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
         return value
     }
 
-    static func string(_ element: AXUIElement, _ name: String) -> String? {
+    nonisolated static func string(_ element: AXUIElement, _ name: String) -> String? {
         let value = attribute(element, name)
         if let text = value as? String { return text }
         if let number = value as? NSNumber { return number.stringValue }
         return nil
     }
 
-    static func frame(_ element: AXUIElement) -> CGRect? {
+    nonisolated static func frame(_ element: AXUIElement) -> CGRect? {
         guard let position = attribute(element, kAXPositionAttribute), let size = attribute(element, kAXSizeAttribute) else { return nil }
         var point = CGPoint.zero
         var extent = CGSize.zero

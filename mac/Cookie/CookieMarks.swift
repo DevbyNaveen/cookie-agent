@@ -119,6 +119,9 @@ struct CookieResolvedDrawing: Equatable, Identifiable {
     var offset = 0
     /// When its ink starts, in `CACurrentMediaTime()` seconds; set when the mark is shown.
     var revealedAt: Double = 0
+    /// The reading pen (`CookieReadingPen`): an underline under words being read, inked as a
+    /// highlighter over the seconds those words take to say. Nil for every other mark.
+    var readSeconds: Double?
 
     /// The same wobble every frame and every redraw: seeded by where the mark is, not by chance.
     var seed: UInt32 {
@@ -129,9 +132,9 @@ struct CookieResolvedDrawing: Equatable, Identifiable {
 }
 
 enum CookieDrawingResolver {
-    /// The screenshot a mark refers to: its screen number, else the cursor's screen.
-    static func capture(for mark: CookieDrawing, in captures: [CompanionScreenCapture]) -> CompanionScreenCapture? {
-        if let number = mark.screenNumber, number >= 1, number <= captures.count { return captures[number - 1] }
+    /// The screenshot a tag refers to: its screen number, else the cursor's screen.
+    static func capture(screen number: Int?, in captures: [CompanionScreenCapture]) -> CompanionScreenCapture? {
+        if let number, number >= 1, number <= captures.count { return captures[number - 1] }
         return captures.first { $0.isCursorScreen } ?? captures.first
     }
 
@@ -168,7 +171,7 @@ enum CookieDrawingResolver {
                 let display = NSScreen.screens.first { $0.frame.intersects(rect) }?.frame ?? NSScreen.main?.frame ?? .zero
                 return CookieResolvedDrawing(geometry: geometry(mark.kind, around: rect, from: nil, to: nil), text: mark.text, displayFrame: display)
             case .pixels(let points):
-                guard let capture = capture(for: mark, in: captures), let first = points.first else { return nil }
+                guard let capture = capture(screen: mark.screenNumber, in: captures), let first = points.first else { return nil }
                 let scale = scale(of: capture)
                 let anchor = global(first, in: capture)
                 let display = capture.displayFrame
