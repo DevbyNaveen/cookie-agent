@@ -284,7 +284,7 @@ final class CookieInteractionTests {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
         let query = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
         expectEqual(query, ["client_id": "trc_1", "redirect_uri": "http://127.0.0.1:5123/callback", "response_type": "code",
-                            "state": "s1", "scope": "ask recall remember search connectors meetings",
+                            "state": "s1", "scope": "ask recall remember search connectors meetings cookie",
                             "code_challenge": "c1", "code_challenge_method": "S256"])
         // The browser comes back to the loopback listener; only the right state counts.
         expectEqual(CookieAccount.callback("GET /callback?code=tro_abc&state=s1 HTTP/1.1\r\nHost: x", state: "s1"), .code("tro_abc"))

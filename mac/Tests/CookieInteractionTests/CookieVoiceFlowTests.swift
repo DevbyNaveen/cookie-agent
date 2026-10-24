@@ -16,7 +16,7 @@ enum CookieVoiceFlowTests {
 
     private static func playbackOwnsTheSpeakingLifetime() async {
         let output = FakeSpeechPlayback()
-        let speaker = CookieSpeaker(makePlayback: { output }, keyProvider: { nil })
+        let speaker = CookieSpeaker(makePlayback: { output }, sourceProvider: { nil })
         var finished = false
         var started = false
         var progress = 0.0
@@ -45,7 +45,7 @@ enum CookieVoiceFlowTests {
     private static func cancelledDownloadNeverStartsFallbackSpeech() async {
         let output = FakeSpeechPlayback()
         var pending: CheckedContinuation<CookieSpeechAudio, Error>?
-        let speaker = CookieSpeaker(makePlayback: { output }, keyProvider: { "test-only" }, fetchAudio: { _, _ in
+        let speaker = CookieSpeaker(makePlayback: { output }, sourceProvider: { .personal(key: "test-only") }, fetchAudio: { _, _ in
             try await withCheckedThrowingContinuation { pending = $0 }
         })
         let task = Task { await speaker.speakText("Cancelled") }
@@ -61,7 +61,7 @@ enum CookieVoiceFlowTests {
     private static func oldCallbacksCannotFinishANewReply() async {
         let first = FakeSpeechPlayback(), second = FakeSpeechPlayback()
         var count = 0
-        let speaker = CookieSpeaker(makePlayback: { count += 1; return count == 1 ? first : second }, keyProvider: { nil })
+        let speaker = CookieSpeaker(makePlayback: { count += 1; return count == 1 ? first : second }, sourceProvider: { nil })
         let firstTask = Task { await speaker.speakText("First") }
         await waitUntil { first.localStarts == 1 }
         let staleStart = first.onStarted, staleFinish = first.onFinished
@@ -81,7 +81,7 @@ enum CookieVoiceFlowTests {
 
     private static func failedCloudSpeechUsesLocalPlaybackUntilItFinishes() async {
         let output = FakeSpeechPlayback()
-        let speaker = CookieSpeaker(makePlayback: { output }, keyProvider: { "test-only" }, fetchAudio: { _, _ in
+        let speaker = CookieSpeaker(makePlayback: { output }, sourceProvider: { .personal(key: "test-only") }, fetchAudio: { _, _ in
             throw URLError(.notConnectedToInternet)
         })
         let task = Task { await speaker.speakText("Local fallback") }
@@ -132,7 +132,7 @@ enum CookieVoiceFlowTests {
     private static func inactiveSelectionNotificationsCannotCancelSpeech() async {
         let selection = CircleSelectController()
         let output = FakeSpeechPlayback()
-        let speaker = CookieSpeaker(makePlayback: { output }, keyProvider: { nil })
+        let speaker = CookieSpeaker(makePlayback: { output }, sourceProvider: { nil })
         var cancellations = 0
         selection.onCancel = { cancellations += 1; speaker.stopPlayback() }
         let speech = Task { await speaker.speakText("Keep speaking after the talk keys are released") }
