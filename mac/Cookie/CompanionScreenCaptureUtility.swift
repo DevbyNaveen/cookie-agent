@@ -171,6 +171,14 @@ enum CompanionScreenCaptureUtility {
     /// area the user circled) as JPEG. Cookie's own windows are left out, so
     /// the magic trail never shows up in the picture. Kept in memory only.
     static func captureRegionAsJPEG(_ globalRect: CGRect) async throws -> RedactedJPEG? {
+        guard let cgImage = try await captureRegionImage(globalRect) else { return nil }
+        return try await encodeRedactedJPEG(cgImage, quality: 0.85)
+    }
+
+    /// One rectangle of the screen as a picture, Cookie and blocked apps left out, at most the size
+    /// the model reads. Unredacted: for this Mac only (the circle redacts it before it is sent;
+    /// the pointer only reads it to check where something is).
+    static func captureRegionImage(_ globalRect: CGRect) async throws -> CGImage? {
         try Task.checkCancellation()
         let content = try await shareableContent()
         try Task.checkCancellation()
@@ -195,8 +203,7 @@ enum CompanionScreenCaptureUtility {
         configuration.width = size.width
         configuration.height = size.height
 
-        let cgImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-        return try await encodeRedactedJPEG(cgImage, quality: 0.85)
+        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
     }
 
     typealias RedactedJPEG = (data: Data, hiddenItems: Int, seconds: Double)

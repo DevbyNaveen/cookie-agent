@@ -20,6 +20,7 @@ enum CookieSpeedTests {
         check("onlyAPictureOfOneColourHasNoTextToRead", onlyAPictureOfOneColourHasNoTextToRead)
         check("imagesAreSentAtTheSizeTheModelReads", imagesAreSentAtTheSizeTheModelReads)
         check("modelPixelsLandOnTheirDisplayPoints", modelPixelsLandOnTheirDisplayPoints)
+        check("thePointerOnlyGoesWhereTheScreenSaysItsLabel", thePointerOnlyGoesWhereTheScreenSaysItsLabel)
         print("\(passed) speed checks passed.")
     }
 
@@ -193,5 +194,14 @@ enum CookieSpeedTests {
         precondition(outside == CGPoint(x: -1512, y: 200))
         let topRight = CookieDrawingResolver.global(CGPoint(x: 1280, y: 0), imageWidth: 1280, imageHeight: 831, display: display)
         precondition(topRight == CGPoint(x: 0, y: 1182))
+    }
+
+    static func thePointerOnlyGoesWhereTheScreenSaysItsLabel() {
+        let yes: [(String, String)] = [("Save", "Save"), ("save", "SAVE"), ("Save", "Save…"), ("Share", "Share menu"),
+                                       ("search mail", "Search  Mail"), ("Don’t Save", "Don't Save"), ("Copy link", "Copy lin")]
+        for (label, text) in yes { precondition(CookieLabelMatch.matches(label: label, text: text), "\(label) / \(text)") }
+        let no: [(String, String)] = [("Save", "Send"), ("Save", ""), ("", "Save"), ("Save as PDF", "PD"), ("Go", "Google"),
+                                      ("Copy link", "Co")]
+        for (label, text) in no { precondition(!CookieLabelMatch.matches(label: label, text: text), "\(label) / \(text)") }
     }
 }

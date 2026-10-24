@@ -431,7 +431,53 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// The control the hand points at, followed while it points; one pointing at a time.
+    private var pointAnchor: CookieElementAnchor?
+    private var pointGeneration = 0
+
+    /// Points where the model said, once the screen agrees: the control there must still say the
+    /// label (or the label is found again nearby, and the hand goes there instead); if the label is
+    /// gone, the hand stays put and the voice carries on. Then the hand follows the control.
+    func point(at location: CGPoint, display: CGRect, label: String?) {
+        pointGeneration += 1
+        let generation = pointGeneration
+        pointAnchor?.stop()
+        pointAnchor = nil
+        Task { @MainActor in
+            let resolution = await CookiePointTarget.resolve(location, label: label, display: display, exceptApp: nil)
+            guard generation == self.pointGeneration else { return }
+            @MainActor func show(_ target: CGPoint) {
+                // The hand's label is only ever what the model named; no label, no words.
+                self.detectedElementBubbleText = label
+                self.detectedElementScreenLocation = target
+                self.detectedElementDisplayFrame = NSScreen.screens.first { $0.frame.contains(target) }?.frame ?? display
+            }
+            switch resolution {
+            case .lost:
+                print("🎯 Not pointing: what it named isn't on screen any more")
+            case .unverified(let target):
+                show(target)
+            case .found(let target, let element, let how):
+                print("🎯 Pointing: \(how)")
+                show(target)
+                guard let element, let anchor = CookieElementAnchor(element: element, label: label, point: target) else { return }
+                anchor.moved = { [weak self] moved in
+                    guard let self, generation == self.pointGeneration, self.detectedElementScreenLocation != nil else { return }
+                    self.detectedElementScreenLocation = moved
+                    self.detectedElementDisplayFrame = NSScreen.screens.first { $0.frame.contains(moved) }?.frame ?? display
+                }
+                anchor.gone = { [weak self] in
+                    guard let self, generation == self.pointGeneration else { return }
+                    self.clearDetectedElementLocation()
+                }
+                self.pointAnchor = anchor
+            }
+        }
+    }
+
     func clearDetectedElementLocation() {
+        pointAnchor?.stop()
+        pointAnchor = nil
         detectedElementScreenLocation = nil
         detectedElementDisplayFrame = nil
         detectedElementBubbleText = nil
@@ -752,7 +798,7 @@ final class CompanionManager: ObservableObject {
 
     when you point, put a coordinate tag inline, right after the words that name the thing: your reply is spoken, and the cursor flies as the voice reaches the tag. one point per reply. the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward.
 
-    format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like "search bar" or "save button"). if the element is on the cursor's screen you can omit the screen number. if the element is on a DIFFERENT screen, append :screenN where N is the screen number from the image label (e.g. :screen2). this is important — without the screen number, the cursor will point at the wrong place.
+    format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is the element's own visible text exactly as it appears on screen (like "Save" or "Search mail"); only for an element with no text at all, a short 1-3 word description (like "back arrow"). cookie checks the live screen for that text just before pointing, so copy it exactly. if the element is on the cursor's screen you can omit the screen number. if the element is on a DIFFERENT screen, append :screenN where N is the screen number from the image label (e.g. :screen2). this is important — without the screen number, the cursor will point at the wrong place.
 
     if pointing wouldn't help, end with [POINT:none].
 
@@ -1260,12 +1306,7 @@ final class CompanionManager: ObservableObject {
                         let label = parsed.elementLabel
                         pointedLabel = label ?? pointedLabel ?? "it"
                         CookieAnalytics.trackElementPointed(elementLabel: label)
-                        points.append((parsed.offset, {
-                            // The hand's label is only ever what the model named; no label, no words.
-                            self.detectedElementBubbleText = label
-                            self.detectedElementScreenLocation = location
-                            self.detectedElementDisplayFrame = display
-                        }))
+                        points.append((parsed.offset, { self.point(at: location, display: display, label: label) }))
                     }
                     placedMarks += marks
                     placedFocuses += focuses
