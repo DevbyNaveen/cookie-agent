@@ -18,6 +18,8 @@ enum CookieSpeedTests {
         check("aPictureLeavesOnlyWhenEveryCheckAnswered", aPictureLeavesOnlyWhenEveryCheckAnswered)
         check("aSecretIsCoveredByEveryWordItTouches", aSecretIsCoveredByEveryWordItTouches)
         check("onlyAPictureOfOneColourHasNoTextToRead", onlyAPictureOfOneColourHasNoTextToRead)
+        check("imagesAreSentAtTheSizeTheModelReads", imagesAreSentAtTheSizeTheModelReads)
+        check("modelPixelsLandOnTheirDisplayPoints", modelPixelsLandOnTheirDisplayPoints)
         print("\(passed) speed checks passed.")
     }
 
@@ -162,5 +164,34 @@ enum CookieSpeedTests {
         }
         precondition(!CookieVisionText.nearlyUniform(lines), "rows of word-shaped marks")
         precondition(CookieEdges.fraction(gray: [0, 255, 0, 255], width: 2, height: 2) == 0.5)
+    }
+
+    static func imagesAreSentAtTheSizeTheModelReads() {
+        // Anthropic's own examples (vision-coordinates): the token cap, not the edge, decides.
+        precondition(CookieImageSize.processed(width: 1075, height: 1520) == (924, 1307))
+        precondition(CookieImageSize.processed(width: 1920, height: 1080) == (1456, 819))
+        precondition(CookieImageSize.processed(width: 800, height: 600) == (800, 600), "an image that fits is unchanged")
+        // A 14" MacBook Pro (1512×982 pt, Retina): its own aspect, nothing stretched, under the cap.
+        let laptop = CookieImageSize.screenshot(displayWidth: 1512, displayHeight: 982, backingScale: 2)
+        precondition(laptop == (1280, 831) && CookieImageSize.tokens(width: 1280, height: 831) <= CookieImageSize.maxTokens)
+        precondition(CookieImageSize.screenshot(displayWidth: 3840, displayHeight: 1080, backingScale: 1) == (1280, 360))
+        precondition(CookieImageSize.screenshot(displayWidth: 1024, displayHeight: 768, backingScale: 1) == (1024, 768), "never up-scaled")
+        let portrait = CookieImageSize.screenshot(displayWidth: 1080, displayHeight: 1920, backingScale: 1)
+        precondition(portrait == (720, 1280), "\(portrait)")
+        for size in [laptop, portrait, CookieImageSize.screenshot(displayWidth: 2560, displayHeight: 1440, backingScale: 2)] {
+            precondition(CookieImageSize.processed(width: size.width, height: size.height) == size, "already what the model reads")
+        }
+    }
+
+    static func modelPixelsLandOnTheirDisplayPoints() {
+        // A second display to the left of and above the main one, 1280×831 sent for 1512×982 pt.
+        let display = CGRect(x: -1512, y: 200, width: 1512, height: 982)
+        let centre = CookieDrawingResolver.global(CGPoint(x: 640, y: 415.5), imageWidth: 1280, imageHeight: 831, display: display)
+        precondition(abs(centre.x - -756) < 0.001 && abs(centre.y - 691) < 0.001, "\(centre)")
+        // Off the image: clamped inside it, so it stays on its own display.
+        let outside = CookieDrawingResolver.global(CGPoint(x: -5, y: 900), imageWidth: 1280, imageHeight: 831, display: display)
+        precondition(outside == CGPoint(x: -1512, y: 200))
+        let topRight = CookieDrawingResolver.global(CGPoint(x: 1280, y: 0), imageWidth: 1280, imageHeight: 831, display: display)
+        precondition(topRight == CGPoint(x: 0, y: 1182))
     }
 }

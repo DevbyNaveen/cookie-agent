@@ -139,17 +139,23 @@ enum CookieDrawingResolver {
     }
 
     /// Screenshot pixels → AppKit global points on that capture's display.
+    /// The pixel is clamped inside the image first, so a point a little off the edge stays on the
+    /// display; each axis is scaled by the size actually sent (not a padded one), in the display's
+    /// own points (its exact frame, not rounded), then flipped and moved to the display's origin.
     static func global(_ point: CGPoint, in capture: CompanionScreenCapture) -> CGPoint {
-        let sx = CGFloat(capture.displayWidthInPoints) / CGFloat(max(1, capture.screenshotWidthInPixels))
-        let sy = CGFloat(capture.displayHeightInPoints) / CGFloat(max(1, capture.screenshotHeightInPixels))
-        let x = max(0, min(point.x, CGFloat(capture.screenshotWidthInPixels))) * sx
-        let y = max(0, min(point.y, CGFloat(capture.screenshotHeightInPixels))) * sy
-        return CGPoint(x: x + capture.displayFrame.origin.x, y: (CGFloat(capture.displayHeightInPoints) - y) + capture.displayFrame.origin.y)
+        global(point, imageWidth: capture.screenshotWidthInPixels, imageHeight: capture.screenshotHeightInPixels, display: capture.displayFrame)
     }
 
-    /// Pixels per point on a capture, for radii and extents.
+    static func global(_ point: CGPoint, imageWidth: Int, imageHeight: Int, display: CGRect) -> CGPoint {
+        let width = CGFloat(max(1, imageWidth)), height = CGFloat(max(1, imageHeight))
+        let x = max(0, min(point.x, width)) * display.width / width
+        let y = max(0, min(point.y, height)) * display.height / height
+        return CGPoint(x: display.minX + x, y: display.maxY - y)
+    }
+
+    /// Points per pixel on a capture, for radii and extents.
     static func scale(of capture: CompanionScreenCapture) -> CGFloat {
-        CGFloat(capture.displayWidthInPoints) / CGFloat(max(1, capture.screenshotWidthInPixels))
+        capture.displayFrame.width / CGFloat(max(1, capture.screenshotWidthInPixels))
     }
 
     /// An AX frame (CG global, top-left origin) → AppKit global.

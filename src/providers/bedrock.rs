@@ -181,7 +181,10 @@ fn blocks(content: &Content, origin: &Origin, tag: &str) -> Vec<Value> {
             json!({"toolResult": result})
         }
         // ImageBlock {format, source: ImageSource.bytes} (br-service-2.json); a blob
-        // is base64 in JSON, and ImageFormat is the media type's subtype.
+        // is base64 in JSON, and ImageFormat is the media type's subtype. Converse's
+        // ImageBlock has no `transformations` (format, source, error only — API
+        // reference, 2026-10), so a screenshot can't ask to fail rather than be resized
+        // here: the client must send it at the size the model processes (Cookie for Mac does).
         Content::Image { media_type, data } => {
             let format = media_type.trim_start_matches("image/");
             let image = json!({"image": {"format": format, "source": {"bytes": data}}});

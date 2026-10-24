@@ -132,6 +132,10 @@ enum CookieModelSettings {
         // minutes: a person asks now and again, and a cached prefix is a faster first word
         // (src/provider.rs `prefix_cache_ttl`; models that can't keep it an hour ignore it).
         environment["COOKIE_PROMPT_CACHE_TTL"] = "1h"
+        // Screenshots go at exactly the size the model reads (CookieImageSize): with Anthropic's
+        // API a resize is then refused instead of silently moving every coordinate. (Bedrock's
+        // Converse has no such option; there the sizing alone keeps them unresized.)
+        environment["COOKIE_SCREEN_IMAGES_EXACT"] = "1"
         return environment
     }
 }

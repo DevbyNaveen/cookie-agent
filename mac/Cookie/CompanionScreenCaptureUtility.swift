@@ -83,16 +83,14 @@ enum CompanionScreenCaptureUtility {
             let filter = SCContentFilter(display: display, excludingApplications: excludedApplications(content),
                                          exceptingWindows: [])
 
+            // Exactly the size the model processes, at the display's own aspect: no server resize
+            // (which would move every coordinate it gives back) and no stretch.
             let configuration = SCStreamConfiguration()
-            let maxDimension = 1280
-            let aspectRatio = CGFloat(display.width) / CGFloat(display.height)
-            if display.width >= display.height {
-                configuration.width = maxDimension
-                configuration.height = Int(CGFloat(maxDimension) / aspectRatio)
-            } else {
-                configuration.height = maxDimension
-                configuration.width = Int(CGFloat(maxDimension) * aspectRatio)
-            }
+            let size = CookieImageSize.screenshot(displayWidth: Double(displayFrame.width), displayHeight: Double(displayFrame.height),
+                                                  backingScale: Double(nsScreenByDisplayID[display.displayID]?.backingScaleFactor ?? 1))
+            configuration.width = size.width
+            configuration.height = size.height
+            print("🖼 screen \(displayIndex + 1): \(size.width)×\(size.height) px for \(Int(displayFrame.width))×\(Int(displayFrame.height)) pt at (\(Int(displayFrame.minX)), \(Int(displayFrame.minY))), backing ×\(nsScreenByDisplayID[display.displayID]?.backingScaleFactor ?? 0)")
 
             let cgImage = try await SCScreenshotManager.captureImage(
                 contentFilter: filter,
@@ -156,9 +154,10 @@ enum CompanionScreenCaptureUtility {
         configuration.sourceRect = CGRect(x: rect.minX - screen.frame.minX,
                                           y: screen.frame.maxY - rect.maxY,
                                           width: rect.width, height: rect.height)
-        let scale = min(screen.backingScaleFactor, 1600 / max(rect.width, rect.height))
-        configuration.width = Int(rect.width * scale)
-        configuration.height = Int(rect.height * scale)
+        // Full detail, up to what the model takes without resizing it.
+        let size = CookieImageSize.processed(width: Int(rect.width * screen.backingScaleFactor), height: Int(rect.height * screen.backingScaleFactor))
+        configuration.width = size.width
+        configuration.height = size.height
 
         let cgImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
         return try await encodeRedactedJPEG(cgImage, quality: 0.85)
@@ -192,5 +191,57 @@ enum CompanionScreenCaptureUtility {
     private static func excludedApplications(_ content: SCShareableContent) -> [SCRunningApplication] {
         let blocked = CaptureGuard.blockedBundleIDs.union([Bundle.main.bundleIdentifier ?? ""])
         return content.applications.filter { blocked.contains($0.bundleIdentifier) }
+    }
+}
+
+/// The size Claude actually reads an image at (Anthropic's reference resize, vision-coordinates):
+/// the largest aspect-preserving size with neither padded side over the edge limit and at most
+/// `⌈w/28⌉·⌈h/28⌉` visual tokens. Standard-tier limits (1,568 px, 1,568 tokens) fit every model;
+/// a high-resolution-tier model reads such an image unchanged too. Images Cookie sends are made
+/// this size, so the server never resizes them and the model's pixels are the image's pixels.
+enum CookieImageSize {
+    static let maxEdge = 1568
+    static let maxTokens = 1568
+    /// The long edge Cookie captures a screen at: legible, and ~1,300 tokens for 16:10.
+    static let screenLongEdge = 1280
+
+    static func tokens(width: Int, height: Int) -> Int {
+        ((width + 27) / 28) * ((height + 27) / 28)
+    }
+
+    static func processed(width: Int, height: Int, maxEdge: Int = maxEdge, maxTokens: Int = maxTokens) -> (width: Int, height: Int) {
+        let width = max(1, width), height = max(1, height)
+        func fits(_ w: Int, _ h: Int) -> Bool {
+            (w + 27) / 28 * 28 <= maxEdge && (h + 27) / 28 * 28 <= maxEdge && tokens(width: w, height: h) <= maxTokens
+        }
+        if fits(width, height) { return (width, height) }
+        if height > width {
+            let rotated = processed(width: height, height: width, maxEdge: maxEdge, maxTokens: maxTokens)
+            return (rotated.height, rotated.width)
+        }
+        let aspect = Double(width) / Double(height)
+        var low = 1, high = width
+        while low + 1 < high {
+            let middle = (low + high) / 2
+            if fits(middle, shortEdge(middle, aspect)) { low = middle } else { high = middle }
+        }
+        return (low, shortEdge(low, aspect))
+    }
+
+    /// A display captured with its long edge at `screenLongEdge` (never up-scaled past the display
+    /// itself), its short edge rounded as the API rounds, then fitted.
+    static func screenshot(displayWidth: Double, displayHeight: Double, backingScale: Double = 2) -> (width: Int, height: Int) {
+        let longest = max(displayWidth, displayHeight)
+        let long = min(Double(screenLongEdge), longest * max(1, backingScale))
+        let aspect = displayWidth / max(1, displayHeight)
+        let size = displayWidth >= displayHeight
+            ? (Int(long), shortEdge(Int(long), aspect))
+            : (shortEdge(Int(long), 1 / aspect), Int(long))
+        return processed(width: size.0, height: size.1)
+    }
+
+    /// The short edge for a long edge at `aspect` (long ÷ short), rounded half to even like the API.
+    private static func shortEdge(_ long: Int, _ aspect: Double) -> Int {
+        max(1, Int((Double(long) / aspect).rounded(.toNearestOrEven)))
     }
 }

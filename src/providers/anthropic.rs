@@ -125,7 +125,8 @@ impl AnthropicProvider {
     }
 
     fn body(&self, request: &ModelRequest) -> Value {
-        let mut body = request_body_with_ttl(request, self.max_tokens, self.caching, crate::provider::prefix_cache_ttl(request.model));
+        let exact = std::env::var("COOKIE_SCREEN_IMAGES_EXACT").is_ok_and(|v| v == "1");
+        let mut body = request_body_with_ttl(request, self.max_tokens, self.caching, crate::provider::prefix_cache_ttl(request.model), exact);
         if let Some(edits) = &self.context_editing {
             body["context_management"] = json!({"edits": [edits.edit()]});
         }
@@ -164,7 +165,7 @@ impl AnthropicProvider {
 /// Untrusted text and every tool result are fenced so the model can tell
 /// them apart from the person's words; an untrusted image follows a fenced
 /// note. Nothing for an empty text block, which the API rejects.
-fn blocks(content: &Content, origin: &Origin, tag: &str) -> Vec<Value> {
+fn blocks(content: &Content, origin: &Origin, tag: &str, exact_screen_images: bool) -> Vec<Value> {
     let source = match origin {
         Origin::Untrusted(source) => Some(source),
         _ => None,
@@ -188,7 +189,13 @@ fn blocks(content: &Content, origin: &Origin, tag: &str) -> Vec<Value> {
         }
         // ImageBlockParam with a Base64ImageSource (@anthropic-ai/sdk 0.124.0, resources/messages/messages.d.ts).
         Content::Image { media_type, data } => {
-            let image = json!({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}});
+            let mut image = json!({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}});
+            // A screenshot sized by the client to exactly what the model processes: a resize
+            // would move every coordinate the model gives back, so it must fail instead
+            // (https://platform.claude.com/docs/en/build-with-claude/vision-coordinates).
+            if exact_screen_images && matches!(source, Some(crate::label::Source::Screen)) {
+                image["transformations"] = json!({"oversized_image": "error"});
+            }
             return match source {
                 Some(source) => vec![json!({"type": "text", "text": image_notice(media_type, source, tag)}), image],
                 None => vec![image],
@@ -204,12 +211,15 @@ fn blocks(content: &Content, origin: &Origin, tag: &str) -> Vec<Value> {
 pub const REASONING_MAX_TOKENS: u32 = 16_384;
 
 pub fn request_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> Value {
-    request_body_with_ttl(request, max_tokens, caching, None)
+    request_body_with_ttl(request, max_tokens, caching, None, false)
 }
 
 /// `request_body`, with the system's and tools' breakpoints kept for
 /// `prefix_ttl` (`"1h"`, `crate::provider::prefix_cache_ttl`) instead of the default.
-pub fn request_body_with_ttl(request: &ModelRequest, max_tokens: u32, caching: bool, prefix_ttl: Option<&str>) -> Value {
+///
+/// `exact_screen_images` (`COOKIE_SCREEN_IMAGES_EXACT=1`): screenshots carry
+/// `transformations.oversized_image = "error"`, for a client that sizes them itself.
+pub fn request_body_with_ttl(request: &ModelRequest, max_tokens: u32, caching: bool, prefix_ttl: Option<&str>, exact_screen_images: bool) -> Value {
     let tag = fence_tag(request.messages);
     let cache = json!({"type": "ephemeral"});
     let prefix_cache = match prefix_ttl {
@@ -228,7 +238,7 @@ pub fn request_body_with_ttl(request: &ModelRequest, max_tokens: u32, caching: b
                 .content()
                 .iter()
                 .filter(|c| keep_reasoning || !matches!(c, Content::Reasoning { .. }))
-                .flat_map(|c| blocks(c, m.origin(), &tag))
+                .flat_map(|c| blocks(c, m.origin(), &tag, exact_screen_images))
                 .collect();
             (!content.is_empty()).then(|| {
                 json!({
@@ -586,7 +596,7 @@ mod tests {
         assert!(on["messages"][0]["content"][0].get("cache_control").is_none());
         let off = request_body(&req, 10, false);
         assert!(off["system"][0].get("cache_control").is_none() && off["tools"][1].get("cache_control").is_none());
-        let hour = request_body_with_ttl(&req, 10, true, Some("1h"));
+        let hour = request_body_with_ttl(&req, 10, true, Some("1h"), false);
         let kept = json!({"type": "ephemeral", "ttl": "1h"});
         assert_eq!((&hour["system"][0]["cache_control"], &hour["tools"][1]["cache_control"]), (&kept, &kept));
         assert_eq!(hour["messages"][1]["content"][0]["cache_control"], cached, "the conversation stays at the default, after the prefix");
@@ -952,6 +962,12 @@ data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_
         let Content::Image { data, .. } = Content::image("image/png", png) else { unreachable!() };
         assert_eq!(blocks[2], json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": data}}));
         assert_eq!(blocks.as_array().unwrap().len(), 3);
+        // Sized by the client: a resize is refused instead of moving every coordinate.
+        let exact = request_body_with_ttl(&req, 10, false, None, true)["messages"][1]["content"][2].clone();
+        assert_eq!(exact["transformations"], json!({"oversized_image": "error"}));
+        let file = vec![Message::user("this file"), Message::untrusted_images(vec![Content::image("image/png", png)], Source::File).unwrap()];
+        let req = ModelRequest { model: "m", system: "", messages: &file, tools: vec![], ..Default::default() };
+        assert!(request_body_with_ttl(&req, 10, false, None, true)["messages"][1]["content"][1].get("transformations").is_none(), "only screenshots");
     }
 
 }
