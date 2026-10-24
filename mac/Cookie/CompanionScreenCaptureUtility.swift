@@ -23,6 +23,8 @@ struct CompanionScreenCapture {
     let hiddenItems: Int
     /// Face detection failed on this picture: its text was checked, faces weren't blurred.
     var facesUnchecked = false
+    /// How long checking it for private details took (`CookieTurnTiming`).
+    var redactionSeconds = 0.0
 }
 
 @MainActor
@@ -121,7 +123,8 @@ enum CompanionScreenCaptureUtility {
                 screenshotWidthInPixels: configuration.width,
                 screenshotHeightInPixels: configuration.height,
                 hiddenItems: redacted.hiddenItems,
-                facesUnchecked: redacted.facesUnchecked
+                facesUnchecked: redacted.facesUnchecked,
+                redactionSeconds: redacted.seconds
             ))
         }
 
@@ -164,20 +167,22 @@ enum CompanionScreenCaptureUtility {
         return try await encodeRedactedJPEG(cgImage, quality: 0.85)
     }
 
-    typealias RedactedJPEG = (data: Data, hiddenItems: Int, facesUnchecked: Bool)
+    typealias RedactedJPEG = (data: Data, hiddenItems: Int, facesUnchecked: Bool, seconds: Double)
 
     /// Vision OCR and JPEG encoding are synchronous CPU work; never run them on the UI/event-tap thread.
     /// Throws `Redactor.Unchecked` when the picture couldn't be checked: it is never sent unchecked.
     nonisolated private static func encodeRedactedJPEG(_ image: CGImage, quality: Double) async throws -> RedactedJPEG {
         let worker = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
+            let started = CACurrentMediaTime()
             let redacted = try Redactor.redact(image)
+            let seconds = CACurrentMediaTime() - started
             try Task.checkCancellation()
             guard let data = NSBitmapImageRep(cgImage: redacted.image)
                 .representation(using: .jpeg, properties: [.compressionFactor: quality]) else {
                 throw NSError(domain: "CompanionScreenCapture", code: -3)
             }
-            return (data: data, hiddenItems: redacted.hiddenText + redacted.blurredFaces, facesUnchecked: redacted.facesUnchecked)
+            return (data: data, hiddenItems: redacted.hiddenText + redacted.blurredFaces, facesUnchecked: redacted.facesUnchecked, seconds: seconds)
         }
         return try await withTaskCancellationHandler {
             try await worker.value

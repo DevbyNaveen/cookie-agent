@@ -278,6 +278,9 @@ final class CompanionManager: ObservableObject {
     private var conversationHistory: [Exchange] = []
     typealias Exchange = (userTranscript: String, assistantResponse: String, untrusted: Bool)
 
+    /// The spoken turn being timed from key-down until its reply is sent (`CookieTurnTiming`).
+    private var pressTiming: CookieTurnTiming?
+
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
@@ -610,6 +613,8 @@ final class CompanionManager: ObservableObject {
 
             voiceInteractionID = UUID()
             let interactionID = voiceInteractionID
+            pressTiming = CookieTurnTiming()
+            pressTiming?.mark(.keyDown)
             noteActivity()
             let front = NSWorkspace.shared.frontmostApplication
             frontAppAtPress = (front?.localizedName, front?.bundleIdentifier)
@@ -661,6 +666,7 @@ final class CompanionManager: ObservableObject {
                     },
                     submitDraftText: { [weak self] finalTranscript in
                         guard let self, self.voiceInteractionID == interactionID else { return }
+                        self.pressTiming?.mark(.transcript)
                         self.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
                         if let interceptor = self.transcriptInterceptor {
@@ -684,6 +690,7 @@ final class CompanionManager: ObservableObject {
             // Without this, a quick press-and-release drops the release event and
             // leaves the waveform overlay stuck on screen indefinitely.
             CookieAnalytics.trackPushToTalkReleased()
+            pressTiming?.mark(.release)
             if circling { circleSelect.setActive(false) }
             // Circled something but said nothing: ask about it anyway.
             // Waits for listening to finish (up to 8s) instead of guessing a delay:
@@ -1081,8 +1088,20 @@ final class CompanionManager: ObservableObject {
         }
         workingStartedAt = startedAt
         workingStep = lookAtScreen && permissionCenter.isAllowed(.screen) ? "Looking at your screen" : "Thinking"
+        // A spoken question was timed from its key; a typed one (or the circle's "what's this?") from now.
+        var timing = speakReply ? (pressTiming ?? CookieTurnTiming()) : CookieTurnTiming()
+        pressTiming = nil
+        timing.mark(.release)
+        timing.notes.append(speakReply ? "voice" : "typed")
 
         currentResponseTask = Task {
+            // One line per turn, however it ends (a stop or the next question is "cancelled").
+            var outcome = "cancelled"
+            defer {
+                timing.closeToolRound()
+                timing.mark(.done)
+                print(timing.line(outcome: outcome))
+            }
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
 
@@ -1106,10 +1125,14 @@ final class CompanionManager: ObservableObject {
                         do { return .success(try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()) }
                         catch { return .failure(error) }
                     }
+                    timing.mark(.capture)
                     switch captured {
                     case .success(let captures)?:
                         screenCaptures = captures
                         lastCaptureAt = Date()
+                        timing.redactionSeconds = captures.reduce(0) { $0 + $1.redactionSeconds }
+                        timing.notes.append("\(captures.count) \(captures.count == 1 ? "screen" : "screens")")
+                        if let first = captures.first { timing.notes.append("\(first.screenshotWidthInPixels)×\(first.screenshotHeightInPixels)") }
                     // Never sent unchecked: Cookie answers from the words and says why it didn't look.
                     case .failure(let error as Redactor.Unchecked)?: refusal = error.localizedDescription
                     case .failure(let error)?: throw error
@@ -1206,12 +1229,17 @@ final class CompanionManager: ObservableObject {
                               displayFrame: $0.displayFrame, isCursorScreen: $0.isCursorScreen)
                 }
                 defer { MacOperator.shared.endRun() }
+                timing.mark(.requestSent)
                 let fullResponseText = try await harness.run(
                     model: model, input: input,
                     instructions: Self.companionVoiceResponseSystemPrompt + Self.agentBrief(CookieAgentStore.shared.agent(threads.first { $0.id == threadID }?.agentID)),
                     images: images,
                     history: Self.historyTurns(conversationHistory),
-                    onText: { text in self.streamingText = Self.visibleReply(text) },
+                    onText: { text in
+                        timing.mark(.firstToken)
+                        timing.closeToolRound()
+                        self.streamingText = Self.visibleReply(text)
+                    },
                     onStep: { step in
                         self.workingStep = step
                         steps.append(CookieStep(title: step, seconds: 0))
@@ -1237,7 +1265,8 @@ final class CompanionManager: ObservableObject {
                             return
                         }
                         self.pendingApproval = approval
-                    }
+                    },
+                    onToolStarted: { timing.toolStarted() }
                 )
 
                 guard !Task.isCancelled else { return }
@@ -1246,7 +1275,6 @@ final class CompanionManager: ObservableObject {
                 // Tags come out of the words, each kept with its place in them: marks and the
                 // pointer happen as the voice reaches that place.
                 let tagged = CookieReplyTags.split(fullResponseText)
-                print("🧾 Reply after \(String(format: "%.1f", Date().timeIntervalSince(startedAt))) s, tags: \(tagged.tags.map { "\($0.kind)@\($0.offset):\($0.body.prefix(80))" })")
                 let nextSteps = Self.nextSteps(from: tagged.tags)
                 let drawnMarks = Array(tagged.tags.compactMap(CookieDrawing.init(tag:)).prefix(CookieDrawing.maxMarks))
                 let parseResult = tagged.tags.last { $0.kind == "POINT" }.map(Self.parsePointing) ?? .noTag
@@ -1367,9 +1395,10 @@ final class CompanionManager: ObservableObject {
                 var heard = false
                 if speakReply, !spokenText.isEmpty {
                     workingStep = "Preparing voice"
+                    timing.mark(.firstSpeakable)
                     // The response task already holds self; a weak capture here would only differ from it.
                     await elevenLabsTTSClient.speakText(spokenText, onPlaybackStarted: {
-                        print("🔊 First sound after \(String(format: "%.1f", Date().timeIntervalSince(startedAt))) s")
+                        timing.mark(.firstAudio)
                         heard = true
                         self.workingStep = nil
                         self.voiceState = .responding
@@ -1418,12 +1447,14 @@ final class CompanionManager: ObservableObject {
                     if let scene { scenePresenter.showNow(scene, near: cardRegion) }
                 }
                 replyFinished.send((threadID, reply))
+                outcome = ""
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
                 // You interrupted it (spoke again, stopped, switched chat): not a failure,
                 // and whoever cancelled already owns the state.
                 guard !Task.isCancelled, (error as? URLError)?.code != .cancelled else { return }
+                outcome = "failed"
                 CookieAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
                 streamingText = ""

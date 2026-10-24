@@ -24,5 +24,5 @@ result = subprocess.run([str(executable), *sys.argv[1:]], cwd=project_directory,
 sys.stdout.write(result.stdout)
 sys.stderr.write(result.stderr)
 result.check_returncode()
-if any(message not in result.stdout for message in ["31 interaction checks passed.", "7 setup checks passed.", "3 work presentation checks passed.", "4 peek presentation checks passed.", "7 voice flow checks passed.", "5 Cookie creation checks passed.", "9 feature checks passed.", "7 dock presentation checks passed.", "3 permission checks passed."]):
+if any(message not in result.stdout for message in ["31 interaction checks passed.", "7 setup checks passed.", "3 work presentation checks passed.", "4 peek presentation checks passed.", "7 voice flow checks passed.", "5 Cookie creation checks passed.", "9 feature checks passed.", "7 dock presentation checks passed.", "3 permission checks passed.", " speed checks passed."]):
     raise SystemExit("Native checks did not finish. Run with access to the macOS graphical session; an empty exit is not a pass.")

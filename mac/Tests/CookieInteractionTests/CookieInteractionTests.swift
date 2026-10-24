@@ -703,6 +703,7 @@ struct CookieInteractionCheckRunner {
         CookieFeatureTests.run()
         CookieDockPresentationTests.run()
         CookiePermissionTests.run()
+        CookieSpeedTests.run()
         var setupChecksFinished = false
         Task { @MainActor in
             await checks.testScreenCaptureGivesUpAtItsDeadline()
