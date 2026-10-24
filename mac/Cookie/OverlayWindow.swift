@@ -171,6 +171,67 @@ final class CookieHand: ObservableObject {
     func rest(beside rect: CGRect) {
         visit = Visit(point: CGPoint(x: rect.maxX + 4, y: rect.minY - 4))
     }
+
+    /// Show, then do: one action Cookie is about to take on the screen.
+    struct Act: Equatable {
+        let id = UUID()
+        /// AppKit global coordinates: where the tip lands and presses.
+        let point: CGPoint
+        /// A drag's drop point: the hand carries on there while the drag runs.
+        let dragTo: CGPoint?
+        /// Two to four words beside the hand, e.g. "Clicking Save".
+        let label: String
+    }
+
+    @Published private(set) var act: Act?
+    private var arrival: (id: UUID, continuation: CheckedContinuation<Void, Never>)?
+    /// The longest the hand may hold up an action: past it the action runs wherever the hand is.
+    static let actTimeout: Duration = .milliseconds(600)
+
+    /// Moves the hand to `point`, presses, and returns once it has. The overlay on that display
+    /// answers with `landed`; with no overlay there, or the hand busy pointing, it returns after
+    /// `actTimeout` anyway, so the hand never blocks the work.
+    func act(at point: CGPoint, dragTo: CGPoint? = nil, label: String) async {
+        let act = Act(point: point, dragTo: dragTo, label: label)
+        self.act = act
+        await withCheckedContinuation { continuation in
+            arrival = (act.id, continuation)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: Self.actTimeout)
+                self?.landed(act.id)
+            }
+        }
+    }
+
+    /// The overlay's hand has landed and pressed for this act.
+    func landed(_ id: UUID) {
+        guard let arrival, arrival.id == id else { return }
+        self.arrival = nil
+        arrival.continuation.resume()
+    }
+
+    /// The action ran: the hand stays a moment, so a next action on the same control finds it there.
+    func actionFinished() {
+        act = nil
+    }
+}
+
+/// One step of a guided walk-through on screen: the control the person should use, its number,
+/// and what to do. `done` ticks the badge once they have.
+struct CookieGuideStep: Equatable {
+    let id = UUID()
+    /// The control, AppKit global.
+    let control: CGRect
+    let displayFrame: CGRect
+    let number: Int
+    var instruction: String
+    var done = false
+
+    /// The control lit, the rest of its display dimmed.
+    var spotlight: CookieSpotlight { CookieSpotlight(rect: control, displayFrame: displayFrame) }
+
+    /// Where the hand's tip rests: just inside the control's lower right, the pointer below it.
+    var restingTip: CGPoint { CGPoint(x: min(control.maxX - 6, control.midX + 30), y: control.minY + 6) }
 }
 
 // SwiftUI view for the blue glowing cursor pointer.
@@ -208,8 +269,17 @@ struct BlueCursorView: View {
     @State private var cursorOpacity: Double = 0.0
     @ObservedObject private var presence = CursorPresence.shared
     @ObservedObject private var hand = CookieHand.shared
-    /// The hand is resting on a card or scene that just opened.
-    @State private var handVisiting = false
+    /// What holds the hand away from the person's cursor: a card or scene opening (`visit`), an
+    /// action about to run (`act`), a guided step waiting on the person (`guide`); nil when nothing does.
+    private enum HandHold { case visit, act, guide }
+    @State private var handHold: HandHold?
+    /// The pill beside the hand while an action or a guided step holds it.
+    @State private var handLabel = ""
+    /// The guided step the hand rests on here.
+    @State private var guidedStepID: UUID?
+    /// Each press of the hand bumps this; the ink ring spreads from `pressPoint`.
+    @State private var pressCount = 0
+    @State private var pressPoint: CGPoint = .zero
 
     // MARK: - Buddy Navigation State
 
@@ -268,7 +338,16 @@ struct BlueCursorView: View {
             Color.black.opacity(0.001)
 
             // The rest of the screen dims while Cookie explains one part of it; marks ink over it.
-            CookieSpotlightLayer(spotlight: companionManager.spotlight, screenFrame: screenFrame, typing: presence.typing)
+            CookieSpotlightLayer(spotlight: companionManager.spotlight ?? companionManager.guideStep?.spotlight,
+                                 screenFrame: screenFrame, typing: presence.typing)
+
+            // A guided step: its number at the control's corner, ticked once the person has done it.
+            if let step = companionManager.guideStep, step.displayFrame == screenFrame {
+                CookieGuideBadge(number: step.number, done: step.done)
+                    .position(convertScreenPointToSwiftUICoordinates(CGPoint(x: step.control.minX, y: step.control.maxY)))
+                    .transition(.scale.combined(with: .opacity))
+                    .animation(.spring(response: 0.3, dampingFraction: 0.7), value: step.done)
+            }
 
             // Cookie's drawings on this display.
             if !companionManager.marks.isEmpty {
@@ -397,7 +476,7 @@ struct BlueCursorView: View {
             CookiePointer(size: 16, degrees: triangleRotationDegrees)
                 .scaleEffect(buddyFlightScale)
                 .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle
-                    || companionManager.voiceState == .responding && buddyNavigationMode != .followingCursor) && !pointerAway ? cursorOpacity : 0)
+                    || companionManager.voiceState != .listening && buddyNavigationMode != .followingCursor) && !pointerAway ? cursorOpacity : 0)
                 .animation(.easeOut(duration: pointerAway ? 0.1 : 0.2), value: pointerAway)
                 .position(cursorPosition)
                 .animation(
@@ -412,6 +491,18 @@ struct BlueCursorView: View {
                     value: triangleRotationDegrees
                 )
 
+            // What the hand is doing ("Clicking Save") or what the person should do next.
+            if handHold == .act || handHold == .guide, !handLabel.isEmpty {
+                CookieHandPill(text: handLabel)
+                    .position(x: cursorPosition.x + 12, y: cursorPosition.y + 22)
+                    .animation(.spring(response: 0.3, dampingFraction: 0.85), value: cursorPosition)
+                    .transition(.opacity)
+            }
+
+            // The ink ring of a press, spreading from the tip.
+            CookiePressRipple(trigger: pressCount)
+                .position(pressPoint)
+
             // Keep speech visibly active until playback ends; pointing still uses the directional chip.
             BlueCursorWaveformView(audioPowerLevel: companionManager.voiceState == .responding ? 0.35 : companionManager.currentAudioPowerLevel,
                                    active: buddyIsVisibleOnThisScreen && (companionManager.voiceState == .listening
@@ -424,7 +515,8 @@ struct BlueCursorView: View {
 
             // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS)
             BlueCursorSpinnerView()
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0)
+                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing
+                    && buddyNavigationMode == .followingCursor ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
@@ -478,6 +570,8 @@ struct BlueCursorView: View {
             startNavigatingToElement(screenLocation: screenLocation)
         }
         .onReceive(hand.$visit) { visit in handOpens(visit) }
+        .onReceive(hand.$act) { act in handActs(act) }
+        .onReceive(companionManager.$guideStep) { step in handGuides(step) }
     }
 
     // MARK: - Cookie's hand
@@ -485,13 +579,13 @@ struct BlueCursorView: View {
     /// Cookie's hand while it draws on this display: the pointer's tip on the pen.
     private func follow(_ pen: CookiePen?) {
         guard let pen else {
-            if buddyNavigationMode == .drawing && !handVisiting { returnHandToCursor() }
+            if buddyNavigationMode == .drawing && handHold == nil { returnHandToCursor() }
             return
         }
         // Flying to point at something comes first; the hand never fights it.
         guard buddyNavigationMode == .followingCursor || buddyNavigationMode == .drawing else { return }
         let centre = Self.centre(placingTipAt: pen.point, degrees: pen.degrees)
-        handVisiting = false
+        handHold = nil
         if pen.travelling || buddyNavigationMode != .drawing {
             withAnimation(.spring(response: CookieMarksLayer.lead, dampingFraction: 0.9)) {
                 cursorPosition = centre
@@ -507,25 +601,114 @@ struct BlueCursorView: View {
     /// A card or a scene opened on this display: the hand goes to its corner, rests while it
     /// opens, then goes back. Reduce Motion keeps the hand with the person.
     private func handOpens(_ visit: CookieHand.Visit?) {
-        guard let visit, screenFrame.contains(visit.point),
+        guard let visit, screenFrame.contains(visit.point), handHold == nil || handHold == .visit,
               buddyNavigationMode == .followingCursor || buddyNavigationMode == .drawing,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
         let target = convertScreenPointToSwiftUICoordinates(visit.point)
         let degrees = Double(atan2(target.y - cursorPosition.y, target.x - cursorPosition.x)) * 180 / .pi + 90
         buddyNavigationMode = .drawing
-        handVisiting = true
+        handHold = .visit
         withAnimation(.spring(response: 0.4, dampingFraction: 0.88)) {
             cursorPosition = Self.centre(placingTipAt: target, degrees: degrees)
             triangleRotationDegrees = degrees
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
-            guard self.handVisiting, self.hand.visit == visit else { return }
-            self.handVisiting = false
+            guard self.handHold == .visit, self.hand.visit == visit else { return }
             if self.buddyNavigationMode == .drawing { self.returnHandToCursor() }
         }
     }
 
+    /// Show, then do: the hand flies to where Cookie is about to act (already there for another action
+    /// on the same control), presses, and only then lets the action run; a drag carries on to its
+    /// drop point while it runs. The hand stays a moment after, then goes back.
+    private func handActs(_ act: CookieHand.Act?) {
+        guard let act else {
+            guard handHold == .act else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                guard self.handHold == .act, self.hand.act == nil, self.buddyNavigationMode == .drawing else { return }
+                self.returnHandToCursor()
+            }
+            return
+        }
+        // Pointing and guiding come first: the operator's wait times out and the action runs anyway.
+        guard screenFrame.contains(act.point), handHold != .guide,
+              buddyNavigationMode == .followingCursor || buddyNavigationMode == .drawing else { return }
+        handLabel = act.label
+        let tip = convertScreenPointToSwiftUICoordinates(act.point)
+        moveHand(toTip: tip, hold: .act) {
+            guard self.hand.act?.id == act.id else { return }
+            self.pressHand(at: tip)
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.pressSeconds) {
+                self.hand.landed(act.id)
+                guard let dragTo = act.dragTo, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+                // The drag itself takes about 0.15 s; the hand rides it.
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    self.cursorPosition = Self.centre(placingTipAt: self.convertScreenPointToSwiftUICoordinates(dragTo), degrees: -35)
+                }
+            }
+        }
+    }
+
+    /// A guided step: the hand flies to the control and stays there, its instruction beside it,
+    /// until the step is done or gone. New words on the same step (the nudge) tap the control again.
+    private func handGuides(_ step: CookieGuideStep?) {
+        guard let step, step.displayFrame == screenFrame else {
+            if handHold == .guide { returnHandToCursor() }
+            return
+        }
+        handLabel = step.instruction
+        let tip = convertScreenPointToSwiftUICoordinates(step.restingTip)
+        if handHold == .guide, guidedStepID == step.id {
+            if !step.done { pressHand(at: tip) }
+            return
+        }
+        guard buddyNavigationMode == .followingCursor || buddyNavigationMode == .drawing else { return }
+        guidedStepID = step.id
+        moveHand(toTip: tip, hold: .guide) {}
+    }
+
+    /// How long a press takes: down and back up, with the ring.
+    private static let pressSeconds = 0.18
+
+    /// Flies the hand's tip to a point (at most 0.4 s, by distance) and holds it there. Reduce Motion:
+    /// it jumps.
+    private func moveHand(toTip tip: CGPoint, hold: HandHold, then arrived: @escaping () -> Void) {
+        let centre = Self.centre(placingTipAt: tip, degrees: -35)
+        let distance = hypot(centre.x - cursorPosition.x, centre.y - cursorPosition.y)
+        let alreadyThere = buddyNavigationMode == .drawing && distance < 2
+        buddyNavigationMode = .drawing
+        handHold = hold
+        guard !alreadyThere, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            cursorPosition = centre
+            triangleRotationDegrees = -35
+            arrived()
+            return
+        }
+        let seconds = min(0.4, max(0.12, Double(distance) / 1800))
+        withAnimation(.easeInOut(duration: seconds)) {
+            cursorPosition = centre
+            triangleRotationDegrees = -35
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: arrived)
+    }
+
+    /// The press cue: the pointer dips and springs back while an ink ring spreads from its tip.
+    /// Reduce Motion: no cue.
+    private func pressHand(at tip: CGPoint) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        pressPoint = tip
+        pressCount += 1
+        let half = Self.pressSeconds / 2
+        withAnimation(.easeIn(duration: half)) { buddyFlightScale = 0.8 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + half) {
+            withAnimation(.easeOut(duration: half)) { self.buddyFlightScale = 1 }
+        }
+    }
+
     private func returnHandToCursor() {
+        handHold = nil
+        handLabel = ""
+        guidedStepID = nil
         buddyNavigationMode = .followingCursor
         let mouse = convertScreenPointToSwiftUICoordinates(NSEvent.mouseLocation)
         withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
@@ -861,6 +1044,75 @@ struct BlueCursorView: View {
             self.welcomeText.append(self.fullWelcomeMessage[index])
             currentIndex += 1
         }
+    }
+}
+
+// MARK: - Cookie's hand at work
+
+/// The words beside the hand, in Cookie's ink, its leading edge just right of the tip.
+private struct CookieHandPill: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold)).foregroundStyle(CookieMarksLayer.onInk)
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(CookieMarksLayer.ink))
+            .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
+            .fixedSize()
+            // A zero-width frame aligned leading: the pill grows rightward from the position.
+            .frame(width: 0, height: 0, alignment: .leading)
+            .allowsHitTesting(false)
+    }
+}
+
+/// A guided step's number in an ink disc, as the `number` mark draws it; a check once done.
+private struct CookieGuideBadge: View {
+    let number: Int
+    let done: Bool
+
+    var body: some View {
+        ZStack {
+            Circle().fill(CookieMarksLayer.ink).frame(width: 24, height: 24)
+            if done {
+                Image(systemName: "checkmark").font(.system(size: 11, weight: .heavy)).transition(.scale.combined(with: .opacity))
+            } else {
+                Text("\(number)").font(.system(size: 12, weight: .bold, design: .rounded)).transition(.opacity)
+            }
+        }
+        .foregroundStyle(CookieMarksLayer.onInk)
+        .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
+        .allowsHitTesting(false)
+    }
+}
+
+/// The soft ink ring of a press: spreads and fades in 180 ms each time `trigger` changes, and is
+/// invisible otherwise (a keyframe animation stays at its end value, opacity 0).
+private struct CookiePressRipple: View {
+    let trigger: Int
+
+    private struct Ring {
+        var scale: CGFloat = 0.3
+        var opacity: Double = 0
+    }
+
+    var body: some View {
+        Circle()
+            .stroke(CookieMarksLayer.ink, lineWidth: 2)
+            .frame(width: 30, height: 30)
+            .keyframeAnimator(initialValue: Ring(), trigger: trigger) { ring, value in
+                ring.scaleEffect(value.scale).opacity(value.opacity)
+            } keyframes: { _ in
+                KeyframeTrack(\.scale) {
+                    LinearKeyframe(0.3, duration: 0)
+                    CubicKeyframe(1.4, duration: 0.18)
+                }
+                KeyframeTrack(\.opacity) {
+                    LinearKeyframe(0.75, duration: 0)
+                    LinearKeyframe(0, duration: 0.18)
+                }
+            }
+            .allowsHitTesting(false)
     }
 }
 

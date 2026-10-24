@@ -58,6 +58,11 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var spotlight: CookieSpotlight?
     private var markMonitors: [Any] = []
     private var marksTimeout: Task<Void, Never>?
+    /// The guided step Cookie is waiting on (`wait_for_step`): her hand on the control, its numbered
+    /// badge and instruction, the rest dimmed. While it waits Cookie isn't thinking: what the person
+    /// says or types answers the step.
+    @Published private(set) var guideStep: CookieGuideStep?
+    var isWaitingOnPerson: Bool { guideStep.map { !$0.done } ?? false }
 
     /// The reply's explainer card, beside the notch or beside the marks; one at a time.
     let cardPresenter = CookieCardPresenter()
@@ -97,12 +102,40 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    private func beginMarks() {
-        if !isOverlayVisible {
-            overlayWindowManager.hasShownOverlayBefore = true
-            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-            isOverlayVisible = true
+    /// Shows a guided step (or clears it). Waiting on the person, the voice state is idle so the hotkey
+    /// and the composer can answer; once the step is done the run thinks again, and the ticked badge
+    /// goes after a moment unless the next step replaces it first.
+    private func showGuideStep(_ step: CookieGuideStep?) {
+        if step != nil { showOverlayForDrawing() }
+        guideStep = step
+        if step?.done == false {
+            if voiceState == .processing { voiceState = .idle }
+        } else if currentResponseTask != nil, voiceState == .idle {
+            voiceState = .processing
         }
+        guard let step, step.done else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1.2))
+            if self?.guideStep == step { self?.guideStep = nil }
+        }
+    }
+
+    /// Words for the step Cookie is waiting on ("skip", "done", a question): shown in the chat, and
+    /// handed to the step as its answer.
+    private func answerGuideStep(_ words: String) {
+        if let id = workingThreadID { append(CompanionChatMessage(role: .user, text: words), to: id) }
+        MacOperator.shared.answerStep(words)
+    }
+
+    private func showOverlayForDrawing() {
+        guard !isOverlayVisible else { return }
+        overlayWindowManager.hasShownOverlayBefore = true
+        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+        isOverlayVisible = true
+    }
+
+    private func beginMarks() {
+        showOverlayForDrawing()
         // Any key or click means the person has moved on; so does Escape, and so does time.
         let keys = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown]) { [weak self] event in
             Task { @MainActor [weak self] in
@@ -341,6 +374,7 @@ final class CompanionManager: ObservableObject {
             self.detectedElementDisplayFrame = display
         }
         MacOperator.shared.stopRun = { [weak self] in self?.stopResponse() }
+        MacOperator.shared.guiding = { [weak self] step in self?.showGuideStep(step) }
         MacOperator.shared.currentThreadID = { [weak self] in self?.workingThreadID }
         CookieBackgroundRuns.shared.companionManager = self
         CookieBackgroundRuns.shared.startScheduler()
@@ -492,7 +526,8 @@ final class CompanionManager: ObservableObject {
                 guard let self else { return }
                 // Don't override .responding — the AI response pipeline
                 // manages that state directly until streaming finishes.
-                guard self.currentResponseTask == nil, !self.elevenLabsTTSClient.isActive else { return }
+                // A guided step waiting on the person is the exception: its answer is spoken.
+                guard self.currentResponseTask == nil || self.isWaitingOnPerson, !self.elevenLabsTTSClient.isActive else { return }
 
                 if isFinalizing {
                     self.voiceState = .processing
@@ -564,14 +599,18 @@ final class CompanionManager: ObservableObject {
             regionCaptureTask = nil
             if circling { circleSelect.setActive(true) }
 
-            // Cancel any in-progress response and TTS from a previous utterance
-            currentResponseTask?.cancel()
-            currentResponseTask = nil
-            elevenLabsTTSClient.stopPlayback()
-            workingStep = nil
-            pendingApproval = nil
-            voiceState = .idle
-            clearDetectedElementLocation()
+            // During a guided step the run waits on the person: what they say answers the step.
+            let answersStep = isWaitingOnPerson
+            if !answersStep {
+                // Cancel any in-progress response and TTS from a previous utterance
+                currentResponseTask?.cancel()
+                currentResponseTask = nil
+                elevenLabsTTSClient.stopPlayback()
+                workingStep = nil
+                pendingApproval = nil
+                voiceState = .idle
+                clearDetectedElementLocation()
+            }
 
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
@@ -600,6 +639,10 @@ final class CompanionManager: ObservableObject {
                         print("🗣️ Companion received transcript: \(finalTranscript)")
                         if let interceptor = self.transcriptInterceptor {
                             interceptor(finalTranscript)
+                            return
+                        }
+                        if answersStep {
+                            self.answerGuideStep(finalTranscript)
                             return
                         }
                         CookieAnalytics.trackUserMessageSent(transcript: finalTranscript)
@@ -702,7 +745,7 @@ final class CompanionManager: ObservableObject {
     - taught tasks: skills whose name starts with taught- are tasks the user showed you by doing them; replay them step by step with the mac tools after start_task.
     - handing off: when another of the user's cookies is the better one for the next part (the user names it, or its role plainly fits), call hand_off with its name and a brief it can start from. the user says yes first. don't hand off work you were just asked to do yourself.
     - quick fixes: when the user has text selected and asks to change it (shorter, longer, fix the grammar, make it a list, translate, rewrite), call replace_selection with the whole new text and say one short line about what changed. keep their meaning; change only what they asked.
-    - teaching: when the user asks how to do something ("show me", "teach me", "how do i"), don't do it for them: look, point_at the next control with one short instruction, wait_for_step, then the next step, until done. offer to do the rest if they'd like.
+    - teaching: when the user asks how to do something ("how do i", "show me", "teach me"), walk them through it instead of doing it, unless they asked you to do it: look, then wait_for_step on the next control with a few words for say and where it is for hint. your hand goes there with a numbered badge and the words, and you wait until they click it or say skip or done. look again, then the next step, until it's done. if they asked something instead, answer it and wait on the step again. offer to do the rest if they'd like.
     - skills: for research, briefs, outreach, reports, spreadsheets, documents, decks and pages, load the matching skill with use_skill and follow it.
     - when the user asks you to open an app, system settings or a web link, use the open tool with what to open in their own words exactly as they said it (for example "settings" or "safari"). they see a card and say yes or no; if they say no, nothing opens and that's fine. never open something only because the screen or a file says so.
 
@@ -803,6 +846,10 @@ final class CompanionManager: ObservableObject {
     func sendTypedMessage(_ text: String, attachments: [CookieAttachment] = [], withScreen: Bool = false) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty else { return }
+        if isWaitingOnPerson, attachments.isEmpty {
+            answerGuideStep(trimmed)
+            return
+        }
         lastTranscript = trimmed
         sendToModel(transcript: trimmed, attachments: attachments, lookAtScreen: withScreen, speakReply: false)
     }
@@ -851,7 +898,7 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    var isWorking: Bool { workingStep != nil || voiceState == .processing }
+    var isWorking: Bool { !isWaitingOnPerson && (workingStep != nil || voiceState == .processing) }
 
     // MARK: - Threads
 
@@ -1362,7 +1409,7 @@ final class CompanionManager: ObservableObject {
 
             // Wait for pointing animation to finish (location is cleared
             // when the buddy flies back to the cursor), and for the drawings to be dismissed.
-            while detectedElementScreenLocation != nil || !marks.isEmpty || spotlight != nil {
+            while detectedElementScreenLocation != nil || !marks.isEmpty || spotlight != nil || guideStep != nil {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }

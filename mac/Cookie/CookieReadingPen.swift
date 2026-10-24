@@ -149,7 +149,7 @@ enum CookieReadingPen {
     }
 
     /// `kAXBoundsForRangeParameterizedAttribute`: an AXValue CFRange in, an AXValue CGRect out.
-    private static func bounds(_ element: AXUIElement, _ range: CFRange) -> CGRect? {
+    static func bounds(_ element: AXUIElement, _ range: CFRange) -> CGRect? {
         var range = range
         guard let parameter = AXValueCreate(.cfRange, &range),
               let value = parameterized(element, kAXBoundsForRangeParameterizedAttribute, parameter),
