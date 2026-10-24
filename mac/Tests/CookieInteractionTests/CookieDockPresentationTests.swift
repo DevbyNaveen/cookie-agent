@@ -77,7 +77,7 @@ enum CookieDockPresentationTests {
 
     private static let entry = DockEntry(id: UUID(), agentID: nil, threadID: UUID(), status: "Speaking",
         step: "Your brief is ready. I’ve pulled together the key changes and three things to bring to tomorrow’s meeting.",
-        history: ["Read the latest company update", "Compared it with your meeting notes", "Prepared a one-page brief"], background: false)
+        history: ["Read the latest company update", "Compared it with your meeting notes", "Prepared a one-page brief"])
 
     private static func everyAnimationFrameClipsTheWholeSurface() {
         let geometry = CookieDockGeometry(availableSize: CGSize(width: 1440, height: 900))

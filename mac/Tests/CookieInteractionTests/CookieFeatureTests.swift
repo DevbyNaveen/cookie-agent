@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import Foundation
+import SwiftUI
 
 /// Place-bound Cookies, routines and watchers, writing grants, corrections, taught skills, what Cookie saw, and the sleeping face.
 @MainActor
@@ -14,7 +15,24 @@ enum CookieFeatureTests {
         testWhatCookieSawIsFoundByAFewWords()
         testTheFaceSleepsAndLooksWhereItPoints()
         testMarksAreReadFromTheReplyAndLandOnTheDisplay()
-        print("8 feature checks passed.")
+        testWordsOnTheOverlayStayWholeOnTheDisplay()
+        print("9 feature checks passed.")
+    }
+
+    private static func testWordsOnTheOverlayStayWholeOnTheDisplay() {
+        let area = CGRect(x: 12, y: 37, width: 1000, height: 700)
+        let pill = CGSize(width: 120, height: 20)
+        // Room on the right: leading edge at the point.
+        var placed = CookieOnScreen<EmptyView>.place(pill, at: CGPoint(x: 100, y: 300), side: .leading, flipX: 80, in: area)
+        precondition(placed.centre == CGPoint(x: 160, y: 300) && !placed.flipped)
+        // No room on the right: flips, trailing edge at flipX.
+        placed = CookieOnScreen<EmptyView>.place(pill, at: CGPoint(x: 950, y: 300), side: .leading, flipX: 930, in: area)
+        precondition(placed.centre == CGPoint(x: 870, y: 300) && placed.flipped)
+        // A note at the very bottom edge is lifted inside; nothing to flip to is nudged in.
+        placed = CookieOnScreen<EmptyView>.place(pill, at: CGPoint(x: 950, y: 745), side: .leading, flipX: nil, in: area)
+        precondition(placed.centre == CGPoint(x: area.maxX - 60, y: area.maxY - 10) && !placed.flipped)
+        placed = CookieOnScreen<EmptyView>.place(pill, at: CGPoint(x: 20, y: 0), side: .centre, flipX: nil, in: area)
+        precondition(placed.centre == CGPoint(x: area.minX + 60, y: area.minY + 10))
     }
 
     private static func testTheHotkeyGoesToTheCookieBoundToTheFrontApp() {

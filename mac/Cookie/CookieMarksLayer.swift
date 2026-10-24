@@ -42,6 +42,15 @@ struct CookieMarksLayer: View {
 
     private var mine: [CookieResolvedDrawing] { marks.filter { $0.displayFrame == screenFrame } }
 
+    /// Where words on a display may sit, in its overlay's coordinates (top-left origin): the
+    /// screen's visible frame (no menu bar, no Dock), 12 pt in from every edge.
+    static func visibleArea(of screenFrame: CGRect) -> CGRect {
+        let visible = NSScreen.screens.first { $0.frame == screenFrame }?.visibleFrame ?? screenFrame
+        return CGRect(x: visible.minX - screenFrame.minX, y: screenFrame.maxY - visible.maxY,
+                      width: visible.width, height: visible.height)
+            .insetBy(dx: 12, dy: 12)
+    }
+
     var body: some View {
         let now = clock.now
         ZStack {
@@ -67,7 +76,8 @@ struct CookieMarksLayer: View {
             }
             ForEach(mine) { mark in
                 let length = cache.strokes(for: mark, local: local).reduce(0) { $0 + $1.length }
-                MarkDecoration(mark: mark, local: local, progress: progress(of: mark, at: now, length: length))
+                MarkDecoration(mark: mark, local: local, progress: progress(of: mark, at: now, length: length),
+                               area: Self.visibleArea(of: screenFrame))
             }
             CookieInkClockDriver(clock: clock).frame(width: 1, height: 1)
         }
@@ -221,6 +231,8 @@ private struct MarkDecoration: View {
     let mark: CookieResolvedDrawing
     let local: (CGPoint) -> CGPoint
     var progress: Double
+    /// Labels, notes and numbers stay whole inside this (`CookieMarksLayer.visibleArea`).
+    let area: CGRect
 
     private let ink = CookieMarksLayer.ink
     private let onInk = CookieMarksLayer.onInk
@@ -231,72 +243,114 @@ private struct MarkDecoration: View {
         switch mark.geometry {
         case .circle(let rect):
             let topLeft = local(CGPoint(x: rect.minX, y: rect.maxY))
-            label(at: CGPoint(x: topLeft.x + rect.width + 8, y: topLeft.y - 6), leading: true)
+            label(at: CGPoint(x: topLeft.x + rect.width + 8, y: topLeft.y - 6), side: .leading, flipX: topLeft.x - 8)
         case .arrow(let from, let to):
             let a = local(from), b = local(to)
-            label(at: CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 16), leading: false)
-        case .underline(_, let to):
+            label(at: CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 16), side: .centre)
+        case .underline(let from, let to):
             let b = local(to)
-            label(at: CGPoint(x: b.x + 8, y: b.y), leading: true)
+            label(at: CGPoint(x: b.x + 8, y: b.y), side: .leading, flipX: local(from).x - 8)
         case .bracket(let x, let top, let bottom):
             let t = local(CGPoint(x: x, y: top)), b = local(CGPoint(x: x, y: bottom))
-            label(at: CGPoint(x: t.x - 10, y: (t.y + b.y) / 2), leading: false, trailing: true)
+            label(at: CGPoint(x: t.x - 10, y: (t.y + b.y) / 2), side: .trailing, flipX: t.x + 10)
         case .note(let point):
             let p = local(point)
-            notePill.position(x: p.x + 6, y: p.y).opacity(progress).scaleEffect(0.8 + 0.2 * progress, anchor: .leading)
+            CookieOnScreen(point: CGPoint(x: p.x + 6, y: p.y), side: .leading, flipX: p.x - 6, area: area) { flipped in
+                notePill(flipped: flipped)
+                    .scaleEffect(0.8 + 0.2 * progress, anchor: flipped ? .trailing : .leading)
+                    .opacity(progress)
+            }
         case .number(let point):
             let p = local(point)
-            ZStack {
-                Circle().fill(ink).frame(width: 24, height: 24)
-                Text(mark.text).font(.system(size: 12, weight: .bold, design: .rounded)).foregroundStyle(onInk)
+            CookieOnScreen(point: CGPoint(x: p.x - 2, y: p.y - 2), side: .centre, area: area) { _ in
+                ZStack {
+                    Circle().fill(ink).frame(width: 24, height: 24)
+                    Text(mark.text).font(.system(size: 12, weight: .bold, design: .rounded)).foregroundStyle(onInk)
+                }
+                .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
+                .scaleEffect(progress, anchor: .center)
+                .opacity(progress)
             }
-            .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
-            .position(x: p.x - 2, y: p.y - 2)
-            .scaleEffect(progress, anchor: .center)
-            .opacity(progress)
         }
     }
 
     @ViewBuilder
-    private func label(at point: CGPoint, leading: Bool, trailing: Bool = false) -> some View {
+    private func label(at point: CGPoint, side: CookieOnScreenSide, flipX: CGFloat? = nil) -> some View {
         if !mark.text.isEmpty {
-            Text(mark.text)
-                .font(.system(size: 11, weight: .semibold)).foregroundStyle(onInk)
-                .padding(.horizontal, 7).padding(.vertical, 3)
-                .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(ink))
-                .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
-                .fixedSize()
-                .modifier(Anchored(point: point, leading: leading, trailing: trailing))
-                .opacity(labelProgress)
+            CookieOnScreen(point: point, side: side, flipX: flipX, area: area) { _ in
+                CookieInkPill(text: mark.text).opacity(labelProgress)
+            }
         }
     }
 
-    private var notePill: some View {
+    /// The note's tick points back at its spot: on the leading side, or trailing once flipped.
+    private func notePill(flipped: Bool) -> some View {
         HStack(spacing: 6) {
-            Rectangle().fill(ink).frame(width: 14, height: 2)
+            if !flipped { Rectangle().fill(ink).frame(width: 14, height: 2) }
             Text(mark.text)
                 .font(.system(size: 11.5, weight: .medium)).foregroundStyle(onInk)
                 .padding(.horizontal, 8).padding(.vertical, 5)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(ink))
+            if flipped { Rectangle().fill(ink).frame(width: 14, height: 2) }
         }
         .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
         .fixedSize()
-        .modifier(Anchored(point: .zero, leading: true, trailing: false))
     }
 }
 
-/// Places a fixed-size view so its leading (or trailing, or centre) edge sits at a point.
-private struct Anchored: ViewModifier {
+/// Cookie's words in her ink: a mark's label, the hand's pill, what she points at.
+struct CookieInkPill: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold)).foregroundStyle(CookieMarksLayer.onInk)
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(CookieMarksLayer.ink))
+            .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
+            .fixedSize()
+    }
+}
+
+enum CookieOnScreenSide { case leading, trailing, centre }
+
+/// Places a view so its leading (or trailing, or centre) sits at a point, and keeps it whole inside
+/// `area`: when it would run off on the side it grows towards, it flips to the other side (its
+/// near edge at `flipX`; `content` is told, so a tick can turn round), then is nudged in.
+struct CookieOnScreen<Content: View>: View {
     let point: CGPoint
-    let leading: Bool
-    let trailing: Bool
+    var side: CookieOnScreenSide = .leading
+    var flipX: CGFloat? = nil
+    let area: CGRect
+    @ViewBuilder let content: (_ flipped: Bool) -> Content
     @State private var size: CGSize = .zero
 
-    func body(content: Content) -> some View {
-        content
+    var body: some View {
+        let placed = Self.place(size, at: point, side: side, flipX: flipX, in: area)
+        content(placed.flipped)
             .background(GeometryReader { geo in Color.clear.preference(key: SizePreferenceKey.self, value: geo.size) })
             .onPreferenceChange(SizePreferenceKey.self) { size = $0 }
-            .position(x: point.x + (leading ? size.width / 2 : trailing ? -size.width / 2 : 0), y: point.y)
+            .position(placed.centre)
+    }
+
+    /// The view's centre, and whether it flipped. Bigger than the area: pinned to its top-left.
+    static func place(_ size: CGSize, at point: CGPoint, side: CookieOnScreenSide, flipX: CGFloat?, in area: CGRect) -> (centre: CGPoint, flipped: Bool) {
+        let halfWidth = size.width / 2, halfHeight = size.height / 2
+        var x = point.x
+        var flipped = false
+        switch side {
+        case .leading:
+            x = point.x + halfWidth
+            if x + halfWidth > area.maxX, let flipX { x = flipX - halfWidth; flipped = true }
+        case .trailing:
+            x = point.x - halfWidth
+            if x - halfWidth < area.minX, let flipX { x = flipX + halfWidth; flipped = true }
+        case .centre:
+            break
+        }
+        x = max(area.minX + halfWidth, min(x, area.maxX - halfWidth))
+        let y = max(area.minY + halfHeight, min(point.y, area.maxY - halfHeight))
+        return (CGPoint(x: x, y: y), flipped)
     }
 }
 

@@ -102,7 +102,7 @@ final class NotchPanelManager {
         panel.orderFrontRegardless()
         installMonitors()
         applyPreferences()
-        agentDock = CookieAgentDock(companionManager: companionManager)
+        agentDock = CookieAgentDock()
         NotificationCenter.default.publisher(for: CookieAgentDock.openThread)
             .receive(on: RunLoop.main)
             .sink { [weak self] note in self?.openThread(note.object as? UUID) }

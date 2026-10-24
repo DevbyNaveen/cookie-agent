@@ -580,7 +580,7 @@ final class CookieCardPresenter {
     }
 
     /// Beside the marks when there are any (right, else left, else below or above them), else
-    /// beside the notch, hanging from the menu bar. Kept on the screen's visible area.
+    /// beside the notch, hanging from the menu bar. Kept 12 pt inside the screen's visible area.
     static func frame(for panelSize: CGSize, near region: (rect: CGRect, display: CGRect)?) -> CGRect {
         let margin = CookieCardView.shadowMargin
         let size = CGSize(width: panelSize.width - margin * 2, height: panelSize.height - margin * 2)
@@ -590,13 +590,13 @@ final class CookieCardPresenter {
         if let region {
             visible = NSScreen.screens.first { $0.frame == region.display }?.visibleFrame ?? region.display
             let area = region.rect
-            if area.maxX + gap + size.width <= visible.maxX - 8 {
+            if area.maxX + gap + size.width <= visible.maxX - 12 {
                 card = CGRect(x: area.maxX + gap, y: area.maxY - size.height, width: size.width, height: size.height)
-            } else if area.minX - gap - size.width >= visible.minX + 8 {
+            } else if area.minX - gap - size.width >= visible.minX + 12 {
                 card = CGRect(x: area.minX - gap - size.width, y: area.maxY - size.height, width: size.width, height: size.height)
             } else {
                 let below = area.minY - gap - size.height
-                card = CGRect(x: area.midX - size.width / 2, y: below >= visible.minY + 8 ? below : area.maxY + gap,
+                card = CGRect(x: area.midX - size.width / 2, y: below >= visible.minY + 12 ? below : area.maxY + gap,
                               width: size.width, height: size.height)
             }
         } else {
@@ -606,11 +606,11 @@ final class CookieCardPresenter {
             if screen.safeAreaInsets.top > 0, let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
                 notchWidth = screen.frame.width - left.width - right.width
             }
-            card = CGRect(x: screen.frame.midX + notchWidth / 2 + 16, y: visible.maxY - 8 - size.height,
+            card = CGRect(x: screen.frame.midX + notchWidth / 2 + 16, y: visible.maxY - 12 - size.height,
                           width: size.width, height: size.height)
         }
-        card.origin.x = min(max(card.minX, visible.minX + 8), visible.maxX - 8 - card.width)
-        card.origin.y = min(max(card.minY, visible.minY + 8), visible.maxY - 8 - card.height)
+        card.origin.x = min(max(card.minX, visible.minX + 12), visible.maxX - 12 - card.width)
+        card.origin.y = min(max(card.minY, visible.minY + 12), visible.maxY - 12 - card.height)
         return card.insetBy(dx: -margin, dy: -margin)
     }
 

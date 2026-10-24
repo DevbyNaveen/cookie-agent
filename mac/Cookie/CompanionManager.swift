@@ -301,12 +301,17 @@ final class CompanionManager: ObservableObject {
             guard self.permissionCenter.isAllowed(.screen) else { return }
             self.lastCaptureAt = Date()
             self.regionCaptureTask?.cancel()
-            self.regionCaptureTask = Task { (await withDeadline(seconds: 8) { try await CompanionScreenCaptureUtility.captureRegionAsJPEG(rect) }) ?? nil }
+            self.regionCaptureTask = Task {
+                await withDeadline(seconds: 8) { () async -> Result<CompanionScreenCaptureUtility.RedactedJPEG?, Error> in
+                    do { return .success(try await CompanionScreenCaptureUtility.captureRegionAsJPEG(rect)) }
+                    catch { return .failure(error) }
+                }
+            }
         }
         return controller
     }()
     /// The circled area, captured in memory and waiting for the next question.
-    private var regionCaptureTask: Task<(data: Data, hiddenItems: Int)?, Never>?
+    private var regionCaptureTask: Task<Result<CompanionScreenCaptureUtility.RedactedJPEG?, Error>?, Never>?
     /// When Cookie last took a picture of the screen; the notch flashes so you always know.
     @Published private(set) var lastCaptureAt: Date?
 
@@ -1097,6 +1102,8 @@ final class CompanionManager: ObservableObject {
                     case .success(let captures)?:
                         screenCaptures = captures
                         lastCaptureAt = Date()
+                    // Never sent unchecked: Cookie answers from the words and says why it didn't look.
+                    case .failure(let error as Redactor.Unchecked)?: refusal = error.localizedDescription
                     case .failure(let error)?: throw error
                     case nil: refusal = "Taking a picture of your screen took too long"
                     }
@@ -1118,6 +1125,7 @@ final class CompanionManager: ObservableObject {
                     }
                 }
                 var hiddenItems = screenCaptures.reduce(0) { $0 + $1.hiddenItems }
+                var facesUnchecked = screenCaptures.contains { $0.facesUnchecked }
                 if let regionTask = regionCaptureTask {
                     regionCaptureTask = nil
                     let region = await withTaskCancellationHandler {
@@ -1125,10 +1133,17 @@ final class CompanionManager: ObservableObject {
                     } onCancel: {
                         regionTask.cancel()
                     }
-                    if refusal == nil, let region {
-                        labeledImages.insert((data: region.data, label: "UNTRUSTED screen content — the area the user circled on screen, this is what they are asking about"), at: 0)
-                        hiddenItems += region.hiddenItems
-                        finishStep("Looked at the area you circled")
+                    if refusal == nil {
+                        switch region {
+                        case .success(let region?)?:
+                            labeledImages.insert((data: region.data, label: "UNTRUSTED screen content — the area the user circled on screen, this is what they are asking about"), at: 0)
+                            hiddenItems += region.hiddenItems
+                            facesUnchecked = facesUnchecked || region.facesUnchecked
+                            finishStep("Looked at the area you circled")
+                        case .failure(let error as Redactor.Unchecked)?:
+                            finishStep("Didn't send the area you circled. \(error.localizedDescription)")
+                        default: break
+                        }
                     }
                 }
                 try Task.checkCancellation()
@@ -1139,6 +1154,9 @@ final class CompanionManager: ObservableObject {
                 }
                 if hiddenItems > 0 {
                     steps.append(CookieStep(title: "Hid \(hiddenItems) private \(hiddenItems == 1 ? "item" : "items") before sending", seconds: 0))
+                }
+                if facesUnchecked {
+                    steps.append(CookieStep(title: "Couldn't check the screenshot for faces, so none were blurred", seconds: 0))
                 }
                 workingStep = "Thinking"
                 if let note = harness.takeRestartNote() {
@@ -1219,6 +1237,7 @@ final class CompanionManager: ObservableObject {
                 // Tags come out of the words, each kept with its place in them: marks and the
                 // pointer happen as the voice reaches that place.
                 let tagged = CookieReplyTags.split(fullResponseText)
+                print("🧾 Reply after \(String(format: "%.1f", Date().timeIntervalSince(startedAt))) s, tags: \(tagged.tags.map { "\($0.kind)@\($0.offset):\($0.body.prefix(80))" })")
                 let nextSteps = Self.nextSteps(from: tagged.tags)
                 let drawnMarks = Array(tagged.tags.compactMap(CookieDrawing.init(tag:)).prefix(CookieDrawing.maxMarks))
                 let parseResult = tagged.tags.last { $0.kind == "POINT" }.map(Self.parsePointing) ?? .noTag
@@ -1288,8 +1307,10 @@ final class CompanionManager: ObservableObject {
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
                 }
-                let point = { [pointAt] in
+                let point = { [pointAt, label = parseResult.elementLabel] in
                     guard let pointAt else { return }
+                    // The hand's label is only ever what the model named; no label, no words.
+                    self.detectedElementBubbleText = label
                     self.detectedElementScreenLocation = pointAt.location
                     self.detectedElementDisplayFrame = pointAt.display
                 }
@@ -1339,6 +1360,7 @@ final class CompanionManager: ObservableObject {
                     workingStep = "Preparing voice"
                     // The response task already holds self; a weak capture here would only differ from it.
                     await elevenLabsTTSClient.speakText(spokenText, onPlaybackStarted: {
+                        print("🔊 First sound after \(String(format: "%.1f", Date().timeIntervalSince(startedAt))) s")
                         heard = true
                         self.workingStep = nil
                         self.voiceState = .responding

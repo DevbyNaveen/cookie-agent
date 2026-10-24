@@ -180,14 +180,9 @@ enum CookieReadingPen {
 
     // MARK: The screenshot (Vision)
 
-    /// Text lines read from a screenshot. Accurate recognition: its boxes are word-precise.
+    /// Text lines read from a screenshot, accurate (word-precise boxes) once the model is warm.
     private static func recognize(_ capture: CompanionScreenCapture) -> [VNRecognizedText] {
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = false
-        let handler = VNImageRequestHandler(data: capture.imageData, options: [:])
-        guard (try? handler.perform([request])) != nil else { return [] }
-        return (request.results ?? []).compactMap { $0.topCandidates(1).first }
+        (try? CookieVisionText.recognize(VNImageRequestHandler(data: capture.imageData, options: [:]))) ?? []
     }
 
     /// Each place the phrase is in a screenshot's text, read across line breaks, as one AppKit rect

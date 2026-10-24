@@ -127,13 +127,6 @@ struct SizePreferenceKey: PreferenceKey {
     }
 }
 
-struct NavigationBubbleSizePreferenceKey: PreferenceKey {
-    static var defaultValue: CGSize = .zero
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
-        value = nextValue()
-    }
-}
-
 /// The buddy's behavioral mode. Controls whether it follows the cursor,
 /// is flying toward a detected UI element, or is pointing at an element.
 enum BuddyNavigationMode {
@@ -141,7 +134,7 @@ enum BuddyNavigationMode {
     case followingCursor
     /// Buddy is animating toward a detected UI element location
     case navigatingToTarget
-    /// Buddy has arrived at the target and is pointing at it with a speech bubble
+    /// Buddy has arrived at the target and is pointing at it, its label beside the hand
     case pointingAtTarget
     /// Cookie's hand at work: the tip rides the pen while a mark is inked, or rests on a card or
     /// scene as it opens. Its position is set directly (no spring), frame by frame.
@@ -292,10 +285,9 @@ struct BlueCursorView: View {
     /// Changes to face the direction of travel when navigating to a target.
     @State private var triangleRotationDegrees: Double = -35.0
 
-    /// Speech bubble text shown when pointing at a detected element.
+    /// What Cookie points at, in her ink beside the hand; only when the model named it.
     @State private var navigationBubbleText: String = ""
     @State private var navigationBubbleOpacity: Double = 0.0
-    @State private var navigationBubbleSize: CGSize = .zero
 
     /// The cursor position at the moment navigation started, used to detect
     /// if the user moves the cursor enough to cancel the navigation.
@@ -310,10 +302,6 @@ struct BlueCursorView: View {
     /// an energetic "swooping" feel.
     @State private var buddyFlightScale: CGFloat = 1.0
 
-    /// Scale factor for the navigation speech bubble's pop-in entrance.
-    /// Starts at 0.5 and springs to 1.0 when the first character appears.
-    @State private var navigationBubbleScale: CGFloat = 1.0
-
     /// True when the buddy is flying BACK to the cursor after pointing.
     /// Only during the return flight can cursor movement cancel the animation.
     @State private var isReturningToCursor: Bool = false
@@ -324,15 +312,6 @@ struct BlueCursorView: View {
     private let onboardingVideoPlayerHeight: CGFloat = 186
 
     private let fullWelcomeMessage = "hey! i'm cookie"
-
-    private let navigationPointerPhrases = [
-        "right here!",
-        "this one!",
-        "over here!",
-        "click this!",
-        "here it is!",
-        "found it!"
-    ]
 
     var body: some View {
         ZStack {
@@ -432,40 +411,11 @@ struct BlueCursorView: View {
                     }
             }
 
-            // Navigation pointer bubble — shown when buddy arrives at a detected element.
-            // Pops in with a scale-bounce (0.5x → 1.0x spring) and a bright initial
-            // glow that settles, creating a "materializing" effect.
+            // What Cookie points at, named by the model, in her ink beside the hand and on screen.
             if buddyNavigationMode == .pointingAtTarget && !navigationBubbleText.isEmpty {
-                Text(navigationBubbleText)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.overlayCursorBlue)
-                            .shadow(
-                                color: DS.Colors.overlayCursorBlue.opacity(0.5 + (1.0 - navigationBubbleScale) * 1.0),
-                                radius: 6 + (1.0 - navigationBubbleScale) * 16,
-                                x: 0, y: 0
-                            )
-                    )
-                    .fixedSize()
-                    .overlay(
-                        GeometryReader { geo in
-                            Color.clear
-                                .preference(key: NavigationBubbleSizePreferenceKey.self, value: geo.size)
-                        }
-                    )
-                    .scaleEffect(navigationBubbleScale)
+                CookieHandPill(text: navigationBubbleText, hand: cursorPosition, area: CookieMarksLayer.visibleArea(of: screenFrame))
                     .opacity(navigationBubbleOpacity)
-                    .position(x: cursorPosition.x + 10 + (navigationBubbleSize.width / 2), y: cursorPosition.y + 18)
-                    .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-                    .animation(.spring(response: 0.4, dampingFraction: 0.6), value: navigationBubbleScale)
                     .animation(.easeOut(duration: 0.5), value: navigationBubbleOpacity)
-                    .onPreferenceChange(NavigationBubbleSizePreferenceKey.self) { newSize in
-                        navigationBubbleSize = newSize
-                    }
             }
 
             // Blue triangle cursor — shown when idle or while TTS is playing (responding).
@@ -498,8 +448,7 @@ struct BlueCursorView: View {
 
             // What the hand is doing ("Clicking Save") or what the person should do next.
             if handHold == .act || handHold == .guide, !handLabel.isEmpty {
-                CookieHandPill(text: handLabel)
-                    .position(x: cursorPosition.x + 12, y: cursorPosition.y + 22)
+                CookieHandPill(text: handLabel, hand: cursorPosition, area: CookieMarksLayer.visibleArea(of: screenFrame))
                     .animation(.spring(response: 0.3, dampingFraction: 0.85), value: cursorPosition)
                     .transition(.opacity)
             }
@@ -930,67 +879,23 @@ struct BlueCursorView: View {
         }
     }
 
-    /// Transitions to pointing mode — shows a speech bubble with a bouncy
-    /// scale-in entrance and variable-speed character streaming.
+    /// Transitions to pointing mode: the label the model gave, if any, beside the hand for 3 s,
+    /// then back to the cursor.
     private func startPointingAtElement() {
         buddyNavigationMode = .pointingAtTarget
 
         // Rotate back to default pointer angle now that we've arrived
         triangleRotationDegrees = -35.0
 
-        // Reset navigation bubble state — start small for the scale-bounce entrance
-        navigationBubbleText = ""
+        navigationBubbleText = companionManager.detectedElementBubbleText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         navigationBubbleOpacity = 1.0
-        navigationBubbleSize = .zero
-        navigationBubbleScale = 0.5
-
-        // Use custom bubble text from the companion manager (e.g. onboarding demo)
-        // if available, otherwise fall back to a random pointer phrase
-        let pointerPhrase = companionManager.detectedElementBubbleText
-            ?? navigationPointerPhrases.randomElement()
-            ?? "right here!"
-
-        streamNavigationBubbleCharacter(phrase: pointerPhrase, characterIndex: 0) {
-            // All characters streamed — hold for 3 seconds, then fly back
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            guard self.buddyNavigationMode == .pointingAtTarget else { return }
+            self.navigationBubbleOpacity = 0.0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 guard self.buddyNavigationMode == .pointingAtTarget else { return }
-                self.navigationBubbleOpacity = 0.0
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    guard self.buddyNavigationMode == .pointingAtTarget else { return }
-                    self.startFlyingBackToCursor()
-                }
+                self.startFlyingBackToCursor()
             }
-        }
-    }
-
-    /// Streams the navigation bubble text one character at a time with variable
-    /// delays (30–60ms) for a natural "speaking" rhythm.
-    private func streamNavigationBubbleCharacter(
-        phrase: String,
-        characterIndex: Int,
-        onComplete: @escaping () -> Void
-    ) {
-        guard buddyNavigationMode == .pointingAtTarget else { return }
-        guard characterIndex < phrase.count else {
-            onComplete()
-            return
-        }
-
-        let charIndex = phrase.index(phrase.startIndex, offsetBy: characterIndex)
-        navigationBubbleText.append(phrase[charIndex])
-
-        // On the first character, trigger the scale-bounce entrance
-        if characterIndex == 0 {
-            navigationBubbleScale = 1.0
-        }
-
-        let characterDelay = Double.random(in: 0.03...0.06)
-        DispatchQueue.main.asyncAfter(deadline: .now() + characterDelay) {
-            self.streamNavigationBubbleCharacter(
-                phrase: phrase,
-                characterIndex: characterIndex + 1,
-                onComplete: onComplete
-            )
         }
     }
 
@@ -1016,7 +921,6 @@ struct BlueCursorView: View {
         navigationAnimationTimer = nil
         navigationBubbleText = ""
         navigationBubbleOpacity = 0.0
-        navigationBubbleScale = 1.0
         buddyFlightScale = 1.0
         finishNavigationAndResumeFollowing()
     }
@@ -1031,7 +935,6 @@ struct BlueCursorView: View {
         buddyFlightScale = 1.0
         navigationBubbleText = ""
         navigationBubbleOpacity = 0.0
-        navigationBubbleScale = 1.0
         companionManager.clearDetectedElementLocation()
     }
 
@@ -1067,20 +970,19 @@ struct BlueCursorView: View {
 
 // MARK: - Cookie's hand at work
 
-/// The words beside the hand, in Cookie's ink, its leading edge just right of the tip.
+/// The words beside the hand, in Cookie's ink: leading edge just right of the tip, or left of the
+/// hand when that would run off the display; always whole inside its visible area.
 private struct CookieHandPill: View {
     let text: String
+    /// The hand's position in the overlay.
+    let hand: CGPoint
+    let area: CGRect
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 11, weight: .semibold)).foregroundStyle(CookieMarksLayer.onInk)
-            .padding(.horizontal, 7).padding(.vertical, 3)
-            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(CookieMarksLayer.ink))
-            .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
-            .fixedSize()
-            // A zero-width frame aligned leading: the pill grows rightward from the position.
-            .frame(width: 0, height: 0, alignment: .leading)
-            .allowsHitTesting(false)
+        CookieOnScreen(point: CGPoint(x: hand.x + 12, y: hand.y + 22), side: .leading, flipX: hand.x - 12, area: area) { _ in
+            CookieInkPill(text: text)
+        }
+        .allowsHitTesting(false)
     }
 }
 

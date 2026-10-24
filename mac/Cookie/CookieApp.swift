@@ -39,6 +39,8 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
+        // Vision's accurate text model takes seconds to load; it loads now, not on the first question.
+        CookieVisionText.warmUp()
         CookieAnalytics.configure()
         CookieAnalytics.trackAppOpened()
 

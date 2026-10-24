@@ -21,6 +21,8 @@ struct CompanionScreenCapture {
     let screenshotHeightInPixels: Int
     /// Private items blacked out or blurred on this Mac before upload.
     let hiddenItems: Int
+    /// Face detection failed on this picture: its text was checked, faces weren't blurred.
+    var facesUnchecked = false
 }
 
 @MainActor
@@ -118,7 +120,8 @@ enum CompanionScreenCaptureUtility {
                 displayFrame: displayFrame,
                 screenshotWidthInPixels: configuration.width,
                 screenshotHeightInPixels: configuration.height,
-                hiddenItems: redacted.hiddenItems
+                hiddenItems: redacted.hiddenItems,
+                facesUnchecked: redacted.facesUnchecked
             ))
         }
 
@@ -133,7 +136,7 @@ enum CompanionScreenCaptureUtility {
     /// Captures one rectangle of the screen (global AppKit coordinates, the
     /// area the user circled) as JPEG. Cookie's own windows are left out, so
     /// the magic trail never shows up in the picture. Kept in memory only.
-    static func captureRegionAsJPEG(_ globalRect: CGRect) async throws -> (data: Data, hiddenItems: Int)? {
+    static func captureRegionAsJPEG(_ globalRect: CGRect) async throws -> RedactedJPEG? {
         try Task.checkCancellation()
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         try Task.checkCancellation()
@@ -161,17 +164,20 @@ enum CompanionScreenCaptureUtility {
         return try await encodeRedactedJPEG(cgImage, quality: 0.85)
     }
 
+    typealias RedactedJPEG = (data: Data, hiddenItems: Int, facesUnchecked: Bool)
+
     /// Vision OCR and JPEG encoding are synchronous CPU work; never run them on the UI/event-tap thread.
-    nonisolated private static func encodeRedactedJPEG(_ image: CGImage, quality: Double) async throws -> (data: Data, hiddenItems: Int) {
+    /// Throws `Redactor.Unchecked` when the picture couldn't be checked: it is never sent unchecked.
+    nonisolated private static func encodeRedactedJPEG(_ image: CGImage, quality: Double) async throws -> RedactedJPEG {
         let worker = Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
-            let redacted = Redactor.redact(image)
+            let redacted = try Redactor.redact(image)
             try Task.checkCancellation()
             guard let data = NSBitmapImageRep(cgImage: redacted.image)
                 .representation(using: .jpeg, properties: [.compressionFactor: quality]) else {
                 throw NSError(domain: "CompanionScreenCapture", code: -3)
             }
-            return (data: data, hiddenItems: redacted.hiddenText + redacted.blurredFaces)
+            return (data: data, hiddenItems: redacted.hiddenText + redacted.blurredFaces, facesUnchecked: redacted.facesUnchecked)
         }
         return try await withTaskCancellationHandler {
             try await worker.value
