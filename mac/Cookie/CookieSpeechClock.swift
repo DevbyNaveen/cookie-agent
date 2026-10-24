@@ -8,8 +8,9 @@
 import Foundation
 
 /// The one clock both voices feed: ElevenLabs from its per-character start
-/// times against the audio player's position, the Mac's voice from
-/// `AVSpeechSynthesizer`'s `willSpeakRangeOfSpeechString` word callbacks.
+/// times (streamed with each audio chunk) against the audio player's position,
+/// the Mac's voice from `AVSpeechSynthesizer`'s `willSpeakRangeOfSpeechString`
+/// word callbacks. A streamed reply's text grows while it is spoken (`setText`).
 ///
 /// Offsets are UTF-16 offsets into the text being spoken (`NSString`/`NSRange`
 /// units — what the synthesizer reports), so a parser that strips tags from a
@@ -18,8 +19,8 @@ import Foundation
 /// Use it to do something when speech reaches a place in the text, for example
 /// draw a mark as the word naming it is said:
 ///
-///     speaker.speakText(spoken, onPlaybackStarted: {
-///         for mark in marks { clock.schedule(atOffset: mark.offset) { show(mark) } }
+///     speaker.beginReply(onTags: { tags in
+///         for mark in marks(tags) { clock.schedule(atOffset: mark.offset) { show(mark) } }
 ///     })
 ///
 /// - `schedule(atOffset:_:)` runs the action on the main actor once
@@ -30,9 +31,10 @@ import Foundation
 ///   offset order (the last word's start is the last offset a voice reports).
 /// - When speech is stopped or interrupted (Stop, Escape, the hotkey pressed
 ///   to talk over Cookie, a new reply), every waiting action is dropped.
-/// - Anything scheduled while nothing is speaking waits for the next speech;
-///   `CookieSpeaker.speakText` stops the previous speech first, which drops it,
-///   so schedule from `onPlaybackStarted` (the clock has begun by then) or later.
+/// - Anything scheduled while nothing is speaking waits for the speech to begin;
+///   `CookieSpeaker.beginReply` stops the previous speech first, which drops it,
+///   so schedule after `beginReply` (a streamed reply's tags arrive before its
+///   first sound) or from `onPlaybackStarted`.
 ///
 /// The voice reports about 60 times a second (ElevenLabs) or once a word
 /// (the Mac's voice); `spokenOffset` only moves forward.
@@ -84,6 +86,12 @@ final class CookieSpeechClock {
         spokenOffset = 0
         progress = 0
         runWaiting(through: 0)
+    }
+
+    /// More of the reply's words arrived while it is being spoken.
+    func setText(_ text: String) {
+        guard isSpeaking else { return }
+        self.text = text
     }
 
     func advance(toOffset offset: Int, progress: Double) {

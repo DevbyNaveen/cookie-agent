@@ -657,6 +657,9 @@ final class CompanionManager: ObservableObject {
 
             CookieAnalytics.trackPushToTalkStarted()
 
+            // A spoken answer is coming: its voice opens its stream now, too.
+            if !answersStep, transcriptInterceptor == nil { elevenLabsTTSClient.prepare() }
+
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = Task {
                 await buddyDictationManager.startPushToTalkFromKeyboardShortcut(
@@ -1229,8 +1232,74 @@ final class CompanionManager: ObservableObject {
                               displayFrame: $0.displayFrame, isCursorScreen: $0.isCursorScreen)
                 }
                 defer { MacOperator.shared.endRun() }
+
+                // The reply's marks, spotlights and pointer, placed as their tags settle: spoken,
+                // each goes on the speech clock at its word while the rest is still being written;
+                // typed (or a voice that never starts), they all show once the reply is in.
+                var placedMarks: [CookieResolvedDrawing] = []
+                var placedFocuses: [(offset: Int, region: CookieSpotlight)] = []
+                var placedPoints: [(offset: Int, show: @MainActor () -> Void)] = []
+                var pointedLabel: String?
+                @MainActor func place(_ tags: [CookieReplyTag]) {
+                    let room = CookieDrawing.maxMarks - placedMarks.count
+                    let drawings = Array(tags.compactMap(CookieDrawing.init(tag:)).prefix(max(0, room)))
+                    let marks = drawings.isEmpty ? [] : CookieDrawingResolver.resolve(
+                        drawings, captures: screenCaptures, elementFrame: { MacOperator.shared.frameOfElement($0) })
+                    let focuses = tags.compactMap(CookieFocus.init(tag:)).compactMap { focus in
+                        CookieDrawingResolver.spotlight(focus, captures: screenCaptures, elementFrame: { MacOperator.shared.frameOfElement($0) })
+                            .map { (offset: focus.offset, region: $0) }
+                    }
+                    var points: [(offset: Int, show: @MainActor () -> Void)] = []
+                    for tag in tags where tag.kind == "POINT" {
+                        let parsed = Self.parsePointing(tag)
+                        guard let coordinate = parsed.coordinate,
+                              let capture = CookieDrawingResolver.capture(screen: parsed.screenNumber, in: screenCaptures) else { continue }
+                        // Claude's coordinates are in the screenshot's pixel space (top-left origin),
+                        // scaled to the display's points and flipped to AppKit global, as marks are.
+                        let location = CookieDrawingResolver.global(coordinate, in: capture)
+                        let display = capture.displayFrame
+                        let label = parsed.elementLabel
+                        pointedLabel = label ?? pointedLabel ?? "it"
+                        CookieAnalytics.trackElementPointed(elementLabel: label)
+                        points.append((parsed.offset, {
+                            // The hand's label is only ever what the model named; no label, no words.
+                            self.detectedElementBubbleText = label
+                            self.detectedElementScreenLocation = location
+                            self.detectedElementDisplayFrame = display
+                        }))
+                    }
+                    placedMarks += marks
+                    placedFocuses += focuses
+                    placedPoints += points
+                    guard speakReply else { return }
+                    for mark in marks {
+                        markSchedules.append(speechClock.schedule(atOffset: mark.offset) { self.revealMark(mark) })
+                    }
+                    for focus in focuses {
+                        markSchedules.append(speechClock.schedule(atOffset: focus.offset) { self.focus(focus.region) })
+                    }
+                    for point in points {
+                        markSchedules.append(speechClock.schedule(atOffset: point.offset, point.show))
+                    }
+                }
+
+                // Spoken: one stream for the whole reply, fed as the model writes.
+                var heard = false
+                var streamedReply = ""
+                if speakReply {
+                    elevenLabsTTSClient.beginReply(
+                        onPlaybackStarted: {
+                            heard = true
+                            timing.mark(.firstAudio)
+                            if self.workingStep == "Preparing voice" { self.workingStep = nil }
+                            self.voiceState = .responding
+                        },
+                        onFirstWords: { timing.mark(.firstSpeakable) },
+                        onTags: { tags in place(tags) })
+                }
+
                 timing.mark(.requestSent)
-                let fullResponseText = try await harness.run(
+                let answer = try await harness.run(
                     model: model, input: input,
                     instructions: Self.companionVoiceResponseSystemPrompt + Self.agentBrief(CookieAgentStore.shared.agent(threads.first { $0.id == threadID }?.agentID)),
                     images: images,
@@ -1238,7 +1307,9 @@ final class CompanionManager: ObservableObject {
                     onText: { text in
                         timing.mark(.firstToken)
                         timing.closeToolRound()
+                        streamedReply = text
                         self.streamingText = Self.visibleReply(text)
+                        if speakReply { self.elevenLabsTTSClient.update(text) }
                     },
                     onStep: { step in
                         self.workingStep = step
@@ -1266,27 +1337,28 @@ final class CompanionManager: ObservableObject {
                         }
                         self.pendingApproval = approval
                     },
-                    onToolStarted: { timing.toolStarted() }
+                    onToolStarted: {
+                        timing.toolStarted()
+                        if speakReply { self.elevenLabsTTSClient.toolStarted() }
+                    }
                 )
 
                 guard !Task.isCancelled else { return }
 
                 finishStep("Thought it through")
+                // Spoken, the reply is everything the voice was given (words before a tool round
+                // included: they were heard); typed, it is the model's answer.
+                let fullResponseText = speakReply && !streamedReply.isEmpty ? streamedReply : answer
+                // The last words go to the voice, and the last tags settle (and are placed).
+                if speakReply { elevenLabsTTSClient.finishReply(fullResponseText) }
                 // Tags come out of the words, each kept with its place in them: marks and the
                 // pointer happen as the voice reaches that place.
                 let tagged = CookieReplyTags.split(fullResponseText)
+                if !speakReply { place(tagged.tags) }
                 let nextSteps = Self.nextSteps(from: tagged.tags)
-                let drawnMarks = Array(tagged.tags.compactMap(CookieDrawing.init(tag:)).prefix(CookieDrawing.maxMarks))
-                let parseResult = tagged.tags.last { $0.kind == "POINT" }.map(Self.parsePointing) ?? .noTag
                 let spokenText = tagged.spoken
-                let resolvedMarks = drawnMarks.isEmpty ? [] : CookieDrawingResolver.resolve(
-                    drawnMarks, captures: screenCaptures, elementFrame: { MacOperator.shared.frameOfElement($0) })
-                if !resolvedMarks.isEmpty { finishStep("Drew on your screen") }
-                let focuses = tagged.tags.compactMap(CookieFocus.init(tag:)).compactMap { focus in
-                    CookieDrawingResolver.spotlight(focus, captures: screenCaptures, elementFrame: { MacOperator.shared.frameOfElement($0) })
-                        .map { (offset: focus.offset, region: $0) }
-                }
-                // The words to underline are found while the voice is prepared. Never in an app
+                if !placedMarks.isEmpty { finishStep("Drew on your screen") }
+                // The words to underline are found while the voice speaks. Never in an app
                 // Cookie doesn't read, or while a password is being typed.
                 let readPhrases = CookieReadingPen.phrases(in: tagged.tags)
                 let readApp: pid_t? = {
@@ -1309,48 +1381,9 @@ final class CompanionManager: ObservableObject {
                 // A scene is the reply's one picture: with one, cards are left out (they'd share the spot).
                 let scene = tagged.tags.lazy.compactMap(CookieScene.init(tag:)).first
                 let cards = scene != nil ? [] : tagged.tags.compactMap(CookieCard.init(tag:))
-                let cardRegion = CookieCardPresenter.region(of: resolvedMarks)
+                let cardRegion = CookieCardPresenter.region(of: placedMarks)
                 if !cards.isEmpty { finishStep("Made a card") }
                 if scene != nil { finishStep("Built a model") }
-
-                // Handle element pointing if Claude returned coordinates.
-                // Switch to idle BEFORE setting the location so the triangle
-                // becomes visible and can fly to the target. Without this, the
-                // spinner hides the triangle and the flight animation is invisible.
-                let hasPointCoordinate = parseResult.coordinate != nil
-                if hasPointCoordinate {
-                    voiceState = .idle
-                }
-
-                // Pick the screen capture matching Claude's screen number,
-                // falling back to the cursor screen if not specified.
-                let targetScreenCapture: CompanionScreenCapture? = {
-                    if let screenNumber = parseResult.screenNumber,
-                       screenNumber >= 1 && screenNumber <= screenCaptures.count {
-                        return screenCaptures[screenNumber - 1]
-                    }
-                    return screenCaptures.first(where: { $0.isCursorScreen })
-                }()
-
-                var pointAt: (location: CGPoint, display: CGRect)?
-                if let pointCoordinate = parseResult.coordinate,
-                   let targetScreenCapture {
-                    // Claude's coordinates are in the screenshot's pixel space
-                    // (top-left origin, e.g. 1280x831), scaled to the display's
-                    // points and flipped to AppKit global, as marks are.
-                    pointAt = (CookieDrawingResolver.global(pointCoordinate, in: targetScreenCapture), targetScreenCapture.displayFrame)
-                    CookieAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
-                    print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
-                } else {
-                    print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
-                }
-                let point = { [pointAt, label = parseResult.elementLabel] in
-                    guard let pointAt else { return }
-                    // The hand's label is only ever what the model named; no label, no words.
-                    self.detectedElementBubbleText = label
-                    self.detectedElementScreenLocation = pointAt.location
-                    self.detectedElementDisplayFrame = pointAt.display
-                }
 
                 // Save this exchange to conversation history (with the point tag
                 // stripped so it doesn't confuse future context)
@@ -1365,9 +1398,8 @@ final class CompanionManager: ObservableObject {
                     conversationHistory.removeFirst(conversationHistory.count - 10)
                 }
 
-                print("🧠 Conversation history: \(conversationHistory.count) exchanges")
-                if parseResult.coordinate != nil {
-                    steps.append(CookieStep(title: "Pointed at \(parseResult.elementLabel ?? "it")", seconds: 0))
+                if let pointedLabel {
+                    steps.append(CookieStep(title: "Pointed at \(pointedLabel)", seconds: 0))
                 }
                 CookieSounds.play(.done)
                 let reply = CompanionChatMessage(
@@ -1389,60 +1421,43 @@ final class CompanionManager: ObservableObject {
 
                 CookieAnalytics.trackAIResponseReceived(response: spokenText)
 
-                // Play the response via TTS. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
+                // Spoken: the reply plays to its end (it may have started long ago); its cards, scene
+                // and reading lines go on the clock now, at their words, or at once if already passed.
                 // A typed question gets a written answer: Cookie speaks only when you talked.
-                var heard = false
                 if speakReply, !spokenText.isEmpty {
-                    workingStep = "Preparing voice"
-                    timing.mark(.firstSpeakable)
-                    // The response task already holds self; a weak capture here would only differ from it.
-                    await elevenLabsTTSClient.speakText(spokenText, onPlaybackStarted: {
-                        timing.mark(.firstAudio)
-                        heard = true
-                        self.workingStep = nil
-                        self.voiceState = .responding
-                        // Each mark, and the pointer, on the word it was written at. Speech
-                        // stopped or talked over drops whatever it hasn't reached yet.
-                        for mark in resolvedMarks {
-                            self.markSchedules.append(self.speechClock.schedule(atOffset: mark.offset) { self.revealMark(mark) })
-                        }
-                        for focus in focuses {
-                            self.markSchedules.append(self.speechClock.schedule(atOffset: focus.offset) { self.focus(focus.region) })
-                        }
-                        // The pen reads each line as the voice reaches its words; if finding them took
-                        // longer than the voice, from here on. Not if this reply's voice already stopped.
-                        if let reading {
-                            Task {
-                                let lines = await reading.value
-                                guard self.speechClock.isSpeaking, self.speechClock.text == spokenText else { return }
-                                for line in lines {
-                                    self.markSchedules.append(self.speechClock.schedule(atOffset: line.offset) { self.revealMark(line) })
-                                }
+                    if !heard { workingStep = "Preparing voice" }
+                    if !cards.isEmpty {
+                        cardPresenter.schedule(cards, spoken: spokenText, near: cardRegion, clock: speechClock)
+                    }
+                    if let scene {
+                        scenePresenter.schedule(scene, spoken: spokenText, near: cardRegion, clock: speechClock)
+                    }
+                    // The pen reads each line as the voice reaches its words; if finding them took
+                    // longer than the voice, from here on. Not if this reply's voice already stopped.
+                    if let reading {
+                        Task {
+                            let lines = await reading.value
+                            guard self.elevenLabsTTSClient.isActive, self.elevenLabsTTSClient.spokenText == spokenText else { return }
+                            for line in lines {
+                                self.markSchedules.append(self.speechClock.schedule(atOffset: line.offset) { self.revealMark(line) })
                             }
                         }
-                        self.speechClock.schedule(atOffset: parseResult.offset, point)
-                        if !cards.isEmpty {
-                            self.cardPresenter.schedule(cards, spoken: spokenText, near: cardRegion, clock: self.speechClock)
-                        }
-                        if let scene {
-                            self.scenePresenter.schedule(scene, spoken: spokenText, near: cardRegion, clock: self.speechClock)
-                        }
-                    })
+                    }
+                    await elevenLabsTTSClient.waitUntilDone()
                 }
                 guard !Task.isCancelled else { return }
                 // Cookie stopped speaking: the dim lifts; the marks stay until the person moves on.
                 if heard { spotlight = nil }
                 // Not spoken (typed, or the voice never started): everything shows now, marks in order.
                 if !heard {
-                    resolvedMarks.forEach(revealMark)
-                    if let first = focuses.first { focus(first.region) }
+                    placedMarks.forEach(revealMark)
+                    if let first = placedFocuses.first { focus(first.region) }
                     if let reading {
                         let lines = await reading.value
                         guard !Task.isCancelled else { return }
                         lines.forEach(revealMark)
                     }
-                    point()
+                    placedPoints.last?.show()
                     if let card = cards.first { cardPresenter.showNow(card, near: cardRegion) }
                     if let scene { scenePresenter.showNow(scene, near: cardRegion) }
                 }

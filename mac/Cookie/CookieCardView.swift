@@ -467,7 +467,8 @@ final class CookieCardPresenter {
     private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
     /// Puts each card on the speech clock: it appears at its tag and its elements follow the
-    /// sentence after it. Call from `onPlaybackStarted`. Later cards replace earlier ones.
+    /// sentence after it. Call once the speech has begun (`beginReply`); a place already passed
+    /// shows at once. Later cards replace earlier ones.
     func schedule(_ cards: [CookieCard], spoken: String, near region: (rect: CGRect, display: CGRect)?, clock: CookieSpeechClock) {
         cancelSchedules()
         self.clock = clock
