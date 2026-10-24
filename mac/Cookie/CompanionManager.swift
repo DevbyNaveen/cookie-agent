@@ -311,6 +311,7 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var lastCaptureAt: Date?
 
     private var shortcutTransitionCancellable: AnyCancellable?
+    private var hoverShortcutCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
@@ -376,6 +377,18 @@ final class CompanionManager: ObservableObject {
         MacOperator.shared.stopRun = { [weak self] in self?.stopResponse() }
         MacOperator.shared.guiding = { [weak self] step in self?.showGuideStep(step) }
         MacOperator.shared.currentThreadID = { [weak self] in self?.workingThreadID }
+        // Hover to explain: the hand needs the overlay; a spoken answer never talks over a reply.
+        let hover = CookieHoverExplainer.shared
+        hover.showOverlay = { [weak self] in self?.showOverlayForDrawing() }
+        hover.ended = { [weak self] in self?.scheduleTransientHideIfNeeded() }
+        hover.speak = { [weak self] text in
+            guard let self, self.voiceState == .idle else { return }
+            Task { await self.speak(text) }
+        }
+        hover.stopSpeaking = { [weak self] in
+            guard let self, self.voiceState == .idle else { return }
+            self.stopSpeaking()
+        }
         CookieBackgroundRuns.shared.companionManager = self
         CookieBackgroundRuns.shared.startScheduler()
         CookieHandoff.currentAgentName = { [weak self] in
@@ -427,6 +440,7 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         currentResponseTask = nil
         shortcutTransitionCancellable?.cancel()
+        hoverShortcutCancellable?.cancel()
         cancellationCancellable?.cancel()
         voiceStateCancellable?.cancel()
         audioPowerCancellable?.cancel()
@@ -561,6 +575,9 @@ final class CompanionManager: ObservableObject {
             .sink { [weak self] transition in
                 self?.handleShortcutTransition(transition)
             }
+        hoverShortcutCancellable = globalPushToTalkShortcutMonitor.hoverShortcutPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { held in CookieHoverExplainer.shared.setHeld(held) }
     }
 
     /// The "Hold to talk" button: the same path as ⌃⌥, minus circling
@@ -1409,7 +1426,8 @@ final class CompanionManager: ObservableObject {
 
             // Wait for pointing animation to finish (location is cleared
             // when the buddy flies back to the cursor), and for the drawings to be dismissed.
-            while detectedElementScreenLocation != nil || !marks.isEmpty || spotlight != nil || guideStep != nil {
+            while detectedElementScreenLocation != nil || !marks.isEmpty || spotlight != nil || guideStep != nil
+                    || CookieHoverExplainer.shared.explanation != nil {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }

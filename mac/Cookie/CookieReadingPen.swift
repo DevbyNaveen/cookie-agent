@@ -172,7 +172,7 @@ enum CookieReadingPen {
         return AXValueGetValue(value as! AXValue, .cfRange, &range) ? range : nil
     }
 
-    private static func parameterized(_ element: AXUIElement, _ name: String, _ parameter: CFTypeRef) -> CFTypeRef? {
+    static func parameterized(_ element: AXUIElement, _ name: String, _ parameter: CFTypeRef) -> CFTypeRef? {
         var value: CFTypeRef?
         guard AXUIElementCopyParameterizedAttributeValue(element, name as CFString, parameter, &value) == .success else { return nil }
         return value

@@ -269,9 +269,11 @@ struct BlueCursorView: View {
     @State private var cursorOpacity: Double = 0.0
     @ObservedObject private var presence = CursorPresence.shared
     @ObservedObject private var hand = CookieHand.shared
+    @ObservedObject private var hover = CookieHoverExplainer.shared
     /// What holds the hand away from the person's cursor: a card or scene opening (`visit`), an
-    /// action about to run (`act`), a guided step waiting on the person (`guide`); nil when nothing does.
-    private enum HandHold { case visit, act, guide }
+    /// action about to run (`act`), a guided step waiting on the person (`guide`), an element
+    /// explained on hover (`hover`); nil when nothing does.
+    private enum HandHold { case visit, act, guide, hover }
     @State private var handHold: HandHold?
     /// The pill beside the hand while an action or a guided step holds it.
     @State private var handLabel = ""
@@ -354,6 +356,9 @@ struct BlueCursorView: View {
                 CookieMarksLayer(marks: companionManager.marks, screenFrame: screenFrame, onPen: { pen in follow(pen) })
                     .transition(.opacity)
             }
+
+            // Hover to explain: the outline round the element and the answer beside the hand.
+            CookieHoverLayer(explanation: hover.explanation, screenFrame: screenFrame)
 
             // Welcome speech bubble (first launch only)
             if isCursorOnThisScreen && showWelcome && !welcomeText.isEmpty {
@@ -572,6 +577,7 @@ struct BlueCursorView: View {
         .onReceive(hand.$visit) { visit in handOpens(visit) }
         .onReceive(hand.$act) { act in handActs(act) }
         .onReceive(companionManager.$guideStep) { step in handGuides(step) }
+        .onReceive(hover.$explanation) { explanation in handHovers(explanation) }
     }
 
     // MARK: - Cookie's hand
@@ -665,6 +671,18 @@ struct BlueCursorView: View {
         guard buddyNavigationMode == .followingCursor || buddyNavigationMode == .drawing else { return }
         guidedStepID = step.id
         moveHand(toTip: tip, hold: .guide) {}
+    }
+
+    /// Hover to explain: the hand glides beside the element and stays while its answer shows;
+    /// another element while the keys are held, and it moves there.
+    private func handHovers(_ explanation: CookieHoverExplanation?) {
+        guard let explanation, explanation.displayFrame == screenFrame else {
+            if handHold == .hover { returnHandToCursor() }
+            return
+        }
+        guard handHold == nil || handHold == .hover,
+              buddyNavigationMode == .followingCursor || buddyNavigationMode == .drawing else { return }
+        moveHand(toTip: convertScreenPointToSwiftUICoordinates(explanation.restingTip), hold: .hover) {}
     }
 
     /// How long a press takes: down and back up, with the ring.

@@ -563,6 +563,9 @@ private struct EnkeonSettings: View {
 }
 
 private struct ShortcutsPage: View {
+    @AppStorage(CK.Key.hoverExplain) private var hoverExplain = true
+    @AppStorage(CK.Key.hoverExplainAloud) private var hoverExplainAloud = false
+
     var body: some View {
         SettingsGroup {
             SettingsRow(title: "Talk", caption: "Hold, speak, let go. Cookie looks at your screen and answers.") {
@@ -573,6 +576,17 @@ private struct ShortcutsPage: View {
             }
             SettingsRow(title: "Close", caption: "Folds Cookie back into the notch.", divider: false) {
                 KeyCap(label: "esc")
+            }
+        }
+        SettingsGroup(label: "Hover to explain") {
+            SettingsRow(title: "Explain what's under the pointer", caption: "Hold ⌥⇧ and rest the pointer on something: Cookie says what it is, beside it. Nothing is read until you hold the keys, never in blocked apps or password fields.") {
+                HStack(spacing: 8) {
+                    HStack(spacing: 3) { KeyCap(label: "⌥"); KeyCap(label: "⇧") }
+                    SettingsSwitch(title: "Explain what's under the pointer", isOn: $hoverExplain)
+                }
+            }
+            SettingsRow(title: "Read hover answers aloud", caption: "Off, answers stay quiet in their pill.", divider: false) {
+                SettingsSwitch(title: "Read hover answers aloud", isOn: $hoverExplainAloud)
             }
         }
     }

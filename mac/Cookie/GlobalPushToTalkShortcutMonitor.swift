@@ -28,6 +28,10 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// release event (tap disabled for a slow main thread, secure input), and
     /// a press that never ends would keep listening and swallow the next press.
     private var releaseWatchdog: Timer?
+    /// Hover to explain: whether ⌥⇧ are held on their own, sent on every modifier change.
+    let hoverShortcutPublisher = PassthroughSubject<Bool, Never>()
+    /// A key typed while ⌥⇧ are held (they type symbols): no hover until they are let go.
+    private var hoverTypedOver = false
 
     deinit {
         stop()
@@ -97,6 +101,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     func stop() {
         if isShortcutCurrentlyPressed { cancellationPublisher.send(()) }
         setPressed(false)
+        hoverShortcutPublisher.send(false)
         awaitsShortcutRelease = false
 
         if let globalEventTapRunLoopSource {
@@ -149,6 +154,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             if awaitsShortcutRelease && !BuddyPushToTalkShortcut.isPhysicallyHeld { awaitsShortcutRelease = false }
             return Unmanaged.passUnretained(event)
         }
+
+        let hoverHeld = CookieHoverShortcut.isHeld(modifierFlagsRawValue: event.flags.rawValue)
+        if eventType == .keyDown && hoverHeld { hoverTypedOver = true }
+        if !hoverHeld { hoverTypedOver = false }
+        if eventType == .flagsChanged || hoverTypedOver { hoverShortcutPublisher.send(hoverHeld && !hoverTypedOver) }
 
         let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         if eventType == .keyDown && eventKeyCode == 53 {

@@ -156,6 +156,18 @@ enum HarnessRequest {
         let enkeon: Bool?
     }
 
+    /// A quick question (hover to explain): one model call, no tools, MCP, skills, history or Enkeon.
+    struct Ask: Encodable {
+        let type = "run"
+        let id: String
+        let model: String
+        let input: String
+        let instructions: String
+        let images: [Image]
+        let budget = Run.Budget(max_steps: 1)
+        let enkeon = false
+    }
+
     /// A stdio MCP server for one run: effects per tool, guarded arguments per tool.
     struct MCP: Encodable, Equatable {
         let command: String

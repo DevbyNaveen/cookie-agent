@@ -237,14 +237,32 @@ final class HarnessClient {
             // On: left out, so the helper uses ENKEON_API_KEY from its environment.
             enkeon: enkeonKey == nil ? false : nil
         )
-        let id = request.id
-        return try await withTaskCancellationHandler {
+        return try await start(id: request.id, line: HarnessWire.encode(request),
+                               onText: onText, onStep: onStep, onApproval: onApproval)
+    }
+
+    /// One quick answer: no tools, no Enkeon, one model call (hover to explain). `onText` gets the
+    /// answer so far as it streams.
+    func ask(model: String, input text: String, instructions: String, images: [HarnessRequest.Image],
+             onText: @escaping (String) -> Void) async throws -> String {
+        try ensureRunning(environment: CookieModelSettings.helperEnvironment(model: model, enkeonKey: nil))
+        runCounter += 1
+        let request = HarnessRequest.Ask(id: "cookie-\(runCounter)", model: model, input: text,
+                                         instructions: instructions, images: images)
+        return try await start(id: request.id, line: HarnessWire.encode(request),
+                               onText: onText, onStep: { _ in }, onApproval: { _ in })
+    }
+
+    private func start(id: String, line: Data,
+                       onText: @escaping (String) -> Void,
+                       onStep: @escaping (String) -> Void,
+                       onApproval: @escaping (HarnessApproval?) -> Void) async throws -> String {
+        try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 cancel() // one run at a time: an older one still going ends here
-                active = ActiveRun(id: request.id, onText: onText, onStep: onStep,
+                active = ActiveRun(id: id, onText: onText, onStep: onStep,
                                    onApproval: onApproval, continuation: continuation)
                 if Task.isCancelled { cancel(); return }
-                let line = HarnessWire.encode(request)
                 if helperBusy { queued = line } else { send(line); helperBusy = true }
             }
         } onCancel: {

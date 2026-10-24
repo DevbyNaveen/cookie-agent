@@ -29,6 +29,10 @@ enum CK {
         static let showInRecordings = "cookie.showInRecordings"
         static let peekOnHover = "cookie.peekOnHover"
         static let sounds = "cookie.sounds"
+        /// Hover to explain (hold ⌥⇧, rest the pointer); on unless turned off.
+        static let hoverExplain = "cookie.hoverExplain"
+        /// Hover answers spoken as well as shown; off unless turned on.
+        static let hoverExplainAloud = "cookie.hoverExplainAloud"
     }
 }
 
