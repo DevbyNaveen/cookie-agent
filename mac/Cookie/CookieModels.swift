@@ -59,6 +59,9 @@ struct CompanionChatMessage: Identifiable, Codable, Equatable {
     /// Cookie needs to see the screen for this ([LOOK:screen] in a reply made without it): the
     /// chat offers "Show my screen", which asks again with a screenshot. The person decides.
     var wantsScreen: Bool?
+    /// Cookie was asked to look but macOS's Screen Recording access is off: the chat offers
+    /// "Turn on screen access", which opens that Settings page.
+    var screenAccessOff: Bool?
 }
 
 /// Each chat is handled by one specialist, picked from its first message.
