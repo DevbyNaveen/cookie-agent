@@ -89,7 +89,7 @@ final class NotchPanelManager {
             defer: false
         )
         panel.isFloatingPanel = true
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 3)
+        panel.level = CookieWindowLevel.notch
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false

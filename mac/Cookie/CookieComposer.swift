@@ -248,7 +248,7 @@ struct CookieComposerControl: View {
     private func chooseFiles() {
         let panel = NSOpenPanel()
         // Above the island (mainMenu + 3), or the picker opens underneath it.
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 4)
+        panel.level = CookieWindowLevel.notchPanel
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         NSApp.activate(ignoringOtherApps: true)

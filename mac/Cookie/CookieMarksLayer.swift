@@ -301,13 +301,18 @@ private struct MarkDecoration: View {
 /// Cookie's words in her ink: a mark's label, the hand's pill, what she points at.
 struct CookieInkPill: View {
     let text: String
+    /// Increase Contrast: a heavier weight and a hard edge, so the pill holds on any background.
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
+        let increased = contrast == .increased
         Text(text)
-            .font(.system(size: 11, weight: .semibold)).foregroundStyle(CookieMarksLayer.onInk)
+            .font(.system(size: 11, weight: increased ? .bold : .semibold)).foregroundStyle(CookieMarksLayer.onInk)
             .padding(.horizontal, 7).padding(.vertical, 3)
             .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(CookieMarksLayer.ink))
-            .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
+            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(increased ? Color.black : .clear, lineWidth: 1.5))
+            .shadow(color: .black.opacity(increased ? 0 : 0.38), radius: 2.5, y: 1)
             .fixedSize()
     }
 }

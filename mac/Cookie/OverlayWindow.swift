@@ -24,7 +24,7 @@ class OverlayWindow: NSWindow {
         // Make window transparent and non-interactive
         self.isOpaque = false
         self.backgroundColor = .clear
-        self.level = .screenSaver  // Always on top, above submenus and popups
+        self.level = CookieWindowLevel.pointerOverlay  // Above submenus and pop-ups: Cookie points at them
         self.ignoresMouseEvents = true  // Click-through
         self.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         self.isReleasedWhenClosed = false
@@ -254,7 +254,8 @@ struct BlueCursorView: View {
         _cursorPosition = State(initialValue: CGPoint(x: localX + 35, y: localY + 25))
         _isCursorOnThisScreen = State(initialValue: screenFrame.contains(mouseLocation))
     }
-    @State private var timer: Timer?
+    /// Follows the person's pointer on this screen's display link.
+    @State private var tracking = CookieScreenTicker()
     @State private var welcomeText: String = ""
     @State private var showWelcome: Bool = true
     @State private var bubbleSize: CGSize = .zero
@@ -293,13 +294,17 @@ struct BlueCursorView: View {
     /// if the user moves the cursor enough to cancel the navigation.
     @State private var cursorPositionWhenNavigationStarted: CGPoint = .zero
 
-    /// Timer driving the frame-by-frame bezier arc flight animation.
-    /// Invalidated when the flight completes, is canceled, or the view disappears.
-    @State private var navigationAnimationTimer: Timer?
+    /// The hand's flight: a spring on this screen's display link, retargeted when the target moves.
+    @State private var flight = CookiePointerFlight()
+    /// The pointing this view is showing: the one hold (show the label, then go back) belongs to it,
+    /// so a timer from an older pointing can never end a newer one.
+    @State private var pointingSession: UUID?
+    @State private var pointingHold: Task<Void, Never>?
+    /// The hand's own fade: Reduce Motion, or a target on another screen, crossfades in place
+    /// instead of flying.
+    @State private var pointerFade: Double = 1
 
-    /// Scale factor applied to the buddy triangle during flight. Grows to ~1.3x
-    /// at the midpoint of the arc and shrinks back to 1.0x on landing, creating
-    /// an energetic "swooping" feel.
+    /// The press cue's dip (`pressHand`).
     @State private var buddyFlightScale: CGFloat = 1.0
 
     /// True when the buddy is flying BACK to the cursor after pointing.
@@ -431,7 +436,7 @@ struct BlueCursorView: View {
             CookiePointer(size: 16, degrees: triangleRotationDegrees)
                 .scaleEffect(buddyFlightScale)
                 .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle
-                    || companionManager.voiceState != .listening && buddyNavigationMode != .followingCursor) && !pointerAway ? cursorOpacity : 0)
+                    || companionManager.voiceState != .listening && buddyNavigationMode != .followingCursor) && !pointerAway ? cursorOpacity * pointerFade : 0)
                 .animation(.easeOut(duration: pointerAway ? 0.1 : 0.2), value: pointerAway)
                 .position(cursorPosition)
                 .animation(
@@ -503,8 +508,9 @@ struct BlueCursorView: View {
             }
         }
         .onDisappear {
-            timer?.invalidate()
-            navigationAnimationTimer?.invalidate()
+            tracking.stop()
+            flight.cancel()
+            pointingHold?.cancel()
             companionManager.tearDownOnboardingVideo()
         }
         .onChange(of: companionManager.detectedElementScreenLocation) { newLocation in
@@ -512,6 +518,11 @@ struct BlueCursorView: View {
             // that position so it points at the element.
             guard let screenLocation = newLocation,
                   let displayFrame = companionManager.detectedElementDisplayFrame else {
+                // The control went away (or the pointing was cleared): the hand leaves now.
+                if newLocation == nil, buddyNavigationMode == .pointingAtTarget
+                    || buddyNavigationMode == .navigatingToTarget && !isReturningToCursor {
+                    endPointing()
+                }
                 return
             }
 
@@ -721,7 +732,8 @@ struct BlueCursorView: View {
     // MARK: - Cursor Tracking
 
     private func startTrackingCursor() {
-        timer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { _ in
+        // 60 a second is enough to follow the person's pointer (SwiftUI's spring smooths it).
+        tracking.start(on: NSScreen.screens.first { $0.frame == screenFrame }, rate: 60) {
             let mouseLocation = NSEvent.mouseLocation
             self.isCursorOnThisScreen = self.screenFrame.contains(mouseLocation)
 
@@ -764,7 +776,8 @@ struct BlueCursorView: View {
 
     // MARK: - Element Navigation
 
-    /// Starts animating the buddy toward a detected UI element location.
+    /// Starts the hand toward a detected UI element, or — when it is already on its way there or
+    /// pointing and the control moved — sends it on to the new place without starting again.
     private func startNavigatingToElement(screenLocation: CGPoint) {
         // Don't interrupt welcome animation
         guard !showWelcome || welcomeText.isEmpty else { return }
@@ -785,6 +798,16 @@ struct BlueCursorView: View {
             y: max(20, min(offsetTarget.y, screenFrame.height - 20))
         )
 
+        // The same pointing, its control moved: follow it.
+        if buddyNavigationMode == .navigatingToTarget && !isReturningToCursor {
+            flight.retarget(clampedTarget)
+            return
+        }
+        if buddyNavigationMode == .pointingAtTarget {
+            fly(to: clampedTarget) {}
+            return
+        }
+
         // Record the current cursor position so we can detect if the user
         // moves the mouse enough to cancel the return flight
         let mouseLocation = NSEvent.mouseLocation
@@ -793,109 +816,70 @@ struct BlueCursorView: View {
         // Enter navigation mode — stop cursor following
         buddyNavigationMode = .navigatingToTarget
         isReturningToCursor = false
+        let session = UUID()
+        pointingSession = session
+        pointingHold?.cancel()
 
-        animateBezierFlightArc(to: clampedTarget) {
-            guard self.buddyNavigationMode == .navigatingToTarget else { return }
-            self.startPointingAtElement()
+        fly(to: clampedTarget) {
+            guard self.pointingSession == session, self.buddyNavigationMode == .navigatingToTarget else { return }
+            self.startPointingAtElement(session: session)
         }
     }
 
-    /// Animates the buddy along a quadratic bezier arc from its current position
-    /// to the specified destination. The triangle rotates to face its direction
-    /// of travel (tangent to the curve) each frame, scales up at the midpoint
-    /// for a "swooping" feel, and the glow intensifies during flight.
-    private func animateBezierFlightArc(
-        to destination: CGPoint,
-        onComplete: @escaping () -> Void
-    ) {
-        navigationAnimationTimer?.invalidate()
-
-        let startPosition = cursorPosition
-        let endPosition = destination
-
-        let deltaX = endPosition.x - startPosition.x
-        let deltaY = endPosition.y - startPosition.y
-        let distance = hypot(deltaX, deltaY)
-
-        // Flight duration scales with distance: short hops are quick, long
-        // flights are more dramatic. Clamped to 0.6s–1.4s.
-        let flightDurationSeconds = min(max(distance / 800.0, 0.6), 1.4)
-        let frameInterval: Double = 1.0 / 60.0
-        let totalFrames = Int(flightDurationSeconds / frameInterval)
-        var currentFrame = 0
-
-        // Control point for the quadratic bezier arc. Offset the midpoint
-        // upward (negative Y in SwiftUI) so the buddy flies in a parabolic arc.
-        let midPoint = CGPoint(
-            x: (startPosition.x + endPosition.x) / 2.0,
-            y: (startPosition.y + endPosition.y) / 2.0
-        )
-        let arcHeight = min(distance * 0.2, 80.0)
-        let controlPoint = CGPoint(x: midPoint.x, y: midPoint.y - arcHeight)
-
-        navigationAnimationTimer = Timer.scheduledTimer(withTimeInterval: frameInterval, repeats: true) { _ in
-            currentFrame += 1
-
-            if currentFrame > totalFrames {
-                self.navigationAnimationTimer?.invalidate()
-                self.navigationAnimationTimer = nil
-                self.cursorPosition = endPosition
-                self.buddyFlightScale = 1.0
-                onComplete()
-                return
+    /// Moves the hand on a spring (retargetable, on the display's clock). Under Reduce Motion, or
+    /// when the person's pointer is on another screen, it fades out, moves and fades in instead:
+    /// motion across a screen that tells nothing is left out.
+    private func fly(to destination: CGPoint, then arrived: @escaping () -> Void) {
+        let screen = NSScreen.screens.first { $0.frame == screenFrame }
+        let crossfade = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            || (!isCursorOnThisScreen && buddyNavigationMode == .navigatingToTarget && !isReturningToCursor)
+        guard !crossfade else {
+            flight.cancel()
+            let session = pointingSession
+            withAnimation(.easeOut(duration: 0.12)) { pointerFade = 0 }
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(120))
+                guard self.pointingSession == session else { return }
+                self.cursorPosition = destination
+                self.triangleRotationDegrees = -35
+                withAnimation(.easeIn(duration: 0.15)) { self.pointerFade = 1 }
+                arrived()
             }
-
-            // Linear progress 0→1 over the flight duration
-            let linearProgress = Double(currentFrame) / Double(totalFrames)
-
-            // Smoothstep easeInOut: 3t² - 2t³ (Hermite interpolation)
-            let t = linearProgress * linearProgress * (3.0 - 2.0 * linearProgress)
-
-            // Quadratic bezier: B(t) = (1-t)²·P0 + 2(1-t)t·P1 + t²·P2
-            let oneMinusT = 1.0 - t
-            let bezierX = oneMinusT * oneMinusT * startPosition.x
-                        + 2.0 * oneMinusT * t * controlPoint.x
-                        + t * t * endPosition.x
-            let bezierY = oneMinusT * oneMinusT * startPosition.y
-                        + 2.0 * oneMinusT * t * controlPoint.y
-                        + t * t * endPosition.y
-
-            self.cursorPosition = CGPoint(x: bezierX, y: bezierY)
-
-            // Rotation: face the direction of travel by computing the tangent
-            // to the bezier curve. B'(t) = 2(1-t)(P1-P0) + 2t(P2-P1)
-            let tangentX = 2.0 * oneMinusT * (controlPoint.x - startPosition.x)
-                         + 2.0 * t * (endPosition.x - controlPoint.x)
-            let tangentY = 2.0 * oneMinusT * (controlPoint.y - startPosition.y)
-                         + 2.0 * t * (endPosition.y - controlPoint.y)
-            // +90° offset because the triangle's "tip" points up at 0° rotation,
-            // and atan2 returns 0° for rightward movement
-            self.triangleRotationDegrees = atan2(tangentY, tangentX) * (180.0 / .pi) + 90.0
-
-            // Scale pulse: sin curve peaks at midpoint of the flight.
-            // Buddy grows to ~1.3x at the apex, then shrinks back to 1.0x on landing.
-            let scalePulse = sin(linearProgress * .pi)
-            self.buddyFlightScale = 1.0 + scalePulse * 0.3
+            return
         }
+        flight.onFrame = { position, degrees in
+            self.cursorPosition = position
+            self.triangleRotationDegrees = degrees
+        }
+        flight.fly(from: cursorPosition, to: destination, on: screen, arrived: arrived)
     }
 
-    /// Transitions to pointing mode: the label the model gave, if any, beside the hand for 3 s,
-    /// then back to the cursor.
-    private func startPointingAtElement() {
+    /// Pointing: the label the model gave, if any, beside the hand for 3 s, then back to the cursor.
+    /// One hold per pointing, cancelled by whatever replaces it.
+    private func startPointingAtElement(session: UUID) {
         buddyNavigationMode = .pointingAtTarget
-
-        // Rotate back to default pointer angle now that we've arrived
         triangleRotationDegrees = -35.0
 
         navigationBubbleText = companionManager.detectedElementBubbleText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         navigationBubbleOpacity = 1.0
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-            guard self.buddyNavigationMode == .pointingAtTarget else { return }
-            self.navigationBubbleOpacity = 0.0
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                guard self.buddyNavigationMode == .pointingAtTarget else { return }
-                self.startFlyingBackToCursor()
-            }
+        pointingHold?.cancel()
+        pointingHold = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, self.pointingSession == session, self.buddyNavigationMode == .pointingAtTarget else { return }
+            self.endPointing()
+        }
+    }
+
+    /// The label fades, then the hand goes back to the person's pointer.
+    private func endPointing() {
+        let session = pointingSession
+        pointingHold?.cancel()
+        navigationBubbleOpacity = 0.0
+        pointingHold = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled, self.pointingSession == session,
+                  self.buddyNavigationMode == .pointingAtTarget || self.buddyNavigationMode == .navigatingToTarget else { return }
+            self.startFlyingBackToCursor()
         }
     }
 
@@ -907,28 +891,29 @@ struct BlueCursorView: View {
 
         cursorPositionWhenNavigationStarted = cursorInSwiftUI
 
+        flight.cancel()
         buddyNavigationMode = .navigatingToTarget
         isReturningToCursor = true
+        let session = pointingSession
 
-        animateBezierFlightArc(to: cursorWithTrackingOffset) {
+        fly(to: cursorWithTrackingOffset) {
+            guard self.pointingSession == session else { return }
             self.finishNavigationAndResumeFollowing()
         }
     }
 
     /// Cancels an in-progress navigation because the user moved the cursor.
     private func cancelNavigationAndResumeFollowing() {
-        navigationAnimationTimer?.invalidate()
-        navigationAnimationTimer = nil
-        navigationBubbleText = ""
-        navigationBubbleOpacity = 0.0
-        buddyFlightScale = 1.0
         finishNavigationAndResumeFollowing()
     }
 
     /// Returns the buddy to normal cursor-following mode after navigation completes.
     private func finishNavigationAndResumeFollowing() {
-        navigationAnimationTimer?.invalidate()
-        navigationAnimationTimer = nil
+        flight.cancel()
+        pointingHold?.cancel()
+        pointingHold = nil
+        pointingSession = nil
+        pointerFade = 1
         buddyNavigationMode = .followingCursor
         isReturningToCursor = false
         triangleRotationDegrees = -35.0

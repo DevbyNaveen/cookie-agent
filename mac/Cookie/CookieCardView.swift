@@ -659,7 +659,7 @@ final class CookieCardPanel: NSPanel {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
-        level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 1)
+        level = CookieWindowLevel.card
         collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         ignoresMouseEvents = true
         hidesOnDeactivate = false

@@ -449,6 +449,12 @@ final class CompanionManager: ObservableObject {
             @MainActor func show(_ target: CGPoint) {
                 // The hand's label is only ever what the model named; no label, no words.
                 self.detectedElementBubbleText = label
+                // VoiceOver says what the hand points at (the pill is only seen).
+                if let label, !label.isEmpty {
+                    NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                                         userInfo: [.announcement: "Cookie is pointing at \(label)",
+                                                    .priority: NSAccessibilityPriorityLevel.high.rawValue])
+                }
                 self.detectedElementScreenLocation = target
                 self.detectedElementDisplayFrame = NSScreen.screens.first { $0.frame.contains(target) }?.frame ?? display
             }

@@ -37,7 +37,7 @@ final class CookieAgentDock {
         }))
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isFloatingPanel = true
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 2)
+        panel.level = CookieWindowLevel.dock
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false

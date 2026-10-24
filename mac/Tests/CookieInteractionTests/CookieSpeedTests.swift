@@ -21,6 +21,7 @@ enum CookieSpeedTests {
         check("imagesAreSentAtTheSizeTheModelReads", imagesAreSentAtTheSizeTheModelReads)
         check("modelPixelsLandOnTheirDisplayPoints", modelPixelsLandOnTheirDisplayPoints)
         check("thePointerOnlyGoesWhereTheScreenSaysItsLabel", thePointerOnlyGoesWhereTheScreenSaysItsLabel)
+        check("theHandSettlesOnASpringAndBendsWhenTheTargetMoves", theHandSettlesOnASpringAndBendsWhenTheTargetMoves)
         print("\(passed) speed checks passed.")
     }
 
@@ -203,5 +204,32 @@ enum CookieSpeedTests {
         let no: [(String, String)] = [("Save", "Send"), ("Save", ""), ("", "Save"), ("Save as PDF", "PD"), ("Go", "Google"),
                                       ("Copy link", "Co")]
         for (label, text) in no { precondition(!CookieLabelMatch.matches(label: label, text: text), "\(label) / \(text)") }
+    }
+
+    static func theHandSettlesOnASpringAndBendsWhenTheTargetMoves() {
+        var spring = CookieSpring2D(position: .zero, target: CGPoint(x: 400, y: 0), duration: 0.5, bounce: 0.1)
+        var farthest = 0.0, time = 0.0
+        // Frame times as a 120 Hz display gives them, with one dropped frame: time, not frame counts.
+        while !spring.isSettled && time < 3 {
+            let frame = time > 0.1 && time < 0.12 ? 1.0 / 60 : 1.0 / 120
+            spring.step(seconds: frame)
+            time += frame
+            farthest = max(farthest, spring.position.x)
+        }
+        precondition(spring.isSettled && time < 1.2, "settles in about its duration (\(time) s)")
+        precondition(farthest < 400 * 1.05, "a little bounce at most: \(farthest)")
+        // Mid-flight the target moves: the velocity carries on (no jump, no restart).
+        var moving = CookieSpring2D(position: .zero, target: CGPoint(x: 400, y: 0))
+        for _ in 0..<12 { moving.step(seconds: 1.0 / 120) }
+        let before = moving.velocity, at = moving.position
+        moving.target = CGPoint(x: 400, y: 300)
+        moving.step(seconds: 1.0 / 120)
+        precondition(hypot(moving.position.x - at.x, moving.position.y - at.y) < 20, "no jump")
+        precondition(moving.velocity.dx > before.dx * 0.8, "still heading the way it was going")
+        for _ in 0..<240 { moving.step(seconds: 1.0 / 120) }
+        precondition(moving.isSettled && abs(moving.position.y - 300) < 1)
+        // Bounce is kept within Apple's guidance even when asked for more.
+        let springy = CookieSpring2D(position: .zero, target: .zero, duration: 0.5, bounce: 0.6)
+        precondition(abs(springy.damping - 4 * .pi * 0.85 / 0.5) < 1e-9)
     }
 }
