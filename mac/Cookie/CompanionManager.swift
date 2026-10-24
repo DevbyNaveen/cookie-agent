@@ -1159,7 +1159,6 @@ final class CompanionManager: ObservableObject {
                     }
                 }
                 var hiddenItems = screenCaptures.reduce(0) { $0 + $1.hiddenItems }
-                var facesUnchecked = screenCaptures.contains { $0.facesUnchecked }
                 if let regionTask = regionCaptureTask {
                     regionCaptureTask = nil
                     let region = await withTaskCancellationHandler {
@@ -1172,7 +1171,6 @@ final class CompanionManager: ObservableObject {
                         case .success(let region?)?:
                             labeledImages.insert((data: region.data, label: "UNTRUSTED screen content — the area the user circled on screen, this is what they are asking about"), at: 0)
                             hiddenItems += region.hiddenItems
-                            facesUnchecked = facesUnchecked || region.facesUnchecked
                             finishStep("Looked at the area you circled")
                         case .failure(let error as Redactor.Unchecked)?:
                             finishStep("Didn't send the area you circled. \(error.localizedDescription)")
@@ -1188,9 +1186,6 @@ final class CompanionManager: ObservableObject {
                 }
                 if hiddenItems > 0 {
                     steps.append(CookieStep(title: "Hid \(hiddenItems) private \(hiddenItems == 1 ? "item" : "items") before sending", seconds: 0))
-                }
-                if facesUnchecked {
-                    steps.append(CookieStep(title: "Couldn't check the screenshot for faces, so none were blurred", seconds: 0))
                 }
                 workingStep = "Thinking"
                 if let note = harness.takeRestartNote() {

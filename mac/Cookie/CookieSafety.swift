@@ -164,55 +164,63 @@ enum Redactor {
         let image: CGImage
         let hiddenText: Int
         let blurredFaces: Int
-        /// Face detection failed: the picture went with its text checked but faces not blurred.
-        var facesUnchecked = false
     }
 
-    /// Text recognition failed outright while secret hiding is on: the picture must not be sent.
+    /// A check that is on could not be completed — text that couldn't be read, or read as
+    /// nothing on a picture that plainly isn't blank, or faces that couldn't be looked for:
+    /// the picture must not be sent.
     struct Unchecked: LocalizedError {
         var errorDescription: String? { "Couldn't check the screenshot for private details, so it wasn't sent" }
     }
 
     private static let context = CIContext(options: [.useSoftwareRenderer: false])
 
-    static func redact(_ image: CGImage) throws -> Result {
+    /// The private details in a picture, every enabled check done, or `Unchecked`. A picture leaves
+    /// the Mac only after every check that is on has run and answered (Recall's rule: a frame that
+    /// can't be checked is dropped whole, never sent part-checked).
+    static func boxes(in read: CookieScreenRead, hideSecrets: Bool, blurFaces: Bool) throws -> (text: [CGRect], faces: [CGRect]) {
+        var textBoxes: [CGRect] = []
+        if hideSecrets {
+            guard read.textChecked else { throw Unchecked() }
+            for line in read.lines {
+                for range in SensitiveText.ranges(in: line.text) {
+                    // A secret whose words have no box can't be covered: not sent.
+                    guard let box = line.boundingBox(for: range) else { throw Unchecked() }
+                    textBoxes.append(box)
+                }
+            }
+        }
+        var faceBoxes: [CGRect] = []
+        if blurFaces {
+            guard let faces = read.faces else { throw Unchecked() }
+            faceBoxes = faces
+        }
+        return (textBoxes, faceBoxes)
+    }
+
+    static func redact(_ image: CGImage) async throws -> Result {
         let defaults = UserDefaults.standard
         let hideSecrets = defaults.object(forKey: hideSecretsKey) as? Bool ?? true
         let blurFaces = defaults.object(forKey: blurFacesKey) as? Bool ?? true
         guard hideSecrets || blurFaces else { return Result(image: image, hiddenText: 0, blurredFaces: 0) }
 
-        var textBoxes: [CGRect] = []
-        var faceBoxes: [CGRect] = []
-        var facesUnchecked = false
-        let handler = VNImageRequestHandler(cgImage: image, options: [:])
-
-        // Fail closed: a picture whose text couldn't be read is never sent unchecked.
-        if hideSecrets {
-            let lines: [VNRecognizedText]
-            do { lines = try CookieVisionText.recognize(handler) } catch {
-                print("⚠️ Redactor: text recognition failed, not sending: \(error)")
-                throw Unchecked()
-            }
-            for candidate in lines {
-                for range in SensitiveText.ranges(in: candidate.string) {
-                    if let box = try? candidate.boundingBox(for: range)?.boundingBox {
-                        textBoxes.append(box)
-                    }
-                }
-            }
+        let read: CookieScreenRead
+        do {
+            read = try await CookieVisionText.read(image, faces: blurFaces)
+        } catch {
+            print("⚠️ Redactor: the picture couldn't be read, not sending: \(error)")
+            throw Unchecked()
         }
-        if blurFaces {
-            let faceRequest = VNDetectFaceRectanglesRequest()
-            do {
-                try handler.perform([faceRequest])
-                faceBoxes = (faceRequest.results ?? []).map(\.boundingBox)
-            } catch {
-                print("⚠️ Redactor: face detection failed: \(error)")
-                facesUnchecked = true
-            }
+        let found: (text: [CGRect], faces: [CGRect])
+        do {
+            found = try boxes(in: read, hideSecrets: hideSecrets, blurFaces: blurFaces)
+        } catch {
+            print("⚠️ Redactor: a check didn't complete (text runs \(read.textRuns), rectangles \(read.textRectangles.map(String.init) ?? "failed"), uniform \(read.nearUniform), faces \(read.faces == nil ? "failed" : "ok")), not sending")
+            throw error
         }
+        let textBoxes = found.text, faceBoxes = found.faces
         guard !textBoxes.isEmpty || !faceBoxes.isEmpty else {
-            return Result(image: image, hiddenText: 0, blurredFaces: 0, facesUnchecked: facesUnchecked)
+            return Result(image: image, hiddenText: 0, blurredFaces: 0)
         }
 
         let width = CGFloat(image.width), height = CGFloat(image.height)
@@ -237,7 +245,7 @@ enum Redactor {
             print("⚠️ Redactor: couldn't render the redacted picture, not sending")
             throw Unchecked()
         }
-        return Result(image: rendered, hiddenText: textBoxes.count, blurredFaces: faceBoxes.count, facesUnchecked: facesUnchecked)
+        return Result(image: rendered, hiddenText: textBoxes.count, blurredFaces: faceBoxes.count)
     }
 }
 

@@ -13,7 +13,6 @@
 
 import AppKit
 import ApplicationServices
-import Vision
 
 enum CookieReadingPen {
     static let maxPhrases = 3
@@ -36,19 +35,21 @@ enum CookieReadingPen {
                      mainHeight: CGFloat) async -> [[CGRect]?] {
         await Task.detached(priority: .userInitiated) {
             let texts = app.map(textElements(app:)) ?? []
-            var recognized: [Int: [VNRecognizedText]] = [:]
-            return phrases.map { phrase -> [CGRect]? in
+            var recognized: [Int: [CookieTextLine]] = [:]
+            var places: [[CGRect]?] = []
+            for phrase in phrases {
                 let needle = Folded([phrase]).characters
-                guard needle.count >= 2 else { return nil }
+                guard needle.count >= 2 else { places.append(nil); continue }
                 var found = texts.flatMap { appLines(needle, in: $0, mainHeight: mainHeight) }
                 if found.isEmpty {
                     for (index, capture) in captures.enumerated() {
-                        if recognized[index] == nil { recognized[index] = recognize(capture) }
+                        if recognized[index] == nil { recognized[index] = await recognize(capture) }
                         found += screenshotLines(needle, in: recognized[index] ?? [], capture: capture)
                     }
                 }
-                return found.min { distance($0, pointer) < distance($1, pointer) }
+                places.append(found.min { distance($0, pointer) < distance($1, pointer) })
             }
+            return places
         }.value
     }
 
@@ -181,14 +182,15 @@ enum CookieReadingPen {
     // MARK: The screenshot (Vision)
 
     /// Text lines read from a screenshot, accurate (word-precise boxes) once the model is warm.
-    private static func recognize(_ capture: CompanionScreenCapture) -> [VNRecognizedText] {
-        (try? CookieVisionText.recognize(VNImageRequestHandler(data: capture.imageData, options: [:]))) ?? []
+    private static func recognize(_ capture: CompanionScreenCapture) async -> [CookieTextLine] {
+        guard let image = CookieVisionText.image(from: capture.imageData) else { return [] }
+        return (try? await CookieVisionText.lines(in: image)) ?? []
     }
 
     /// Each place the phrase is in a screenshot's text, read across line breaks, as one AppKit rect
     /// per recognised line it touches.
-    private static func screenshotLines(_ needle: [Character], in lines: [VNRecognizedText], capture: CompanionScreenCapture) -> [[CGRect]] {
-        let folded = Folded(lines.map(\.string))
+    private static func screenshotLines(_ needle: [Character], in lines: [CookieTextLine], capture: CompanionScreenCapture) -> [[CGRect]] {
+        let folded = Folded(lines.map(\.text))
         return folded.ranges(of: needle).prefix(3).compactMap { match -> [CGRect]? in
             var rects: [CGRect] = []
             var index = match.lowerBound
@@ -199,7 +201,7 @@ enum CookieReadingPen {
                 if piece >= 0 {
                     let range = folded.origins[index].range.lowerBound..<folded.origins[last].range.upperBound
                     // Normalised, bottom-left origin → screenshot pixels, top-left → AppKit.
-                    guard let box = try? lines[piece].boundingBox(for: range)?.boundingBox else { return nil }
+                    guard let box = lines[piece].boundingBox(for: range) else { return nil }
                     let width = CGFloat(capture.screenshotWidthInPixels), height = CGFloat(capture.screenshotHeightInPixels)
                     let topLeft = CookieDrawingResolver.global(CGPoint(x: box.minX * width, y: (1 - box.maxY) * height), in: capture)
                     let bottomRight = CookieDrawingResolver.global(CGPoint(x: box.maxX * width, y: (1 - box.minY) * height), in: capture)

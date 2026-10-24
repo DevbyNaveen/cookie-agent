@@ -15,6 +15,9 @@ enum CookieSpeedTests {
         check("theFirstClauseIsFlushedOnceItIsLongEnough", theFirstClauseIsFlushedOnceItIsLongEnough)
         check("alignmentFindsEachCharacterInTheSentText", alignmentFindsEachCharacterInTheSentText)
         check("chunkTimesBecomeAbsoluteAcrossGaps", chunkTimesBecomeAbsoluteAcrossGaps)
+        check("aPictureLeavesOnlyWhenEveryCheckAnswered", aPictureLeavesOnlyWhenEveryCheckAnswered)
+        check("aSecretIsCoveredByEveryWordItTouches", aSecretIsCoveredByEveryWordItTouches)
+        check("onlyAPictureOfOneColourHasNoTextToRead", onlyAPictureOfOneColourHasNoTextToRead)
         print("\(passed) speed checks passed.")
     }
 
@@ -97,5 +100,67 @@ enum CookieSpeedTests {
         times.add(offset: 3, seconds: 0.5) // out of order: ignored
         times.add(offset: 9, seconds: 1.1)
         precondition(times.offset(at: -0.1) == nil && times.offset(at: 0.39) == 0 && times.offset(at: 0.4) == 5 && times.offset(at: 5) == 9)
+    }
+
+    static func aPictureLeavesOnlyWhenEveryCheckAnswered() {
+        func unchecked(_ read: CookieScreenRead, secrets: Bool = true, faces: Bool = true) -> Bool {
+            (try? Redactor.boxes(in: read, hideSecrets: secrets, blurFaces: faces)) == nil
+        }
+        let line = CookieTextLine(text: "hello", box: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.05),
+                                  words: [CookieTextWord(start: 0, end: 5, box: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.05))])
+        precondition(!unchecked(CookieScreenRead(lines: [line], faces: [], textRuns: [1])), "text read, faces looked for: sent")
+        precondition(unchecked(CookieScreenRead(lines: [line], faces: nil, textRuns: [1])), "face detection failed: not sent")
+        precondition(!unchecked(CookieScreenRead(lines: [line], faces: nil, textRuns: [1]), faces: false), "blurring faces is off")
+        precondition(unchecked(CookieScreenRead(faces: [], textRuns: [nil])), "text recognition failed: not sent")
+        precondition(unchecked(CookieScreenRead(faces: [], textRuns: [])), "no recognizer ran: not sent")
+        // Nothing read: believed only from a clean run and a second sign the picture has no text.
+        precondition(unchecked(CookieScreenRead(faces: [], textRuns: [0, 0], textRectangles: 14)), "the detector sees text the reader missed")
+        precondition(unchecked(CookieScreenRead(faces: [], textRuns: [0, 0], textRectangles: nil)), "and nothing says it is blank")
+        precondition(!unchecked(CookieScreenRead(faces: [], textRuns: [0, 0], textRectangles: 0)), "no text anywhere")
+        precondition(!unchecked(CookieScreenRead(faces: [], textRuns: [0], textRectangles: nil, nearUniform: true)), "a blank screen")
+        precondition(unchecked(CookieScreenRead(faces: [], textRuns: [nil, 0], textRectangles: 0)), "accurate failed: its silence isn't trusted")
+        precondition(!unchecked(CookieScreenRead(lines: [line], faces: [], textRuns: [nil, 1])), "fast read what accurate couldn't")
+        precondition(!unchecked(CookieScreenRead(faces: nil, textRuns: [nil]), secrets: false, faces: false), "nothing is on")
+    }
+
+    static func aSecretIsCoveredByEveryWordItTouches() {
+        // A test card (4242 4242 4242 4242 passes Luhn) and a fake key, each in a line of words.
+        let text = "card 4242 4242 4242 4242 key sk-ant-TESTONLY0000000000000000 ok"
+        let ranges = CookieTextLine.wordRanges(in: text)
+        precondition(ranges.count == 8 && ranges[1] == 5..<9 && ranges[7] == 61..<63, "\(ranges)")
+        let words = ranges.enumerated().map { index, range in
+            CookieTextWord(start: range.lowerBound, end: range.upperBound, box: CGRect(x: Double(index) * 0.1, y: 0.5, width: 0.08, height: 0.02))
+        }
+        let line = CookieTextLine(text: text, box: CGRect(x: 0, y: 0.5, width: 0.8, height: 0.02), words: words)
+        let found = try! Redactor.boxes(in: CookieScreenRead(lines: [line], faces: [], textRuns: [1]), hideSecrets: true, blurFaces: true)
+        precondition(found.text.count == 2, "\(found.text)")
+        let card = found.text.first { $0.minX < 0.15 }!, key = found.text.first { $0.minX > 0.55 }!
+        precondition(abs(card.minX - 0.1) < 1e-9 && abs(card.maxX - 0.48) < 1e-9, "all four groups of the card: \(card)")
+        precondition(abs(key.minX - 0.6) < 1e-9 && abs(key.maxX - 0.68) < 1e-9, "the key's word: \(key)")
+        // A secret in a line whose words have no boxes can't be covered: not sent.
+        let boxless = CookieTextLine(text: text, box: line.box, words: [])
+        precondition((try? Redactor.boxes(in: CookieScreenRead(lines: [boxless], faces: [], textRuns: [1]), hideSecrets: true, blurFaces: true)) == nil)
+    }
+
+    static func onlyAPictureOfOneColourHasNoTextToRead() {
+        func picture(_ draw: (CGContext) -> Void) -> CGImage {
+            let context = CGContext(data: nil, width: 640, height: 400, bitsPerComponent: 8, bytesPerRow: 0,
+                                    space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)!
+            context.setFillColor(gray: 0.95, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: 640, height: 400))
+            draw(context)
+            return context.makeImage()!
+        }
+        precondition(CookieVisionText.nearlyUniform(picture { _ in }), "one colour")
+        let gradient = picture { context in
+            for x in 0..<640 { context.setFillColor(gray: CGFloat(x) / 640, alpha: 1); context.fill(CGRect(x: x, y: 0, width: 1, height: 400)) }
+        }
+        precondition(CookieVisionText.nearlyUniform(gradient), "a gentle gradient")
+        let lines = picture { context in
+            context.setFillColor(gray: 0, alpha: 1)
+            for row in 0..<12 { for word in 0..<9 { context.fill(CGRect(x: 20 + word * 66, y: 20 + row * 30, width: 50, height: 9)) } }
+        }
+        precondition(!CookieVisionText.nearlyUniform(lines), "rows of word-shaped marks")
+        precondition(CookieEdges.fraction(gray: [0, 255, 0, 255], width: 2, height: 2) == 0.5)
     }
 }
