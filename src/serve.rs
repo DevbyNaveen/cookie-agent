@@ -880,6 +880,20 @@ where
                     }
                 }
             }
+            // A run is coming (Cookie for Mac: the talk key went down): open the
+            // connection to the model's host now, so the run skips the handshakes.
+            // Never waits on, or touches, a run; `{type: "warm", id, ok}` when done.
+            "warm" => {
+                let out = out.clone();
+                let model = message["model"].as_str().unwrap_or_default().to_string();
+                tokio::spawn(async move {
+                    let ok = match crate::model_id::ModelId::parse(&model) {
+                        Ok(id) => crate::providers::warm(&id).await,
+                        Err(_) => false,
+                    };
+                    let _ = out.send(json!({"type": "warm", "id": named, "ok": ok}));
+                });
+            }
             "cancel" => {
                 if let Some((control, _)) = &current {
                     control.cancel.cancel();
@@ -1808,6 +1822,19 @@ mod tests {
         assert!(c.next().await["message"].as_str().unwrap().contains("teleport"));
         c.send(run("hi", json!([]))).await;
         assert_eq!(c.next().await["answer"], "still here");
+    }
+
+    #[tokio::test]
+    async fn a_warm_is_answered_on_its_own_and_never_touches_a_run() {
+        let p = Arc::new(Scripted::new(vec![Scripted::text("answered")]));
+        let mut c = start(p);
+        // A local model has no host to warm; a bad id warms nothing. Neither is an error.
+        c.send(json!({"type": "warm", "id": "w1", "model": "ollama:qwen3"})).await;
+        assert_eq!(c.next().await, json!({"type": "warm", "id": "w1", "ok": false}));
+        c.send(json!({"type": "warm", "id": "w2", "model": "nonsense"})).await;
+        assert_eq!(c.next().await, json!({"type": "warm", "id": "w2", "ok": false}));
+        c.send(run("hi", json!([]))).await;
+        assert_eq!(c.next().await["answer"], "answered");
     }
 
     #[tokio::test]

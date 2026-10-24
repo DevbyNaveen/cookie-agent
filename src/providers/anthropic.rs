@@ -125,7 +125,7 @@ impl AnthropicProvider {
     }
 
     fn body(&self, request: &ModelRequest) -> Value {
-        let mut body = request_body(request, self.max_tokens, self.caching);
+        let mut body = request_body_with_ttl(request, self.max_tokens, self.caching, crate::provider::prefix_cache_ttl(request.model));
         if let Some(edits) = &self.context_editing {
             body["context_management"] = json!({"edits": [edits.edit()]});
         }
@@ -204,8 +204,18 @@ fn blocks(content: &Content, origin: &Origin, tag: &str) -> Vec<Value> {
 pub const REASONING_MAX_TOKENS: u32 = 16_384;
 
 pub fn request_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> Value {
+    request_body_with_ttl(request, max_tokens, caching, None)
+}
+
+/// `request_body`, with the system's and tools' breakpoints kept for
+/// `prefix_ttl` (`"1h"`, `crate::provider::prefix_cache_ttl`) instead of the default.
+pub fn request_body_with_ttl(request: &ModelRequest, max_tokens: u32, caching: bool, prefix_ttl: Option<&str>) -> Value {
     let tag = fence_tag(request.messages);
     let cache = json!({"type": "ephemeral"});
+    let prefix_cache = match prefix_ttl {
+        Some(ttl) => json!({"type": "ephemeral", "ttl": ttl}),
+        None => cache.clone(),
+    };
     let turn = crate::provider::current_turn_start(request.messages);
     let mut messages: Vec<Value> = request
         .messages
@@ -249,7 +259,7 @@ pub fn request_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> V
     if !request.system.is_empty() {
         let mut system = json!({"type": "text", "text": request.system});
         if caching {
-            system["cache_control"] = cache.clone();
+            system["cache_control"] = prefix_cache.clone();
         }
         body["system"] = json!([system]);
     }
@@ -261,7 +271,7 @@ pub fn request_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> V
             .collect();
         if caching {
             if let Some(last) = tools.last_mut() {
-                last["cache_control"] = cache;
+                last["cache_control"] = prefix_cache;
             }
         }
         body["tools"] = json!(tools);
@@ -576,6 +586,10 @@ mod tests {
         assert!(on["messages"][0]["content"][0].get("cache_control").is_none());
         let off = request_body(&req, 10, false);
         assert!(off["system"][0].get("cache_control").is_none() && off["tools"][1].get("cache_control").is_none());
+        let hour = request_body_with_ttl(&req, 10, true, Some("1h"));
+        let kept = json!({"type": "ephemeral", "ttl": "1h"});
+        assert_eq!((&hour["system"][0]["cache_control"], &hour["tools"][1]["cache_control"]), (&kept, &kept));
+        assert_eq!(hour["messages"][1]["content"][0]["cache_control"], cached, "the conversation stays at the default, after the prefix");
     }
 
     #[test]

@@ -623,6 +623,10 @@ final class CompanionManager: ObservableObject {
 
             // During a guided step the run waits on the person: what they say answers the step.
             let answersStep = isWaitingOnPerson
+            // A question is coming: the model's connection opens while the person talks.
+            if !answersStep, transcriptInterceptor == nil {
+                Task { await harness.warm(model: CookieModelSettings.model) }
+            }
             if !answersStep {
                 // Cancel any in-progress response and TTS from a previous utterance
                 currentResponseTask?.cancel()
@@ -796,6 +800,10 @@ final class CompanionManager: ObservableObject {
     - user asks how to commit in xcode: "see that source control menu [POINT:285,11:source control] up top? click that and hit commit, or you can use command option c as a shortcut."
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window [POINT:400,300:terminal:screen2]?"
     """
+
+    /// Said with every spoken question. The voice speaks the reply as it is written, so a tool
+    /// round before any words would be silence; one short sentence first fills it.
+    static let spokenTurnNote = "\n\n(the user is talking to you and hears your reply while you write it. if you need a tool before you can answer, first say one short sentence of what you're doing, like \"let me look at that.\", then call it; never repeat that sentence afterwards.)"
 
     private static let newAgentConversationPrompt = """
     you're cookie, helping the user make a new cookie: a named character that does one kind of work for them. this is a spoken conversation; what you say is read aloud, so keep it to one or two short friendly sentences, all lowercase, no lists.
@@ -1183,6 +1191,7 @@ final class CompanionManager: ObservableObject {
                 let input = Self.promptText(transcript, attachments: attachments)
                     + (selection.map { "\n\nUNTRUSTED selected text — the user has this selected in \($0.app): «\($0.text)». if they asked to change it, call replace_selection with the whole new text; otherwise it is context." } ?? "")
                     + (refusal == nil ? "" : "\n\n(cookie did not look at the screen this time: \(refusal!). say that plainly in one short sentence first — \(look == .refused("Screen access is off") ? "a button under your reply lets them turn screen access on" : "they can try again") — then help from the words alone; never ask them to paste what is on screen.)")
+                    + (speakReply ? Self.spokenTurnNote : "")
                     + (look == .notAsked && images.isEmpty
                        ? "\n\n(the user typed this without sharing their screen. if doing it needs the screen — drawing or pointing on it, reading what's there — say in one short sentence that you'll do it once you can see it, and end with [LOOK:screen]: a button lets them show it to you in one click. never say you can't draw. otherwise answer from the words alone.)"
                        : "")

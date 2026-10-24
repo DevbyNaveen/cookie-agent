@@ -201,8 +201,18 @@ fn blocks(content: &Content, origin: &Origin, tag: &str) -> Vec<Value> {
 /// call (one user turn, nothing to read back yet) gets none: that point would
 /// only be written.
 pub fn converse_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> Value {
+    converse_body_with_ttl(request, max_tokens, caching, None)
+}
+
+/// `converse_body`, with the tools' and system's cache points kept for
+/// `prefix_ttl` (`"1h"`, `crate::provider::prefix_cache_ttl`) instead of the default.
+pub fn converse_body_with_ttl(request: &ModelRequest, max_tokens: u32, caching: bool, prefix_ttl: Option<&str>) -> Value {
     let tag = fence_tag(request.messages);
     let cache_point = json!({"cachePoint": {"type": "default"}});
+    let prefix_point = match prefix_ttl {
+        Some(ttl) => json!({"cachePoint": {"type": "default", "ttl": ttl}}),
+        None => cache_point.clone(),
+    };
     // Converse wants user and assistant turns to alternate: merge neighbours.
     let mut messages: Vec<Value> = Vec::new();
     let turn = crate::provider::current_turn_start(request.messages);
@@ -246,7 +256,7 @@ pub fn converse_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> 
     if !request.system.is_empty() {
         let mut system = vec![json!({"text": request.system})];
         if caching {
-            system.push(cache_point.clone());
+            system.push(prefix_point.clone());
         }
         body["system"] = json!(system);
     }
@@ -257,7 +267,7 @@ pub fn converse_body(request: &ModelRequest, max_tokens: u32, caching: bool) -> 
             .map(|t| json!({"toolSpec": {"name": t.name, "description": t.description, "inputSchema": {"json": t.schema}}}))
             .collect();
         if caching {
-            tools.push(cache_point);
+            tools.push(prefix_point);
         }
         body["toolConfig"] = json!({"tools": tools});
     }
@@ -521,7 +531,7 @@ impl BedrockProvider {
 
     fn prepare(&self, request: &ModelRequest) -> Result<(String, Vec<u8>)> {
         let region = region_for_model(self.region.as_deref(), request.model)?;
-        let body = converse_body(request, self.max_tokens, self.caching);
+        let body = converse_body_with_ttl(request, self.max_tokens, self.caching, crate::provider::prefix_cache_ttl(request.model));
         check_first_turn(&body)?;
         check_images(&body)?;
         Ok((region, serde_json::to_vec(&body)?))
@@ -607,6 +617,13 @@ mod tests {
         let plain = converse_body(&req, 2048, false);
         assert_eq!(plain["system"], json!([{"text": "be brief"}]));
         assert_eq!(plain["toolConfig"]["tools"].as_array().unwrap().len(), 1);
+        // An hour for the stable prefix; the conversation's own point stays at the default,
+        // after it (a longer entry must come first).
+        let hour = converse_body_with_ttl(&req, 2048, true, Some("1h"));
+        let hour_point = json!({"cachePoint": {"type": "default", "ttl": "1h"}});
+        assert_eq!(hour["system"][1], hour_point);
+        assert_eq!(hour["toolConfig"]["tools"][1], hour_point);
+        assert_eq!(hour["messages"][2]["content"][2], json!({"cachePoint": {"type": "default"}}));
     }
 
     #[test]

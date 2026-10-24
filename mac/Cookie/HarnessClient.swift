@@ -128,6 +128,10 @@ enum CookieModelSettings {
             if let value = value(field) { environment[field.variable] = value }
         }
         if let enkeonKey { environment[enkeonField.variable] = enkeonKey }
+        // Tools and Cookie's instructions stay in the model's prompt cache for an hour, not five
+        // minutes: a person asks now and again, and a cached prefix is a faster first word
+        // (src/provider.rs `prefix_cache_ttl`; models that can't keep it an hour ignore it).
+        environment["COOKIE_PROMPT_CACHE_TTL"] = "1h"
         return environment
     }
 }
@@ -191,7 +195,10 @@ final class HarnessClient {
     private struct ActiveRun {
         let id: String
         var text = ""
+        /// A tool round started since the last words: the next words begin a new sentence.
+        var afterTool = false
         let onText: (String) -> Void
+        let onToolStarted: () -> Void
         let onStep: (String) -> Void
         let onApproval: (HarnessApproval?) -> Void
         let continuation: CheckedContinuation<String, Error>
@@ -224,7 +231,8 @@ final class HarnessClient {
              history: [HarnessRequest.Turn],
              onText: @escaping (String) -> Void,
              onStep: @escaping (String) -> Void,
-             onApproval: @escaping (HarnessApproval?) -> Void) async throws -> String {
+             onApproval: @escaping (HarnessApproval?) -> Void,
+             onToolStarted: @escaping () -> Void = {}) async throws -> String {
         let enkeonKey = await CookieModelSettings.enkeonKey()
         try ensureRunning(environment: CookieModelSettings.helperEnvironment(model: model, enkeonKey: enkeonKey))
         runCounter += 1
@@ -238,7 +246,23 @@ final class HarnessClient {
             enkeon: enkeonKey == nil ? false : nil
         )
         return try await start(id: request.id, line: HarnessWire.encode(request),
-                               onText: onText, onStep: onStep, onApproval: onApproval)
+                               onText: onText, onStep: onStep, onApproval: onApproval, onToolStarted: onToolStarted)
+    }
+
+    /// A run is coming (the talk key went down): the helper is started if it isn't, with the
+    /// environment the run will use (a different one would restart it and lose the warm
+    /// connection), and asked to open its connection to the model's host now, so the TCP and TLS
+    /// handshakes overlap the person's speech instead of delaying the first word.
+    func warm(model: String) async {
+        guard CookieModelSettings.missing(model: model) == nil else { return }
+        let enkeonKey = await CookieModelSettings.enkeonKey()
+        do {
+            try ensureRunning(environment: CookieModelSettings.helperEnvironment(model: model, enkeonKey: enkeonKey))
+        } catch {
+            return
+        }
+        runCounter += 1
+        send(HarnessWire.encode(HarnessRequest.Warm(id: "warm-\(runCounter)", model: model)))
     }
 
     /// One quick answer: no tools, no Enkeon, one model call (hover to explain). `onText` gets the
@@ -256,11 +280,12 @@ final class HarnessClient {
     private func start(id: String, line: Data,
                        onText: @escaping (String) -> Void,
                        onStep: @escaping (String) -> Void,
-                       onApproval: @escaping (HarnessApproval?) -> Void) async throws -> String {
+                       onApproval: @escaping (HarnessApproval?) -> Void,
+                       onToolStarted: @escaping () -> Void = {}) async throws -> String {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 cancel() // one run at a time: an older one still going ends here
-                active = ActiveRun(id: id, onText: onText, onStep: onStep,
+                active = ActiveRun(id: id, onText: onText, onToolStarted: onToolStarted, onStep: onStep,
                                    onApproval: onApproval, continuation: continuation)
                 if Task.isCancelled { cancel(); return }
                 if helperBusy { queued = line } else { send(line); helperBusy = true }
@@ -422,9 +447,19 @@ final class HarnessClient {
             guard let event = line.event else { return }
             switch event.type {
             case "text_delta":
-                active?.text += event.text ?? ""
+                let delta = event.text ?? ""
+                guard !delta.isEmpty else { return }
+                // Words from a round after a tool call follow words from before it with no space
+                // ("let me look.the button…"): start them on a new line, which reads and sounds right.
+                if active?.afterTool == true, let last = active?.text.last, !last.isWhitespace, delta.first?.isWhitespace == false {
+                    active?.text += "\n"
+                }
+                active?.afterTool = false
+                active?.text += delta
                 run.onText(active?.text ?? "")
             case "tool_call_started":
+                active?.afterTool = true
+                run.onToolStarted()
                 let name = event.detail?.name ?? "a tool"
                 // A connected-app action may be parked on Enkeon for the person's yes.
                 if name == "connector_call" { CookieAppApprovals.shared.watch() }

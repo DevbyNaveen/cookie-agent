@@ -208,6 +208,14 @@ enum HarnessRequest {
     }
 
     struct Cancel: Encodable { let type = "cancel" }
+
+    /// Open the connection to the model's host ahead of a run (serve.rs `warm`); answered on
+    /// its own line, which Cookie doesn't wait for.
+    struct Warm: Encodable {
+        let type = "warm"
+        let id: String
+        let model: String
+    }
 }
 
 enum HarnessWire {
