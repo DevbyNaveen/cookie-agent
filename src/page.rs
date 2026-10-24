@@ -591,6 +591,8 @@ fn local_offset(secs: i64) -> i64 {
         // SAFETY: localtime_r writes only into `tm`, which outlives the call.
         let mut tm: libc::tm = unsafe { std::mem::zeroed() };
         if !unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+            // tm_gmtoff is a C long: 64 bits here, 32 on some targets.
+            #[allow(clippy::unnecessary_cast)]
             return tm.tm_gmtoff as i64;
         }
     }

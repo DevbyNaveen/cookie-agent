@@ -440,7 +440,7 @@ async fn fetch_text(http: &reqwest::Client, url: &str, cap: usize) -> Result<(St
         return Err(format!("The page answered {status}."));
     }
     let kind = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_lowercase();
-    if !kind.is_empty() && !(kind.starts_with("text/") || kind.contains("json") || kind.contains("xml")) {
+    if !(kind.is_empty() || kind.starts_with("text/") || kind.contains("json") || kind.contains("xml")) {
         return Err(format!("That page is `{kind}`, not text."));
     }
     let mut body = Vec::new();
