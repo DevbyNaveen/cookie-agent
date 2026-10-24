@@ -712,9 +712,10 @@ struct CookieInteractionCheckRunner {
             await CookieSetupTests.run()
             await CookieVoiceFlowTests.run()
             await CookieCreationTests.run()
+            await CookieSenseTests.run()
             setupChecksFinished = true
         }
-        let deadline = Date().addingTimeInterval(30)
+        let deadline = Date().addingTimeInterval(60)
         while !setupChecksFinished && Date() < deadline {
             RunLoop.current.run(until: Date().addingTimeInterval(0.01))
         }

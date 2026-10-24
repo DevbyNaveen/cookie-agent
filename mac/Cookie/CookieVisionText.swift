@@ -3,7 +3,8 @@
 //  Cookie
 //
 //  The one place the app reads screenshots: text lines (with a box for every
-//  word, so any part of a line can be placed) and faces. Vision's accurate
+//  word, so any part of a line can be placed) and faces — in the cookie-sense
+//  helper (`CookieSense`) when the app has one, else in this process. Vision's accurate
 //  model loads on first use: on an M4 that took 13–28 s in a fresh process
 //  and sometimes failed outright (e5rt error 13), and in that process every
 //  later accurate call failed too; warm, it reads a screen in ~0.15 s. So it
@@ -97,8 +98,19 @@ enum CookieVisionText {
     private static let current = OSAllocatedUnfairLock(initialState: State.warming)
     static var state: State { current.withLock { $0 } }
 
-    /// Starts the accurate model loading. Called once, at launch.
+    /// Starts the reader: the cookie-sense helper when the app has one (it warms the accurate model
+    /// in its own process), else the accurate model in this one. Called once, at launch. Not on an
+    /// OS where accurate already failed to load (`CookieSense.accurateKnownBroken`): there a failed
+    /// load costs ~26 s and slows every other read while it runs.
     static func warmUp() {
+        if CookieSense.shared.isBundled {
+            CookieSense.shared.start()
+            return
+        }
+        guard !CookieSense.accurateKnownBroken else {
+            current.withLock { $0 = .unavailable }
+            return
+        }
         DispatchQueue.global(qos: .utility).async {
             let started = Date()
             do {
@@ -115,6 +127,7 @@ enum CookieVisionText {
                             : "👁️ Vision text: accurate loaded after the 40 s limit, staying on fast")
             } catch {
                 current.withLock { $0 = .unavailable }
+                UserDefaults.standard.set(CookieSense.operatingSystem, forKey: CookieSense.accurateFailedOSKey)
                 print("⚠️ Vision text: accurate unavailable, reading with fast: \(error)")
             }
         }
@@ -131,13 +144,21 @@ enum CookieVisionText {
     /// Text (and faces, when asked) in a picture, for the redactor: accurate once warm, and fast
     /// as well whenever accurate failed or found nothing; the text detector and an edge count
     /// when no recognizer found a line. Throws only when the picture can't be read at all.
+    ///
+    /// With the cookie-sense helper, it reads (a failure is thrown, so the redactor refuses the
+    /// picture); without it (a development build), this process does.
     static func read(_ image: CGImage, faces: Bool) async throws -> CookieScreenRead {
-        try await Task.detached(priority: .userInitiated) { try readNow(image, faces: faces) }.value
+        guard CookieSense.shared.isBundled else {
+            return try await Task.detached(priority: .userInitiated) { try readNow(image, faces: faces) }.value
+        }
+        var read = try await CookieSense.shared.read(image, faces: faces)
+        if read.lines.isEmpty { read.nearUniform = nearlyUniform(image) }
+        return read
     }
 
     /// The text lines in a picture (the reading pen, what Cookie saw). Throws when no recognizer ran.
     static func lines(in image: CGImage) async throws -> [CookieTextLine] {
-        let read = try await Task.detached(priority: .userInitiated) { try readNow(image, faces: false) }.value
+        let read = try await self.read(image, faces: false)
         guard read.textRuns.contains(where: { $0 != nil }) else { throw CocoaError(.featureUnsupported) }
         return read.lines
     }

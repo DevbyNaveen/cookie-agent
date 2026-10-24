@@ -32,6 +32,7 @@ Needs macOS 15 or later, Rust 1.91+ and the Command Line Tools for Xcode
 ```sh
 (cd cookie-tools && cargo build --release)     # files: spreadsheets, documents, pages, CSV
 (cd cookie-recorder && cargo build --release)  # meeting recording
+(cd cookie-sense && SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX27.sdk swift build -c release --build-system native)  # screen reading and on-device speech, out of process
 scripts/bundle-python.sh                       # research and decks: Cookie's own Python
 ./build.sh                                     # → build/Cookie.app
 ```
