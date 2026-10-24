@@ -24,6 +24,14 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// Published so the overlay can hide immediately on key release without
     /// waiting for the async dictation state pipeline to catch up.
     @Published private(set) var isShortcutCurrentlyPressed = false
+    /// While pressed, checks the keys themselves: the system can drop the
+    /// release event (tap disabled for a slow main thread, secure input), and
+    /// a press that never ends would keep listening and swallow the next press.
+    private var releaseWatchdog: Timer?
+    /// Hover to explain: whether ⌥⇧ are held on their own, sent on every modifier change.
+    let hoverShortcutPublisher = PassthroughSubject<Bool, Never>()
+    /// A key typed while ⌥⇧ are held (they type symbols): no hover until they are let go.
+    private var hoverTypedOver = false
 
     deinit {
         stop()
@@ -34,7 +42,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         // Restarting resets isShortcutCurrentlyPressed, which would kill
         // the waveform overlay mid-press when the permission poller calls
         // refreshAllPermissions → start() every few seconds.
-        guard globalEventTap == nil else { return }
+        // A tap the system invalidated never delivers again: replace it.
+        if let globalEventTap {
+            if CFMachPortIsValid(globalEventTap) { return }
+            stop()
+        }
 
         let monitoredEventTypes: [CGEventType] = [.flagsChanged, .keyDown, .keyUp]
         let eventMask = monitoredEventTypes.reduce(CGEventMask(0)) { currentMask, eventType in
@@ -88,7 +100,8 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
     func stop() {
         if isShortcutCurrentlyPressed { cancellationPublisher.send(()) }
-        isShortcutCurrentlyPressed = false
+        setPressed(false)
+        hoverShortcutPublisher.send(false)
         awaitsShortcutRelease = false
 
         if let globalEventTapRunLoopSource {
@@ -104,7 +117,27 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
     func cancelUntilRelease() {
         awaitsShortcutRelease = awaitsShortcutRelease || isShortcutCurrentlyPressed
-        isShortcutCurrentlyPressed = false
+        setPressed(false)
+    }
+
+    /// Someone else saw the keys let go (circle select's own check): end the
+    /// press here too, so this monitor's state never disagrees with the keys.
+    func releaseIfNotHeld() {
+        guard isShortcutCurrentlyPressed, !BuddyPushToTalkShortcut.isPhysicallyHeld else { return }
+        print("🎙️ Global push-to-talk: released (missed release recovered)")
+        setPressed(false)
+        shortcutTransitionPublisher.send(.released)
+    }
+
+    private func setPressed(_ pressed: Bool) {
+        isShortcutCurrentlyPressed = pressed
+        releaseWatchdog?.invalidate()
+        releaseWatchdog = nil
+        guard pressed else { return }
+        // The tap's run loop is the main one, so this fires on the main thread too.
+        let watchdog = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in self?.releaseIfNotHeld() }
+        releaseWatchdog = watchdog
+        RunLoop.main.add(watchdog, forMode: .common)
     }
 
     func handleGlobalEventTap(
@@ -112,14 +145,20 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         event: CGEvent
     ) -> Unmanaged<CGEvent>? {
         if eventType == .tapDisabledByTimeout || eventType == .tapDisabledByUserInput {
+            // Events were lost, not cancelled: a reply or speech in progress
+            // carries on, and a press in progress ends when the keys do (the watchdog).
             print("🎙️ Global push-to-talk: event tap interrupted (\(eventType.rawValue))")
-            cancelUntilRelease()
-            cancellationPublisher.send(())
             if let globalEventTap {
                 CGEvent.tapEnable(tap: globalEventTap, enable: true)
             }
+            if awaitsShortcutRelease && !BuddyPushToTalkShortcut.isPhysicallyHeld { awaitsShortcutRelease = false }
             return Unmanaged.passUnretained(event)
         }
+
+        let hoverHeld = CookieHoverShortcut.isHeld(modifierFlagsRawValue: event.flags.rawValue)
+        if eventType == .keyDown && hoverHeld { hoverTypedOver = true }
+        if !hoverHeld { hoverTypedOver = false }
+        if eventType == .flagsChanged || hoverTypedOver { hoverShortcutPublisher.send(hoverHeld && !hoverTypedOver) }
 
         let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         if eventType == .keyDown && eventKeyCode == 53 {
@@ -147,11 +186,11 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             break
         case .pressed:
             print("🎙️ Global push-to-talk: pressed")
-            isShortcutCurrentlyPressed = true
+            setPressed(true)
             shortcutTransitionPublisher.send(.pressed)
         case .released:
             print("🎙️ Global push-to-talk: released")
-            isShortcutCurrentlyPressed = false
+            setPressed(false)
             shortcutTransitionPublisher.send(.released)
         }
 

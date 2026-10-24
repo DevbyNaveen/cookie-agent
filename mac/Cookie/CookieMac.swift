@@ -7,7 +7,10 @@
 //  scripting (Excel, Word, PowerPoint, Numbers, Keynote, Pages), then the
 //  accessibility tree (press / set a value), then synthetic input (type,
 //  keys, scroll, drag, a click at screenshot coordinates) for what neither
-//  reaches. Teach mode points at the next control and waits for the person.
+//  reaches. Show, then do: before each action on the screen Cookie's hand goes
+//  there and presses, so the person sees where she acts. Guided steps (do it
+//  with me) show the hand, a numbered badge and the instruction on the control,
+//  and wait for the person to use it.
 //
 //  Enforced here, whatever the model asks:
 //  - nothing acts without a task the person approved (`start_task`), and only
@@ -198,6 +201,8 @@ final class MacOperator {
 
     /// Moves Cookie's pointer: AppKit global point, its display, a short sentence.
     var point: ((CGPoint, CGRect, String) -> Void)?
+    /// Shows the guided step the person is doing (hand, numbered badge, instruction, spotlight), or none.
+    var guiding: ((CookieGuideStep?) -> Void)?
     /// Stops the whole run (Esc).
     var stopRun: (() -> Void)?
     /// The screenshots of the current run, for `click_at`.
@@ -209,6 +214,17 @@ final class MacOperator {
     private var labels: [Int: String] = [:]
     private var lookedAt: pid_t?
     private var escMonitors: [Any] = []
+    /// Bumped when a run ends (Escape, Stop, done): a guided step still waiting stops.
+    private var runGeneration = 0
+    /// Guided steps shown this run, for each step's number.
+    private var guideStepsShown = 0
+    /// What the person said or typed while a step waited ("skip", "done", a question).
+    private var stepAnswer: String?
+    /// A guided step is waiting on the person.
+    private(set) var isWaitingForStep = false
+    /// How long a guided step waits, and when the instruction becomes a nudge.
+    static let stepTimeout: TimeInterval = 180
+    static let stepNudgeAfter: TimeInterval = 45
 
     // MARK: Tools
 
@@ -265,8 +281,11 @@ final class MacOperator {
             tool("point_at", "read", "Teach mode: point Cookie's pointer at an element and say one short instruction for the person to do themselves.",
                  ["id": "Element id from the latest look.", "say": "One short instruction, e.g. \"Click Insert, then Chart\"."], ["id", "say"]),
             tool("wait_for_step", "read",
-                 "Teach mode: wait until the person does the step you pointed at (clicks it, changes it, or focus moves), then return what changed. Times out after the given seconds.",
-                 ["id": "Element id you pointed at.", "timeout": "Seconds to wait, 5 to 180 (default 60)."], ["id"]),
+                 "Guide the person through one step they do themselves: your hand goes to the control, a numbered badge and your instruction appear beside it, the rest of the screen dims, and you wait until they click it, change it or focus it, or say or type skip or done (or anything else, which comes back to you). Up to 3 minutes; after 45 seconds your hint replaces the instruction. Look again after it returns.",
+                 ["id": "Element id from the latest look: the control they should use.",
+                  "say": "The instruction, a few words, e.g. \"Click Insert\".",
+                  "hint": "Optional: where it is, for a gentle nudge, e.g. \"It's the blue button on the right\".",
+                  "step": "Optional: this step's number (default: the next one)."], ["id", "say"]),
         ]
     }
 
@@ -363,6 +382,16 @@ final class MacOperator {
         grant.actions += 1
         self.grant = grant
 
+        // Show, then do: the hand goes there and presses first. Esc meanwhile ends the task, and the action doesn't run.
+        if let cue = cue(for: name, args) {
+            await CookieHand.shared.act(at: cue.point, dragTo: cue.dragTo, label: cue.label)
+            guard self.grant != nil else {
+                CookieHand.shared.actionFinished()
+                return ("Stopped: the person pressed Esc before this ran.", true)
+            }
+        }
+        defer { CookieHand.shared.actionFinished() }
+
         let result: (String, Bool)
         switch name {
         case "press": result = press(args)
@@ -371,7 +400,7 @@ final class MacOperator {
         case "replace_selection": result = replaceSelection(args)
         case "key": result = key(args)
         case "scroll": result = scroll(args)
-        case "drag": result = drag(args)
+        case "drag": result = await drag(args)
         case "choose_menu": result = chooseMenu(args)
         case "click_at": result = clickAt(args)
         case "run_script": result = runScript(args)
@@ -385,6 +414,9 @@ final class MacOperator {
 
     /// The run ended: the task ends with it.
     func endRun() {
+        runGeneration += 1
+        guideStepsShown = 0
+        guiding?(nil)
         grant = nil
         screens = []
         elements = [:]
@@ -664,7 +696,7 @@ final class MacOperator {
         return ("Scrolled.", false)
     }
 
-    private func drag(_ args: [String: Any]) -> (String, Bool) {
+    private func drag(_ args: [String: Any]) async -> (String, Bool) {
         guard let from = element(args, "from_id").flatMap(Self.center), let to = element(args, "to_id").flatMap(Self.center) else {
             return ("No element with one of those ids. Look again first.", true)
         }
@@ -674,7 +706,8 @@ final class MacOperator {
             let t = CGFloat(step) / 12
             let point = CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t)
             CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
-            usleep(12_000)
+            // Awaited, not slept: the main thread keeps drawing Cookie's hand along the drag.
+            try? await Task.sleep(for: .milliseconds(12))
         }
         CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: to, mouseButton: .left)?.post(tap: .cghidEventTap)
         return ("Dragged.", false)
@@ -720,15 +753,76 @@ final class MacOperator {
     }
 
     private func clickAt(_ args: [String: Any]) -> (String, Bool) {
+        guard !screens.isEmpty else { return ("There's no screenshot in this run to click on. Ask the person to share their screen.", true) }
+        guard let point = clickPoint(args) else { return ("Give x and y in screenshot pixels.", true) }
+        return Self.click(at: point) ? ("Clicked.", false) : ("Couldn't click there.", true)
+    }
+
+    /// A click_at point in CG global coordinates: its screenshot pixels, on the screenshot it names
+    /// (else the pointer's).
+    private func clickPoint(_ args: [String: Any]) -> CGPoint? {
         guard let x = (args["x"] as? Double) ?? Self.int(args["x"]).map(Double.init),
-              let y = (args["y"] as? Double) ?? Self.int(args["y"]).map(Double.init) else { return ("Give x and y in screenshot pixels.", true) }
+              let y = (args["y"] as? Double) ?? Self.int(args["y"]).map(Double.init) else { return nil }
         let screen: MacScreen?
         if let index = Self.int(args["screen"]), index >= 1, index <= screens.count { screen = screens[index - 1] } else { screen = screens.first { $0.isCursorScreen } ?? screens.first }
-        guard let screen else { return ("There's no screenshot in this run to click on. Ask the person to share their screen.", true) }
+        guard let screen else { return nil }
         let mainHeight = NSScreen.screens.first?.frame.height ?? screen.displayFrame.height
-        let point = screenshotPointToGlobal(x: x, y: y, pixelWidth: screen.pixelWidth, pixelHeight: screen.pixelHeight,
-                                            displayFrame: screen.displayFrame, mainHeight: mainHeight)
-        return Self.click(at: point) ? ("Clicked.", false) : ("Couldn't click there.", true)
+        return screenshotPointToGlobal(x: x, y: y, pixelWidth: screen.pixelWidth, pixelHeight: screen.pixelHeight,
+                                       displayFrame: screen.displayFrame, mainHeight: mainHeight)
+    }
+
+    // MARK: Show, then do
+
+    /// Where the hand goes before an action (AppKit global), what its pill says, and a drag's drop
+    /// point; nil for actions with no place on the screen (keys, scripts, replacing a selection).
+    private func cue(for name: String, _ args: [String: Any]) -> (point: CGPoint, dragTo: CGPoint?, label: String)? {
+        let mainHeight = NSScreen.screens.first?.frame.height ?? 0
+        func appKit(_ point: CGPoint) -> CGPoint { CGPoint(x: point.x, y: mainHeight - point.y) }
+        /// "Clicking" + the control's first words: two to four words in all.
+        func pill(_ verb: String, _ key: String = "id") -> String {
+            let words = Self.int(args[key]).flatMap { labels[$0] }?.split(separator: " ").prefix(3).joined(separator: " ") ?? ""
+            return words.isEmpty ? verb : "\(verb) \(words)"
+        }
+        switch name {
+        case "press":
+            return element(args).flatMap(Self.center).map { (appKit($0), nil, pill("Clicking")) }
+        case "set_value":
+            return element(args).flatMap(Self.center).map { (appKit($0), nil, pill("Filling")) }
+        case "type_text":
+            // The hand rests at the caret while the words appear; at the field's leading edge when the app doesn't say.
+            guard let field = Self.focusedElement(),
+                  let spot = Self.caret(in: field) ?? Self.frame(field).map({ CGPoint(x: $0.minX + 6, y: $0.midY) }) else { return nil }
+            return (appKit(spot), nil, "Typing")
+        case "scroll":
+            let direction = (args["direction"] as? String ?? "down").lowercased()
+            let point = element(args).flatMap(Self.center).map(appKit) ?? NSEvent.mouseLocation
+            return (point, nil, "Scrolling \(direction)")
+        case "drag":
+            guard let from = element(args, "from_id").flatMap(Self.center), let to = element(args, "to_id").flatMap(Self.center) else { return nil }
+            return (appKit(from), appKit(to), pill("Dragging", "from_id"))
+        case "choose_menu":
+            guard let title = (args["path"] as? String)?.split(separator: ">").first?.trimmingCharacters(in: .whitespaces),
+                  let app = NSWorkspace.shared.frontmostApplication,
+                  let menuBar = Self.attribute(AXUIElementCreateApplication(app.processIdentifier), kAXMenuBarAttribute) as! AXUIElement?,
+                  let item = Self.menuChild(menuBar, titled: title), let center = Self.center(item) else { return nil }
+            return (appKit(center), nil, "Opening \(title)")
+        case "click_at":
+            return clickPoint(args).map { (appKit($0), nil, "Clicking here") }
+        default:
+            return nil
+        }
+    }
+
+    /// The caret in a text field (CG global), beside the character before it; nil when the app
+    /// doesn't give character bounds (`kAXSelectedTextRangeAttribute`, `kAXBoundsForRangeParameterizedAttribute`).
+    private static func caret(in field: AXUIElement) -> CGPoint? {
+        guard let value = attribute(field, kAXSelectedTextRangeAttribute), CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        var selection = CFRange()
+        guard AXValueGetValue(value as! AXValue, .cfRange, &selection) else { return nil }
+        if selection.location > 0, let glyph = CookieReadingPen.bounds(field, CFRange(location: selection.location - 1, length: 1)) {
+            return CGPoint(x: glyph.maxX, y: glyph.midY)
+        }
+        return CookieReadingPen.bounds(field, CFRange(location: selection.location, length: 1)).map { CGPoint(x: $0.minX, y: $0.midY) }
     }
 
     private func runScript(_ args: [String: Any]) -> (String, Bool) {
@@ -762,34 +856,88 @@ final class MacOperator {
         return ("Pointing at it.", false)
     }
 
+    /// Do it with me: the hand, a numbered badge and the instruction on the control, the rest dimmed;
+    /// then wait until the person clicks it (a listen-only global mouse monitor, hit-tested against
+    /// its AX frame), changes or focuses it, or says or types something. A nudge at 45 s, done at 3 min.
     private func waitForStep(_ args: [String: Any]) async -> (String, Bool) {
-        guard let element = element(args) else { return ("No element with that id. Look again first.", true) }
-        let timeout = Double(min(180, max(5, Self.int(args["timeout"]) ?? 60)))
+        guard let element = element(args), let frame = Self.frame(element) else { return ("No element with that id. Look again first.", true) }
+        let say = String((args["say"] as? String ?? "").prefix(140))
+        let hint = String((args["hint"] as? String ?? "").prefix(140))
+        let mainHeight = NSScreen.screens.first?.frame.height ?? 0
+        let control = CookieDrawingResolver.appKit(frame, mainHeight: mainHeight)
+        guideStepsShown = Self.int(args["step"]) ?? guideStepsShown + 1
+        var step = CookieGuideStep(control: control,
+                                   displayFrame: NSScreen.screens.first { $0.frame.intersects(control) }?.frame ?? NSScreen.main?.frame ?? .zero,
+                                   number: guideStepsShown, instruction: say.isEmpty ? "Click here" : say)
+        guiding?(step)
+
         let startValue = Self.string(element, kAXValueAttribute)
-        let frame = Self.frame(element)
         let app = lookedAt.map(AXUIElementCreateApplication)
         let startWindow = app.flatMap { Self.attribute($0, kAXFocusedWindowAttribute) as! AXUIElement? }.flatMap { Self.string($0, kAXTitleAttribute) }
         var clicked = false
-        let mainHeight = NSScreen.screens.first?.frame.height ?? 0
         let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
             let location = NSEvent.mouseLocation
             let cg = CGPoint(x: location.x, y: mainHeight - location.y)
-            if let frame, frame.insetBy(dx: -4, dy: -4).contains(cg) { clicked = true }
+            if frame.insetBy(dx: -4, dy: -4).contains(cg) { clicked = true }
         }
-        defer { if let monitor { NSEvent.removeMonitor(monitor) } }
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
+        let generation = runGeneration
+        stepAnswer = nil
+        isWaitingForStep = true
+        defer {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            isWaitingForStep = false
+            stepAnswer = nil
+        }
+        let started = Date()
+        var nudged = false
+        while Date().timeIntervalSince(started) < Self.stepTimeout {
             try? await Task.sleep(for: .milliseconds(250))
-            if Task.isCancelled { return ("Stopped.", true) }
-            if clicked { return ("The person clicked it.\n\(afterState())", false) }
-            if Self.string(element, kAXValueAttribute) != startValue { return ("The person changed it.\n\(afterState())", false) }
-            if let app, let focused = Self.attribute(app, kAXFocusedUIElementAttribute) as! AXUIElement?, CFEqual(focused, element) {
-                return ("The person moved focus to it.\n\(afterState())", false)
+            // Escape or Stop ended the run (and endRun cleared the step).
+            if generation != runGeneration { return ("Stopped: the person ended the guide.", true) }
+            if !nudged, Date().timeIntervalSince(started) >= Self.stepNudgeAfter {
+                nudged = true
+                step.instruction = hint.isEmpty ? "It's here, where my hand is" : hint
+                guiding?(step)
+            }
+            var outcome: String?
+            if clicked { outcome = "The person clicked it." }
+            else if Self.string(element, kAXValueAttribute) != startValue { outcome = "The person changed it." }
+            else if let app, let focused = Self.attribute(app, kAXFocusedUIElementAttribute) as! AXUIElement?, CFEqual(focused, element) {
+                outcome = "The person moved focus to it."
+            }
+            if outcome == nil, let words = stepAnswer {
+                let said = words.lowercased()
+                if said.contains("skip") {
+                    guiding?(nil)
+                    return ("The person skipped this step. Go on to the next one.", false)
+                }
+                guard said.contains("done") else {
+                    guiding?(nil)
+                    return ("The person said: “\(words.prefix(300))”. Answer them, then wait_for_step again if this step still stands.", false)
+                }
+                outcome = "The person says it's done."
+            }
+            if let outcome {
+                step.done = true
+                guiding?(step)
+                // A moment for the check to show before the next step.
+                try? await Task.sleep(for: .milliseconds(450))
+                return ("\(outcome)\n\(afterState())", false)
             }
             let window = app.flatMap { Self.attribute($0, kAXFocusedWindowAttribute) as! AXUIElement? }.flatMap { Self.string($0, kAXTitleAttribute) }
-            if window != startWindow { return ("A different window is in front now.\n\(afterState())", false) }
+            if window != startWindow {
+                guiding?(nil)
+                return ("A different window is in front now.\n\(afterState())", false)
+            }
         }
-        return ("The person hasn't done it yet (waited \(Int(timeout)) s). Ask if they need help, or point again.", false)
+        guiding?(nil)
+        return ("The person hasn't done it yet (waited 3 minutes). Ask if they need help, or guide the step again.", false)
+    }
+
+    /// Words the person said or typed while a step waits: they end the wait.
+    func answerStep(_ words: String) {
+        guard isWaitingForStep else { return }
+        stepAnswer = words
     }
 
     // MARK: After each step
@@ -828,21 +976,22 @@ final class MacOperator {
     }
 
     // MARK: AX helpers
+    // Pure reads of another app's tree, safe off the main thread (the reading pen walks it there).
 
-    static func attribute(_ element: AXUIElement, _ name: String) -> AnyObject? {
+    nonisolated static func attribute(_ element: AXUIElement, _ name: String) -> AnyObject? {
         var value: AnyObject?
         guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
         return value
     }
 
-    static func string(_ element: AXUIElement, _ name: String) -> String? {
+    nonisolated static func string(_ element: AXUIElement, _ name: String) -> String? {
         let value = attribute(element, name)
         if let text = value as? String { return text }
         if let number = value as? NSNumber { return number.stringValue }
         return nil
     }
 
-    static func frame(_ element: AXUIElement) -> CGRect? {
+    nonisolated static func frame(_ element: AXUIElement) -> CGRect? {
         guard let position = attribute(element, kAXPositionAttribute), let size = attribute(element, kAXSizeAttribute) else { return nil }
         var point = CGPoint.zero
         var extent = CGSize.zero

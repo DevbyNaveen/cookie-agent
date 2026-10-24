@@ -222,9 +222,6 @@ final class NotchPanelManager {
     private func applyPreferences() {
         cancelHoverIntent()
         let defaults = UserDefaults.standard
-        let visible = defaults.object(forKey: CK.Key.showInRecordings) as? Bool ?? true
-        panel.sharingType = visible ? .readOnly : .none
-        windowController.setSharing(visible)
         let wantsDock = defaults.bool(forKey: CK.Key.showInDock)
         let policy: NSApplication.ActivationPolicy = wantsDock ? .regular : .accessory
         if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
@@ -415,7 +412,6 @@ final class CookieWindowController: NSObject, NSWindowDelegate {
     private let companionManager: CompanionManager
     private let navigation: CookieNavigation
     private var window: NSWindow?
-    private var sharingVisible = true
 
     init(companionManager: CompanionManager, navigation: CookieNavigation) {
         self.companionManager = companionManager
@@ -423,11 +419,6 @@ final class CookieWindowController: NSObject, NSWindowDelegate {
     }
 
     var isFrontmost: Bool { window?.isKeyWindow == true && NSApp.isActive }
-
-    func setSharing(_ visible: Bool) {
-        sharingVisible = visible
-        window?.sharingType = visible ? .readOnly : .none
-    }
 
     func show() {
         let visibleFrame = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame.insetBy(dx: 16, dy: 16)
@@ -446,7 +437,6 @@ final class CookieWindowController: NSObject, NSWindowDelegate {
             window.appearance = NSAppearance(named: .darkAqua)
             window.minSize = NSSize(width: min(480, visibleFrame.width), height: min(400, visibleFrame.height))
             window.isReleasedWhenClosed = false
-            window.sharingType = sharingVisible ? .readOnly : .none
             window.contentView = NSHostingView(rootView: CookieHomeView(
                 mode: .window, companionManager: companionManager, navigation: navigation
             ))
@@ -686,6 +676,7 @@ private struct PeekView: View {
     @ObservedObject private var work = WorkStore.shared
     @ObservedObject private var calendar = CookieCalendar.shared
     @ObservedObject private var recorder = CookieRecorder.shared
+    @ObservedObject private var cookie = CookieAPI.shared
 
     private var lines: [PeekLine] {
         var notes: PeekLines.MeetingNotes?
@@ -698,7 +689,8 @@ private struct PeekView: View {
             PeekLines.latest(threads: companionManager.threads, work: work.items, meetingNotes: notes, chatsLocked: lock.isLocked),
             PeekLines.now(working: companionManager.isWorking, step: companionManager.workingStep,
                           threadTitle: companionManager.currentThread?.title, approval: approval, work: work.items,
-                          voiceState: companionManager.voiceState, dozing: companionManager.isDozing),
+                          voiceState: companionManager.voiceState, dozing: companionManager.isDozing,
+                          boardNeeds: cookie.needs.map(\.title)),
             PeekLines.upNext(access: calendar.access, meeting: meeting, recalled: meeting.flatMap { calendar.recalled[$0.id] },
                              work: work.items),
         ]
@@ -723,7 +715,10 @@ private struct PeekView: View {
             audioLevel: companionManager.currentAudioPowerLevel,
             gaze: companionManager.gazeTowardPointer
         )
-        .onAppear { calendar.refresh() }
+        .onAppear {
+            calendar.refresh()
+            cookie.refreshIfRunning()
+        }
         .overlay(alignment: .topTrailing) {
             if navigation.showsShortcuts {
                 ShortcutsCard()

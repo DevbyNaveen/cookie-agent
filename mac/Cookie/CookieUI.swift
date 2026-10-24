@@ -29,6 +29,10 @@ enum CK {
         static let showInRecordings = "cookie.showInRecordings"
         static let peekOnHover = "cookie.peekOnHover"
         static let sounds = "cookie.sounds"
+        /// Hover to explain (hold ⌥⇧, rest the pointer); on unless turned off.
+        static let hoverExplain = "cookie.hoverExplain"
+        /// Hover answers spoken as well as shown; off unless turned on.
+        static let hoverExplainAloud = "cookie.hoverExplainAloud"
     }
 }
 
@@ -87,24 +91,23 @@ final class CookieNavigation: ObservableObject {
     @Published var showsSidebarDrawer = false
 }
 
-/// Small Cookie for strips and labels: chips, no face.
-struct CookieMark: View {
-    var size: CGFloat = 12
-    var body: some View { ClayCookie(size: size * 1.55, face: false, alive: false) }
-}
-
-/// Cookie herself by default; a Cookie the person made has its own creature, the same one every time.
+/// Cookie herself is the orb; a Cookie the person made has its own creature, the same one every time.
+/// The big orbs look at the pointer, as on Cookie's page.
 struct CookieAvatar: View {
     var size: CGFloat = 32
     var agent: CookieAgent? = nil
-    var mood: ClayCookie.Mood = .idle
+    var mood: CookieOrb.Mood = .idle
     var animatesIdle = false
     var isEngaged = false
     var gaze: CGFloat? = nil
 
     var body: some View {
-        ChatCompanionAvatar(size: size, threadID: agent.flatMap { $0.builtIn ? nil : $0.id },
-                            mood: mood, animatesIdle: animatesIdle, isEngaged: isEngaged, gaze: gaze)
+        if let agent, !agent.builtIn {
+            ChatCompanionAvatar(size: size, threadID: agent.id,
+                                mood: mood, animatesIdle: animatesIdle, isEngaged: isEngaged, gaze: gaze)
+        } else {
+            CookieOrb(size: size, mood: mood, gaze: gaze, follow: size >= 40)
+        }
     }
 }
 

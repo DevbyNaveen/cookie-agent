@@ -4,7 +4,8 @@
 //
 //  The notch peek: three rows and a chat field.
 //    Latest  - the newest thing that happened (a reply, a moved card, meeting notes)
-//    Now     - what Cookie is doing, or where your work stands
+//    Now     - what Cookie is doing, else what waits for you on the Board
+//              (Cookie's drafts, approvals and questions first), else where your work stands
 //    Up next - your next meeting with one line of prep, else the most urgent work
 //  The rows are built from plain values (testable); PeekView wires them up.
 //
@@ -27,7 +28,7 @@ struct PeekLine: Equatable, Identifiable {
     var action: PeekAction = .none
     /// A live reply is in progress; tracked work alone does not set this.
     var busy = false
-    var characterMood: ClayCookie.Mood = .idle
+    var characterMood: CookieOrb.Mood = .idle
     var id: String { kind.rawValue }
 
     var label: String {
@@ -73,8 +74,9 @@ enum PeekLines {
                                       detail: "What Cookie finishes shows up here.")
     }
 
+    /// `boardNeeds`: the titles of what waits for the person in Cookie's API (`CookieAPI.needs`).
     static func now(working: Bool, step: String?, threadTitle: String?, approval: String?, work: [WorkItem],
-                    voiceState: CompanionVoiceState = .idle, dozing: Bool = false) -> PeekLine {
+                    voiceState: CompanionVoiceState = .idle, dozing: Bool = false, boardNeeds: [String] = []) -> PeekLine {
         if let approval {
             return PeekLine(kind: .now, symbol: "hand.raised.fill", tint: .orange, title: "Cookie needs your OK",
                             detail: approval, button: "Review", action: .review)
@@ -92,6 +94,12 @@ enum PeekLines {
                             detail: threadTitle ?? "Working on it", button: "Stop", action: .stop, busy: true, characterMood: .thinking)
         }
         let open = work.filter { $0.column != .done }
+        if let first = boardNeeds.first {
+            let count = boardNeeds.count + open.filter { $0.column == .needsYou }.count
+            return PeekLine(kind: .now, symbol: WorkColumn.needsYou.symbol, tint: WorkColumn.needsYou.tint,
+                            title: "\(count) need\(count == 1 ? "s" : "") you", detail: first,
+                            button: "Board", action: .openWorkBoard)
+        }
         let needs = open.filter { $0.column == .needsYou }.count
         let waiting = open.filter { $0.column == .waiting }.count
         let doing = open.filter { $0.column == .cookie }.count

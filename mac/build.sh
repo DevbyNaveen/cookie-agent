@@ -3,10 +3,16 @@
 set -e
 cd "$(dirname "$0")"
 # Cookie thinks through `cookie serve`, this repo's core, bundled as a helper.
-# Build it first from the repo root: `cargo build --release --bin cookie`; COOKIE_HARNESS_BIN overrides the path.
-HARNESS="${COOKIE_HARNESS_BIN:-../target/release/cookie}"
+# Built here with Amazon Bedrock (the `bedrock` cargo feature, Rust 1.91+), so every
+# provider Settings offers can answer. COOKIE_HARNESS_BIN uses a binary you built instead.
+if [ -n "$COOKIE_HARNESS_BIN" ]; then
+  HARNESS="$COOKIE_HARNESS_BIN"
+else
+  (cd .. && cargo build --release --bin cookie --features bedrock)
+  HARNESS=../target/release/cookie
+fi
 [ -x "$HARNESS" ] || { echo "error: harness binary not found or not executable: $HARNESS" >&2
-  echo "       build it (cargo build --release --bin cookie) or set COOKIE_HARNESS_BIN" >&2; exit 1; }
+  echo "       build it (cargo build --release --bin cookie --features bedrock) or set COOKIE_HARNESS_BIN" >&2; exit 1; }
 # Your Developer ID (security find-identity -v -p codesigning) keeps the signature
 # stable across rebuilds; without one the app is signed ad hoc (macOS then asks for
 # its permissions again after each rebuild).
@@ -31,7 +37,7 @@ $P -c "Add :CFBundleExecutable string Cookie" -c "Add :CFBundleIdentifier string
    -c "Add :CFBundleName string Cookie" -c "Add :CFBundleDisplayName string Cookie" \
    -c "Add :CFBundlePackageType string APPL" -c "Add :CFBundleShortVersionString string 0.1.0" \
    -c "Add :CFBundleVersion string 1" -c "Add :CFBundleIconFile string AppIcon" \
-   -c "Add :NSAppleEventsUsageDescription string 'Cookie edits documents in this app only for a task you approved.'" -c "Add :LSMinimumSystemVersion string 14.2" "$APP/Contents/Info.plist"
+   -c "Add :NSAppleEventsUsageDescription string 'Cookie edits documents in this app only for a task you approved.'" -c "Add :LSMinimumSystemVersion string 15.0" "$APP/Contents/Info.plist"
 # A real identity keeps the signature stable across rebuilds, so macOS keeps the permission grants
 # (ad-hoc "-" pins grants to the cdhash, which changes every build). Override with COOKIE_SIGN_ID.
 # Hardened runtime with zero exception entitlements: code injected into Cookie
@@ -71,7 +77,7 @@ fi
 codesign --force --options runtime $TIMESTAMP --sign "$SIGN_ID" --entitlements Cookie/Cookie.entitlements "$APP"
 codesign --verify --strict --deep "$APP"
 for BIN in "$APP" "$APP/Contents/Helpers/cookie"; do
-  codesign -dv "$BIN" 2>&1 | grep -q "flags=0x10000(runtime)" || { echo "hardened runtime missing: $BIN"; exit 1; }
+  codesign -dv "$BIN" 2>&1 | grep -Eq "flags=0x[0-9a-f]+\([^)]*runtime" || { echo "hardened runtime missing: $BIN"; exit 1; }
 done
 echo "built $APP"
 

@@ -6,7 +6,7 @@ struct ChatCompanionAvatar: View {
 
     var size: CGFloat = 32
     var threadID: UUID?
-    var mood: ClayCookie.Mood = .idle
+    var mood: CookieOrb.Mood = .idle
     var animatesIdle = false
     var isEngaged = false
     /// Where the eyes look, -1 (left) to 1 (right); nil lets the idle glance decide.

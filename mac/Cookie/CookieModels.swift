@@ -56,6 +56,12 @@ struct CompanionChatMessage: Identifiable, Codable, Equatable {
     /// The reply was built from a screenshot or file, so on later turns it is
     /// untrusted context, never your words. Nil: saved before this was recorded.
     var readUntrusted: Bool?
+    /// Cookie needs to see the screen for this ([LOOK:screen] in a reply made without it): the
+    /// chat offers "Show my screen", which asks again with a screenshot. The person decides.
+    var wantsScreen: Bool?
+    /// Cookie was asked to look but macOS's Screen Recording access is off: the chat offers
+    /// "Turn on screen access", which opens that Settings page.
+    var screenAccessOff: Bool?
 }
 
 /// Each chat is handled by one specialist, picked from its first message.
@@ -137,17 +143,11 @@ struct CookieThread: Identifiable, Codable, Equatable {
 /// encryption existed is sealed on first load and then destroyed.
 enum CookieThreadStore {
     static func load() -> [CookieThread] {
-        let fm = FileManager.default
-        if let sealed = try? Data(contentsOf: ChatVault.encryptedFile) {
-            do {
-                return try decode(ChatVault.open(sealed))
-            } catch {
-                // Never overwrite chats we couldn't read: keep the file aside for recovery.
-                print("⚠️ Cookie: could not open saved chats: \(error)")
-                let aside = ChatVault.directory.appendingPathComponent("threads.unreadable-\(Int(Date().timeIntervalSince1970)).sealed")
-                try? fm.moveItem(at: ChatVault.encryptedFile, to: aside)
-                return []
-            }
+        do {
+            if let threads = try ChatVault.openStore(ChatVault.encryptedFile, name: "threads", decode: decode) { return threads }
+        } catch {
+            print("⚠️ Cookie: could not open saved chats: \(error)")
+            return []
         }
         guard let plaintext = try? Data(contentsOf: ChatVault.legacyPlaintextFile) else { return [] }
         let threads = (try? decode(plaintext)) ?? []
@@ -161,6 +161,7 @@ enum CookieThreadStore {
     }
 
     static func save(_ threads: [CookieThread]) {
+        guard !ChatVault.isWithheld(ChatVault.encryptedFile) else { return }
         do {
             try ChatVault.write(JSONEncoder().encode(threads))
         } catch {

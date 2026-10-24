@@ -50,7 +50,7 @@ final class CookieAccount: ObservableObject {
     @Published private(set) var phase: Phase = .signedOut
 
     static let issuer = URL(string: "https://api.thinkingroot.com")!
-    static let scope = "ask recall remember search connectors meetings"
+    static let scope = "ask recall remember search connectors meetings cookie"
 
     /// The signed-in project, for its REST routes (approvals, meetings).
     var projectID: String? { Self.stored()?.projectID }
@@ -170,7 +170,8 @@ final class CookieAccount: ObservableObject {
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "state", value: state),
             // Context, web search, the person's connected apps (every send or delete
-            // asks), and meetings they record. Not `agents`: Cookie runs no team.
+            // asks), meetings they record, and Cookie itself (its board, jobs and
+            // voice; granted only when asked for by name). Not `agents`: Cookie runs no team.
             URLQueryItem(name: "scope", value: scope),
             URLQueryItem(name: "code_challenge", value: challenge),
             URLQueryItem(name: "code_challenge_method", value: "S256"),

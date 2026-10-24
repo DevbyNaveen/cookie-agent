@@ -237,7 +237,8 @@ The board, the conversations and the chat, as Enkeon's teams use them, for the
 folder you open it in (read only; default: this one). Jobs run as in `cookie
 local`; a page address Cookie found in what it read waits for your yes on the
 page. Everything is kept in --home (default ~/.cookie): one file per job, one
-per conversation, and SOUL.md, your own words on how Cookie should be.
+per conversation, your routines (each job runs at its hour on this computer's
+clock), and SOUL.md, your own words on how Cookie should be.
 
   --model provider:model   the model (default: Anthropic when ANTHROPIC_API_KEY is set)
   --permission ask|full    ask before opening an address from what it read (default: ask)

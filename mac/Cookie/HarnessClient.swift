@@ -47,8 +47,10 @@ enum CookieModelSettings {
         Provider(name: "bedrock", title: "Amazon Bedrock", fields: [
             Field(variable: "AWS_ACCESS_KEY_ID", label: "Access key ID"),
             Field(variable: "AWS_SECRET_ACCESS_KEY", label: "Secret access key"),
+            // Read by src/providers/bedrock.rs `from_env`: the session token only for temporary credentials.
+            Field(variable: "AWS_SESSION_TOKEN", label: "Session token", required: false),
             Field(variable: "AWS_REGION", label: "Region", secret: false, required: false),
-        ], note: "Region is needed only for models without an eu. or us. profile, for example eu-central-1."),
+        ], note: "Session token only for temporary credentials. Region only for a model id without an eu. or us. inference profile (eu. is called in eu-central-1, us. in us-east-1), for example eu-north-1."),
         Provider(name: "ollama", title: "Ollama", fields: [], note: "None needed — Ollama runs on this Mac."),
     ]
 
@@ -229,20 +231,38 @@ final class HarnessClient {
         let request = HarnessRequest.Run(
             id: "cookie-\(runCounter)", model: model, input: text, instructions: instructions,
             // open, and the Mac tools: acting needs a task the person approved.
-            tools: [CookieOpen.tool, CookieHandoff.tool, CookieScreenMemory.tool] + MacOperator.tools,
+            tools: [CookieOpen.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieRoutineWords.tool] + MacOperator.tools,
             images: images,
             history: history,
             // On: left out, so the helper uses ENKEON_API_KEY from its environment.
             enkeon: enkeonKey == nil ? false : nil
         )
-        let id = request.id
-        return try await withTaskCancellationHandler {
+        return try await start(id: request.id, line: HarnessWire.encode(request),
+                               onText: onText, onStep: onStep, onApproval: onApproval)
+    }
+
+    /// One quick answer: no tools, no Enkeon, one model call (hover to explain). `onText` gets the
+    /// answer so far as it streams.
+    func ask(model: String, input text: String, instructions: String, images: [HarnessRequest.Image],
+             onText: @escaping (String) -> Void) async throws -> String {
+        try ensureRunning(environment: CookieModelSettings.helperEnvironment(model: model, enkeonKey: nil))
+        runCounter += 1
+        let request = HarnessRequest.Ask(id: "cookie-\(runCounter)", model: model, input: text,
+                                         instructions: instructions, images: images)
+        return try await start(id: request.id, line: HarnessWire.encode(request),
+                               onText: onText, onStep: { _ in }, onApproval: { _ in })
+    }
+
+    private func start(id: String, line: Data,
+                       onText: @escaping (String) -> Void,
+                       onStep: @escaping (String) -> Void,
+                       onApproval: @escaping (HarnessApproval?) -> Void) async throws -> String {
+        try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 cancel() // one run at a time: an older one still going ends here
-                active = ActiveRun(id: request.id, onText: onText, onStep: onStep,
+                active = ActiveRun(id: id, onText: onText, onStep: onStep,
                                    onApproval: onApproval, continuation: continuation)
                 if Task.isCancelled { cancel(); return }
-                let line = HarnessWire.encode(request)
                 if helperBusy { queued = line } else { send(line); helperBusy = true }
             }
         } onCancel: {
@@ -439,6 +459,14 @@ final class HarnessClient {
                     let answer = CookieScreenMemory.shared.answer(args["query"] as? String ?? "")
                     run.onStep("Remembering what was on screen")
                     self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: answer, is_error: false)))
+                }
+                return
+            }
+            if name == CookieRoutineWords.tool.name {
+                Task { @MainActor in
+                    let result = await CookieRoutineWords.perform(args)
+                    if !result.1 { run.onStep("Made a routine") }
+                    self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.0, is_error: result.1)))
                 }
                 return
             }

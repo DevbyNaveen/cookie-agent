@@ -14,7 +14,7 @@ source_files = sorted(
 executable = output_directory / "cookie-interaction-checks"
 subprocess.run([
     "swiftc", "-sdk", "/Library/Developer/CommandLineTools/SDKs/MacOSX15.5.sdk",
-    "-target", "arm64-apple-macosx14.2", "-swift-version", "5",
+    "-target", "arm64-apple-macosx15.0", "-swift-version", "5",
     "-module-cache-path", str(output_directory / "module-cache"),
     *map(str, source_files),
     *map(str, sorted((project_directory / "Tests" / "CookieInteractionTests").glob("*.swift"))),

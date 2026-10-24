@@ -33,56 +33,70 @@ struct CookieDrawing: Equatable {
     /// 1-based screen from the image labels; nil means the cursor's screen.
     let screenNumber: Int?
 
-    static let maxMarks = 6
-    private static let pattern = #"\[DRAW:(circle|arrow|underline|bracket|note|number):([^\]:]+)(?::([^\]]*?))?(?::screen(\d+))?\]"#
-    /// Any DRAW tag, known kind or not: all of them leave the spoken text.
-    private static let anyTag = #"\[DRAW:[^\]]*\]"#
+    /// UTF-16 offset in the spoken text where the tag sat: the mark draws when speech reaches it.
+    var offset = 0
 
-    /// Pulls every [DRAW:…] tag out of a reply: the text without them, and the marks in order.
+    static let maxMarks = 6
+    /// A DRAW tag's body: "kind:where[:label][:screenN]".
+    private static let body = try? NSRegularExpression(pattern: #"^(circle|arrow|underline|bracket|note|number):([^:]+)(?::(.*?))?(?::screen(\d+))?$"#,
+                                                       options: [.dotMatchesLineSeparators])
+
+    /// Pulls every [DRAW:…] tag out of a reply: the text without them, and the marks in order,
+    /// each with its place in that text. Any DRAW tag, known kind or not, leaves the text.
     static func parse(from text: String) -> (text: String, marks: [CookieDrawing]) {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return (text, []) }
-        let whole = NSRange(text.startIndex..., in: text)
-        var marks: [CookieDrawing] = []
-        for match in regex.matches(in: text, range: whole) {
-            guard let kindRange = Range(match.range(at: 1), in: text), let kind = Kind(rawValue: String(text[kindRange])),
-                  let whereRange = Range(match.range(at: 2), in: text) else { continue }
-            let label = Range(match.range(at: 3), in: text).map { String(text[$0]).trimmingCharacters(in: .whitespaces) } ?? ""
-            let screen = Range(match.range(at: 4), in: text).flatMap { Int(text[$0]) }
-            let place = text[whereRange].trimmingCharacters(in: .whitespaces)
-            let anchor: Anchor
-            var extent: Double?
-            if place.hasPrefix("#"), let id = Int(place.dropFirst()) {
-                anchor = .element(id)
-            } else {
-                let numbers = place.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
-                switch kind {
-                case .circle:
-                    guard numbers.count >= 2 else { continue }
-                    anchor = .pixels([CGPoint(x: numbers[0], y: numbers[1])])
-                    extent = numbers.count >= 3 ? max(8, numbers[2]) : 28
-                case .arrow:
-                    guard numbers.count >= 4 else { continue }
-                    anchor = .pixels([CGPoint(x: numbers[0], y: numbers[1]), CGPoint(x: numbers[2], y: numbers[3])])
-                case .underline:
-                    guard numbers.count >= 3 else { continue }
-                    anchor = .pixels([CGPoint(x: numbers[0], y: numbers[2])])
-                    extent = numbers[1]
-                case .bracket:
-                    guard numbers.count >= 3 else { continue }
-                    anchor = .pixels([CGPoint(x: numbers[0], y: numbers[1])])
-                    extent = numbers[2]
-                case .note, .number:
-                    guard numbers.count >= 2 else { continue }
-                    anchor = .pixels([CGPoint(x: numbers[0], y: numbers[1])])
-                }
+        let (spoken, tags) = CookieReplyTags.split(text, kinds: ["DRAW"])
+        return (spoken, Array(tags.compactMap(CookieDrawing.init(tag:)).prefix(maxMarks)))
+    }
+
+    init(kind: Kind, anchor: Anchor, extent: Double?, text: String, screenNumber: Int?, offset: Int = 0) {
+        self.kind = kind
+        self.anchor = anchor
+        self.extent = extent
+        self.text = text
+        self.screenNumber = screenNumber
+        self.offset = offset
+    }
+
+    /// One mark from a DRAW tag, or nil when the tag doesn't describe one.
+    init?(tag: CookieReplyTag) {
+        let text = tag.body
+        guard tag.kind == "DRAW", let regex = Self.body,
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let kindRange = Range(match.range(at: 1), in: text), let kind = Kind(rawValue: String(text[kindRange])),
+              let whereRange = Range(match.range(at: 2), in: text) else { return nil }
+        let label = Range(match.range(at: 3), in: text).map { String(text[$0]).trimmingCharacters(in: .whitespaces) } ?? ""
+        let screen = Range(match.range(at: 4), in: text).flatMap { Int(text[$0]) }
+        let place = text[whereRange].trimmingCharacters(in: .whitespaces)
+        let anchor: Anchor
+        var extent: Double?
+        if place.hasPrefix("#"), let id = Int(place.dropFirst()) {
+            anchor = .element(id)
+        } else {
+            let numbers = place.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            switch kind {
+            case .circle:
+                guard numbers.count >= 2 else { return nil }
+                anchor = .pixels([CGPoint(x: numbers[0], y: numbers[1])])
+                extent = numbers.count >= 3 ? max(8, numbers[2]) : 28
+            case .arrow:
+                guard numbers.count >= 4 else { return nil }
+                anchor = .pixels([CGPoint(x: numbers[0], y: numbers[1]), CGPoint(x: numbers[2], y: numbers[3])])
+            case .underline:
+                guard numbers.count >= 3 else { return nil }
+                anchor = .pixels([CGPoint(x: numbers[0], y: numbers[2])])
+                extent = numbers[1]
+            case .bracket:
+                guard numbers.count >= 3 else { return nil }
+                anchor = .pixels([CGPoint(x: numbers[0], y: numbers[1])])
+                extent = numbers[2]
+            case .note, .number:
+                guard numbers.count >= 2 else { return nil }
+                anchor = .pixels([CGPoint(x: numbers[0], y: numbers[1])])
             }
-            if kind == .note || kind == .number { guard !label.isEmpty else { continue } }
-            marks.append(CookieDrawing(kind: kind, anchor: anchor, extent: extent, text: String(label.prefix(kind == .note ? 80 : 24)), screenNumber: screen))
         }
-        let stripped = text.replacingOccurrences(of: anyTag, with: "", options: .regularExpression)
-            .replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (stripped, Array(marks.prefix(maxMarks)))
+        if kind == .note || kind == .number { guard !label.isEmpty else { return nil } }
+        self.init(kind: kind, anchor: anchor, extent: extent, text: String(label.prefix(kind == .note ? 80 : 24)),
+                  screenNumber: screen, offset: tag.offset)
     }
 }
 
@@ -101,12 +115,26 @@ struct CookieResolvedDrawing: Equatable, Identifiable {
     let text: String
     /// The display it belongs to (AppKit frame), so each overlay draws its own.
     let displayFrame: CGRect
+    /// Where its tag sat in the spoken text (`CookieDrawing.offset`).
+    var offset = 0
+    /// When its ink starts, in `CACurrentMediaTime()` seconds; set when the mark is shown.
+    var revealedAt: Double = 0
+    /// The reading pen (`CookieReadingPen`): an underline under words being read, inked as a
+    /// highlighter over the seconds those words take to say. Nil for every other mark.
+    var readSeconds: Double?
+
+    /// The same wobble every frame and every redraw: seeded by where the mark is, not by chance.
+    var seed: UInt32 {
+        var hash: UInt32 = 2_166_136_261
+        for byte in "\(geometry)\(text)".utf8 { hash = (hash ^ UInt32(byte)) &* 16_777_619 }
+        return hash == 0 ? 1 : hash
+    }
 }
 
 enum CookieDrawingResolver {
-    /// The screenshot a mark refers to: its screen number, else the cursor's screen.
-    static func capture(for mark: CookieDrawing, in captures: [CompanionScreenCapture]) -> CompanionScreenCapture? {
-        if let number = mark.screenNumber, number >= 1, number <= captures.count { return captures[number - 1] }
+    /// The screenshot a tag refers to: its screen number, else the cursor's screen.
+    static func capture(screen number: Int?, in captures: [CompanionScreenCapture]) -> CompanionScreenCapture? {
+        if let number, number >= 1, number <= captures.count { return captures[number - 1] }
         return captures.first { $0.isCursorScreen } ?? captures.first
     }
 
@@ -135,7 +163,7 @@ enum CookieDrawingResolver {
     static func resolve(_ marks: [CookieDrawing], captures: [CompanionScreenCapture],
                         elementFrame: (Int) -> CGRect?, snap: (CGPoint) -> CGRect? = CookieDrawingResolver.controlFrame) -> [CookieResolvedDrawing] {
         let mainHeight = NSScreen.screens.first?.frame.height ?? 0
-        return marks.compactMap { mark -> CookieResolvedDrawing? in
+        func place(_ mark: CookieDrawing) -> CookieResolvedDrawing? {
             switch mark.anchor {
             case .element(let id):
                 guard let frame = elementFrame(id) else { return nil }
@@ -143,7 +171,7 @@ enum CookieDrawingResolver {
                 let display = NSScreen.screens.first { $0.frame.intersects(rect) }?.frame ?? NSScreen.main?.frame ?? .zero
                 return CookieResolvedDrawing(geometry: geometry(mark.kind, around: rect, from: nil, to: nil), text: mark.text, displayFrame: display)
             case .pixels(let points):
-                guard let capture = capture(for: mark, in: captures), let first = points.first else { return nil }
+                guard let capture = capture(screen: mark.screenNumber, in: captures), let first = points.first else { return nil }
                 let scale = scale(of: capture)
                 let anchor = global(first, in: capture)
                 let display = capture.displayFrame
@@ -183,6 +211,11 @@ enum CookieDrawingResolver {
                     return CookieResolvedDrawing(geometry: .number(point), text: mark.text, displayFrame: display)
                 }
             }
+        }
+        return marks.compactMap { mark -> CookieResolvedDrawing? in
+            var placed = place(mark)
+            placed?.offset = mark.offset
+            return placed
         }
     }
 

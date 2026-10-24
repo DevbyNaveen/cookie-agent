@@ -29,7 +29,9 @@ struct CookieChatView: View {
                 GreetingView(mood: companionManager.voiceState.cookieMood, agent: companionManager.currentAgent)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                MessageList(companionManager: companionManager, navigation: navigation, roomy: roomy) { suggestion in
+                MessageList(companionManager: companionManager, navigation: navigation, roomy: roomy,
+                            onShowScreen: { companionManager.showScreenForLastRequest() },
+                            onScreenAccess: { companionManager.openScreenAccessSettings() }) { suggestion in
                     companionManager.sendTypedMessage(suggestion)
                 }
             }
@@ -102,7 +104,7 @@ struct CookieChatView: View {
 // MARK: - Empty state
 
 private struct GreetingView: View {
-    let mood: ClayCookie.Mood
+    let mood: CookieOrb.Mood
     var agent: CookieAgent? = nil
     @State private var appeared = false
 
@@ -149,6 +151,8 @@ private struct MessageList: View {
     @ObservedObject var companionManager: CompanionManager
     @ObservedObject var navigation: CookieNavigation
     let roomy: Bool
+    let onShowScreen: () -> Void
+    let onScreenAccess: () -> Void
     let onSuggestion: (String) -> Void
 
     var body: some View {
@@ -165,7 +169,8 @@ private struct MessageList: View {
                                 .padding(.top, index == 0 ? 4 : 10)
                         }
                         MessageRow(message: message, isLast: index == messages.count - 1,
-                                   navigation: navigation, onSuggestion: onSuggestion)
+                                   navigation: navigation, onShowScreen: onShowScreen, onScreenAccess: onScreenAccess,
+                                   onSuggestion: onSuggestion)
                             .id(message.id)
                             .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 8)), removal: .opacity))
                     }
@@ -201,6 +206,8 @@ private struct MessageRow: View {
     let message: CompanionChatMessage
     let isLast: Bool
     @ObservedObject var navigation: CookieNavigation
+    let onShowScreen: () -> Void
+    let onScreenAccess: () -> Void
     let onSuggestion: (String) -> Void
     @State private var hovering = false
     @State private var copied = false
@@ -266,6 +273,16 @@ private struct MessageRow: View {
                 .buttonStyle(.plain)
                 .help("Copy")
                 .opacity(hovering || copied ? 1 : 0)
+            }
+
+            if isLast && message.screenAccessOff == true {
+                PillButton(title: "Turn on screen access", symbol: "gearshape", primary: true, action: onScreenAccess)
+                    .padding(.top, 2)
+            }
+
+            if isLast && message.wantsScreen == true {
+                PillButton(title: "Show my screen", symbol: "rectangle.dashed", primary: true, action: onShowScreen)
+                    .padding(.top, 2)
             }
 
             if isLast && !message.nextSteps.isEmpty {
@@ -406,6 +423,7 @@ extension HarnessAction {
     var question: String {
         if let mac = MacOperator.shared.question(for: self) { return mac }
         if let handoff = CookieHandoff.question(for: self) { return handoff }
+        if let routine = CookieRoutineWords.question(for: self) { return routine }
         switch openTarget {
         case .settings?: return "Open System Settings?"
         case .app(let url)?: return "Open \(url.deletingPathExtension().lastPathComponent)?"
@@ -416,6 +434,10 @@ extension HarnessAction {
 
     var consequence: String {
         if tool == "start_task" { return "One yes covers this task in these apps. Sending, paying or deleting still asks. Esc stops it." }
+        if tool == CookieRoutineWords.tool.name {
+            if let agent = CookieRoutineWords.namedCookie { return "\(agent.name) does this job at those times on this Mac; it shows on your Board, where you can remove it." }
+            return "Cookie gives itself this job at those times; it shows on your Board, where you can pause it."
+        }
         switch openTarget {
         case .web?: return "In your browser. Nothing opens unless you allow it."
         case .some: return "On this Mac. Nothing opens unless you allow it."

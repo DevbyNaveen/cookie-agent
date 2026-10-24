@@ -203,19 +203,20 @@ final class WorkStore: ObservableObject {
     // MARK: Disk
 
     private func load() {
-        guard let sealed = try? Data(contentsOf: file) else { return }
         do {
-            items = try JSONDecoder().decode([WorkItem].self, from: ChatVault.open(sealed))
+            if let saved = try ChatVault.openStore(file, name: "work", decode: { try JSONDecoder().decode([WorkItem].self, from: $0) }) {
+                items = saved
+            }
+        } catch ChatVault.StoreError.keyWithheld {
+            syncProblem = ChatVault.withheldProblem("work")
         } catch {
-            // Never overwrite work we couldn't read: set it aside for recovery.
-            let aside = ChatVault.directory.appendingPathComponent("work.unreadable-\(Int(Date().timeIntervalSince1970)).sealed")
-            try? FileManager.default.moveItem(at: file, to: aside)
+            // Set aside for recovery, never overwritten.
             items = []
         }
     }
 
     private func save() {
-        guard connected else { return }
+        guard connected, !ChatVault.isWithheld(file) else { return }
         do {
             try FileManager.default.createDirectory(at: ChatVault.directory, withIntermediateDirectories: true)
             try ChatVault.seal(JSONEncoder().encode(items)).write(to: file, options: .atomic)

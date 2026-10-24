@@ -72,10 +72,7 @@ final class CircleSelectController {
         }
     }
 
-    private var shortcutIsHeld: Bool {
-        BuddyPushToTalkShortcut.isHeld(modifierFlagsRawValue: CGEventSource.flagsState(.combinedSessionState).rawValue,
-                                      spacePressed: CGEventSource.keyState(.combinedSessionState, key: 49))
-    }
+    private var shortcutIsHeld: Bool { BuddyPushToTalkShortcut.isPhysicallyHeld }
 
     /// Cancel never submits the unfinished selection and immediately gives input back.
     func cancel() {
@@ -281,7 +278,7 @@ private struct MagicTrailView: View {
             Canvas { ctx, _ in
                 draw(in: &ctx, t: t)
             } symbols: {
-                ChocoChip(size: 15).tag(0)
+                CookiePointer(size: 15).tag(0)
             }
         }
         .opacity(model.opacity)

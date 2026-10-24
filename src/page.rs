@@ -12,6 +12,11 @@
 //! A page address Cookie found in what it read waits for a yes on the page's
 //! approval card, as it does in Enkeon.
 //!
+//! A routine ("every Tuesday at 17:00, clean up my inbox") is kept here too and
+//! starts its job on this computer's own clock, as Enkeon starts one on the
+//! person's: at most once per time it is due, and not at all when Cookie was
+//! off for more than twelve hours past it.
+//!
 //! It listens on 127.0.0.1 only. A request whose `Host` is not this machine
 //! (DNS rebinding) or whose `Origin` is not the page (another site in the same
 //! browser) is refused before anything else is read.
@@ -66,6 +71,15 @@ const SOUL_CHARS: usize = 2_000;
 /// How long a stream ticket opens a stream, and how long an approval waits.
 const TICKET_TTL: Duration = Duration::from_secs(60);
 const APPROVAL_TTL: Duration = Duration::from_secs(600);
+/// How often due routines are looked for.
+const ROUTINE_TICK: Duration = Duration::from_secs(30);
+/// A run missed while Cookie was off still runs once if it is no later than
+/// this; an older one is skipped (Enkeon's rule).
+const ROUTINE_LATE_SECS: i64 = 12 * 3_600;
+/// As many routines as the board lists; one more would run where nobody could pause it.
+const MOST_ROUTINES: usize = 20;
+/// A routine's job, as long as a job may be.
+const JOB_CHARS: usize = 4_000;
 /// A comment line on an open stream, so nothing between closes it as idle.
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
 /// At most this often a stream sends a frame (about twenty a second).
@@ -130,6 +144,31 @@ impl Live {
     }
 }
 
+/// Something Cookie does on a cadence, in the shape the page reads
+/// (`CookieRoutine`): `weekday` 1 = Monday … 7 = Sunday, the hour and minute
+/// on this computer's clock.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Routine {
+    id: String,
+    job: String,
+    /// `daily` | `weekly` | `hourly`.
+    cadence: String,
+    weekday: i16,
+    hour: i16,
+    minute: i16,
+    seen: u32,
+    /// `active` | `paused` (made here, never offered).
+    state: String,
+    last_run_at: Option<String>,
+    created_at: String,
+    /// When it last became active, and the due time it last ran for (seconds
+    /// since 1970): a routine never runs for a time before it was on.
+    #[serde(default)]
+    since: i64,
+    #[serde(default)]
+    fired: i64,
+}
+
 struct Pending {
     view: Value,
     answer: oneshot::Sender<bool>,
@@ -142,6 +181,7 @@ struct State {
     live: Mutex<HashMap<String, Arc<Live>>>,
     approvals: Mutex<HashMap<String, Pending>>,
     tickets: Mutex<HashMap<String, (String, Instant)>>,
+    routines: Mutex<Vec<Routine>>,
     origins: Vec<String>,
     hosts: Vec<String>,
 }
@@ -154,6 +194,7 @@ pub async fn serve(opts: PageOptions) -> Result<(), String> {
         std::fs::create_dir_all(opts.home.join(dir)).map_err(|e| format!("{}: {e}", opts.home.join(dir).display()))?;
     }
     let runs = load_runs(&opts.home.join("runs"));
+    let routines: Vec<Routine> = std::fs::read(opts.home.join("routines.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let port = opts.port;
     let hosts = vec![format!("127.0.0.1:{port}"), format!("localhost:{port}"), format!("[::1]:{port}")];
     let mut origins: Vec<String> = hosts.iter().map(|h| format!("http://{h}")).collect();
@@ -165,9 +206,11 @@ pub async fn serve(opts: PageOptions) -> Result<(), String> {
         live: Mutex::new(HashMap::new()),
         approvals: Mutex::new(HashMap::new()),
         tickets: Mutex::new(HashMap::new()),
+        routines: Mutex::new(routines),
         origins,
         hosts,
     });
+    tokio::spawn(fire_routines(state.clone()));
     loop {
         let (stream, _) = match listener.accept().await {
             Ok(accepted) => accepted,
@@ -257,7 +300,21 @@ async fn cookie_api(state: &Arc<State>, method: Method, rest: &str, query: &str,
     match (method, parts.as_slice()) {
         (Method::GET, []) => ok(overview(state)),
         (Method::POST, ["jobs"]) => match body_json(req).await {
-            Ok(body) => start_job(state, &body),
+            Ok(body) => {
+                let text = body["text"].as_str().unwrap_or_default();
+                match start_job(state, text, body["conversation"].as_str(), "page") {
+                    Ok(id) => ok(json!({"run_id": id, "steered": false})),
+                    Err(e) => *e,
+                }
+            }
+            Err(e) => e,
+        },
+        (Method::POST, ["routines"]) => match body_json(req).await {
+            Ok(body) => create_routine(state, &body),
+            Err(e) => e,
+        },
+        (Method::POST, ["routines", id]) => match body_json(req).await {
+            Ok(body) => decide_routine(state, id, body["action"].as_str().unwrap_or_default()),
             Err(e) => e,
         },
         (Method::GET, ["runs", id]) => match state.runs.lock().expect("runs lock").get(*id) {
@@ -283,7 +340,10 @@ async fn cookie_api(state: &Arc<State>, method: Method, rest: &str, query: &str,
             Ok(body) => set_soul(state, body["text"].as_str().unwrap_or_default()),
             Err(e) => e,
         },
-        (Method::PUT, ["prefs"]) => ok(json!({"saved": true})),
+        (Method::PUT, ["prefs"]) => match body_json(req).await {
+            Ok(body) => set_prefs(state, &body),
+            Err(e) => e,
+        },
         _ => error(
             StatusCode::NOT_FOUND,
             "with_enkeon",
@@ -306,7 +366,8 @@ fn overview(state: &State) -> Value {
         "runs": runs.iter().map(|r| run_view(state, r)).collect::<Vec<_>>(),
         "waiting": [],
         "approvals": approvals,
-        "viewer": {"member_id": MEMBER, "via": "console", "pin_set": true, "soul": read_soul(&state.opts.home)},
+        "routines": routines_view(state),
+        "viewer": {"member_id": MEMBER, "via": "console", "pin_set": true, "soul": read_soul(&state.opts.home), "prefs": read_prefs(&state.opts.home)},
         "slack": {"available": false, "workspace": null},
     })
 }
@@ -324,22 +385,23 @@ fn run_view(state: &State, run: &Run) -> Value {
     view
 }
 
-fn start_job(state: &Arc<State>, body: &Value) -> Response<Body> {
-    let text = body["text"].as_str().unwrap_or_default().trim().to_string();
+/// Start a job (`trigger`: `page`, or `routine` for one a routine started);
+/// its id, or the refusal to send.
+fn start_job(state: &Arc<State>, text: &str, conversation: Option<&str>, trigger: &str) -> Result<String, Box<Response<Body>>> {
+    let text = text.trim().to_string();
     if text.is_empty() {
-        return error(StatusCode::BAD_REQUEST, "empty", "Give Cookie a job first.");
+        return Err(Box::new(error(StatusCode::BAD_REQUEST, "empty", "Give Cookie a job first.")));
     }
     let id = format!("ck_{}", token(12));
     // A follow-up continues its conversation: the same session file, so the
     // model reads what came before.
-    let conversation = body["conversation"]
-        .as_str()
+    let conversation = conversation
         .filter(|c| is_id(c) && state.runs.lock().expect("runs lock").values().any(|r| r.conversation.as_deref() == Some(*c)))
         .map(str::to_string)
         .unwrap_or_else(|| id.clone());
     let run = Run {
         id: id.clone(),
-        trigger: "page".into(),
+        trigger: trigger.into(),
         subject: clip(text.lines().next().unwrap_or_default(), 80),
         status: "running".into(),
         delivery: None,
@@ -360,7 +422,217 @@ fn start_job(state: &Arc<State>, body: &Value) -> Response<Body> {
     save(state, &run);
     state.runs.lock().expect("runs lock").insert(id.clone(), run);
     tokio::spawn(work(state.clone(), id.clone(), conversation, text, live));
-    ok(json!({"run_id": id}))
+    Ok(id)
+}
+
+// MARK: routines
+
+fn create_routine(state: &Arc<State>, body: &Value) -> Response<Body> {
+    let job: String = body["job"].as_str().unwrap_or_default().trim().chars().take(JOB_CHARS).collect();
+    let cadence = body["cadence"].as_str().unwrap_or_default();
+    let n = |k: &str, lo: i64, hi: i64| body[k].as_i64().filter(|v| (lo..=hi).contains(v)).map(|v| v as i16);
+    // Only a weekly routine has a day; the others keep Monday, as Enkeon's do.
+    let weekday = if cadence == "weekly" { n("weekday", 1, 7) } else { Some(1) };
+    let (Some(weekday), Some(hour), Some(minute)) = (weekday, n("hour", 0, 23), n("minute", 0, 59)) else {
+        return error(StatusCode::BAD_REQUEST, "bad_time", "A routine needs a weekday 1–7 (Monday is 1), an hour 0–23 and a minute 0–59.");
+    };
+    if job.is_empty() || !matches!(cadence, "daily" | "weekly" | "hourly") {
+        return error(StatusCode::BAD_REQUEST, "bad_routine", "A routine needs a job and a cadence: daily, weekly or hourly.");
+    }
+    let mut routines = state.routines.lock().expect("routines lock");
+    // The same routine asked again while it's active is the one already there, as in Enkeon.
+    let now = SystemTime::now();
+    if let Some(same) = routines.iter().find(|r| {
+        r.state == "active" && r.job == job && r.cadence == cadence && r.weekday == weekday && r.hour == hour && r.minute == minute
+    }) {
+        return ok(routine_view(same, unix(now)));
+    }
+    if routines.iter().filter(|r| r.state != "declined").count() >= MOST_ROUTINES {
+        return error(
+            StatusCode::CONFLICT,
+            "conflict",
+            &format!("You have {MOST_ROUTINES} routines already. Stop one on the Board first."),
+        );
+    }
+    let routine = Routine {
+        id: format!("cr_{}", token(10)),
+        job,
+        cadence: cadence.into(),
+        weekday,
+        hour,
+        minute,
+        seen: 0,
+        state: "active".into(),
+        last_run_at: None,
+        created_at: utc_iso(now),
+        since: unix(now),
+        fired: 0,
+    };
+    let view = routine_view(&routine, unix(now));
+    routines.push(routine);
+    save_routines(state, &routines);
+    ok(view)
+}
+
+/// pause / resume (and accept / decline, the same answers Enkeon takes).
+fn decide_routine(state: &Arc<State>, id: &str, action: &str) -> Response<Body> {
+    let mut routines = state.routines.lock().expect("routines lock");
+    let Some(i) = routines.iter().position(|r| r.id == id) else {
+        return error(StatusCode::NOT_FOUND, "not_found", "That routine isn't here.");
+    };
+    let now = unix(SystemTime::now());
+    let r = &mut routines[i];
+    match (action, r.state.as_str()) {
+        ("resume" | "accept", "paused") => {
+            r.state = "active".into();
+            r.since = now;
+        }
+        ("pause" | "decline", "active") => r.state = "paused".into(),
+        _ => return error(StatusCode::CONFLICT, "conflict", &format!("A {} routine can't be {action}d.", r.state)),
+    }
+    let view = routine_view(r, now);
+    save_routines(state, &routines);
+    ok(view)
+}
+
+fn routines_view(state: &State) -> Vec<Value> {
+    let now = unix(SystemTime::now());
+    state.routines.lock().expect("routines lock").iter().rev().map(|r| routine_view(r, now)).collect()
+}
+
+fn routine_view(r: &Routine, now: i64) -> Value {
+    let off = local_offset(now);
+    let next = (r.state == "active").then(|| next_due(r, now + off) - off);
+    json!({
+        "id": r.id, "job": r.job, "cadence": r.cadence, "weekday": r.weekday, "hour": r.hour, "minute": r.minute,
+        "seen": r.seen, "state": r.state, "last_run_at": r.last_run_at, "created_at": r.created_at,
+        "next_run_at": next.map(|t| utc_iso(UNIX_EPOCH + Duration::from_secs(t.max(0) as u64))),
+    })
+}
+
+fn save_routines(state: &State, routines: &[Routine]) {
+    let path = state.opts.home.join("routines.json");
+    if let Err(e) = write_atomic(&path, &serde_json::to_vec_pretty(routines).expect("routines serialize")) {
+        tracing::warn!("cookie page: could not save {}: {e}", path.display());
+    }
+}
+
+/// Start each due routine's job once per time it is due.
+async fn fire_routines(state: Arc<State>) {
+    let mut tick = tokio::time::interval(ROUTINE_TICK);
+    loop {
+        tick.tick().await;
+        let now_t = SystemTime::now();
+        let now = unix(now_t);
+        let off = local_offset(now);
+        let due: Vec<(usize, i64)> = {
+            let routines = state.routines.lock().expect("routines lock");
+            routines
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.state == "active")
+                .map(|(i, r)| (i, last_due(r, now + off) - off))
+                .filter(|(i, at)| *at > routines[*i].fired.max(routines[*i].since) && now - at <= ROUTINE_LATE_SECS)
+                .collect()
+        };
+        if due.is_empty() {
+            continue;
+        }
+        let mut routines = state.routines.lock().expect("routines lock");
+        for (i, at) in due {
+            let r = &mut routines[i];
+            // Claimed before it starts: a job that fails is not run again for the same time.
+            r.fired = at;
+            r.last_run_at = Some(utc_iso(now_t));
+            if let Err(e) = start_job(&state, &r.job.clone(), None, "routine") {
+                tracing::warn!("cookie page: routine {} did not start: {}", r.id, e.status());
+            }
+        }
+        save_routines(&state, &routines);
+    }
+}
+
+/// The latest time at or before `wall` (seconds on this computer's wall clock,
+/// as if it were UTC) the routine was due.
+fn last_due(r: &Routine, wall: i64) -> i64 {
+    let (hour, minute) = (i64::from(r.hour), i64::from(r.minute));
+    let day = wall.div_euclid(86_400);
+    let at = day * 86_400 + hour * 3_600 + minute * 60;
+    match r.cadence.as_str() {
+        "hourly" => {
+            let at = wall.div_euclid(3_600) * 3_600 + minute * 60;
+            if at <= wall { at } else { at - 3_600 }
+        }
+        "weekly" => {
+            // 1 January 1970 was a Thursday: day 0 is weekday 4 counting Monday as 1.
+            let today = (day + 3).rem_euclid(7) + 1;
+            let at = at - (today - i64::from(r.weekday)).rem_euclid(7) * 86_400;
+            if at <= wall { at } else { at - 7 * 86_400 }
+        }
+        _ => if at <= wall { at } else { at - 86_400 },
+    }
+}
+
+fn next_due(r: &Routine, wall: i64) -> i64 {
+    last_due(r, wall) + match r.cadence.as_str() {
+        "hourly" => 3_600,
+        "weekly" => 7 * 86_400,
+        _ => 86_400,
+    }
+}
+
+/// This computer's offset from UTC at `secs`, in seconds, from its own time
+/// zone (so its clock changes are kept).
+// ponytail: other systems read their prefs' fixed offset; add a zone database if Cookie's page is ever run off Unix.
+fn local_offset(secs: i64) -> i64 {
+    #[cfg(unix)]
+    {
+        let t = secs as libc::time_t;
+        // SAFETY: localtime_r writes only into `tm`, which outlives the call.
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        if !unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+            return tm.tm_gmtoff as i64;
+        }
+    }
+    let _ = secs;
+    0
+}
+
+fn unix(t: SystemTime) -> i64 {
+    t.duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or_default()
+}
+
+// MARK: prefs
+
+fn read_prefs(home: &Path) -> Value {
+    std::fs::read(home.join("prefs.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| json!({"notices": true, "tz_offset_min": 0, "tz": "", "quiet_from": 22, "quiet_to": 7}))
+}
+
+/// The page's settings, as Enkeon keeps them: whether notices come, the zone
+/// (IANA name and the offset), quiet hours.
+fn set_prefs(state: &State, body: &Value) -> Response<Body> {
+    let mut prefs = read_prefs(&state.opts.home);
+    if let Some(v) = body["notices"].as_bool() {
+        prefs["notices"] = json!(v);
+    }
+    if let Some(v) = body["tz_offset_min"].as_i64().filter(|v| v.abs() <= 14 * 60) {
+        prefs["tz_offset_min"] = json!(v);
+    }
+    if let Some(v) = body["tz"].as_str().filter(|v| v.len() <= 64 && v.bytes().all(|b| b.is_ascii_alphanumeric() || b"/_+-".contains(&b))) {
+        prefs["tz"] = json!(v);
+    }
+    for k in ["quiet_from", "quiet_to"] {
+        if let Some(v) = body[k].as_i64().filter(|v| (0..24).contains(v)) {
+            prefs[k] = json!(v);
+        }
+    }
+    match write_atomic(&state.opts.home.join("prefs.json"), prefs.to_string().as_bytes()) {
+        Ok(()) => ok(json!({"saved": true})),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, "write", &format!("Couldn't save it: {e}")),
+    }
 }
 
 /// The key that signs this machine's action logs, made once in `home`.
@@ -868,6 +1140,24 @@ mod tests {
         assert_eq!(a.len(), 32);
         assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_routine_is_due_at_its_own_hour_on_its_day() {
+        let r = |cadence: &str, weekday: i16| Routine {
+            id: "cr_t".into(), job: "inbox".into(), cadence: cadence.into(), weekday, hour: 17, minute: 0, seen: 0,
+            state: "active".into(), last_run_at: None, created_at: String::new(), since: 0, fired: 0,
+        };
+        // Friday 23 October 2026, 18:30 on the wall clock.
+        let wall = 1_792_780_200;
+        let five = |days_back: i64| wall - 90 * 60 - days_back * 86_400;
+        let tuesday = r("weekly", 2);
+        assert_eq!(last_due(&tuesday, wall), five(3));
+        assert_eq!(next_due(&tuesday, wall), five(3) + 7 * 86_400);
+        assert_eq!(last_due(&r("weekly", 5), wall), five(0), "today at 17:00");
+        assert_eq!(last_due(&r("weekly", 6), wall), five(6), "Saturday is still ahead: last week's");
+        assert_eq!(last_due(&r("daily", 1), wall - 2 * 3_600), five(1), "16:30 is before today's 17:00");
+        assert_eq!(last_due(&r("hourly", 1), wall), wall - 30 * 60);
     }
 
     #[test]

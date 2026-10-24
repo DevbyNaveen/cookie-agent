@@ -60,7 +60,7 @@ struct CookieDockSurface: View, Animatable {
         CGSize(width: CookieDockGeometry.bubbleSize + (geometry.cardWidth - CookieDockGeometry.bubbleSize) * fraction,
                height: CookieDockGeometry.bubbleSize + (expandedHeight - CookieDockGeometry.bubbleSize) * fraction)
     }
-    private var mood: ClayCookie.Mood {
+    private var mood: CookieOrb.Mood {
         entry.phase == .speaking ? .speaking : entry.phase == .listening ? .listening : .thinking
     }
 
