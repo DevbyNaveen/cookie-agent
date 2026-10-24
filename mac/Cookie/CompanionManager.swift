@@ -657,8 +657,12 @@ final class CompanionManager: ObservableObject {
 
             CookieAnalytics.trackPushToTalkStarted()
 
-            // A spoken answer is coming: its voice opens its stream now, too.
-            if !answersStep, transcriptInterceptor == nil { elevenLabsTTSClient.prepare() }
+            // A spoken answer is coming: its voice opens its stream now, too, and what can be
+            // captured is listed ahead of the look.
+            if !answersStep, transcriptInterceptor == nil {
+                elevenLabsTTSClient.prepare()
+                if permissionCenter.isAllowed(.screen) { CompanionScreenCaptureUtility.prefetch() }
+            }
 
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = Task {

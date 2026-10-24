@@ -28,12 +28,45 @@ struct CompanionScreenCapture {
 @MainActor
 enum CompanionScreenCaptureUtility {
 
+    /// What ScreenCaptureKit can see, kept between looks: listing it is most of a one-shot
+    /// capture's time. Only the displays and the running apps matter here (a display filter
+    /// excludes apps, not windows), so it is refetched when an app launches or quits, the
+    /// displays change, at key-down (`prefetch`), and after 30 s at most.
+    private static var cachedContent: (content: SCShareableContent, at: CFTimeInterval)?
+    private static var watchingForChanges = false
+
+    static func shareableContent() async throws -> SCShareableContent {
+        startWatchingForChanges()
+        if let cachedContent, CACurrentMediaTime() - cachedContent.at < 30 { return cachedContent.content }
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        cachedContent = (content, CACurrentMediaTime())
+        return content
+    }
+
+    /// A look may be coming (the talk key went down): list what can be captured now.
+    static func prefetch() {
+        cachedContent = nil
+        Task { _ = try? await shareableContent() }
+    }
+
+    private static func startWatchingForChanges() {
+        guard !watchingForChanges else { return }
+        watchingForChanges = true
+        let forget: (Notification) -> Void = { _ in MainActor.assumeIsolated { cachedContent = nil } }
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+            workspace.addObserver(forName: name, object: nil, queue: .main, using: forget)
+        }
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main, using: forget)
+    }
+
     /// Captures all connected displays as JPEG data, labeling each with
     /// whether the user's cursor is on that screen. This gives the AI
-    /// full context across multiple monitors.
+    /// full context across multiple monitors. Displays are taken and checked
+    /// at the same time, the cursor's first in the list.
     static func captureAllScreensAsJPEG() async throws -> [CompanionScreenCapture] {
         try Task.checkCancellation()
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        let content = try await shareableContent()
         try Task.checkCancellation()
 
         guard !content.displays.isEmpty else {
@@ -43,8 +76,6 @@ enum CompanionScreenCaptureUtility {
 
         let mouseLocation = NSEvent.mouseLocation
 
-        // Exclude all windows belonging to this app so the AI sees
-        // only the user's content, not our overlays or panels.
         // Build a lookup from display ID to NSScreen so we can use AppKit-coordinate
         // frames instead of CG-coordinate frames. NSEvent.mouseLocation and NSScreen.frame
         // both use AppKit coordinates (bottom-left origin), while SCDisplay.frame uses
@@ -68,9 +99,9 @@ enum CompanionScreenCaptureUtility {
             return false
         }
 
-        var capturedScreens: [CompanionScreenCapture] = []
-
-        for (displayIndex, display) in sortedDisplays.enumerated() {
+        // Cookie itself and every blocked app (password managers…) are cut out of the picture.
+        let excluded = excludedApplications(content)
+        let jobs = sortedDisplays.enumerated().map { displayIndex, display in
             // Use NSScreen.frame (AppKit coordinates, bottom-left origin) so
             // displayFrame is in the same coordinate system as NSEvent.mouseLocation
             // and the overlay window's screenFrame in BlueCursorView.
@@ -78,10 +109,7 @@ enum CompanionScreenCaptureUtility {
                 ?? CGRect(x: display.frame.origin.x, y: display.frame.origin.y,
                           width: CGFloat(display.width), height: CGFloat(display.height))
             let isCursorScreen = displayFrame.contains(mouseLocation)
-
-            // Cookie itself and every blocked app (password managers…) are cut out of the picture.
-            let filter = SCContentFilter(display: display, excludingApplications: excludedApplications(content),
-                                         exceptingWindows: [])
+            let filter = SCContentFilter(display: display, excludingApplications: excluded, exceptingWindows: [])
 
             // Exactly the size the model processes, at the display's own aspect: no server resize
             // (which would move every coordinate it gives back) and no stretch.
@@ -92,14 +120,6 @@ enum CompanionScreenCaptureUtility {
             configuration.height = size.height
             print("🖼 screen \(displayIndex + 1): \(size.width)×\(size.height) px for \(Int(displayFrame.width))×\(Int(displayFrame.height)) pt at (\(Int(displayFrame.minX)), \(Int(displayFrame.minY))), backing ×\(nsScreenByDisplayID[display.displayID]?.backingScaleFactor ?? 0)")
 
-            let cgImage = try await SCScreenshotManager.captureImage(
-                contentFilter: filter,
-                configuration: configuration
-            )
-
-            let redacted = try await encodeRedactedJPEG(cgImage, quality: 0.8)
-            try Task.checkCancellation()
-
             let screenLabel: String
             if sortedDisplays.count == 1 {
                 screenLabel = "user's screen (cursor is here)"
@@ -108,19 +128,35 @@ enum CompanionScreenCaptureUtility {
             } else {
                 screenLabel = "screen \(displayIndex + 1) of \(sortedDisplays.count) — secondary screen"
             }
+            return (index: displayIndex, filter: filter, configuration: configuration, label: screenLabel,
+                    isCursorScreen: isCursorScreen, displayFrame: displayFrame)
+        }
 
-            capturedScreens.append(CompanionScreenCapture(
-                imageData: redacted.data,
-                label: screenLabel,
-                isCursorScreen: isCursorScreen,
-                displayWidthInPoints: Int(displayFrame.width),
-                displayHeightInPoints: Int(displayFrame.height),
-                displayFrame: displayFrame,
-                screenshotWidthInPixels: configuration.width,
-                screenshotHeightInPixels: configuration.height,
-                hiddenItems: redacted.hiddenItems,
-                redactionSeconds: redacted.seconds
-            ))
+        // Every display at once: each is captured and redacted on its own; one that can't be
+        // checked fails the whole look (its error is thrown), as before.
+        let capturedScreens = try await withThrowingTaskGroup(of: (Int, CompanionScreenCapture).self) { group in
+            for job in jobs {
+                group.addTask {
+                    let cgImage = try await SCScreenshotManager.captureImage(contentFilter: job.filter, configuration: job.configuration)
+                    let redacted = try await encodeRedactedJPEG(cgImage, quality: 0.8)
+                    try Task.checkCancellation()
+                    return (job.index, CompanionScreenCapture(
+                        imageData: redacted.data,
+                        label: job.label,
+                        isCursorScreen: job.isCursorScreen,
+                        displayWidthInPoints: Int(job.displayFrame.width),
+                        displayHeightInPoints: Int(job.displayFrame.height),
+                        displayFrame: job.displayFrame,
+                        screenshotWidthInPixels: job.configuration.width,
+                        screenshotHeightInPixels: job.configuration.height,
+                        hiddenItems: redacted.hiddenItems,
+                        redactionSeconds: redacted.seconds
+                    ))
+                }
+            }
+            var done: [(Int, CompanionScreenCapture)] = []
+            for try await capture in group { done.append(capture) }
+            return done.sorted { $0.0 < $1.0 }.map(\.1)
         }
 
         guard !capturedScreens.isEmpty else {
@@ -136,7 +172,7 @@ enum CompanionScreenCaptureUtility {
     /// the magic trail never shows up in the picture. Kept in memory only.
     static func captureRegionAsJPEG(_ globalRect: CGRect) async throws -> RedactedJPEG? {
         try Task.checkCancellation()
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        let content = try await shareableContent()
         try Task.checkCancellation()
         let center = CGPoint(x: globalRect.midX, y: globalRect.midY)
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }),
