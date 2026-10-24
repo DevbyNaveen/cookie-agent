@@ -2,15 +2,9 @@
 //  CookiePointTarget.swift
 //  Cookie
 //
-//  The pointer is checked against the screen as it is when it flies, not as
-//  it was in the screenshot seconds earlier. The model names the target by
-//  its visible text ([POINT:x,y:label]); just before the hand moves, the
-//  control at that point is read (Accessibility) and must say the label.
-//  If it doesn't, the label is looked for in the window's controls, then in
-//  a fresh read of the screen around the point; found, the hand goes there;
-//  not found, it doesn't point (the voice still says it). Once there, the
-//  hand is tied to the control: it follows it when it moves, and leaves when
-//  the control goes or stops saying the label.
+//  Verify the model's screenshot patch first, then relocate by visible text.
+//  Accessible controls follow AX events; visual text follows local patch checks
+//  and OCR relocation. Cancelled or unverified targets never revive old cues.
 //
 
 import AppKit
@@ -36,6 +30,64 @@ enum CookieLabelMatch {
     }
 }
 
+/// A small, textured patch from the exact redacted picture the model saw. This stays on
+/// the Mac and is discarded with the pointing session. Text descriptions need not be OCR text.
+struct CookiePointPatch {
+    var area: CGRect
+    let image: CGImage
+    let samples: [UInt8]
+    static let width = 64
+    static let height = 32
+
+    init?(point: CGPoint, capture: CompanionScreenCapture) {
+        let area = CGRect(x: point.x - 96, y: point.y - 48, width: 192, height: 96).intersection(capture.displayFrame)
+        guard area.width >= 32, area.height >= 16,
+              let source = NSBitmapImageRep(data: capture.imageData)?.cgImage else { return nil }
+        let scaleX = CGFloat(source.width) / capture.displayFrame.width
+        let scaleY = CGFloat(source.height) / capture.displayFrame.height
+        let pixels = CGRect(x: (area.minX - capture.displayFrame.minX) * scaleX,
+                            y: (capture.displayFrame.maxY - area.maxY) * scaleY,
+                            width: area.width * scaleX, height: area.height * scaleY).integral
+        guard let crop = source.cropping(to: pixels), let samples = Self.sample(crop) else { return nil }
+        self.area = area
+        self.image = crop
+        self.samples = samples
+    }
+
+    static func sample(_ image: CGImage) -> [UInt8]? {
+        var samples = [UInt8](repeating: 0, count: width * height)
+        let drawn = samples.withUnsafeMutableBytes { bytes -> Bool in
+            guard let context = CGContext(data: bytes.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width, space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+            context.interpolationQuality = .high
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        return drawn ? samples : nil
+    }
+
+    static func matches(_ reference: [UInt8], _ current: [UInt8]) -> Bool {
+        guard reference.count == width * height, current.count == reference.count else { return false }
+        let mean = Double(reference.reduce(0) { $0 + Int($1) }) / Double(reference.count)
+        let texture = reference.reduce(0.0) { $0 + abs(Double($1) - mean) } / Double(reference.count)
+        // A blank patch proves nothing: another empty window could have replaced it.
+        guard texture >= 8 else { return false }
+        let differences = zip(reference, current).map { abs(Int($0) - Int($1)) }
+        return differences.reduce(0, +) < reference.count * 10
+            && differences.filter { $0 > 32 }.count < reference.count / 12
+    }
+
+    func isUnchanged() async -> Bool {
+        guard !Task.isCancelled,
+              let image = try? await CompanionScreenCaptureUtility.captureRegionImage(area) else { return false }
+        return await Task.detached(priority: .userInitiated) {
+            guard let current = Self.sample(image) else { return false }
+            return Self.matches(samples, current)
+        }.value
+    }
+}
+
 enum CookiePointTarget {
     /// Where the hand goes, or that it shouldn't.
     enum Resolution {
@@ -50,12 +102,17 @@ enum CookiePointTarget {
 
     /// Checks `point` (AppKit global) against `label`, looking for the label when it isn't there.
     /// Off the main thread; a short Accessibility walk, then a fresh read of the screen nearby.
-    static func resolve(_ point: CGPoint, label: String?, display: CGRect, exceptApp: pid_t?) async -> Resolution {
-        guard let label = label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty, label.lowercased() != "none",
-              AXIsProcessTrusted() else { return .unverified(point) }
-        let mainHeight = await MainActor.run { NSScreen.screens.first?.frame.height ?? 0 }
+    static func resolve(_ point: CGPoint, label: String?, display: CGRect, exceptApp: pid_t?, patch: CookiePointPatch? = nil) async -> Resolution {
+        guard !Task.isCancelled else { return .lost }
         let refusal = await MainActor.run { CaptureGuard.refusal() }
-        guard refusal == nil else { return .unverified(point) }
+        guard refusal == nil else { return .lost }
+        if let patch, await patch.isUnchanged() {
+            guard !Task.isCancelled else { return .lost }
+            return .found(point, element: nil, how: "the screenshot patch is unchanged")
+        }
+        guard let label = label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty,
+              label.lowercased() != "none" else { return patch == nil ? .unverified(point) : .lost }
+        let mainHeight = await MainActor.run { NSScreen.screens.first?.frame.height ?? 0 }
         let (viaAX, app) = await Task.detached(priority: .userInitiated) {
             accessibility(point, label: label, mainHeight: mainHeight, exceptApp: exceptApp)
         }.value
@@ -64,7 +121,7 @@ enum CookiePointTarget {
             guard let app = app.flatMap(NSRunningApplication.init(processIdentifier:)) else { return false }
             return MacSafety.blocked(bundleID: app.bundleIdentifier, category: MacOperator.category(app))
         }
-        if blocked { return .unverified(point) }
+        guard !Task.isCancelled, !blocked else { return .lost }
         if let viaAX { return viaAX }
         if let seen = await onScreen(point, label: label, display: display) { return .found(seen, element: nil, how: "read again on screen") }
         return .lost
@@ -98,8 +155,10 @@ enum CookiePointTarget {
         var queue: [(AXUIElement, Int)] = [(window, 0)]
         var visited = 0
         // ponytail: a 2,000-control walk; a bigger window falls back to reading the screen.
-        while !queue.isEmpty, visited < 2_000 {
+        let deadline = Date().addingTimeInterval(0.15)
+        while !queue.isEmpty, visited < 2_000, Date() < deadline {
             let (current, depth) = queue.removeFirst()
+            AXUIElementSetMessagingTimeout(current, 0.03)
             visited += 1
             if texts(of: current).contains(where: { CookieLabelMatch.matches(label: label, text: $0) }),
                let frame = MacOperator.frame(current), frame.width > 1, frame.height > 1, frame.width < 900, frame.height < 600 {
@@ -128,7 +187,7 @@ enum CookiePointTarget {
 
     /// The label in a fresh picture of the screen around the point (kept on this Mac, never sent),
     /// the line nearest the point; nil when it isn't there or the screen can't be read.
-    private static func onScreen(_ point: CGPoint, label: String, display: CGRect) async -> CGPoint? {
+    static func onScreen(_ point: CGPoint, label: String, display: CGRect) async -> CGPoint? {
         let area = CGRect(x: point.x - 300, y: point.y - 200, width: 600, height: 400).intersection(display)
         guard area.width > 8, area.height > 8, await MainActor.run(body: { CGPreflightScreenCaptureAccess() }),
               let image = try? await CompanionScreenCaptureUtility.captureRegionImage(area),
@@ -223,4 +282,61 @@ final class CookieElementAnchor {
         stop()
         gone?()
     }
+}
+
+/// Visual targets have no AX element. Verify their patch while visible, and on a scroll
+/// relocate an actual line from that patch rather than searching the model's description.
+/// The second patch check prevents a duplicate phrase elsewhere from becoming the target.
+@MainActor
+final class CookieVisualPointAnchor {
+    private var task: Task<Void, Never>?
+    var moved: ((CGPoint) -> Void)?
+    var gone: (() -> Void)?
+
+    init(point: CGPoint, patch: CookiePointPatch, display: CGRect) {
+        task = Task { [weak self] in
+            var currentPoint = point
+            var currentPatch = patch
+            var referenceLine: CookieTextLine?
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+                guard CaptureGuard.refusal() == nil else { self?.gone?(); return }
+                if await currentPatch.isUnchanged() { continue }
+                guard !Task.isCancelled else { return }
+                if referenceLine == nil, let lines = try? await CookieVisionText.lines(in: patch.image) {
+                    referenceLine = lines.filter { $0.text.count >= 8 }.min {
+                        abs($0.box.midY - 0.5) < abs($1.box.midY - 0.5)
+                    }
+                }
+                guard !Task.isCancelled else { return }
+                guard let referenceLine,
+                      let relocated = await CookiePointTarget.onScreen(currentPoint, label: referenceLine.text, display: display) else {
+                    if !Task.isCancelled { self?.gone?() }
+                    return
+                }
+                let previousLine = CGPoint(x: currentPatch.area.minX + referenceLine.box.midX * currentPatch.area.width,
+                                           y: currentPatch.area.minY + referenceLine.box.midY * currentPatch.area.height)
+                let shift = CGVector(dx: relocated.x - previousLine.x, dy: relocated.y - previousLine.y)
+                var candidate = currentPatch
+                candidate.area = currentPatch.area.offsetBy(dx: shift.dx, dy: shift.dy)
+                guard display.contains(candidate.area), await candidate.isUnchanged() else {
+                    if !Task.isCancelled { self?.gone?() }
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                currentPatch = candidate
+                currentPoint = CGPoint(x: currentPoint.x + shift.dx, y: currentPoint.y + shift.dy)
+                self?.moved?(currentPoint)
+            }
+        }
+    }
+
+    func stop() {
+        task?.cancel()
+        task = nil
+        moved = nil
+        gone = nil
+    }
+
+    deinit { task?.cancel() }
 }

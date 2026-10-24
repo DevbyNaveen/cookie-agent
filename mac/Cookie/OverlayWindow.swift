@@ -299,6 +299,7 @@ struct BlueCursorView: View {
     /// The pointing this view is showing: the one hold (show the label, then go back) belongs to it,
     /// so a timer from an older pointing can never end a newer one.
     @State private var pointingSession: UUID?
+    @State private var pointerTransitionID = UUID()
     @State private var pointingHold: Task<Void, Never>?
     /// The hand's own fade: Reduce Motion, or a target on another screen, crossfades in place
     /// instead of flying.
@@ -533,6 +534,17 @@ struct BlueCursorView: View {
             }
 
             startNavigatingToElement(screenLocation: screenLocation)
+        }
+        .onChange(of: companionManager.pointPresentationID) { _ in
+            guard let location = companionManager.detectedElementScreenLocation,
+                  let display = companionManager.detectedElementDisplayFrame else { return }
+            guard display == screenFrame else {
+                if buddyNavigationMode == .pointingAtTarget || buddyNavigationMode == .navigatingToTarget && !isReturningToCursor {
+                    endPointing()
+                }
+                return
+            }
+            startNavigatingToElement(screenLocation: location, newPoint: true)
         }
         .onReceive(hand.$visit) { visit in handOpens(visit) }
         .onReceive(hand.$act) { act in handActs(act) }
@@ -778,7 +790,7 @@ struct BlueCursorView: View {
 
     /// Starts the hand toward a detected UI element, or — when it is already on its way there or
     /// pointing and the control moved — sends it on to the new place without starting again.
-    private func startNavigatingToElement(screenLocation: CGPoint) {
+    private func startNavigatingToElement(screenLocation: CGPoint, newPoint: Bool = false) {
         // Don't interrupt welcome animation
         guard !showWelcome || welcomeText.isEmpty else { return }
 
@@ -799,14 +811,22 @@ struct BlueCursorView: View {
         )
 
         // The same pointing, its control moved: follow it.
-        if buddyNavigationMode == .navigatingToTarget && !isReturningToCursor {
-            flight.retarget(clampedTarget)
+        if !newPoint, buddyNavigationMode == .navigatingToTarget && !isReturningToCursor {
+            // A crossfade has no spring to retarget. Restart its destination safely.
+            if !flight.isFlying {
+                let session = pointingSession
+                fly(to: clampedTarget) {
+                    if let session, self.pointingSession == session { self.startPointingAtElement(session: session) }
+                }
+            } else { flight.retarget(clampedTarget) }
             return
         }
-        if buddyNavigationMode == .pointingAtTarget {
+        if !newPoint, buddyNavigationMode == .pointingAtTarget {
             fly(to: clampedTarget) {}
             return
         }
+
+        if newPoint { navigationBubbleOpacity = 0 }
 
         // Record the current cursor position so we can detect if the user
         // moves the mouse enough to cancel the return flight
@@ -830,6 +850,8 @@ struct BlueCursorView: View {
     /// when the person's pointer is on another screen, it fades out, moves and fades in instead:
     /// motion across a screen that tells nothing is left out.
     private func fly(to destination: CGPoint, then arrived: @escaping () -> Void) {
+        let transition = UUID()
+        pointerTransitionID = transition
         let screen = NSScreen.screens.first { $0.frame == screenFrame }
         let crossfade = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
             || (!isCursorOnThisScreen && buddyNavigationMode == .navigatingToTarget && !isReturningToCursor)
@@ -839,7 +861,7 @@ struct BlueCursorView: View {
             withAnimation(.easeOut(duration: 0.12)) { pointerFade = 0 }
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(120))
-                guard self.pointingSession == session else { return }
+                guard self.pointingSession == session, self.pointerTransitionID == transition else { return }
                 self.cursorPosition = destination
                 self.triangleRotationDegrees = -35
                 withAnimation(.easeIn(duration: 0.15)) { self.pointerFade = 1 }
@@ -863,15 +885,23 @@ struct BlueCursorView: View {
         navigationBubbleText = companionManager.detectedElementBubbleText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         navigationBubbleOpacity = 1.0
         pointingHold?.cancel()
+        let presentation = companionManager.pointPresentationID
+        let generation = companionManager.pointGeneration
         pointingHold = Task { @MainActor in
             try? await Task.sleep(for: .seconds(3))
-            guard !Task.isCancelled, self.pointingSession == session, self.buddyNavigationMode == .pointingAtTarget else { return }
+            guard !Task.isCancelled, self.pointingSession == session, self.buddyNavigationMode == .pointingAtTarget,
+                  self.companionManager.pointGeneration == generation else { return }
+            if self.companionManager.pointPresentationID == presentation {
+                self.companionManager.clearDetectedElementLocation()
+            }
             self.endPointing()
         }
     }
 
     /// The label fades, then the hand goes back to the person's pointer.
     private func endPointing() {
+        pointerTransitionID = UUID()
+        flight.cancel()
         let session = pointingSession
         pointingHold?.cancel()
         navigationBubbleOpacity = 0.0

@@ -34,20 +34,30 @@ struct CookieSpring2D {
         damping = 4 * .pi * (1 - bounce) / duration
     }
 
-    /// Advances by `seconds` in small fixed steps (stable however long the frame was).
+    /// Solve the damped spring at elapsed time, so dropped frames do not slow the flight
+    /// and 60 Hz and 120 Hz take the same path. Retargeting preserves position and velocity.
     mutating func step(seconds: Double) {
-        var left = min(max(0, seconds), 0.1)
-        let substep = 1.0 / 480
-        while left > 0 {
-            let dt = min(substep, left)
-            let ax = -stiffness * (position.x - target.x) - damping * velocity.dx
-            let ay = -stiffness * (position.y - target.y) - damping * velocity.dy
-            velocity.dx += ax * dt
-            velocity.dy += ay * dt
-            position.x += velocity.dx * dt
-            position.y += velocity.dy * dt
-            left -= dt
+        guard seconds.isFinite, seconds > 0 else { return }
+        let decay = damping / 2
+        let frequencySquared = stiffness - decay * decay
+        let envelope = exp(-decay * seconds)
+        func advance(_ position: CGFloat, _ velocity: CGFloat, toward target: CGFloat) -> (CGFloat, CGFloat) {
+            let displacement = position - target
+            if frequencySquared > 0.000001 {
+                let frequency = sqrt(frequencySquared)
+                let cosine = cos(frequency * seconds)
+                let sine = sin(frequency * seconds)
+                return (target + envelope * (displacement * cosine + (velocity + decay * displacement) / frequency * sine),
+                        envelope * (velocity * cosine - (decay * velocity + stiffness * displacement) / frequency * sine))
+            }
+            let slope = velocity + decay * displacement
+            return (target + envelope * (displacement + slope * seconds),
+                    envelope * (velocity - decay * slope * seconds))
         }
+        let horizontal = advance(position.x, velocity.dx, toward: target.x)
+        let vertical = advance(position.y, velocity.dy, toward: target.y)
+        position = CGPoint(x: horizontal.0, y: vertical.0)
+        velocity = CGVector(dx: horizontal.1, dy: vertical.1)
     }
 
     /// Close enough, and slow enough, to stop.

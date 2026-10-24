@@ -472,6 +472,10 @@ final class HarnessClient {
                              "connector_actions": "Looking at your connected apps", "connector_call": "Using a connected app",
                              "use_skill": "Opening a skill", "look": "Looking at the app"]
                 run.onStep(plain[name] ?? "Using \(name.replacingOccurrences(of: "_", with: " "))")
+            case "usage":
+                if let usage = event.usage {
+                    print("⏱ model usage input=\(usage.input_tokens ?? 0) output=\(usage.output_tokens ?? 0) cache_read=\(usage.cache_read_tokens ?? 0) cache_write=\(usage.cache_write_tokens ?? 0)")
+                }
             case "enkeon_unavailable":
                 run.onStep("Enkeon didn't answer; going on without it")
             default:

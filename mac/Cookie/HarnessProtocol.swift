@@ -71,6 +71,14 @@ struct HarnessEvent: Decodable {
     let text: String?
     /// tool_call_started (name), asked_person (tool), enkeon_unavailable / compaction_failed (reason)
     let detail: Detail?
+    let usage: Usage?
+
+    struct Usage: Decodable {
+        let input_tokens: UInt64?
+        let output_tokens: UInt64?
+        let cache_read_tokens: UInt64?
+        let cache_write_tokens: UInt64?
+    }
 
     struct Detail: Decodable {
         let name: String?
@@ -85,6 +93,7 @@ struct HarnessEvent: Decodable {
         type = try c.decode(String.self, forKey: .type)
         text = try? c.decode(String.self, forKey: .data)
         detail = try? c.decode(Detail.self, forKey: .data)
+        usage = type == "usage" ? try? c.decode(Usage.self, forKey: .data) : nil
     }
 }
 
@@ -272,6 +281,7 @@ enum HarnessWire {
         precondition(decoded[3].type == "tool_call" && decoded[3].id == "t4" && decoded[3].name == "read_screen")
         precondition(decoded[4].run == nil && decoded[4].message?.contains("t9") == true)
         precondition(decoded[5].event?.type == "usage" && decoded[5].event?.text == nil)
+        precondition(decoded[5].event?.usage?.input_tokens == 3)
         precondition(decoded[6].answer == "hello [POINT:none]")
 
         let run = String(decoding: encode(HarnessRequest.Run(id: "r1", model: "ollama:qwen3", input: "hi", instructions: "", tools: [], images: [], history: [], enkeon: false)), as: UTF8.self)

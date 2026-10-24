@@ -22,6 +22,10 @@ enum CookieSpeedTests {
         check("modelPixelsLandOnTheirDisplayPoints", modelPixelsLandOnTheirDisplayPoints)
         check("thePointerOnlyGoesWhereTheScreenSaysItsLabel", thePointerOnlyGoesWhereTheScreenSaysItsLabel)
         check("theHandSettlesOnASpringAndBendsWhenTheTargetMoves", theHandSettlesOnASpringAndBendsWhenTheTargetMoves)
+        check("visualEvidenceAcceptsCompressionButRejectsChangedOrBlankTargets", visualEvidenceAcceptsCompressionButRejectsChangedOrBlankTargets)
+        check("severalPointsFollowSpeechAndStopDropsFutureCues", severalPointsFollowSpeechAndStopDropsFutureCues)
+        check("pointerMotionIsIndependentOfFrameRateAndDroppedFrames", pointerMotionIsIndependentOfFrameRateAndDroppedFrames)
+        check("cacheUsageSurvivesTheHelperProtocol", cacheUsageSurvivesTheHelperProtocol)
         print("\(passed) speed checks passed.")
     }
 
@@ -232,4 +236,60 @@ enum CookieSpeedTests {
         let springy = CookieSpring2D(position: .zero, target: .zero, duration: 0.5, bounce: 0.6)
         precondition(abs(springy.damping - 4 * .pi * 0.85 / 0.5) < 1e-9)
     }
+    static func visualEvidenceAcceptsCompressionButRejectsChangedOrBlankTargets() {
+        let count = CookiePointPatch.width * CookiePointPatch.height
+        let paragraph = (0..<count).map { UInt8(($0 / 8) % 2 == 0 ? 35 : 215) }
+        let compressed = paragraph.map { UInt8(Int($0) + 4) }
+        precondition(CookiePointPatch.matches(paragraph, compressed))
+        precondition(!CookiePointPatch.matches(paragraph, paragraph.reversed()))
+        precondition(!CookiePointPatch.matches(paragraph, Array(repeating: 215, count: count)))
+        precondition(!CookiePointPatch.matches(Array(repeating: 215, count: count), Array(repeating: 215, count: count)))
+        precondition(!CookiePointPatch.matches(paragraph, []))
+    }
+
+    static func severalPointsFollowSpeechAndStopDropsFutureCues() {
+        var stream = CookieSpokenStream()
+        let step = stream.update("First [POINT:10,20:first] then second [POINT:80,90:second] and third [POINT:40,50:third] done.", final: true)
+        let points = step.tags.filter { $0.kind == "POINT" }
+        precondition(points.count == 3)
+        let clock = CookieSpeechClock()
+        var shown: [Int] = []
+        for (index, point) in points.enumerated() {
+            clock.schedule(atOffset: point.offset) { shown.append(index) }
+        }
+        clock.begin(text: stream.spoken)
+        clock.advance(toOffset: points[0].offset, progress: 0.2)
+        precondition(shown == [0])
+        clock.advance(toOffset: points[1].offset, progress: 0.5)
+        precondition(shown == [0, 1])
+        clock.stop()
+        clock.begin(text: "another reply")
+        clock.finish()
+        precondition(shown == [0, 1], "interrupted visual cues must not leak into another reply")
+    }
+
+
+
+    static func pointerMotionIsIndependentOfFrameRateAndDroppedFrames() {
+        for bounce in [0.0, 0.1, 0.15] {
+            var smooth = CookieSpring2D(position: .zero, target: CGPoint(x: 800, y: 350), bounce: bounce)
+            var dropped = smooth
+            for _ in 0..<60 { smooth.step(seconds: 1.0 / 120) }
+            dropped.step(seconds: 0.5)
+            precondition(hypot(smooth.position.x - dropped.position.x, smooth.position.y - dropped.position.y) < 0.0001)
+            precondition(hypot(smooth.velocity.dx - dropped.velocity.dx, smooth.velocity.dy - dropped.velocity.dy) < 0.0001)
+            let before = dropped.position
+            dropped.step(seconds: .nan)
+            precondition(dropped.position == before)
+        }
+    }
+
+    static func cacheUsageSurvivesTheHelperProtocol() {
+        let data = Data(#"{"type":"usage","data":{"input_tokens":30,"output_tokens":8,"cache_read_tokens":900,"cache_write_tokens":50}}"#.utf8)
+        let event = try! JSONDecoder().decode(HarnessEvent.self, from: data)
+        precondition(event.usage?.input_tokens == 30 && event.usage?.output_tokens == 8)
+        precondition(event.usage?.cache_read_tokens == 900 && event.usage?.cache_write_tokens == 50)
+        precondition(event.text == nil)
+    }
+
 }
