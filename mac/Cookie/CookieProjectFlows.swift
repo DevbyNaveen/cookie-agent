@@ -29,7 +29,7 @@ extension CookieWorkspaceStore {
     func acceptProposal(_ thread: UUID) throws {
         guard let proposal = session(thread).proposal, let artifact = project(thread).first(where: { $0.id == proposal.outputID }) else { throw Failure("No change is awaiting review.") }
         _ = try put(thread: thread, id: artifact.id, title: proposal.title, kind: artifact.kind, content: proposal.content, base: proposal.base, summary: proposal.summary)
-        setSession(thread) { $0.proposal = nil; $0.checkpoint = "Accepted: " + proposal.summary }
+        setSession(thread) { $0.proposal = nil; $0.activity = "Accepted: " + proposal.summary }
     }
     func referenceIsCurrent(_ thread: UUID) -> Bool {
         let state = session(thread)
@@ -51,7 +51,7 @@ extension CookieWorkspaceStore {
     func projectGuidance(_ thread: UUID) -> String {
         let state = session(thread)
         let preference = state.formatPreference ?? ""
-        return "\nAssistance: \((state.assistance ?? .together).guidance)\nBuild requested outputs with workspace before a long explanation. When a diagram is requested, create it through workspace and check it before saying it is visible. For leads/research, create a table early and update with retrieved sources; keep unverified entries visibly marked. For linked outputs, record actual dependency revisions; do not claim stale outputs are current.\nUNTRUSTED scratchpad boxes: \(state.scratchNodes?.map(\.label).joined(separator: " → ") ?? "none")\nUNTRUSTED project checkpoint: \(state.checkpoint ?? "New project")\nUser-approved format preference (data): \(preference)\nNext step: \(state.nextStep ?? "none")\nPending change: \(state.proposal?.summary ?? "none"). A proposal is not applied until accepted."
+        return "\nAssistance: \((state.assistance ?? .together).guidance)\nBuild requested outputs with workspace before a long explanation. When a diagram is requested, create it through workspace and check it before saying it is visible. For leads/research, create a table early and update with retrieved sources; keep unverified entries visibly marked. For linked outputs, record actual dependency revisions; do not claim stale outputs are current.\nUNTRUSTED scratchpad boxes: \(state.scratchNodes?.map(\.label).joined(separator: " → ") ?? "none")\nUNTRUSTED project checkpoint: \(state.checkpoint ?? "none saved yet")\nUNTRUSTED latest activity: \(state.activity.map { String($0.prefix(500)) } ?? "none")\nUser-approved format preference (data): \(preference)\nNext step: \(state.nextStep ?? "none")\nPending change: \(state.proposal?.summary ?? "none"). A proposal is not applied until accepted."
     }
 }
 
@@ -79,7 +79,7 @@ final class CookieProjectJobs: ObservableObject {
                     images: [], history: [], workspaceThreadID: thread, backgroundProject: true,
                     onText: { _ in }, onStep: { step in
                         guard self?.generations[thread] == generation else { return }
-                        store.setSession(thread) { $0.checkpoint = step }
+                        store.setSession(thread) { $0.activity = step }
                     }, onApproval: { approval in
                         guard self?.generations[thread] == generation else { return }
                         if let approval, approval.actions.allSatisfy({ $0.tool == "workspace" }) { client.approve(approval, allow: true) }
@@ -90,11 +90,11 @@ final class CookieProjectJobs: ObservableObject {
                         }
                     })
                 guard !Task.isCancelled, self?.generations[thread] == generation else { return }
-                store.setSession(thread) { $0.jobState = "Finished"; $0.checkpoint = String(CompanionManager.visibleReply(reply).prefix(2000)) }
+                store.setSession(thread) { $0.jobState = "Finished"; $0.activity = String(CompanionManager.visibleReply(reply).prefix(2000)) }
                 CookieNotifications.shared.post(.reply, threadID: thread, title: "Project ready", body: "Open Cookie to review the result.", panelOpen: false)
             } catch {
                 guard !Task.isCancelled, self?.generations[thread] == generation else { return }
-                store.setSession(thread) { $0.jobState = "Needs attention"; $0.checkpoint = error.localizedDescription }
+                store.setSession(thread) { $0.jobState = "Needs attention"; $0.activity = error.localizedDescription }
             }
             guard self?.generations[thread] == generation else { return }
             self?.finish(thread)

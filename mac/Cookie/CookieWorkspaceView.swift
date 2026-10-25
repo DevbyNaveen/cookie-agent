@@ -414,9 +414,15 @@ struct CookieWorkspaceView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             if url.pathExtension.lowercased() == "xlsx" {
-                var content = CookieArtifact.Content(); content.grid = try CookieWorkbookImport.load(url)
-                _ = try store.put(thread: thread, id: UUID().uuidString, title: url.deletingPathExtension().lastPathComponent, kind: .sheet, content: content, base: nil, summary: "Imported first worksheet")
-                self.error = "Imported the first sheet. Formatting, macros and unsupported formulas are not reproduced."
+                // Unzipping and parsing happen off the main thread; the window keeps drawing.
+                Task {
+                    do {
+                        var content = CookieArtifact.Content()
+                        content.grid = try await Task.detached(priority: .userInitiated) { try CookieWorkbookImport.load(url) }.value
+                        _ = try store.put(thread: thread, id: UUID().uuidString, title: url.deletingPathExtension().lastPathComponent, kind: .sheet, content: content, base: nil, summary: "Imported first worksheet")
+                        self.error = "Imported the first tab. Formatting, macros and formulas Cookie can't calculate (shown as errors) are not reproduced."
+                    } catch { self.error = error.localizedDescription }
+                }
                 return
             }
             let data = try Data(contentsOf: url, options: .mappedIfSafe)

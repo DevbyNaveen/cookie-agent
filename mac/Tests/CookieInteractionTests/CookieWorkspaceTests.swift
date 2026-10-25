@@ -24,13 +24,49 @@ enum CookieWorkspaceTests {
         precondition(blanks.value(row: 0, column: 3) == .success(10))
         precondition(blanks.value(row: 0, column: 4) == .success(1))
         precondition(blanks.value(row: 0, column: 5) == .success(0))
+        // Anchored references are references.
+        precondition(CookieSheet(grid: [["2", "3", "=$A$1*B$1+$A1"]]).value(row: 0, column: 2) == .success(8))
+        // A range's errors are the total's error; its text is left out.
+        precondition(CookieSheet(grid: [["=1/0", "5", "=SUM(A1:B1)"]]).value(row: 0, column: 2) == .failure("#DIV/0!"))
+        precondition(CookieSheet(grid: [["=A2*2", "4", "=SUM(A1:B1)"], ["n/a"]]).value(row: 0, column: 2) == .failure("#VALUE!"))
+        // A thousand rows under a row of full-column totals evaluate whole.
+        var long = (1...1000).map { [String($0)] + Array(repeating: "", count: 20) }
+        long.append(Array(repeating: "=SUM($A$1:$A$1000)", count: 21))
+        let longSheet = CookieSheet(grid: long)
+        precondition((0..<21).allSatisfy { longSheet.value(row: 1000, column: $0) == .success(500500) }, "full-column totals must not hit the work limit")
+        // What reads back differently stays text.
+        precondition(!CookieWorkbookExport.isPlainNumber("007") && !CookieWorkbookExport.isPlainNumber("+15551234") && !CookieWorkbookExport.isPlainNumber("1e3"))
+        precondition(CookieWorkbookExport.isPlainNumber("12.5") && CookieWorkbookExport.isPlainNumber("-3"))
+        // Shared formulas move with their cell; anchors and quoted text don't.
+        precondition(CookieWorkbookImport.shift("B2*C2", rows: 1, columns: 0) == "B3*C3")
+        precondition(CookieWorkbookImport.shift("$B$2*C2&\"A1\"", rows: 2, columns: 1) == "$B$2*D4&\"A1\"")
+        precondition(CookieWorkbookImport.shift("SUM(A1:A3)+LOG10(B$1)", rows: 1, columns: 0) == "SUM(A2:A4)+LOG10(B$1)")
+        precondition(CookieWorkbookImport.shift("A1", rows: 0, columns: -1) == "#REF!")
+        func xml(_ text: String) -> Data { Data(("<?xml version=\"1.0\" encoding=\"UTF-8\"?>" + text).utf8) }
+        let workbook = xml("<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets><sheet name=\"Totals\" sheetId=\"3\" r:id=\"rId3\"/><sheet name=\"Old\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>")
+        let rels = xml("<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"x\" Target=\"worksheets/sheet1.xml\"/><Relationship Id=\"rId3\" Type=\"x\" Target=\"worksheets/sheet3.xml\"/></Relationships>")
+        precondition(CookieWorkbookImport.firstSheetPath(workbook: workbook, relationships: rels) == "xl/worksheets/sheet3.xml", "the first tab, not the first file")
+        precondition(CookieWorkbookImport.firstSheetPath(workbook: workbook, relationships: xml("<Relationships><Relationship Id=\"rId3\" Target=\"../../secret.xml\"/></Relationships>")) == nil)
+        let filled = xml("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>"
+            + "<row r=\"1\"><c r=\"A1\"><v>2</v></c><c r=\"B1\"><v>3</v></c><c r=\"C1\"><f t=\"shared\" ref=\"C1:C3\" si=\"0\">A1*B1</f><v>6</v></c></row>"
+            + "<row r=\"2\"><c r=\"A2\"><v>4</v></c><c r=\"B2\"><v>5</v></c><c r=\"C2\"><f t=\"shared\" si=\"0\"/><v>20</v></c></row>"
+            + "<row r=\"3\"><c r=\"A3\"><v>6</v></c><c r=\"B3\"><v>7</v></c><c r=\"C3\"><f t=\"shared\" si=\"0\"/><v>42</v></c><c r=\"D3\"><f t=\"array\" ref=\"D3:E3\">A1:B1*2</f><v>4</v></c><c r=\"E3\"><v>6</v></c></row>"
+            + "</sheetData></worksheet>")
+        let book = CookieWorkbookExport.zip([("xl/workbook.xml", workbook), ("xl/_rels/workbook.xml.rels", rels), ("xl/worksheets/sheet3.xml", filled),
+                                             ("xl/worksheets/sheet1.xml", xml("<worksheet><sheetData><row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>wrong tab</t></is></c></row></sheetData></worksheet>"))])
+        let bookURL = FileManager.default.temporaryDirectory.appendingPathComponent("cookie-shared-\(UUID().uuidString).xlsx")
+        try! book.write(to: bookURL); defer { try? FileManager.default.removeItem(at: bookURL) }
+        let imported = try! CookieWorkbookImport.load(bookURL)
+        precondition(imported[1][2] == "=A2*B2" && imported[2][2] == "=A3*B3", "filled-down formulas stay formulas")
+        precondition(imported[2][3] == "=ARRAY()" && imported[2][4] == "=ARRAY()", "an array formula's cells are never frozen numbers")
+        precondition(CookieSheet(grid: imported).value(row: 2, column: 2) == .success(42))
         let parsed = try! CookieWorkspaceCSV.parse("Name,Note\r\n\"A,B\",\"line1\nline2\"\r\n")
         precondition(parsed == [["Name", "Note"], ["A,B", "line1\nline2"]])
         do { _ = try CookieWorkspaceCSV.parse("\"unclosed"); preconditionFailure("Malformed CSV accepted") } catch {}
-        let data = CookieWorkbookExport.data(grid)
+        let data = CookieWorkbookExport.data(grid + [["007", "+15551234", "", ""]])
         precondition(data.prefix(4) == Data([0x50, 0x4b, 0x03, 0x04]))
         try! data.write(to: URL(fileURLWithPath: "/tmp/cookie-workspace-test.xlsx"))
-        precondition(try! CookieWorkbookImport.load(URL(fileURLWithPath: "/tmp/cookie-workspace-test.xlsx")) == grid)
+        precondition(try! CookieWorkbookImport.load(URL(fileURLWithPath: "/tmp/cookie-workspace-test.xlsx")) == grid + [["007", "+15551234", "", ""]])
     }
     static func testVersionsIsolationAndDependencies() {
         let store = CookieWorkspaceStore(persistent: false), thread = UUID(), other = UUID()
@@ -114,8 +150,13 @@ enum CookieWorkspaceTests {
         content.grid[1][1] = "200"
         try! store.propose(thread: thread, artifact: artifact, content: content, base: artifact.current.id, title: "Budget", summary: "Change rent")
         precondition(store.selected(thread)!.current.content.grid[1][1] == "100", "A proposal must not change the original")
+        let (_, failed) = CookieWorkspaceTool.perform(["action": "checkpoint", "payload": #"{"summary":"Rows 1-40 verified","nextStep":"pricing column"}"#], thread: thread, store: store)
+        precondition(!failed)
         try! store.acceptProposal(thread)
         precondition(store.selected(thread)!.current.content.grid[1][1] == "200" && store.session(thread).proposal == nil)
+        store.setSession(thread) { $0.activity = "Updated workspace" }
+        precondition(store.session(thread).checkpoint == "Rows 1-40 verified" && store.session(thread).nextStep == "pricing column", "only the checkpoint action writes the checkpoint")
+        precondition(store.context(thread).contains("Rows 1-40 verified"), "resuming starts from the model's own checkpoint")
         precondition(!store.referenceIsCurrent(thread), "Changed row must invalidate old reference")
         do { try store.propose(thread: thread, artifact: store.selected(thread)!, content: content, base: artifact.current.id, title: "Budget", summary: "Stale"); preconditionFailure("Stale proposal accepted") } catch {}
         let oldSession = try! JSONDecoder().decode(CookieWorkspaceSession.self, from: Data(#"{"selection":"","scrollY":0,"mobile":false,"showing":false}"#.utf8))
@@ -124,6 +165,9 @@ enum CookieWorkspaceTests {
         precondition(saved == store.session(thread))
         precondition(CompanionManager.visibleReply("Before\n\n[CARD {\"x\":1}]\n\nAfter") == "Before\n\nAfter")
         precondition(CookieRequestMode.choose("Take these features and explain the diagram", selection: false, visual: false) == .screen)
+        precondition(!CompanionManager.pictureFailed(CookieReplyTags.split("A sequence diagram shows messages over time.").tags, shown: false), "mentioning a diagram is not a failed one")
+        precondition(CompanionManager.pictureFailed(CookieReplyTags.split("Here [CARD {\"kind\":\"bogus\"}] it is.").tags, shown: false))
+        precondition(!CompanionManager.pictureFailed(CookieReplyTags.split("Here [CARD {\"kind\":\"bogus\"}] it is.").tags, shown: true))
         precondition(CookieRequestMode.refersToPrevious("Explain that one"))
         precondition(!CookieRequestMode.refersToPrevious("Research manufacturers"))
     }

@@ -56,8 +56,12 @@ struct CookieWorkspaceSession: Codable, Equatable {
     var showing = false
     var assistance: CookieAssistance?
     var proposal: CookieChangeProposal?
+    /// Progress as the model recorded it (workspace checkpoint): what resuming starts from. Only that
+    /// action writes it, so a step name or a reply can't replace it.
     var checkpoint: String?
     var nextStep: String?
+    /// What happened last (a job's step, a finished reply, an accepted change, an error), shown beside it.
+    var activity: String?
     var formatPreference: String?
     var proposedPreference: String?
     var jobBrief: String?

@@ -24,6 +24,7 @@ struct CookieProjectPanel: View {
                     GroupBox("Continue where you stopped") {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(session.checkpoint ?? "Start with an idea, or select an existing output.").textSelection(.enabled)
+                            if let activity = session.activity, !activity.isEmpty { Text("Latest: \(activity)").font(.caption).foregroundStyle(CK.secondary).lineLimit(3) }
                             if let selected = store.selected(thread) { Text("\(selected.title) · v\(selected.revisions.count)").foregroundStyle(CK.secondary) }
                             if !session.selection.isEmpty { Text("Selected: \(session.selection)").lineLimit(3) }
                             if let next = session.nextStep, !next.isEmpty { Text("Next: \(next)") }

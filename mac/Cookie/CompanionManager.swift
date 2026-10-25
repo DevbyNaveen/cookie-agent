@@ -1040,6 +1040,11 @@ final class CompanionManager: ObservableObject {
     }
 
     /// Escape/Stop releases input first; late audio, captures and transcripts cannot restart the turn.
+    /// The reply drew a card or scene and none of it could be shown.
+    static func pictureFailed(_ tags: [CookieReplyTag], shown: Bool) -> Bool {
+        !shown && tags.contains { $0.kind == "CARD" || $0.kind == "SCENE" }
+    }
+
     /// ⌃⌘ dictation that turned into a Mac shortcut: forget what was heard so nothing is typed.
     private func abandonDictation() {
         guard isDictating else { return }
@@ -1684,10 +1689,11 @@ final class CompanionManager: ObservableObject {
                 let cardRegion = CookieCardPresenter.region(of: placedMarks)
                 if !cards.isEmpty { finishStep("Made a card") }
                 if scene != nil { finishStep("Built a model") }
-                if transcript.localizedCaseInsensitiveContains("diagram"), cards.isEmpty,
-                   !CookieWorkspaceStore.shared.project(threadID).contains(where: { $0.kind == .diagram || $0.kind == .html }) {
-                    spokenText += "\n\nThe diagram did not render. The explanation above is text only; ask me to build it in the workspace to retry."
-                    steps.append(CookieStep(title: "Diagram unavailable — no rendered output", seconds: 0))
+                // Only a picture the model actually drew and Cookie couldn't show is a failure; a question
+                // that merely mentions a diagram, or an answer that chose words, is not.
+                if Self.pictureFailed(visualTags, shown: !cards.isEmpty || scene != nil) {
+                    spokenText += "\n\nThe picture for this didn't come through, so the explanation above is text only. Ask me to build it in the workspace to try again."
+                    steps.append(CookieStep(title: "Picture couldn't be shown", seconds: 0))
                 }
 
 
@@ -1727,7 +1733,7 @@ final class CompanionManager: ObservableObject {
                 }
 
                 CookieWorkspaceStore.shared.setSession(threadID) { state in
-                    state.checkpoint = String(Self.visibleReply(spokenText).prefix(1500))
+                    state.activity = String(Self.visibleReply(spokenText).prefix(1500))
                 }
                 CookieAnalytics.trackAIResponseReceived(response: spokenText)
 

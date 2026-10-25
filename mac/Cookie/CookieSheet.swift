@@ -4,9 +4,12 @@ struct CookieSheet {
     enum Value: Equatable { case success(Double), failure(String) }
     let grid: [[String]]
     private let evaluation = Evaluation()
+    /// Bounds the work of one sheet's evaluation: every cell read counts, so a sheet of a thousand
+    /// rows with a column of full-column totals stays well inside it.
+    static let readBudget = 1_000_000
     private final class Evaluation {
-        var remaining = 20000
-        var cache: [String: Value] = [:]
+        var remaining = CookieSheet.readBudget
+        var cache: [Int: Value] = [:]
     }
     init(grid: [[String]]) { self.grid = grid }
     static func address(_ row: Int, _ column: Int) -> String {
@@ -14,7 +17,9 @@ struct CookieSheet {
         while index > 0 { index -= 1; letters = String(UnicodeScalar(65 + index % 26)!) + letters; index /= 26 }
         return letters + String(row + 1)
     }
+    /// "B2", or "$B$2" / "B$2": the `$` only anchors a reference when a formula is copied.
     static func coordinate(_ address: String) -> (Int, Int)? {
+        let address = address.replacingOccurrences(of: "$", with: "")
         let letters = address.uppercased().prefix(while: { $0 >= "A" && $0 <= "Z" })
         guard !letters.isEmpty, letters.count <= 3, let row = Int(address.dropFirst(letters.count)), row > 0, row <= 1000 else { return nil }
         let column = letters.unicodeScalars.reduce(0) { $0 * 26 + Int($1.value) - 64 }
@@ -30,32 +35,42 @@ struct CookieSheet {
         case .failure(let error): return error
         }
     }
-    func value(row: Int, column: Int, visited: Set<String> = []) -> Value {
-        let address = Self.address(row, column)
-        guard !visited.contains(address), visited.count < 100 else { return .failure("#CYCLE!") }
-        if let cached = evaluation.cache[address] { return cached }
+    private func text(_ row: Int, _ column: Int) -> String? {
+        guard grid.indices.contains(row), grid[row].indices.contains(column) else { return nil }
+        return grid[row][column].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    func value(row: Int, column: Int) -> Value { value(row: row, column: column, visited: []) }
+    private func value(row: Int, column: Int, visited: Set<Int>) -> Value {
+        let key = row * 1024 + column
+        guard !visited.contains(key), visited.count < 100 else { return .failure("#CYCLE!") }
+        // Counted before the cache: a range over cached cells is still work.
         evaluation.remaining -= 1
         guard evaluation.remaining >= 0 else { return .failure("#LIMIT!") }
-        guard grid.indices.contains(row), grid[row].indices.contains(column) else { return .failure("#REF!") }
-        let text = grid[row][column].trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty { return .success(0) }
-        guard text.hasPrefix("=") else { return Double(text).map(Value.success) ?? .failure("#VALUE!") }
-        do {
-            let parser = FormulaParser(String(text.dropFirst()), isBlank: { reference in
-                guard let (r, c) = Self.coordinate(reference) else { return false }
-                return !grid.indices.contains(r) || !grid[r].indices.contains(c) || grid[r][c].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }) { reference in
-                guard let (row, column) = Self.coordinate(reference) else { throw FormulaError("#REF!") }
-                switch value(row: row, column: column, visited: visited.union([address])) {
-                case .success(let number): return number
-                case .failure(let error): throw FormulaError(error)
+        if let cached = evaluation.cache[key] { return cached }
+        guard let text = text(row, column) else { return .failure("#REF!") }
+        let result: Value
+        if text.isEmpty { result = .success(0) }
+        else if !text.hasPrefix("=") { result = Double(text).map(Value.success) ?? .failure("#VALUE!") }
+        else {
+            do {
+                let parser = FormulaParser(String(text.dropFirst()), skipsInRange: { reference in
+                    // Like a spreadsheet: a range's empty and text cells are left out; its errors are not.
+                    guard let (r, c) = Self.coordinate(reference), let cell = self.text(r, c) else { return true }
+                    return cell.isEmpty || (!cell.hasPrefix("=") && Double(cell) == nil)
+                }) { reference in
+                    guard let (row, column) = Self.coordinate(reference) else { throw FormulaError("#REF!") }
+                    switch value(row: row, column: column, visited: visited.union([key])) {
+                    case .success(let number): return number
+                    case .failure(let error): throw FormulaError(error)
+                    }
                 }
-            }
-            let number = try parser.parse()
-            let result: Value = number.isFinite ? .success(number) : .failure("#NUM!")
-            evaluation.cache[address] = result
-            return result
-        } catch { return .failure((error as? FormulaError)?.message ?? "#ERROR!") }
+                let number = try parser.parse()
+                result = number.isFinite ? .success(number) : .failure("#NUM!")
+            } catch { result = .failure((error as? FormulaError)?.message ?? "#ERROR!") }
+        }
+        // A cycle depends on the path it was found on, so it isn't kept.
+        if result != .failure("#CYCLE!") { evaluation.cache[key] = result }
+        return result
     }
 }
 
@@ -65,12 +80,14 @@ private final class FormulaParser {
     private var index = 0
     private var depth = 0
     private let resolve: (String) throws -> Double
-    private let isBlank: (String) -> Bool
-    init(_ text: String, isBlank: @escaping (String) -> Bool, resolve: @escaping (String) throws -> Double) {
-        let expression = try! NSRegularExpression(pattern: #"[A-Za-z]+[0-9]*|(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)|[^\s]"#)
-        tokens = expression.matches(in: text, range: NSRange(text.startIndex..., in: text)).map { String(text[Range($0.range, in: text)!]).uppercased() }
+    private let skipsInRange: (String) -> Bool
+    init(_ text: String, skipsInRange: @escaping (String) -> Bool, resolve: @escaping (String) throws -> Double) {
+        // A reference with its `$` anchors ($B$2, B$2) is one token; the anchors don't change its value.
+        let expression = try! NSRegularExpression(pattern: #"\$?[A-Za-z]{1,3}\$[0-9]+|\$[A-Za-z]{1,3}[0-9]+|[A-Za-z]+[0-9]*|(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)|[^\s]"#)
+        tokens = expression.matches(in: text, range: NSRange(text.startIndex..., in: text))
+            .map { String(text[Range($0.range, in: text)!]).uppercased().replacingOccurrences(of: "$", with: "") }
         self.resolve = resolve
-        self.isBlank = isBlank
+        self.skipsInRange = skipsInRange
     }
     private var next: String { index < tokens.count ? tokens[index] : "" }
     @discardableResult private func take(_ token: String) -> Bool { if next == token { index += 1; return true }; return false }
@@ -112,9 +129,9 @@ private final class FormulaParser {
                     guard let (r1, c1) = CookieSheet.coordinate(start), let (r2, c2) = CookieSheet.coordinate(end), r1 <= r2, c1 <= c2 else { throw FormulaError("#REF!") }
                     guard (r2 - r1 + 1) * (c2 - c1 + 1) <= 10000 else { throw FormulaError("#LIMIT!") }
                     for row in r1...r2 { for column in c1...c2 {
-                        if isBlank(CookieSheet.address(row, column)) { continue }
-                        do { values.append(try resolve(CookieSheet.address(row, column))) }
-                        catch let error as FormulaError where error.message == "#VALUE!" { continue }
+                        let reference = CookieSheet.address(row, column)
+                        if skipsInRange(reference) { continue }
+                        values.append(try resolve(reference))
                     } }
                 } else { values.append(try expression()) }
             } while take(",")
@@ -135,6 +152,11 @@ private final class FormulaParser {
 
 /// Small standards-based XLSX writer: stored ZIP entries, no external runtime or shell.
 enum CookieWorkbookExport {
+    /// Written as a number only when the number reads back as the same text: "007", "+15551234",
+    /// "1e3" and " 12" stay text, as they were typed.
+    static func isPlainNumber(_ raw: String) -> Bool {
+        raw.range(of: #"^-?(0|[1-9][0-9]*)(\.[0-9]+)?$"#, options: .regularExpression) != nil && Double(raw)?.isFinite == true
+    }
     static func data(_ grid: [[String]]) -> Data {
         func escape(_ value: String) -> String { value.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;") }
         let sheet = CookieSheet(grid: grid)
@@ -146,7 +168,7 @@ enum CookieWorkbookExport {
                     if case .success(let number) = sheet.value(row: row, column: column) { cached = "<v>\(number)</v>" } else { cached = "" }
                     return "<c r=\"\(ref)\"><f>\(escape(String(raw.dropFirst())))</f>\(cached)</c>"
                 }
-                if let number = Double(raw), number.isFinite { return "<c r=\"\(ref)\"><v>\(raw.trimmingCharacters(in: .whitespacesAndNewlines))</v></c>" }
+                if isPlainNumber(raw) { return "<c r=\"\(ref)\"><v>\(raw)</v></c>" }
                 return "<c r=\"\(ref)\" t=\"inlineStr\"><is><t xml:space=\"preserve\">\(escape(raw))</t></is></c>"
             }.joined() + "</row>"
         }.joined()
@@ -158,7 +180,7 @@ enum CookieWorkbookExport {
             ("xl/worksheets/sheet1.xml", "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>\(rows)</sheetData></worksheet>")]
         return zip(files.map { ($0.0, Data(("<?xml version=\"1.0\" encoding=\"UTF-8\"?>" + $0.1).utf8)) })
     }
-    private static func zip(_ files: [(String, Data)]) -> Data {
+    static func zip(_ files: [(String, Data)]) -> Data {
         var output = Data(), directory = Data()
         func append(_ value: UInt32, bytes: Int, to data: inout Data) { for index in 0..<bytes { data.append(UInt8((value >> (index * 8)) & 255)) } }
         for (name, bytes) in files {

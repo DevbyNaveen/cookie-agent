@@ -41,6 +41,9 @@ enum CookieSpeedTests {
         precondition(!CookieReadingPen.toleratesOCR("Same", expected: "Save"))
         precondition(!CookieReadingPen.toleratesOCR("Credits left: 19,902", expected: "Credits left: 18,902"))
         precondition(!CookieReadingPen.toleratesOCR("The tab title above", expected: "No screen dimming"))
+        precondition(!CookieReadingPen.toleratesOCR("is now allowed here", expected: "is not allowed here"), "a slip in a short word can flip the meaning")
+        precondition(!CookieReadingPen.toleratesOCR("Paste the token in the box", expected: "Paste the token on the box"))
+        precondition(!CookieReadingPen.toleratesOCR("Remember to exclude every attachment from the final export", expected: "Remember to include every attachment from the final export"), "two slips in one word is a different word")
     }
 
     static func readingFollowsHeardCharactersAndFreezesOnStop() {

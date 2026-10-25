@@ -246,44 +246,74 @@ enum CookieReadingPen {
         let phrase = String(needle)
         guard needle.count >= 12, phrase.split(separator: " ").count >= 2 else { return [] }
         let wordCount = phrase.split(separator: " ").count
-        var candidates: [[Line]] = []
-        for line in lines {
+        // Several word windows on one line can match the same words; they are one place. Two places
+        // anywhere are ambiguous, and nothing is drawn.
+        var best: (line: Int, range: NSRange, distance: Int, rects: [Line])?
+        for (lineIndex, line) in lines.enumerated() {
             let words = CookieTextLine.wordRanges(in: line.text)
             for count in max(1, wordCount - 1)...(wordCount + 1) where words.count >= count {
             for start in 0...(words.count - count) {
                 let lower = words[start].lowerBound, upper = words[start + count - 1].upperBound
                 let nsRange = NSRange(location: lower, length: upper - lower)
                 let source = (line.text as NSString).substring(with: nsRange)
-                guard toleratesOCR(source, expected: phrase), let range = Range(nsRange, in: line.text),
+                guard let distance = ocrDistance(source, expected: phrase), let range = Range(nsRange, in: line.text),
                       let box = line.boundingBox(for: range) else { continue }
+                if let current = best {
+                    let samePlace = current.line == lineIndex && NSIntersectionRange(current.range, nsRange).length > 0
+                    guard samePlace else { return [] }
+                    guard distance < current.distance else { continue }
+                }
                 let width = CGFloat(capture.screenshotWidthInPixels), height = CGFloat(capture.screenshotHeightInPixels)
                 let top = CookieDrawingResolver.global(CGPoint(x: box.minX * width, y: (1 - box.maxY) * height), in: capture)
                 let bottom = CookieDrawingResolver.global(CGPoint(x: box.maxX * width, y: (1 - box.minY) * height), in: capture)
-                candidates.append([Line(rect: CGRect(x: top.x, y: bottom.y, width: bottom.x - top.x, height: top.y - bottom.y),
-                                        characters: 0..<needle.count)])
-                if candidates.count > 1 { return [] }
+                best = (lineIndex, nsRange, distance, [Line(rect: CGRect(x: top.x, y: bottom.y, width: bottom.x - top.x, height: top.y - bottom.y),
+                                                            characters: 0..<needle.count)])
             }
             }
         }
-        return candidates
+        return best.map { [$0.rects] } ?? []
     }
 
-    static func toleratesOCR(_ source: String, expected: String) -> Bool {
+    static func toleratesOCR(_ source: String, expected: String) -> Bool { ocrDistance(source, expected: expected) != nil }
+
+    /// How many characters fast Vision got wrong, when it's plausibly the same text: at most one slip
+    /// per word and two in all, never in a word under five letters ("not"/"now", "is"/"in" change the
+    /// meaning; a long word with one wrong letter doesn't), and the same digits. Nil otherwise.
+    static func ocrDistance(_ source: String, expected: String) -> Int? {
         let a = Folded([source]).characters, b = Folded([expected]).characters
         guard b.count >= 12, b.contains(" "),
-              a.filter({ $0.isNumber }) == b.filter({ $0.isNumber }) else { return false }
+              a.filter({ $0.isNumber }) == b.filter({ $0.isNumber }) else { return nil }
         let limit = min(2, max(1, b.count / 24))
-        guard abs(a.count - b.count) <= limit else { return false }
-        var previous = Array(0...b.count)
-        for (i, character) in a.enumerated() {
-            var row = [i + 1] + Array(repeating: 0, count: b.count)
-            for j in b.indices {
-                row[j + 1] = min(previous[j + 1] + 1, row[j] + 1, previous[j] + (character == b[j] ? 0 : 1))
+        guard abs(a.count - b.count) <= limit else { return nil }
+        // Levenshtein with the path kept, so each slip can be charged to the expected word it falls in.
+        var table = Array(repeating: Array(repeating: 0, count: b.count + 1), count: a.count + 1)
+        for i in 0...a.count { table[i][0] = i }
+        for j in 0...b.count { table[0][j] = j }
+        // a is at least 10 long: b is 12+ and the lengths differ by two at most.
+        for i in 1...a.count { for j in 1...b.count {
+            table[i][j] = min(table[i - 1][j] + 1, table[i][j - 1] + 1, table[i - 1][j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1))
+        } }
+        let distance = table[a.count][b.count]
+        guard distance <= limit else { return nil }
+        // Which word of the expected text each position belongs to (a space goes with the word before it).
+        var wordOf: [Int] = [], word = 0
+        for character in b { wordOf.append(word); if character == " " { word += 1 } }
+        let wordLengths = b.split(separator: " ", omittingEmptySubsequences: false).map(\.count)
+        var slips: [Int: Int] = [:]
+        var i = a.count, j = b.count
+        while i > 0 || j > 0 {
+            if i > 0, j > 0, table[i][j] == table[i - 1][j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1) {
+                if a[i - 1] != b[j - 1] { slips[wordOf[j - 1], default: 0] += 1 }
+                i -= 1; j -= 1
+            } else if j > 0, table[i][j] == table[i][j - 1] + 1 {
+                slips[wordOf[j - 1], default: 0] += 1; j -= 1
+            } else {
+                // A character Vision added (a split word): charged to the word it landed in.
+                slips[wordOf[max(0, j - 1)], default: 0] += 1; i -= 1
             }
-            previous = row
         }
-        return previous[b.count] <= limit
-
+        for (word, count) in slips where count > 1 || wordLengths[word] < 5 { return nil }
+        return distance
     }
 }
 
