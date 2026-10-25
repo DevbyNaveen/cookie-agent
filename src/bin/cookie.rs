@@ -283,9 +283,13 @@ async fn page_command(args: &[String]) -> Result<(), Failure> {
         Some(home) => home,
         None => std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cookie")).ok_or_else(|| Failure::Usage("set --home".into()))?,
     };
+    // The built page: given, or this repo's `web/out`, or `page/` beside the binary (a release
+    // archive carries it there).
+    let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("page")));
     let page_dir = page
         .or_else(|| std::env::var_os("COOKIE_PAGE_DIR").map(Into::into))
-        .or_else(|| Some(std::path::PathBuf::from("web/out")).filter(|d| d.join("me").is_dir()));
+        .or_else(|| Some(std::path::PathBuf::from("web/out")).filter(|d| d.join("me").is_dir()))
+        .or_else(|| beside.filter(|d| d.join("me").is_dir()));
     origins.extend(["http://localhost:4748".to_string(), "http://127.0.0.1:4748".to_string()]);
     match &page_dir {
         Some(_) => eprintln!("Cookie's page: http://localhost:{port}{}", cookie_harness::page::PAGE_PATH),
