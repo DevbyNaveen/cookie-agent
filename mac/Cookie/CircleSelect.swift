@@ -191,7 +191,7 @@ final class CircleSelectController {
             let model = CircleSelectModel()
             let panel = NSPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
                                 backing: .buffered, defer: false)
-            panel.level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
+            panel.level = CookieWindowLevel.circleSelect
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = false

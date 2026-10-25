@@ -278,11 +278,22 @@ final class CookieAPI: ObservableObject {
         return session
     }
 
-    /// Enkeon's voice: ElevenLabs' with-timestamps answer, as CookieSpeaker decodes it.
-    func speech(_ text: String, voice: String?) async throws -> Data {
-        var body: [String: Any] = ["text": text]
-        if let voice { body["voice"] = voice }
-        return try await call("POST", "/speech", body, timeout: 30)
+    /// Enkeon's streaming voice: `GET /v1/projects/{p}/cookie/speech/stream?voice=&output_format=`,
+    /// a WebSocket that relays ElevenLabs' stream-input protocol on the platform's key (the model
+    /// is chosen there). The account token rides in the header, as on every other call.
+    func speechStreamRequest(voice: String?, outputFormat: String) async throws -> URLRequest {
+        guard CookieAccount.shared.isSignedIn else {
+            throw Failure(status: 401, code: "cookie_sign_in", message: "Sign in to Enkeon to use Cookie's voice.")
+        }
+        let (base, project, token) = try await backend()
+        var components = URLComponents(url: base.appendingPathComponent("v1/projects/\(project)/cookie/speech/stream"), resolvingAgainstBaseURL: false)!
+        components.scheme = components.scheme == "http" ? "ws" : "wss"
+        components.queryItems = [URLQueryItem(name: "output_format", value: outputFormat)]
+            + (voice.map { [URLQueryItem(name: "voice", value: $0)] } ?? [])
+        var request = URLRequest(url: components.url!)
+        request.setValue("desktop", forHTTPHeaderField: "x-tr-client")
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        return request
     }
 
     private func act(_ method: String, _ path: String, _ body: [String: Any]? = nil, refreshAfter: Bool = true) async {

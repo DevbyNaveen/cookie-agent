@@ -1,0 +1,380 @@
+import AppKit
+import SwiftUI
+
+/// The pure parts of a fast, correct turn: timing, streaming speech, pictures, the pointer.
+@MainActor
+enum CookieSpeedTests {
+    static func run() {
+        var passed = 0
+        func check(_ name: String, _ body: () -> Void) {
+            body()
+            passed += 1
+            print("PASS \(name)")
+        }
+        check("aTurnLogsEveryStageItReachedAndNothingElse", aTurnLogsEveryStageItReachedAndNothingElse)
+        check("aHalfWrittenTagNeverReachesTheVoice", aHalfWrittenTagNeverReachesTheVoice)
+        check("theFirstClauseIsFlushedOnceItIsLongEnough", theFirstClauseIsFlushedOnceItIsLongEnough)
+        check("alignmentFindsEachCharacterInTheSentText", alignmentFindsEachCharacterInTheSentText)
+        check("chunkTimesBecomeAbsoluteAcrossGaps", chunkTimesBecomeAbsoluteAcrossGaps)
+        check("aPictureLeavesOnlyWhenEveryCheckAnswered", aPictureLeavesOnlyWhenEveryCheckAnswered)
+        check("aSecretIsCoveredByEveryWordItTouches", aSecretIsCoveredByEveryWordItTouches)
+        check("onlyAPictureOfOneColourHasNoTextToRead", onlyAPictureOfOneColourHasNoTextToRead)
+        check("imagesAreSentAtTheSizeTheModelReads", imagesAreSentAtTheSizeTheModelReads)
+        check("modelPixelsLandOnTheirDisplayPoints", modelPixelsLandOnTheirDisplayPoints)
+        check("thePointerOnlyGoesWhereTheScreenSaysItsLabel", thePointerOnlyGoesWhereTheScreenSaysItsLabel)
+        check("theHandSettlesOnASpringAndBendsWhenTheTargetMoves", theHandSettlesOnASpringAndBendsWhenTheTargetMoves)
+        check("visualEvidenceAcceptsCompressionButRejectsChangedOrBlankTargets", visualEvidenceAcceptsCompressionButRejectsChangedOrBlankTargets)
+        check("severalPointsFollowSpeechAndStopDropsFutureCues", severalPointsFollowSpeechAndStopDropsFutureCues)
+        check("pointerMotionIsIndependentOfFrameRateAndDroppedFrames", pointerMotionIsIndependentOfFrameRateAndDroppedFrames)
+        check("cacheUsageSurvivesTheHelperProtocol", cacheUsageSurvivesTheHelperProtocol)
+        check("speakingKeepsTheTriangleAndItsTarget", speakingKeepsTheTriangleAndItsTarget)
+        check("focusOutlinesWithoutDimmingTheScreen", focusOutlinesWithoutDimmingTheScreen)
+        check("readingFollowsHeardCharactersAndFreezesOnStop", readingFollowsHeardCharactersAndFreezesOnStop)
+        check("wrappedQuotesKeepTheirCharacterRanges", wrappedQuotesKeepTheirCharacterRanges)
+        check("ocrToleranceRejectsShortLabelsAndChangedNumbers", ocrToleranceRejectsShortLabelsAndChangedNumbers)
+        print("\(passed) speed checks passed.")
+    }
+
+    static func ocrToleranceRejectsShortLabelsAndChangedNumbers() {
+        precondition(CookieReadingPen.toleratesOCR("Instructions to use points and undeplines", expected: "Instructions to use points and underlines"))
+        precondition(CookieReadingPen.toleratesOCR("No sc reen dimming", expected: "No screen dimming"))
+        precondition(!CookieReadingPen.toleratesOCR("Same", expected: "Save"))
+        precondition(!CookieReadingPen.toleratesOCR("Credits left: 19,902", expected: "Credits left: 18,902"))
+        precondition(!CookieReadingPen.toleratesOCR("The tab title above", expected: "No screen dimming"))
+        precondition(!CookieReadingPen.toleratesOCR("is now allowed here", expected: "is not allowed here"), "a slip in a short word can flip the meaning")
+        precondition(!CookieReadingPen.toleratesOCR("Paste the token in the box", expected: "Paste the token on the box"))
+        precondition(!CookieReadingPen.toleratesOCR("Remember to exclude every attachment from the final export", expected: "Remember to include every attachment from the final export"), "two slips in one word is a different word")
+    }
+
+    static func readingFollowsHeardCharactersAndFreezesOnStop() {
+        let position = CookieSpeechPosition()
+        position.move(to: 10, at: 1)
+        precondition(position.visualOffset(at: 1) == 0)
+        precondition(position.visualOffset(at: 1.1) > 8 && position.visualOffset(at: 1.1) < 10)
+        precondition(position.visualOffset(at: 2) <= 10, "ink cannot predict unheard characters")
+        let before = position.visualOffset(at: 1.1)
+        position.move(to: 20, at: 1.1)
+        precondition(abs(position.visualOffset(at: 1.1) - before) < 0.001, "retarget without a jump")
+        let clock = CookieSpeechClock()
+        var mark = CookieResolvedDrawing(geometry: .underline(from: .zero, to: CGPoint(x: 100, y: 0)), text: "", displayFrame: .zero)
+        mark.readRange = 10..<30
+        mark.readPosition = clock.position // may be scheduled before playback starts
+        clock.begin(text: String(repeating: "a", count: 50))
+        precondition(mark.readingProgress == 0 && mark.readingActive)
+        clock.advance(toOffset: 20, progress: 0.4)
+        precondition(mark.readingProgress == 0.5)
+        clock.advance(toOffset: 20, progress: 0.4) // audio paused: ink must not run ahead
+        precondition(mark.readingProgress == 0.5)
+        clock.stop()
+        precondition(mark.readingProgress == 0.5 && !mark.readingActive)
+        clock.begin(text: "a different reply")
+        clock.finish()
+        precondition(mark.readingProgress == 0.5, "another reply must not finish old ink")
+        mark.readPosition = clock.position
+        clock.begin(text: String(repeating: "b", count: 30))
+        clock.finish()
+        precondition(mark.readingProgress == 1 && !mark.readingActive)
+        precondition(CookieReadingPen.spokenRange(of: "No screen dimming", in: "First: No screen dimming means…", near: 7) == 7..<24)
+        precondition(CookieReadingPen.spokenRange(of: "No screen dimming", in: "This means no darkening. No screen dimming", near: 0) == nil)
+    }
+
+    static func wrappedQuotesKeepTheirCharacterRanges() {
+        // A narrow word on a very wide rendered line must not steal the next line's timing.
+        let lines = [CookieReadingPen.Line(rect: CGRect(x: 10, y: 50, width: 400, height: 15), characters: 0..<1),
+                     CookieReadingPen.Line(rect: CGRect(x: 10, y: 30, width: 30, height: 15), characters: 2..<12)]
+        let marks = CookieReadingPen.marks(lines: lines, phrase: "I understand", offset: 20, spokenLength: 32)
+        precondition(marks.map(\.offset) == [20, 22])
+        precondition(marks.map(\.readRange) == [20..<21, 22..<32])
+    }
+
+    static func aTurnLogsEveryStageItReachedAndNothingElse() {
+        var timing = CookieTurnTiming()
+        timing.mark(.keyDown, at: 10)
+        timing.mark(.release, at: 12.4)
+        timing.mark(.release, at: 99) // marked once: the first time wins
+        timing.mark(.transcript, at: 12.58)
+        timing.notes = ["voice", "1 screen"]
+        timing.redactionSeconds = 0.09
+        timing.mark(.capture, at: 12.71)
+        timing.mark(.requestSent, at: 12.75)
+        timing.toolStarted(at: 13.0)
+        timing.closeToolRound(at: 14.5)
+        timing.mark(.firstToken, at: 13.9)
+        timing.mark(.done, at: 20.4)
+        let line = timing.line()
+        precondition(line == "⏱ turn voice 1 screen · held 2.40 s · transcript +0.18 · capture +0.31 (redaction 0.09) · sent +0.35 · first token +1.50 · done +8.00 · tools 1 (1.50 s)", line)
+        precondition(CookieTurnTiming().line() == "⏱ turn: no start")
+    }
+
+    static func aHalfWrittenTagNeverReachesTheVoice() {
+        var stream = CookieSpokenStream()
+        // A lone "[" may start a tag: nothing from it on is spoken until it is decided.
+        var step = stream.update("see the [")
+        precondition(step.words == "see " && step.tags.isEmpty, step.words)
+        step = stream.update("see the [POINT:12,40:Sa")
+        precondition(step.words.isEmpty && step.tags.isEmpty)
+        step = stream.update("see the [POINT:12,40:Save] button and")
+        precondition(step.words == "the button " && step.tags.map(\.offset) == [8], step.words)
+        // A "[" that is not a tag is spoken once its "]" shows it isn't one.
+        step = stream.update("see the [POINT:12,40:Save] button and [this] one")
+        precondition(step.words == "and [this] " && step.tags.isEmpty, step.words)
+        // A tag at the very end settles only with the reply: trimming could still move it.
+        step = stream.update("see the [POINT:12,40:Save] button and [this] one [NEXT:show me]")
+        precondition(step.tags.isEmpty)
+        step = stream.update("see the [POINT:12,40:Save] button and [this] one [NEXT:show me]", final: true)
+        precondition(step.words == "one" && step.tags.map(\.kind) == ["NEXT"] && step.tags[0].offset == stream.spoken.utf16.count)
+        precondition(stream.update("more", final: true).words.isEmpty, "a finished stream takes nothing more")
+    }
+
+    static func theFirstClauseIsFlushedOnceItIsLongEnough() {
+        precondition(!CookieSpokenStream.holdsFirstClause("Sure, "), "too short to sound like speech")
+        precondition(CookieSpokenStream.holdsFirstClause("The share menu is up top, "))
+        precondition(!CookieSpokenStream.holdsFirstClause("The share menu is up top,and"))
+        precondition(CookieSpokenStream.holdsFirstClause(String(repeating: "word ", count: 16)))
+    }
+
+    static func alignmentFindsEachCharacterInTheSentText() {
+        var mapper = CookieAlignmentMapper()
+        mapper.sent("Hi é\n")
+        mapper.sent("you 👋 ")
+        // The voice reports the newline as a space, skips the wave, and adds a trailing space.
+        let offsets = mapper.map(["H", "i", " ", "é", " ", "y", "o", "u", " ", " "])
+        precondition(offsets == [0, 1, 2, 3, 4, 5, 6, 7, 8, nil], "\(offsets)")
+        // A character the voice made up is skipped; the next real one is found a few ahead.
+        var second = CookieAlignmentMapper()
+        second.sent("a-b c")
+        precondition(second.map(["a", "x", "b", "c"]) == [0, nil, 2, 4])
+        precondition(second.alignedThrough == 5 && second.sentLength == 5)
+    }
+
+    static func chunkTimesBecomeAbsoluteAcrossGaps() {
+        var timeline = CookieAudioTimeline()
+        precondition(timeline.schedule(frames: 24_000, playerSample: nil) == 0)
+        // The player ran dry at 1 s and kept counting; the next chunk came at 1.5 s.
+        precondition(timeline.schedule(frames: 12_000, playerSample: 36_000) == 24_000)
+        precondition(timeline.gaps == 12_000)
+        precondition(timeline.heard(playerSample: 30_000) == 24_000, "silence is not audio")
+        precondition(timeline.heard(playerSample: 42_000) == 30_000)
+        precondition(timeline.heard(playerSample: 99_000) == 36_000, "never past what was scheduled")
+        // A chunk scheduled while the player still has audio adds no gap.
+        _ = timeline.schedule(frames: 100, playerSample: 40_000)
+        precondition(timeline.gaps == 12_000)
+
+        var times = CookieCharacterTimes()
+        times.add(offset: 0, seconds: 0)
+        times.add(offset: 5, seconds: 0.4)
+        times.add(offset: 3, seconds: 0.5) // out of order: ignored
+        times.add(offset: 9, seconds: 1.1)
+        precondition(times.offset(at: -0.1) == nil && times.offset(at: 0.39) == 0 && times.offset(at: 0.4) == 5 && times.offset(at: 5) == 9)
+    }
+
+    static func aPictureLeavesOnlyWhenEveryCheckAnswered() {
+        func unchecked(_ read: CookieScreenRead, secrets: Bool = true, faces: Bool = true) -> Bool {
+            (try? Redactor.boxes(in: read, hideSecrets: secrets, blurFaces: faces)) == nil
+        }
+        let line = CookieTextLine(text: "hello", box: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.05),
+                                  words: [CookieTextWord(start: 0, end: 5, box: CGRect(x: 0.1, y: 0.1, width: 0.2, height: 0.05))])
+        precondition(!unchecked(CookieScreenRead(lines: [line], faces: [], textRuns: [1])), "text read, faces looked for: sent")
+        precondition(unchecked(CookieScreenRead(lines: [line], faces: nil, textRuns: [1])), "face detection failed: not sent")
+        precondition(!unchecked(CookieScreenRead(lines: [line], faces: nil, textRuns: [1]), faces: false), "blurring faces is off")
+        precondition(unchecked(CookieScreenRead(faces: [], textRuns: [nil])), "text recognition failed: not sent")
+        precondition(unchecked(CookieScreenRead(faces: [], textRuns: [])), "no recognizer ran: not sent")
+        // Nothing read: believed only from a clean run and a second sign the picture has no text.
+        precondition(unchecked(CookieScreenRead(faces: [], textRuns: [0, 0], textRectangles: 14)), "the detector sees text the reader missed")
+        precondition(unchecked(CookieScreenRead(faces: [], textRuns: [0, 0], textRectangles: nil)), "and nothing says it is blank")
+        precondition(!unchecked(CookieScreenRead(faces: [], textRuns: [0, 0], textRectangles: 0)), "no text anywhere")
+        precondition(!unchecked(CookieScreenRead(faces: [], textRuns: [0], textRectangles: nil, nearUniform: true)), "a blank screen")
+        precondition(unchecked(CookieScreenRead(faces: [], textRuns: [nil, 0], textRectangles: 0)), "accurate failed: its silence isn't trusted")
+        precondition(!unchecked(CookieScreenRead(lines: [line], faces: [], textRuns: [nil, 1])), "fast read what accurate couldn't")
+        precondition(!unchecked(CookieScreenRead(faces: nil, textRuns: [nil]), secrets: false, faces: false), "nothing is on")
+    }
+
+    static func aSecretIsCoveredByEveryWordItTouches() {
+        // A test card (4242 4242 4242 4242 passes Luhn) and a fake key, each in a line of words.
+        let text = "card 4242 4242 4242 4242 key sk-ant-TESTONLY0000000000000000 ok"
+        let ranges = CookieTextLine.wordRanges(in: text)
+        precondition(ranges.count == 8 && ranges[1] == 5..<9 && ranges[7] == 61..<63, "\(ranges)")
+        let words = ranges.enumerated().map { index, range in
+            CookieTextWord(start: range.lowerBound, end: range.upperBound, box: CGRect(x: Double(index) * 0.1, y: 0.5, width: 0.08, height: 0.02))
+        }
+        let line = CookieTextLine(text: text, box: CGRect(x: 0, y: 0.5, width: 0.8, height: 0.02), words: words)
+        let found = try! Redactor.boxes(in: CookieScreenRead(lines: [line], faces: [], textRuns: [1]), hideSecrets: true, blurFaces: true)
+        precondition(found.text.count == 2, "\(found.text)")
+        let card = found.text.first { $0.minX < 0.15 }!, key = found.text.first { $0.minX > 0.55 }!
+        precondition(abs(card.minX - 0.1) < 1e-9 && abs(card.maxX - 0.48) < 1e-9, "all four groups of the card: \(card)")
+        precondition(abs(key.minX - 0.6) < 1e-9 && abs(key.maxX - 0.68) < 1e-9, "the key's word: \(key)")
+        // A secret in a line whose words have no boxes can't be covered: not sent.
+        let boxless = CookieTextLine(text: text, box: line.box, words: [])
+        precondition((try? Redactor.boxes(in: CookieScreenRead(lines: [boxless], faces: [], textRuns: [1]), hideSecrets: true, blurFaces: true)) == nil)
+    }
+
+    static func onlyAPictureOfOneColourHasNoTextToRead() {
+        func picture(_ draw: (CGContext) -> Void) -> CGImage {
+            let context = CGContext(data: nil, width: 640, height: 400, bitsPerComponent: 8, bytesPerRow: 0,
+                                    space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)!
+            context.setFillColor(gray: 0.95, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: 640, height: 400))
+            draw(context)
+            return context.makeImage()!
+        }
+        precondition(CookieVisionText.nearlyUniform(picture { _ in }), "one colour")
+        let gradient = picture { context in
+            for x in 0..<640 { context.setFillColor(gray: CGFloat(x) / 640, alpha: 1); context.fill(CGRect(x: x, y: 0, width: 1, height: 400)) }
+        }
+        precondition(CookieVisionText.nearlyUniform(gradient), "a gentle gradient")
+        let lines = picture { context in
+            context.setFillColor(gray: 0, alpha: 1)
+            for row in 0..<12 { for word in 0..<9 { context.fill(CGRect(x: 20 + word * 66, y: 20 + row * 30, width: 50, height: 9)) } }
+        }
+        precondition(!CookieVisionText.nearlyUniform(lines), "rows of word-shaped marks")
+        precondition(CookieEdges.fraction(gray: [0, 255, 0, 255], width: 2, height: 2) == 0.5)
+    }
+
+    static func imagesAreSentAtTheSizeTheModelReads() {
+        // Anthropic's own examples (vision-coordinates): the token cap, not the edge, decides.
+        precondition(CookieImageSize.processed(width: 1075, height: 1520) == (924, 1307))
+        precondition(CookieImageSize.processed(width: 1920, height: 1080) == (1456, 819))
+        precondition(CookieImageSize.processed(width: 800, height: 600) == (800, 600), "an image that fits is unchanged")
+        // A 14" MacBook Pro (1512×982 pt, Retina): its own aspect, nothing stretched, under the cap.
+        let laptop = CookieImageSize.screenshot(displayWidth: 1512, displayHeight: 982, backingScale: 2)
+        precondition(laptop == (1280, 831) && CookieImageSize.tokens(width: 1280, height: 831) <= CookieImageSize.maxTokens)
+        precondition(CookieImageSize.screenshot(displayWidth: 3840, displayHeight: 1080, backingScale: 1) == (1280, 360))
+        precondition(CookieImageSize.screenshot(displayWidth: 1024, displayHeight: 768, backingScale: 1) == (1024, 768), "never up-scaled")
+        let portrait = CookieImageSize.screenshot(displayWidth: 1080, displayHeight: 1920, backingScale: 1)
+        precondition(portrait == (720, 1280), "\(portrait)")
+        for size in [laptop, portrait, CookieImageSize.screenshot(displayWidth: 2560, displayHeight: 1440, backingScale: 2)] {
+            precondition(CookieImageSize.processed(width: size.width, height: size.height) == size, "already what the model reads")
+        }
+    }
+
+    static func modelPixelsLandOnTheirDisplayPoints() {
+        // A second display to the left of and above the main one, 1280×831 sent for 1512×982 pt.
+        let display = CGRect(x: -1512, y: 200, width: 1512, height: 982)
+        let centre = CookieDrawingResolver.global(CGPoint(x: 640, y: 415.5), imageWidth: 1280, imageHeight: 831, display: display)
+        precondition(abs(centre.x - -756) < 0.001 && abs(centre.y - 691) < 0.001, "\(centre)")
+        // Off the image: clamped inside it, so it stays on its own display.
+        let outside = CookieDrawingResolver.global(CGPoint(x: -5, y: 900), imageWidth: 1280, imageHeight: 831, display: display)
+        precondition(outside == CGPoint(x: -1512, y: 200))
+        let topRight = CookieDrawingResolver.global(CGPoint(x: 1280, y: 0), imageWidth: 1280, imageHeight: 831, display: display)
+        precondition(topRight == CGPoint(x: 0, y: 1182))
+    }
+
+    static func thePointerOnlyGoesWhereTheScreenSaysItsLabel() {
+        let yes: [(String, String)] = [("Save", "Save"), ("save", "SAVE"), ("Save", "Save…"), ("Share", "Share menu"),
+                                       ("search mail", "Search  Mail"), ("Don’t Save", "Don't Save"), ("Copy link", "Copy lin")]
+        for (label, text) in yes { precondition(CookieLabelMatch.matches(label: label, text: text), "\(label) / \(text)") }
+        let no: [(String, String)] = [("Save", "Send"), ("Save", ""), ("", "Save"), ("Save as PDF", "PD"), ("Go", "Google"),
+                                      ("Copy link", "Co")]
+        for (label, text) in no { precondition(!CookieLabelMatch.matches(label: label, text: text), "\(label) / \(text)") }
+    }
+
+    static func theHandSettlesOnASpringAndBendsWhenTheTargetMoves() {
+        var spring = CookieSpring2D(position: .zero, target: CGPoint(x: 400, y: 0), duration: 0.5, bounce: 0.1)
+        var farthest = 0.0, time = 0.0
+        // Frame times as a 120 Hz display gives them, with one dropped frame: time, not frame counts.
+        while !spring.isSettled && time < 3 {
+            let frame = time > 0.1 && time < 0.12 ? 1.0 / 60 : 1.0 / 120
+            spring.step(seconds: frame)
+            time += frame
+            farthest = max(farthest, spring.position.x)
+        }
+        precondition(spring.isSettled && time < 1.2, "settles in about its duration (\(time) s)")
+        precondition(farthest < 400 * 1.05, "a little bounce at most: \(farthest)")
+        // Mid-flight the target moves: the velocity carries on (no jump, no restart).
+        var moving = CookieSpring2D(position: .zero, target: CGPoint(x: 400, y: 0))
+        for _ in 0..<12 { moving.step(seconds: 1.0 / 120) }
+        let before = moving.velocity, at = moving.position
+        moving.target = CGPoint(x: 400, y: 300)
+        moving.step(seconds: 1.0 / 120)
+        precondition(hypot(moving.position.x - at.x, moving.position.y - at.y) < 20, "no jump")
+        precondition(moving.velocity.dx > before.dx * 0.8, "still heading the way it was going")
+        for _ in 0..<240 { moving.step(seconds: 1.0 / 120) }
+        precondition(moving.isSettled && abs(moving.position.y - 300) < 1)
+        // Bounce is kept within Apple's guidance even when asked for more.
+        let springy = CookieSpring2D(position: .zero, target: .zero, duration: 0.5, bounce: 0.6)
+        precondition(abs(springy.damping - 4 * .pi * 0.85 / 0.5) < 1e-9)
+    }
+    static func visualEvidenceAcceptsCompressionButRejectsChangedOrBlankTargets() {
+        let count = CookiePointPatch.width * CookiePointPatch.height
+        let paragraph = (0..<count).map { UInt8(($0 / 8) % 2 == 0 ? 35 : 215) }
+        let compressed = paragraph.map { UInt8(Int($0) + 4) }
+        precondition(CookiePointPatch.matches(paragraph, compressed))
+        precondition(!CookiePointPatch.matches(paragraph, paragraph.reversed()))
+        precondition(!CookiePointPatch.matches(paragraph, Array(repeating: 215, count: count)))
+        precondition(!CookiePointPatch.matches(Array(repeating: 215, count: count), Array(repeating: 215, count: count)))
+        precondition(!CookiePointPatch.matches(paragraph, []))
+    }
+
+    static func severalPointsFollowSpeechAndStopDropsFutureCues() {
+        var stream = CookieSpokenStream()
+        let step = stream.update("First [POINT:10,20:first] then second [POINT:80,90:second] and third [POINT:40,50:third] done.", final: true)
+        let points = step.tags.filter { $0.kind == "POINT" }
+        precondition(points.count == 3)
+        let clock = CookieSpeechClock()
+        var shown: [Int] = []
+        for (index, point) in points.enumerated() {
+            clock.schedule(atOffset: point.offset) { shown.append(index) }
+        }
+        clock.begin(text: stream.spoken)
+        clock.advance(toOffset: points[0].offset, progress: 0.2)
+        precondition(shown == [0])
+        clock.advance(toOffset: points[1].offset, progress: 0.5)
+        precondition(shown == [0, 1])
+        clock.stop()
+        clock.begin(text: "another reply")
+        clock.finish()
+        precondition(shown == [0, 1], "interrupted visual cues must not leak into another reply")
+    }
+
+
+
+    static func pointerMotionIsIndependentOfFrameRateAndDroppedFrames() {
+        for bounce in [0.0, 0.1, 0.15] {
+            var smooth = CookieSpring2D(position: .zero, target: CGPoint(x: 800, y: 350), bounce: bounce)
+            var dropped = smooth
+            for _ in 0..<60 { smooth.step(seconds: 1.0 / 120) }
+            dropped.step(seconds: 0.5)
+            precondition(hypot(smooth.position.x - dropped.position.x, smooth.position.y - dropped.position.y) < 0.0001)
+            precondition(hypot(smooth.velocity.dx - dropped.velocity.dx, smooth.velocity.dy - dropped.velocity.dy) < 0.0001)
+            let before = dropped.position
+            dropped.step(seconds: .nan)
+            precondition(dropped.position == before)
+        }
+    }
+
+    static func cacheUsageSurvivesTheHelperProtocol() {
+        let data = Data(#"{"type":"usage","data":{"input_tokens":30,"output_tokens":8,"cache_read_tokens":900,"cache_write_tokens":50}}"#.utf8)
+        let event = try! JSONDecoder().decode(HarnessEvent.self, from: data)
+        precondition(event.usage?.input_tokens == 30 && event.usage?.output_tokens == 8)
+        precondition(event.usage?.cache_read_tokens == 900 && event.usage?.cache_write_tokens == 50)
+        precondition(event.text == nil)
+    }
+
+    static func speakingKeepsTheTriangleAndItsTarget() {
+        for mode: BuddyNavigationMode in [.followingCursor, .navigatingToTarget, .pointingAtTarget, .drawing] {
+            precondition(CookiePointerPresentation.showsTriangle(voice: .responding, navigation: mode))
+            precondition(!CookiePointerPresentation.showsTriangle(voice: .listening, navigation: mode))
+        }
+        precondition(CookiePointerPresentation.keepsPoint(voice: .responding))
+        precondition(!CookiePointerPresentation.keepsPoint(voice: .idle))
+        precondition(!CookiePointerPresentation.keepsPoint(voice: .listening))
+        precondition(!CookiePointerPresentation.showsTriangle(voice: .processing, navigation: .followingCursor))
+    }
+
+    static func focusOutlinesWithoutDimmingTheScreen() {
+        let screen = CGRect(x: 0, y: 0, width: 240, height: 160)
+        let focus = CookieSpotlight(rect: CGRect(x: 70, y: 50, width: 100, height: 60), displayFrame: screen)
+        let renderer = ImageRenderer(content: CookieSpotlightLayer(spotlight: focus, screenFrame: screen, typing: false))
+        renderer.scale = 1
+        guard let image = renderer.cgImage else { preconditionFailure("focus must render") }
+        let bitmap = NSBitmapImageRep(cgImage: image)
+        precondition((bitmap.colorAt(x: 10, y: 10)?.alphaComponent ?? 1) < 0.01, "outside focus must be transparent")
+        precondition((bitmap.colorAt(x: 120, y: 80)?.alphaComponent ?? 1) < 0.01, "text inside focus must be transparent")
+        var outlinePixels = 0
+        for y in 0..<160 { for x in 0..<240 {
+            if (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5 { outlinePixels += 1 }
+        } }
+        precondition(outlinePixels > 100 && outlinePixels < 2000, "only the region border should be painted")
+    }
+
+}

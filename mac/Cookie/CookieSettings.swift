@@ -335,6 +335,7 @@ private struct PermissionsPage: View {
 }
 
 private struct VoicePage: View {
+    @AppStorage(CookieDictationText.vocabularyKey) private var vocabulary = ""
     @ObservedObject var companionManager: CompanionManager
 
     var body: some View {
@@ -345,6 +346,15 @@ private struct VoicePage: View {
                     .font(.system(size: 12))
                     .foregroundStyle(CK.secondary)
             }
+        }
+        SettingsGroup(label: "Dictation") {
+            SettingsRow(title: "Write where you are", caption: "Hold Control–Command, speak, then release. Say “scratch that” to undo the last verified insertion. Password fields are excluded.") { EmptyView() }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Personal vocabulary").font(.system(size: 12, weight: .medium))
+                Text("One name or term per line, up to 100. Passed as recognition hints when supported by your speech provider.").font(.system(size: 11)).foregroundStyle(CK.secondary)
+                TextEditor(text: $vocabulary).frame(height: 90).font(.system(size: 12))
+                    .onChange(of: vocabulary) { _, value in if value.count > 8_000 { vocabulary = String(value.prefix(8_000)) } }
+            }.padding(12)
         }
         SettingsGroup(label: "Speaking") {
             CredentialRow(field: CookieModelSettings.elevenLabsField, title: "ElevenLabs key",
@@ -568,9 +578,13 @@ private struct ShortcutsPage: View {
 
     var body: some View {
         SettingsGroup {
-            SettingsRow(title: "Talk", caption: "Hold, speak, let go. Cookie looks at your screen and answers.") {
+            SettingsRow(title: "Talk", caption: "Hold, speak, let go. Cookie chooses text, screen help, a visual lesson, or connected work.") {
                 HStack(spacing: 6) { Text("Hold").font(.system(size: 11)).foregroundStyle(CK.tertiary); TalkKeys() }
             }
+            SettingsRow(title: "Dictate", caption: "Hold, speak, release to write in the focused text field. No model round trip.") {
+                HStack(spacing: 3) { KeyCap(label: "ctrl"); KeyCap(label: "cmd") }
+            }
+            SettingsRow(title: "Rewrite selection", caption: "Select text in an app, hold Control–Option and say shorter, friendlier, translate, or turn into an email.") { EmptyView() }
             SettingsRow(title: "Open Cookie", caption: "Click the notch.") {
                 Image(systemName: "rectangle.topthird.inset.filled").foregroundStyle(CK.secondary)
             }

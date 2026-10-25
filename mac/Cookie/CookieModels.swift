@@ -24,15 +24,21 @@ struct CookieAttachment: Codable, Hashable, Identifiable {
         guard let image = NSImage(contentsOf: url),
               let tiff = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
-        let longSide = max(bitmap.pixelsWide, bitmap.pixelsHigh)
-        guard longSide > 1600 else { return bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) }
-        let scale = 1600 / CGFloat(longSide)
-        let size = NSSize(width: CGFloat(bitmap.pixelsWide) * scale, height: CGFloat(bitmap.pixelsHigh) * scale)
-        let resized = NSImage(size: size)
-        resized.lockFocus()
-        image.draw(in: NSRect(origin: .zero, size: size))
-        resized.unlockFocus()
-        guard let small = resized.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)) else { return nil }
+        // At most what the model reads without resizing it (CookieImageSize).
+        let fitted = CookieImageSize.processed(width: bitmap.pixelsWide, height: bitmap.pixelsHigh)
+        guard fitted.width != bitmap.pixelsWide || fitted.height != bitmap.pixelsHigh else {
+            return bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.8])
+        }
+        // Drawn into a bitmap of exactly those pixels: NSImage.lockFocus would draw at the
+        // screen's backing scale, twice the size on a Retina Mac.
+        guard let small = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: fitted.width, pixelsHigh: fitted.height,
+                                           bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                           colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+        small.size = NSSize(width: fitted.width, height: fitted.height)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: small)
+        bitmap.draw(in: NSRect(x: 0, y: 0, width: fitted.width, height: fitted.height))
+        NSGraphicsContext.restoreGraphicsState()
         return small.representation(using: .jpeg, properties: [.compressionFactor: 0.8])
     }
 }

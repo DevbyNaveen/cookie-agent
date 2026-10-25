@@ -118,6 +118,35 @@ pub enum ProviderEvent {
     FellBack { from: String, to: String, reason: String },
 }
 
+/// Prompt-cache lifetime for the stable prefix (tools and system), from
+/// `COOKIE_PROMPT_CACHE_TTL`: `1h` keeps it an hour between runs instead of
+/// the default five minutes — for a person who asks something now and again,
+/// which a 5-minute cache never serves. Only Claude models from 4.5 on take
+/// it (Bedrock refuses `ttl` on 3.x with a ValidationException); anything
+/// else, or the variable unset, keeps the default and sends no `ttl`.
+/// The conversation's own breakpoint stays at five minutes: a longer entry
+/// must come before a shorter one, and tools and system come first.
+pub fn prefix_cache_ttl(model: &str) -> Option<&'static str> {
+    let wanted = std::env::var("COOKIE_PROMPT_CACHE_TTL").ok()?;
+    (wanted.trim() == "1h" && hour_cache_supported(model)).then_some("1h")
+}
+
+/// Claude 4.5 and later, by id: `claude-sonnet-4-6`, `eu.anthropic.claude-opus-5-5`, …
+/// (the families Bedrock's prompt-caching table lists with a 1-hour TTL).
+pub fn hour_cache_supported(model: &str) -> bool {
+    let Some(at) = model.find("claude-") else { return false };
+    // `<tier>-<major>[-<minor>][-<date>…]`, or the 3.x naming `3-7-sonnet-…`;
+    // a date is eight digits, never a minor.
+    let mut parts = model[at + "claude-".len()..].split(['-', '@', ':', '.']).peekable();
+    let number = |part: Option<&str>| part.filter(|p| (1..=2).contains(&p.len())).and_then(|p| p.parse::<u32>().ok());
+    if number(parts.peek().copied()).is_none() {
+        parts.next();
+    }
+    let Some(major) = number(parts.next()) else { return false };
+    let minor = number(parts.next()).unwrap_or(0);
+    (major, minor) >= (4, 5)
+}
+
 #[async_trait]
 pub trait Provider: Send + Sync {
     async fn complete(&self, request: ModelRequest<'_>) -> Result<ModelResponse>;
@@ -147,6 +176,17 @@ pub trait Provider: Send + Sync {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn only_claude_after_three_keeps_a_cache_for_an_hour() {
+        for yes in ["claude-sonnet-4-6", "eu.anthropic.claude-sonnet-4-6", "anthropic.claude-haiku-4-5-20251001-v1:0", "claude-opus-5-5", "claude-opus-5", "eu.anthropic.claude-fable-5-1"] {
+            assert!(hour_cache_supported(yes), "{yes}");
+        }
+        for no in ["anthropic.claude-3-7-sonnet-20250219-v1:0", "claude-3-5-haiku-latest", "claude-sonnet-4-20250514", "claude-opus-4-1-20250805",
+                   "amazon.nova-pro-v1:0", "gpt-6"] {
+            assert!(!hour_cache_supported(no), "{no}");
+        }
+    }
 
     #[test]
     fn the_answer_must_be_json_with_the_required_keys() {

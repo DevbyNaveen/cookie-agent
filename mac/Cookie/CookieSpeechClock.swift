@@ -6,10 +6,12 @@
 //
 
 import Foundation
+import QuartzCore
 
 /// The one clock both voices feed: ElevenLabs from its per-character start
-/// times against the audio player's position, the Mac's voice from
-/// `AVSpeechSynthesizer`'s `willSpeakRangeOfSpeechString` word callbacks.
+/// times (streamed with each audio chunk) against the audio player's position,
+/// the Mac's voice from `AVSpeechSynthesizer`'s `willSpeakRangeOfSpeechString`
+/// word callbacks. A streamed reply's text grows while it is spoken (`setText`).
 ///
 /// Offsets are UTF-16 offsets into the text being spoken (`NSString`/`NSRange`
 /// units — what the synthesizer reports), so a parser that strips tags from a
@@ -18,8 +20,8 @@ import Foundation
 /// Use it to do something when speech reaches a place in the text, for example
 /// draw a mark as the word naming it is said:
 ///
-///     speaker.speakText(spoken, onPlaybackStarted: {
-///         for mark in marks { clock.schedule(atOffset: mark.offset) { show(mark) } }
+///     speaker.beginReply(onTags: { tags in
+///         for mark in marks(tags) { clock.schedule(atOffset: mark.offset) { show(mark) } }
 ///     })
 ///
 /// - `schedule(atOffset:_:)` runs the action on the main actor once
@@ -30,9 +32,10 @@ import Foundation
 ///   offset order (the last word's start is the last offset a voice reports).
 /// - When speech is stopped or interrupted (Stop, Escape, the hotkey pressed
 ///   to talk over Cookie, a new reply), every waiting action is dropped.
-/// - Anything scheduled while nothing is speaking waits for the next speech;
-///   `CookieSpeaker.speakText` stops the previous speech first, which drops it,
-///   so schedule from `onPlaybackStarted` (the clock has begun by then) or later.
+/// - Anything scheduled while nothing is speaking waits for the speech to begin;
+///   `CookieSpeaker.beginReply` stops the previous speech first, which drops it,
+///   so schedule after `beginReply` (a streamed reply's tags arrive before its
+///   first sound) or from `onPlaybackStarted`.
 ///
 /// The voice reports about 60 times a second (ElevenLabs) or once a word
 /// (the Mac's voice); `spokenOffset` only moves forward.
@@ -56,6 +59,9 @@ final class CookieSpeechClock {
     private(set) var spokenOffset = 0
     /// How much of the reply has been heard, 0...1.
     private(set) var progress = 0.0
+
+    /// A retained position lets ink finish without jumping back when the clock resets.
+    private(set) var position = CookieSpeechPosition()
 
     private var waiting: [Waiting] = []
     private var nextID = 0
@@ -86,11 +92,18 @@ final class CookieSpeechClock {
         runWaiting(through: 0)
     }
 
+    /// More of the reply's words arrived while it is being spoken.
+    func setText(_ text: String) {
+        guard isSpeaking else { return }
+        self.text = text
+    }
+
     func advance(toOffset offset: Int, progress: Double) {
         guard isSpeaking else { return }
         self.progress = max(self.progress, min(1, max(0, progress)))
         guard offset > spokenOffset else { return }
         spokenOffset = offset
+        position.move(to: offset, at: CACurrentMediaTime())
         runWaiting(through: offset)
     }
 
@@ -99,12 +112,15 @@ final class CookieSpeechClock {
         guard isSpeaking else { return }
         progress = 1
         spokenOffset = max(spokenOffset, text.utf16.count)
+        position.move(to: spokenOffset, at: CACurrentMediaTime())
         runWaiting(through: .max)
         stop()
     }
 
     /// Stopped, interrupted or done: nothing waiting runs.
     func stop() {
+        position.ended = true
+        position = CookieSpeechPosition()
         waiting = []
         isSpeaking = false
         text = ""
@@ -120,4 +136,25 @@ final class CookieSpeechClock {
             due.action()
         }
     }
+}
+
+/// Read on the main actor by the overlay's display link; one instance per reply.
+final class CookieSpeechPosition: Equatable {
+    private(set) var offset = 0
+    private var displayStart = 0.0
+    private var changedAt = 0.0
+    var ended = false
+
+    func move(to offset: Int, at time: Double) {
+        displayStart = visualOffset(at: time)
+        changedAt = time
+        self.offset = max(self.offset, offset)
+    }
+
+    /// A 45 ms settling constant smooths character/word callbacks without predicting unheard text.
+    func visualOffset(at time: Double) -> Double {
+        if ended { return Double(offset) }
+        return Double(offset) + (displayStart - Double(offset)) * exp(-max(0, time - changedAt) / 0.045)
+    }
+    static func == (lhs: CookieSpeechPosition, rhs: CookieSpeechPosition) -> Bool { lhs === rhs }
 }

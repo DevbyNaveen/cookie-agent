@@ -19,7 +19,13 @@ import Foundation
 
 struct CookieCard: Equatable {
     struct Event: Codable, Equatable { let label: String; let when: String }
-    struct Node: Codable, Equatable { let id: String; let label: String }
+    struct Node: Codable, Equatable {
+        let id: String
+        let label: String
+        let icon: String?
+        init(id: String, label: String, icon: String? = nil) { self.id = id; self.label = label; self.icon = icon }
+    }
+    static let teachingIcons: Set<String> = ["sun.max", "drop", "leaf", "wind", "sparkles", "cube", "flame", "gearshape", "globe", "server.rack", "display", "arrow.triangle.branch", "bolt", "cloud", "atom"]
     struct Edge: Codable, Equatable { let from: String; let to: String; let label: String? }
     struct Column: Codable, Equatable { let heading: String; let points: [String] }
 
@@ -212,7 +218,8 @@ struct CookieCard: Equatable {
         for node in nodes {
             guard let id = fits(node.id, shortLength), let label = fits(node.label, shortLength),
                   !kept.contains(where: { $0.id == id }) else { return nil }
-            kept.append(Node(id: id, label: label))
+            if let icon = node.icon, !teachingIcons.contains(icon) { return nil }
+            kept.append(Node(id: id, label: label, icon: node.icon))
         }
         let ids = Set(kept.map(\.id))
         var keptEdges: [Edge] = []
@@ -250,7 +257,33 @@ struct CookieCard: Equatable {
     /// Where on the speech clock each element appears: the first at the tag, the rest spread
     /// evenly over the sentence after it (to that sentence's end, or the next card's tag).
     func revealOffsets(in spoken: String, nextCardOffset: Int?) -> [Int] {
-        Self.beats(elements.count, from: offset, in: spoken, until: nextCardOffset)
+        guard case .flow(_, let nodes, _, _, _) = content else {
+            return Self.beats(elements.count, from: offset, in: spoken, until: nextCardOffset)
+        }
+        let cues = Self.namedBeats(nodes.map(\.label), from: offset, in: spoken)
+        let positions = Dictionary(uniqueKeysWithValues: zip(nodes.map(\.id), cues.dropFirst()))
+        var last = offset
+        return elements.map { element in
+            if case .node(let id) = element { last = max(last, positions[id] ?? last) }
+            return last
+        }
+    }
+
+    /// Bind each named object to its actual words, across sentence boundaries.
+    static func namedBeats(_ names: [String], from offset: Int, in spoken: String) -> [Int] {
+        let text = spoken as NSString
+        var cursor = min(max(0, offset), text.length)
+        var result = [cursor]
+        for name in names {
+            let pattern = "(?<![\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: name) + "(?![\\p{L}\\p{N}])"
+            let match = text.range(of: pattern, options: [.caseInsensitive, .regularExpression],
+                                   range: NSRange(location: cursor, length: text.length - cursor))
+            if match.location != NSNotFound {
+                result.append(match.location)
+                cursor = NSMaxRange(match)
+            } else { result.append(result.last ?? cursor) }
+        }
+        return result
     }
 
     /// `count` places on the speech clock: the first at `offset`, the rest spread evenly over the

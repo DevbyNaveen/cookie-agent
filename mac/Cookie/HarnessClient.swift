@@ -128,6 +128,14 @@ enum CookieModelSettings {
             if let value = value(field) { environment[field.variable] = value }
         }
         if let enkeonKey { environment[enkeonField.variable] = enkeonKey }
+        // Tools and Cookie's instructions stay in the model's prompt cache for an hour, not five
+        // minutes: a person asks now and again, and a cached prefix is a faster first word
+        // (src/provider.rs `prefix_cache_ttl`; models that can't keep it an hour ignore it).
+        environment["COOKIE_PROMPT_CACHE_TTL"] = "1h"
+        // Screenshots go at exactly the size the model reads (CookieImageSize): with Anthropic's
+        // API a resize is then refused instead of silently moving every coordinate. (Bedrock's
+        // Converse has no such option; there the sizing alone keeps them unresized.)
+        environment["COOKIE_SCREEN_IMAGES_EXACT"] = "1"
         return environment
     }
 }
@@ -191,9 +199,13 @@ final class HarnessClient {
     private struct ActiveRun {
         let id: String
         var text = ""
+        /// A tool round started since the last words: the next words begin a new sentence.
+        var afterTool = false
         let onText: (String) -> Void
+        let onToolStarted: () -> Void
         let onStep: (String) -> Void
         let onApproval: (HarnessApproval?) -> Void
+        let workspaceThreadID: UUID?
         let continuation: CheckedContinuation<String, Error>
     }
 
@@ -221,24 +233,41 @@ final class HarnessClient {
     /// Runs one question. Throws HarnessFailure with words for the person,
     /// or CancellationError when the caller's task was cancelled.
     func run(model: String, input text: String, instructions: String, images: [HarnessRequest.Image],
-             history: [HarnessRequest.Turn],
+             history: [HarnessRequest.Turn], workspaceThreadID: UUID? = nil, backgroundProject: Bool = false,
              onText: @escaping (String) -> Void,
              onStep: @escaping (String) -> Void,
-             onApproval: @escaping (HarnessApproval?) -> Void) async throws -> String {
+             onApproval: @escaping (HarnessApproval?) -> Void,
+             onToolStarted: @escaping () -> Void = {}) async throws -> String {
         let enkeonKey = await CookieModelSettings.enkeonKey()
         try ensureRunning(environment: CookieModelSettings.helperEnvironment(model: model, enkeonKey: enkeonKey))
         runCounter += 1
         let request = HarnessRequest.Run(
             id: "cookie-\(runCounter)", model: model, input: text, instructions: instructions,
             // open, and the Mac tools: acting needs a task the person approved.
-            tools: [CookieOpen.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieRoutineWords.tool] + MacOperator.tools,
+            tools: (backgroundProject ? [] : [CookieOpen.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieRoutineWords.tool] + MacOperator.tools) + (workspaceThreadID == nil ? [] : [CookieWorkspaceTool.tool]),
             images: images,
             history: history,
             // On: left out, so the helper uses ENKEON_API_KEY from its environment.
             enkeon: enkeonKey == nil ? false : nil
         )
         return try await start(id: request.id, line: HarnessWire.encode(request),
-                               onText: onText, onStep: onStep, onApproval: onApproval)
+                               onText: onText, onStep: onStep, onApproval: onApproval, onToolStarted: onToolStarted, workspaceThreadID: workspaceThreadID)
+    }
+
+    /// A run is coming (the talk key went down): the helper is started if it isn't, with the
+    /// environment the run will use (a different one would restart it and lose the warm
+    /// connection), and asked to open its connection to the model's host now, so the TCP and TLS
+    /// handshakes overlap the person's speech instead of delaying the first word.
+    func warm(model: String) async {
+        guard CookieModelSettings.missing(model: model) == nil else { return }
+        let enkeonKey = await CookieModelSettings.enkeonKey()
+        do {
+            try ensureRunning(environment: CookieModelSettings.helperEnvironment(model: model, enkeonKey: enkeonKey))
+        } catch {
+            return
+        }
+        runCounter += 1
+        send(HarnessWire.encode(HarnessRequest.Warm(id: "warm-\(runCounter)", model: model)))
     }
 
     /// One quick answer: no tools, no Enkeon, one model call (hover to explain). `onText` gets the
@@ -256,12 +285,13 @@ final class HarnessClient {
     private func start(id: String, line: Data,
                        onText: @escaping (String) -> Void,
                        onStep: @escaping (String) -> Void,
-                       onApproval: @escaping (HarnessApproval?) -> Void) async throws -> String {
+                       onApproval: @escaping (HarnessApproval?) -> Void,
+                       onToolStarted: @escaping () -> Void = {}, workspaceThreadID: UUID? = nil) async throws -> String {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 cancel() // one run at a time: an older one still going ends here
-                active = ActiveRun(id: id, onText: onText, onStep: onStep,
-                                   onApproval: onApproval, continuation: continuation)
+                active = ActiveRun(id: id, onText: onText, onToolStarted: onToolStarted, onStep: onStep,
+                                   onApproval: onApproval, workspaceThreadID: workspaceThreadID, continuation: continuation)
                 if Task.isCancelled { cancel(); return }
                 if helperBusy { queued = line } else { send(line); helperBusy = true }
             }
@@ -422,9 +452,19 @@ final class HarnessClient {
             guard let event = line.event else { return }
             switch event.type {
             case "text_delta":
-                active?.text += event.text ?? ""
+                let delta = event.text ?? ""
+                guard !delta.isEmpty else { return }
+                // Words from a round after a tool call follow words from before it with no space
+                // ("let me look.the button…"): start them on a new line, which reads and sounds right.
+                if active?.afterTool == true, let last = active?.text.last, !last.isWhitespace, delta.first?.isWhitespace == false {
+                    active?.text += "\n"
+                }
+                active?.afterTool = false
+                active?.text += delta
                 run.onText(active?.text ?? "")
             case "tool_call_started":
+                active?.afterTool = true
+                run.onToolStarted()
                 let name = event.detail?.name ?? "a tool"
                 // A connected-app action may be parked on Enkeon for the person's yes.
                 if name == "connector_call" { CookieAppApprovals.shared.watch() }
@@ -433,6 +473,10 @@ final class HarnessClient {
                              "connector_actions": "Looking at your connected apps", "connector_call": "Using a connected app",
                              "use_skill": "Opening a skill", "look": "Looking at the app"]
                 run.onStep(plain[name] ?? "Using \(name.replacingOccurrences(of: "_", with: " "))")
+            case "usage":
+                if let usage = event.usage {
+                    print("⏱ model usage input=\(usage.input_tokens ?? 0) output=\(usage.output_tokens ?? 0) cache_read=\(usage.cache_read_tokens ?? 0) cache_write=\(usage.cache_write_tokens ?? 0)")
+                }
             case "enkeon_unavailable":
                 run.onStep("Enkeon didn't answer; going on without it")
             default:
@@ -444,6 +488,14 @@ final class HarnessClient {
             // (or the approved task covered it).
             let name = line.name ?? ""
             let args = line.args ?? [:]
+            if name == CookieWorkspaceTool.tool.name {
+                let result: (String, Bool)
+                if let thread = run.workspaceThreadID { result = CookieWorkspaceTool.perform(args, thread: thread) }
+                else { result = ("No workspace is bound to this run.", true) }
+                if !result.1 { run.onStep("Updated workspace") }
+                send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.0, is_error: result.1)))
+                return
+            }
             if MacOperator.names.contains(name) {
                 Task { @MainActor in
                     let result = await MacOperator.shared.perform(name, args)

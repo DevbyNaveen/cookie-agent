@@ -8,6 +8,7 @@ enum CookiePeekPresentationTests {
         testVoiceAndApprovalStatusMatchReality()
         testQuickQuestionSurvivesClosingAndNavigation()
         testEachChatGetsOneSpecialist()
+        testLatestConversationActivity()
         print("4 peek presentation checks passed.")
     }
 
@@ -80,6 +81,27 @@ enum CookiePeekPresentationTests {
         precondition(CookieSounds.wave(.send).count < CookieSounds.wave(.done).count)
     }
 
+    private static func testLatestConversationActivity() {
+        let now = Date()
+        let old = CookieThread(messages: [.init(role: .assistant, text: "Old greeting", date: now.addingTimeInterval(-3600))])
+        var recent = CookieThread(messages: [
+            .init(role: .user, text: "Hi", date: now.addingTimeInterval(-300)),
+            .init(role: .assistant, text: "Hello", date: now.addingTimeInterval(-299)),
+            .init(role: .user, text: "Explain the jet engine", date: now)])
+        func latest() -> PeekLine {
+            PeekLines.latest(threads: [old, recent], work: [], meetingNotes: nil, chatsLocked: false)
+        }
+        precondition(latest().title == "Explain the jet engine" && latest().action == .openThread(recent.id))
+        precondition(!latest().detail.contains("Hello"))
+        recent.messages.append(.init(role: .assistant, text: "**Air** enters the fan. [POINT:1,2:Fan:screen0]", date: now))
+        precondition(latest().detail == "Air enters the fan.")
+        recent.messages.append(.init(role: .note, text: "Stopped by you", date: now))
+        precondition(latest().detail == "Stopped by you" && latest().activityDate == now)
+        precondition(PeekLines.latest(threads: [recent], work: [], meetingNotes: nil, chatsLocked: true).action == .none)
+        precondition(PeekLines.preview("## Result\n- Read [the brief](https://example.com)") == "Result Read the brief")
+        print("Latest conversation activity regression checks passed.")
+    }
+
     static func render() {
         let store = WorkStore(connected: false)
         let item = store.add(title: "Northwind team pilot", nextStep: "Review the proposal", due: Date())
@@ -90,6 +112,12 @@ enum CookiePeekPresentationTests {
         let meeting = UpcomingMeeting(id: "preview", title: "Northwind pilot call", start: Date().addingTimeInterval(720),
                                       end: Date().addingTimeInterval(2520), attendees: ["Anna"])
         let next = PeekLines.upNext(access: .allowed, meeting: meeting, recalled: "Review the proposed timeline with Anna.", work: [])
+        let conversation = CookieThread(messages: [
+            .init(role: .user, text: "Explain how a jet engine works and show each part"),
+            .init(role: .assistant, text: "Air enters the fan, then the compressor increases its pressure. The combustor adds heat before the turbine extracts energy.")])
+        let threadLine = PeekLines.latest(threads: [conversation], work: [], meetingNotes: nil, chatsLocked: false)
+        snapshot("cookie-peek-conversation", lines: [threadLine, idle, connect])
+        snapshot("cookie-peek-conversation-compact", lines: [threadLine, idle, connect], width: 340)
         snapshot("cookie-peek-idle", lines: [latest, idle, connect])
         snapshot("cookie-peek-meeting", lines: [latest, idle, next])
         snapshot("cookie-peek-empty", lines: [
@@ -113,7 +141,7 @@ enum CookiePeekPresentationTests {
         snapshot("cookie-peek-short", lines: [latest, idle, connect], width: 340, height: 235)
     }
 
-    private static func snapshot(_ name: String, lines: [PeekLine], width: CGFloat = 488, height: CGFloat = 314,
+    private static func snapshot(_ name: String, lines: [PeekLine], width: CGFloat = 488, height: CGFloat = CookiePeekMetrics.height(header: 32),
                                  locked: Bool = false, composerPhase: CookieComposerPhase = .ready, draft: String = "") {
         let content = NotchSurface(size: CGSize(width: width, height: height), topRadius: 14, bottomRadius: 24) {
             CookiePeekContent(lines: lines, isLocked: locked, needsPermissions: false, headerHeight: 32,

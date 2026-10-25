@@ -18,6 +18,38 @@ import SwiftUI
 @MainActor
 final class CookieCardReveal: ObservableObject {
     let card: CookieCard
+    let teachingOwner = UUID()
+    @Published var collapsed = false
+    @Published private(set) var activeNode: String?
+    private(set) var selectedNode: String?
+    var anchors: [String: CGPoint] = [:]
+    var onFocus: (CGPoint) -> Void = { _ in }
+    /// Cookie's hand goes to the active node only while Cookie is explaining it; a node the person
+    /// clicked is already under their own pointer.
+    private var handFollows = false
+
+    func focus(_ id: String, hand: Bool = true) {
+        guard case .flow(_, let nodes, _, _, _) = card.content, nodes.contains(where: { $0.id == id }) else { return }
+        collapsed = false
+        handFollows = hand
+        activeNode = id
+        selectedNode = id
+        if let index = elements.firstIndex(of: .node(id)) { reveal(through: index, instant: true, explaining: hand) }
+        pointAtActiveNode()
+    }
+    func advance(_ forward: Bool) {
+        guard case .flow(_, let nodes, _, _, _) = card.content, !nodes.isEmpty else { return }
+        let current = selectedNode.flatMap { selected in nodes.firstIndex { $0.id == selected } } ?? (forward ? -1 : nodes.count)
+        focus(nodes[min(nodes.count - 1, max(0, current + (forward ? 1 : -1)))].id)
+    }
+    func pointAtActiveNode() {
+        if handFollows, let activeNode, let point = anchors[activeNode] { onFocus(point) }
+    }
+    func pauseTeaching() {
+        handFollows = false
+        activeNode = nil
+        CookieHand.shared.stopTeaching(owner: teachingOwner)
+    }
     let elements: [CookieCard.Element]
     @Published private(set) var shown = 0
     private var target = 0
@@ -35,18 +67,22 @@ final class CookieCardReveal: ObservableObject {
 
     /// Shows elements up to and including `index`, in order, at least 0.12 s apart so two
     /// that come due together still arrive one after the other; `instant` shows them at once.
-    func reveal(through index: Int, instant: Bool) {
+    /// `explaining`: Cookie is naming this node now (the hand may go to it); false for the person's own click.
+    func reveal(through index: Int, instant: Bool, explaining: Bool = true) {
         target = max(target, min(elements.count, index + 1))
+        if index >= 0, index < elements.count, case .node(let id) = elements[index] { activeNode = id; selectedNode = id; handFollows = explaining }
         if instant {
             stagger?.cancel()
             stagger = nil
             shown = target
+            pointAtActiveNode()
             return
         }
         guard stagger == nil else { return }
         stagger = Task { [weak self] in
             while let self, !Task.isCancelled, self.shown < self.target {
                 self.shown += 1
+                self.pointAtActiveNode()
                 try? await Task.sleep(for: .milliseconds(120))
             }
             self?.stagger = nil
@@ -54,6 +90,7 @@ final class CookieCardReveal: ObservableObject {
     }
 
     func stop() {
+        pauseTeaching()
         stagger?.cancel()
         stagger = nil
     }
@@ -131,6 +168,7 @@ struct CookieCardInk: Shape {
 struct CookieCardView: View {
     @ObservedObject var reveal: CookieCardReveal
     var onClose: () -> Void
+    var onCollapse: (Bool) -> Void = { _ in }
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -156,7 +194,24 @@ struct CookieCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            content
+            Button {
+                reveal.collapsed.toggle()
+                reveal.pauseTeaching()
+            } label: {
+                Label(reveal.collapsed ? String(card.spokenSummary.prefix(48)) : "Collapse", systemImage: reveal.collapsed ? "chevron.down" : "chevron.up")
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(quietText)
+                    .lineLimit(1).padding(.trailing, 24)
+            }.buttonStyle(.plain)
+            if !reveal.collapsed {
+                content
+                if case .flow = card.content {
+                    HStack(spacing: 18) {
+                        Button("Previous") { reveal.advance(false) }
+                        Button("Next step") { reveal.advance(true) }
+                    }.font(.system(size: 11, weight: .medium)).foregroundStyle(quietText)
+                        .buttonStyle(.plain).pointerCursor()
+                }
+            }
         }
         .padding(.horizontal, 18)
         .padding(.top, 16)
@@ -170,6 +225,12 @@ struct CookieCardView: View {
         )
         .overlay(alignment: .topTrailing) { closeButton }
         .padding(Self.shadowMargin)
+        .coordinateSpace(name: "teachingPaper")
+        .onPreferenceChange(CookieDiagramAnchors.self) { anchors in
+            reveal.anchors = anchors
+            reveal.pointAtActiveNode()
+        }
+        .onChange(of: reveal.collapsed) { _, value in onCollapse(value) }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(card.spokenSummary)
     }
@@ -348,8 +409,8 @@ struct CookieCardView: View {
 
     // MARK: Flow
 
-    private static let nodeSize = CGSize(width: 112, height: 44)
-    private static let rankGap: CGFloat = 40
+    private static let nodeSize = CGSize(width: 112, height: 86)
+    private static let rankGap: CGFloat = 58
     private static let nodeGap: CGFloat = 14
 
     /// Where each node's box sits on the flow canvas: ranks are columns (across) or rows (down),
@@ -408,7 +469,15 @@ struct CookieCardView: View {
             }
             ForEach(nodes, id: \.id) { node in
                 if let box = layout.boxes[node.id] {
-                    Text(node.label)
+                    VStack(spacing: 8) {
+                        if let icon = node.icon {
+                            Image(systemName: icon)
+                                .font(.system(size: 28, weight: .light))
+                                .foregroundStyle(ink)
+                        }
+                        Text(node.label)
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    }
                         .font(.system(size: 12, weight: .medium, design: .rounded))
                         .foregroundStyle(inkText)
                         .multilineTextAlignment(.center)
@@ -416,9 +485,18 @@ struct CookieCardView: View {
                         .minimumScaleFactor(0.85)
                         .padding(.horizontal, 8)
                         .frame(width: box.width, height: box.height)
-                        .background(inked([.box(CGRect(x: 0.02, y: 0.04, width: 0.96, height: 0.92))], .node(node.id), pen: 1.8))
+                        .background(RoundedRectangle(cornerRadius: 16).fill(ink.opacity(reveal.activeNode == node.id ? 0.17 : 0.04)))
+                        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(ink.opacity(reveal.activeNode == node.id ? 1 : 0.25), lineWidth: reveal.activeNode == node.id ? 2 : 1))
+                        .background(GeometryReader { proxy in
+                            let frame = proxy.frame(in: .named("teachingPaper"))
+                            Color.clear.preference(key: CookieDiagramAnchors.self,
+                                value: [node.id: CGPoint(x: frame.minX + 6, y: frame.midY)])
+                        })
                         .position(x: box.midX, y: box.midY)
                         .appear(reveal.isShown(.node(node.id)), reduceMotion)
+                        .onTapGesture { reveal.focus(node.id, hand: false) }
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityLabel("Focus on \(node.label)")
                 }
             }
         }
@@ -439,6 +517,13 @@ struct CookieCardView: View {
     }
 }
 
+struct CookieDiagramAnchors: PreferenceKey {
+    static var defaultValue: [String: CGPoint] = [:]
+    static func reduce(value: inout [String: CGPoint], nextValue: () -> [String: CGPoint]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
 private extension View {
     /// An element's arrival: a short fade and lift (a fade alone under Reduce Motion).
     func appear(_ shown: Bool, _ reduceMotion: Bool) -> some View {
@@ -455,6 +540,18 @@ private extension View {
 /// dismisses it. A new card cross-fades over the old one. The panel is an ordinary Cookie window,
 /// so Cookie's own screenshots leave it out (`CompanionScreenCaptureUtility` excludes the app) and
 /// "Hide from screen sharing" covers it (`CookieCaptureShield` applies to every window).
+/// A lesson stays for follow-up questions, but not over the person's work: with nothing new and the
+/// pointer elsewhere it folds to its title bar after 45 s, and closes after 10 minutes.
+enum CookieLessonIdle {
+    static let collapseAfter: TimeInterval = 45
+    static let closeAfter: TimeInterval = 600
+    enum Step: Equatable { case stay, collapse, close }
+    static func step(idle: TimeInterval, collapsed: Bool) -> Step {
+        if idle >= closeAfter { return .close }
+        return idle >= collapseAfter && !collapsed ? .collapse : .stay
+    }
+}
+
 @MainActor
 final class CookieCardPresenter {
     private var panel: NSPanel?
@@ -463,11 +560,41 @@ final class CookieCardPresenter {
     private weak var clock: CookieSpeechClock?
     private var monitors: [Any] = []
     private var fadeTimer: Task<Void, Never>?
+    private var lastActive = Date()
+
+    var teachingContext: String? {
+        guard let reveal else { return nil }
+        if case .flow(let title, let nodes, _, _, _) = reveal.card.content {
+            return "Visible teaching diagram: \(title). Selected: \(reveal.selectedNode ?? "none"). Objects: " + nodes.map { "\($0.id)=\($0.label)" }.joined(separator: "; ")
+        }
+        return "Visible card: " + reveal.card.spokenSummary
+    }
+    func pauseTeaching() { cancelSchedules(); reveal?.pauseTeaching() }
+    @discardableResult func apply(_ command: CookieVisualCommand) -> Bool {
+        guard let reveal, command == .next || command == .previous else { return false }
+        reveal.advance(command == .next)
+        return true
+    }
+    @discardableResult func focus(_ id: String) -> Bool {
+        guard let reveal, case .flow(_, let nodes, _, _, _) = reveal.card.content,
+              nodes.contains(where: { $0.id == id }) else { return false }
+        reveal.focus(id)
+        return true
+    }
 
     private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
     /// Puts each card on the speech clock: it appears at its tag and its elements follow the
-    /// sentence after it. Call from `onPlaybackStarted`. Later cards replace earlier ones.
+    /// sentence after it. Call once the speech has begun (`beginReply`); a place already passed
+    /// shows at once. Later cards replace earlier ones.
+    func prepare(_ card: CookieCard, clock: CookieSpeechClock) {
+        cancelSchedules()
+        self.clock = clock
+        schedules.append(clock.schedule(atOffset: card.offset) { [weak self] in
+            self?.show(card, near: nil).reveal(through: 0, instant: true)
+        })
+    }
+
     func schedule(_ cards: [CookieCard], spoken: String, near region: (rect: CGRect, display: CGRect)?, clock: CookieSpeechClock) {
         cancelSchedules()
         self.clock = clock
@@ -535,15 +662,26 @@ final class CookieCardPresenter {
 
     @discardableResult
     private func show(_ card: CookieCard, near region: (rect: CGRect, display: CGRect)?) -> CookieCardReveal {
+        if let reveal, reveal.card == card { return reveal }
         let cardReveal = CookieCardReveal(card: card)
         let hosting = CookieCardHostingView(rootView: CookieCardView(reveal: cardReveal, onClose: { [weak self] in self?.dismiss() }))
         let size = hosting.fittingSize
         let newPanel = CookieCardPanel(contentRect: Self.frame(for: size, near: region))
         newPanel.contentView = hosting
+        newPanel.isMovableByWindowBackground = true
+        hosting.rootView.onCollapse = { [weak newPanel, weak cardReveal] collapsed in
+            guard let panel = newPanel else { return }
+            if collapsed { cardReveal?.pauseTeaching() }
+            let height = collapsed ? 112.0 : size.height
+            panel.setFrame(CGRect(x: panel.frame.minX, y: panel.frame.maxY - height, width: size.width, height: height), display: true)
+        }
         newPanel.alphaValue = 0
         newPanel.orderFrontRegardless()
-        // Cookie's hand goes to it as it opens.
-        CookieHand.shared.open(at: newPanel.frame)
+        cardReveal.onFocus = { [weak newPanel, weak cardReveal] local in
+            guard let panel = newPanel, let reveal = cardReveal else { return }
+            CookieHand.shared.teach(owner: reveal.teachingOwner,
+                at: CGPoint(x: panel.frame.minX + local.x, y: panel.frame.maxY - local.y))
+        }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.22
             newPanel.animator().alphaValue = 1
@@ -553,6 +691,7 @@ final class CookieCardPresenter {
         panel = newPanel
         reveal = cardReveal
         installMonitors()
+        restartFadeTimer()
         // The card is drawn, so VoiceOver hears what it holds.
         NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
                              userInfo: [.announcement: card.spokenSummary, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
@@ -569,49 +708,63 @@ final class CookieCardPresenter {
         })
     }
 
-    /// Fades like the marks: 45 s after the last element arrived.
+    /// Something happened on the card (a beat, the pointer over it): the idle clock starts again.
     private func restartFadeTimer() {
-        fadeTimer?.cancel()
+        lastActive = Date()
+        guard fadeTimer == nil else { return }
         fadeTimer = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(45))
-            guard !Task.isCancelled else { return }
-            self?.dismiss()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled, let self, let reveal = self.reveal else { return }
+                switch CookieLessonIdle.step(idle: Date().timeIntervalSince(self.lastActive), collapsed: reveal.collapsed) {
+                case .close: self.dismiss(); return
+                case .collapse: reveal.collapsed = true
+                case .stay: break
+                }
+            }
         }
     }
 
     /// Beside the marks when there are any (right, else left, else below or above them), else
-    /// beside the notch, hanging from the menu bar. Kept on the screen's visible area.
+    /// beside the notch, hanging from the menu bar. Kept 12 pt inside the screen's visible area.
     static func frame(for panelSize: CGSize, near region: (rect: CGRect, display: CGRect)?) -> CGRect {
-        let margin = CookieCardView.shadowMargin
-        let size = CGSize(width: panelSize.width - margin * 2, height: panelSize.height - margin * 2)
-        let gap: CGFloat = 24
-        var card: CGRect
-        let visible: CGRect
-        if let region {
-            visible = NSScreen.screens.first { $0.frame == region.display }?.visibleFrame ?? region.display
-            let area = region.rect
-            if area.maxX + gap + size.width <= visible.maxX - 8 {
-                card = CGRect(x: area.maxX + gap, y: area.maxY - size.height, width: size.width, height: size.height)
-            } else if area.minX - gap - size.width >= visible.minX + 8 {
-                card = CGRect(x: area.minX - gap - size.width, y: area.maxY - size.height, width: size.width, height: size.height)
-            } else {
-                let below = area.minY - gap - size.height
-                card = CGRect(x: area.midX - size.width / 2, y: below >= visible.minY + 8 ? below : area.maxY + gap,
-                              width: size.width, height: size.height)
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main ?? NSScreen.screens[0]
+        let visible = region.flatMap { target in NSScreen.screens.first { $0.frame == target.display }?.visibleFrame } ?? screen.visibleFrame
+        var avoided = region.map { [$0.rect] } ?? []
+        if let element = MacOperator.focusedElement(), let rect = MacOperator.frame(element),
+           let mainHeight = NSScreen.screens.first?.frame.height {
+            let focused = CookieDrawingResolver.appKit(rect, mainHeight: mainHeight)
+            // Full-window accessibility containers provide no useful pane information.
+            if focused.width * focused.height < visible.width * visible.height * 0.8 {
+                avoided.append(focused.insetBy(dx: -24, dy: -24))
             }
-        } else {
-            let screen = NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main ?? NSScreen.screens[0]
-            visible = screen.visibleFrame
-            var notchWidth: CGFloat = 190
-            if screen.safeAreaInsets.top > 0, let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
-                notchWidth = screen.frame.width - left.width - right.width
-            }
-            card = CGRect(x: screen.frame.midX + notchWidth / 2 + 16, y: visible.maxY - 8 - size.height,
-                          width: size.width, height: size.height)
         }
-        card.origin.x = min(max(card.minX, visible.minX + 8), visible.maxX - 8 - card.width)
-        card.origin.y = min(max(card.minY, visible.minY + 8), visible.maxY - 8 - card.height)
-        return card.insetBy(dx: -margin, dy: -margin)
+        avoided.append(CGRect(x: mouse.x - 130, y: mouse.y - 100, width: 260, height: 200))
+        return teachingFrame(size: panelSize, visible: visible, avoiding: avoided)
+    }
+
+    /// Prefer the left and centre, then choose the candidate covering least active content.
+    static func teachingFrame(size: CGSize, visible: CGRect, avoiding areas: [CGRect]) -> CGRect {
+        let bounds = visible.insetBy(dx: 16, dy: 16)
+        let size = CGSize(width: min(size.width, bounds.width), height: min(size.height, bounds.height))
+        let columns: [CGFloat] = [0, 0.5, 1]
+        let rows: [CGFloat] = [0.5, 0.2, 0.8]
+        let candidates = rows.flatMap { row in columns.map { column in
+            CGRect(x: bounds.minX + (bounds.width - size.width) * column,
+                   y: bounds.minY + (bounds.height - size.height) * row,
+                   width: size.width, height: size.height)
+        }}
+        func overlap(_ candidate: CGRect) -> CGFloat {
+            areas.reduce(0) { total, area in
+                let intersection = candidate.intersection(area)
+                return total + (intersection.isNull ? 0 : intersection.width * intersection.height)
+            }
+        }
+        return candidates.enumerated().min { left, right in
+            let lhs = overlap(left.element), rhs = overlap(right.element)
+            return abs(lhs - rhs) < 1 ? left.offset < right.offset : lhs < rhs
+        }!.element
     }
 
     // MARK: Pointer and keys
@@ -628,26 +781,23 @@ final class CookieCardPresenter {
         let follow: (NSEvent) -> Void = { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let panel = self.panel else { return }
-                panel.ignoresMouseEvents = !self.closeRect.contains(NSEvent.mouseLocation)
+                let over = panel.frame.insetBy(dx: CookieCardView.shadowMargin, dy: CookieCardView.shadowMargin).contains(NSEvent.mouseLocation)
+                panel.ignoresMouseEvents = !over
+                if over { self.lastActive = Date() }
             }
         }
         if let moved = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved, handler: follow) { monitors.append(moved) }
         if let moved = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved, handler: { follow($0); return $0 }) { monitors.append(moved) }
-        // A click in another app, or Escape anywhere: the person has moved on.
-        if let clicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] _ in
-            MainActor.assumeIsolated { self?.dismiss() }
-        }) { monitors.append(clicks) }
-        if let clicks = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] event in
+        // Escape in another app belongs to that app (a dialog, a search): it closes the card only with
+        // the pointer over it, or when Cookie is the app in front.
+        let escape: (NSEvent, Bool) -> Void = { [weak self] event, local in
             MainActor.assumeIsolated {
-                if let self, event.window !== self.panel { self.dismiss() }
+                guard event.keyCode == 53, let self, let panel = self.panel else { return }
+                if local || panel.frame.contains(NSEvent.mouseLocation) { self.dismiss() }
             }
-            return event
-        }) { monitors.append(clicks) }
-        let escape: (NSEvent) -> Void = { [weak self] event in
-            MainActor.assumeIsolated { if event.keyCode == 53 { self?.dismiss() } }
         }
-        if let keys = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: escape) { monitors.append(keys) }
-        if let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { escape($0); return $0 }) { monitors.append(keys) }
+        if let keys = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { escape($0, false) }) { monitors.append(keys) }
+        if let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { escape($0, true); return $0 }) { monitors.append(keys) }
     }
 }
 
@@ -658,7 +808,7 @@ final class CookieCardPanel: NSPanel {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
-        level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 1)
+        level = CookieWindowLevel.card
         collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         ignoresMouseEvents = true
         hidesOnDeactivate = false

@@ -337,18 +337,21 @@ struct CookieHoverLayer: View {
                         .id(explanation.id)
                         .transition(.opacity)
                 }
-                Text(explanation.text.isEmpty ? "…" : explanation.text)
-                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(CookieMarksLayer.onInk)
-                    .lineLimit(2)
-                    .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(CookieMarksLayer.ink))
-                    .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
-                    // Background before the frame: the pill hugs its words, up to two lines this wide.
-                    .frame(maxWidth: Self.pillWidth, alignment: .leading)
-                    .offset(x: min(tip.x + 12, screenFrame.width - Self.pillWidth - 8),
-                            y: min(tip.y + 14, screenFrame.height - 48))
-                    .id(explanation.id)
-                    .transition(.opacity)
+                // Right of the hand, or left of it near the edge; whole inside the display's visible area.
+                CookieOnScreen(point: CGPoint(x: tip.x + 12, y: tip.y + 24), side: .leading, flipX: tip.x - 12,
+                               area: CookieMarksLayer.visibleArea(of: screenFrame)) { flipped in
+                    Text(explanation.text.isEmpty ? "…" : explanation.text)
+                        .font(.system(size: 11, weight: .semibold)).foregroundStyle(CookieMarksLayer.onInk)
+                        .lineLimit(2)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(CookieMarksLayer.ink))
+                        .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
+                        // Background before the frame: the pill hugs its words, up to two lines this
+                        // wide, on the hand's side of the frame.
+                        .frame(width: Self.pillWidth, alignment: flipped ? .trailing : .leading)
+                }
+                .id(explanation.id)
+                .transition(.opacity)
             }
         }
         .frame(width: screenFrame.width, height: screenFrame.height, alignment: .topLeading)

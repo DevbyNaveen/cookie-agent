@@ -49,6 +49,7 @@ struct CookieFocus: Equatable {
 struct CookieSpotlight: Equatable {
     let rect: CGRect
     let displayFrame: CGRect
+    var pointerLocation: CGPoint { CGPoint(x: rect.minX + min(12, rect.width / 2), y: rect.maxY - min(12, rect.height / 2)) }
 }
 
 extension CookieDrawingResolver {
@@ -71,70 +72,34 @@ extension CookieDrawingResolver {
     }
 }
 
-/// The dim on one display's overlay, with the lit region cut out of it.
+/// A local outline keeps the user's screen fully readable. Focus never paints a
+/// full-display scrim, including while waiting on a guided step.
 struct CookieSpotlightLayer: View {
     let spotlight: CookieSpotlight?
     let screenFrame: CGRect
-    /// The person is typing: no dim over what they're writing.
     let typing: Bool
-
-    /// Room left around the region, and how soft the cut-out's edge is.
-    static let padding: CGFloat = 12
-    private static let feather: CGFloat = 9
-
-    @Environment(\.colorScheme) private var colorScheme
+    static let padding: CGFloat = 8
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// The cut-out drawn now; kept while the dim fades out, so the hole doesn't close first.
-    @State private var hole: CGRect?
-    @State private var shown = false
 
-    /// On this display, while the person isn't typing: the region in overlay coordinates, padded.
     private var target: CGRect? {
         guard !typing, let spotlight, spotlight.displayFrame == screenFrame else { return nil }
-        let rect = spotlight.rect.insetBy(dx: -Self.padding, dy: -Self.padding)
-        return CGRect(x: rect.minX - screenFrame.minX, y: screenFrame.maxY - rect.maxY, width: rect.width, height: rect.height)
-    }
-
-    /// Dark pages are dark already, so the dim is deeper there; Reduce Motion is gentler throughout.
-    private var dim: Double {
-        (colorScheme == .dark ? 0.4 : 0.28) * (reduceMotion ? 0.7 : 1)
+        let rect = spotlight.rect.insetBy(dx: -Self.padding, dy: -Self.padding).intersection(screenFrame)
+        guard !rect.isNull, rect.width > 0, rect.height > 0 else { return nil }
+        return CGRect(x: rect.minX - screenFrame.minX, y: screenFrame.maxY - rect.maxY,
+                      width: rect.width, height: rect.height)
     }
 
     var body: some View {
         ZStack {
-            if shown, let hole {
-                Rectangle()
-                    .fill(Color.black.opacity(dim))
-                    .mask {
-                        // The region is erased from the dim with a blurred edge: a soft cut-out.
-                        Rectangle()
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .frame(width: hole.width, height: hole.height)
-                                    .position(x: hole.midX, y: hole.midY)
-                                    .blur(radius: Self.feather)
-                                    .blendMode(.destinationOut)
-                            }
-                            .compositingGroup()
-                    }
-                    .transition(.opacity)
+            if let target {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.orange.opacity(0.9), lineWidth: 2)
+                    .frame(width: target.width, height: target.height)
+                    .position(x: target.midX, y: target.midY)
             }
         }
+        .frame(width: screenFrame.width, height: screenFrame.height)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: target)
         .allowsHitTesting(false)
-        .onChange(of: target, initial: true) { _, target in follow(target) }
-    }
-
-    /// Fades in on its region (placed, not flown in), glides between regions, fades out in place.
-    private func follow(_ target: CGRect?) {
-        guard let target else {
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { shown = false }
-            return
-        }
-        guard shown else {
-            hole = target
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { shown = true }
-            return
-        }
-        withAnimation(reduceMotion ? nil : .spring(response: 0.45, dampingFraction: 0.9)) { hole = target }
     }
 }

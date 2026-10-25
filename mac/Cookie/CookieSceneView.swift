@@ -24,6 +24,12 @@ import SwiftUI
 @MainActor
 final class CookieSceneStage: ObservableObject {
     let scene: CookieScene
+    let teachingOwner = UUID()
+    @Published var collapsed = false
+    @Published private(set) var activePart: String?
+    private(set) var selectedPart: String?
+    var onFocus: (CGPoint) -> Void = { _ in }
+    var viewportOrigin = CGPoint.zero
     /// Turned by dragging and spinning; the parts hang from it with the scene's centroid at its origin.
     let root = Entity()
     private let camera = PerspectiveCamera()
@@ -45,8 +51,10 @@ final class CookieSceneStage: ObservableObject {
     private var turn = simd_quatf(angle: -0.5, axis: [0, 1, 0])
     private var dragBase: simd_quatf?
     private var zoom: Float = 1
-    private var exploded = false
+    @Published private(set) var exploded = false
     private var subscription: EventSubscription?
+    private var initialExplosionStarted = false
+    private var explosionTask: Task<Void, Never>?
 
     private static let fieldOfView: Float = 34
 
@@ -78,6 +86,7 @@ final class CookieSceneStage: ObservableObject {
 
     /// Puts the scene into the RealityView and starts the per-frame update (spin and label positions).
     func install(in content: inout RealityViewCameraContent) {
+        subscription?.cancel()
         content.camera = .virtual
         content.add(root)
         content.add(camera)
@@ -98,6 +107,7 @@ final class CookieSceneStage: ObservableObject {
 
     /// Stops the per-frame work and lets go of every entity.
     func release() {
+        pauseTeaching()
         subscription?.cancel()
         subscription = nil
         root.children.removeAll()
@@ -112,29 +122,99 @@ final class CookieSceneStage: ObservableObject {
     func reveal(through beat: Int, all: Bool) {
         let count = all ? scene.labelled.count : min(scene.labelled.count, beat)
         if count > shownLabels { shownLabels = count }
-        guard scene.explode, !exploded else { return }
+        if !all, count > 0 { focus(scene.labelled[count - 1].id) }
+        guard scene.explode, !initialExplosionStarted else { return }
+        initialExplosionStarted = true
         exploded = true
         if reduceMotion || all {
             explodeParts(animated: !reduceMotion)
+            placeCamera()
         } else {
-            Task { [weak self] in
+            explosionTask = Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(600))
-                self?.explodeParts(animated: true)
+                guard !Task.isCancelled, let self, self.exploded else { return }
+                self.explodeParts(animated: true)
+                self.placeCamera()
             }
         }
+    }
+
+    /// As on cards: the hand follows the active part only while Cookie explains it.
+    private var handFollows = false
+
+    func focus(_ id: String, hand: Bool = true) {
+        guard scene.labelled.contains(where: { $0.id == id }) else { return }
+        collapsed = false
+        handFollows = hand
+        activePart = id
+        selectedPart = id
+        parts[id]?.isEnabled = true
+        spinning = false
+        if let index = scene.labelled.firstIndex(where: { $0.id == id }) { shownLabels = max(shownLabels, index + 1) }
+        for part in scene.parts {
+            var material = Self.material(part)
+            if part.id == id { material.baseColor = .init(tint: NSColor.systemOrange) }
+            parts[part.id]?.model?.materials = [material]
+        }
+        if hand, let anchor = anchors[id] { onFocus(anchor) }
+    }
+
+    func pauseTeaching() {
+        explosionTask?.cancel()
+        explosionTask = nil
+        handFollows = false
+        activePart = nil
+        CookieHand.shared.stopTeaching(owner: teachingOwner)
+        for part in scene.parts { parts[part.id]?.model?.materials = [Self.material(part)] }
     }
 
     private func explodeParts(animated: Bool) {
         for part in scene.parts {
             guard let entity = parts[part.id] else { continue }
             var target = entity.transform
-            target.translation = scene.place(of: part, exploded: true)
+            target.translation = scene.place(of: part, exploded: exploded)
             if animated {
                 entity.move(to: target, relativeTo: root, duration: 1.2, timingFunction: .easeInOut)
             } else {
                 entity.transform = target
             }
         }
+    }
+
+    func apply(_ command: CookieVisualCommand) {
+        explosionTask?.cancel()
+        explosionTask = nil
+        initialExplosionStarted = true
+        collapsed = false
+        spinning = false
+        switch command {
+        case .explode, .assemble:
+            exploded = command == .explode
+            explodeParts(animated: !reduceMotion)
+            placeCamera()
+        case .next, .previous:
+            let ids = scene.labelled.map(\.id)
+            guard !ids.isEmpty else { return }
+            let current = selectedPart.flatMap { ids.firstIndex(of: $0) } ?? (command == .next ? -1 : ids.count)
+            focus(ids[min(ids.count - 1, max(0, current + (command == .next ? 1 : -1)))])
+        case .isolate:
+            guard let selectedPart else { return }
+            for (id, entity) in parts { entity.isEnabled = id == selectedPart }
+        case .showAll:
+            parts.values.forEach { $0.isEnabled = true }
+        case .zoomIn: zoom(by: 20)
+        case .zoomOut: zoom(by: -20)
+        case .reset:
+            parts.values.forEach { $0.isEnabled = true }
+            exploded = false
+            explodeParts(animated: !reduceMotion)
+            zoom = 1
+            turn = simd_quatf(angle: -0.5, axis: [0, 1, 0])
+            root.orientation = turn
+            placeCamera()
+            pauseTeaching()
+        }
+        onInteract()
     }
 
     // MARK: Turning and zooming
@@ -163,7 +243,8 @@ final class CookieSceneStage: ObservableObject {
     /// Far enough back that the scene's bounding ball fits the view's height, a little from above.
     private func placeCamera() {
         let half = Self.fieldOfView / 2 * .pi / 180
-        let distance = scene.radius / sin(half) * 1.12 / zoom
+        let radius = max(0.05, scene.parts.map { simd_length(scene.place(of: $0, exploded: exploded)) + $0.reach }.max() ?? 0.05)
+        let distance = radius / sin(half) * 1.12 / zoom
         camera.look(at: .zero, from: simd_normalize(SIMD3<Float>(0, 0.32, 1)) * distance, relativeTo: nil)
     }
 
@@ -175,13 +256,14 @@ final class CookieSceneStage: ObservableObject {
         guard shownLabels > 0 else { return }
         var points: [String: CGPoint] = [:]
         for part in scene.labelled.prefix(shownLabels) {
-            if let entity = parts[part.id], let point = project(entity.position(relativeTo: nil)) { points[part.id] = point }
+            if let entity = parts[part.id], entity.isEnabled, let point = project(entity.position(relativeTo: nil)) { points[part.id] = point }
         }
         let centre = project(.zero)
         // Only publish a real move: SwiftUI redraws the labels on every change.
         if points.count != anchors.count || points.contains(where: { id, point in
             anchors[id].map { abs($0.x - point.x) + abs($0.y - point.y) > 0.25 } ?? true
         }) { anchors = points }
+        if handFollows, let activePart, let point = points[activePart] { onFocus(point) }
         if let centre, middle.map({ abs($0.x - centre.x) + abs($0.y - centre.y) > 0.25 }) ?? true { middle = centre }
     }
 
@@ -249,11 +331,12 @@ final class CookieSceneStage: ObservableObject {
 struct CookieSceneView: View {
     @ObservedObject var stage: CookieSceneStage
     var onClose: () -> Void
+    var onCollapse: (Bool) -> Void = { _ in }
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    static let sceneSize = CGSize(width: 380, height: 300)
+    static let sceneSize = CGSize(width: 520, height: 360)
 
     private var paper: Color { CookieCardView.paper(colorScheme) }
     private var inkText: Color { CookieCardView.inkText(colorScheme) }
@@ -263,6 +346,9 @@ struct CookieSceneView: View {
             Text(stage.scene.title)
                 .font(.system(size: 15, weight: .semibold, design: .rounded))
                 .foregroundStyle(inkText)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .shadow(color: paper, radius: 2)
                 .padding(.trailing, 26)
                 .padding(.bottom, 5)
                 .overlay(alignment: .bottomLeading) {
@@ -270,11 +356,16 @@ struct CookieSceneView: View {
                         .fill(CookieMarksLayer.ink)
                         .frame(width: 56, height: 4)
                 }
+            if !stage.collapsed {
             RealityView { content in
                 stage.install(in: &content)
             }
-            .backgroundStyle(paper)
+            .backgroundStyle(Color.clear)
             .frame(width: Self.sceneSize.width, height: Self.sceneSize.height)
+            .background(GeometryReader { proxy in
+                Color.clear.onAppear { stage.viewportOrigin = proxy.frame(in: .named("sceneSurface")).origin }
+                    .onChange(of: proxy.frame(in: .named("sceneSurface"))) { _, frame in stage.viewportOrigin = frame.origin }
+            })
             .overlay { CookieSceneLabels(stage: stage, size: Self.sceneSize, paper: paper, inkText: inkText, reduceMotion: reduceMotion) }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .contentShape(Rectangle())
@@ -282,23 +373,38 @@ struct CookieSceneView: View {
                 .onChanged { stage.drag($0.translation) }
                 .onEnded { _ in stage.endDrag() })
             .accessibilityHidden(true)
+            }
+            if !stage.collapsed {
+                HStack(spacing: 16) {
+                    Button(stage.exploded ? "Assemble" : "Explode") { stage.apply(stage.exploded ? .assemble : .explode) }
+                    Button("Previous") { stage.apply(.previous) }
+                    Button("Next part") { stage.apply(.next) }
+                    Button("Reset") { stage.apply(.reset) }
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(inkText).shadow(color: paper, radius: 2)
+                .buttonStyle(.plain).pointerCursor()
+            }
+            Button {
+                stage.collapsed.toggle()
+                stage.pauseTeaching()
+            } label: {
+                Label(stage.collapsed ? "Expand model" : "Collapse", systemImage: stage.collapsed ? "chevron.down" : "chevron.up")
+                    .font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .foregroundStyle(inkText).background(Capsule().fill(paper))
+            }.buttonStyle(.plain)
         }
         .padding(.horizontal, 16)
         .padding(.top, 16)
         .padding(.bottom, 16)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(paper)
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(inkText.opacity(0.08), lineWidth: 1))
-                .shadow(color: .black.opacity(colorScheme == .dark ? 0.45 : 0.16), radius: 14, y: 6)
-        )
         .overlay(alignment: .topTrailing) {
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(inkText.opacity(0.58))
                     .frame(width: CookieCardView.closeSize, height: CookieCardView.closeSize)
-                    .background(Circle().fill(inkText.opacity(0.06)))
+                    .background(Circle().fill(paper))
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
@@ -307,13 +413,14 @@ struct CookieSceneView: View {
             .padding(CookieCardView.closeInset)
         }
         .padding(CookieCardView.shadowMargin)
+        .coordinateSpace(name: "sceneSurface")
+        .onChange(of: stage.collapsed) { _, value in onCollapse(value) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(stage.scene.spokenSummary)
     }
 }
 
-/// Each shown label: a dot on its part, an inked leader line, and a paper pill leaning away from the
-/// scene's centre, kept inside the view.
+/// Borderless labels stay in stable lanes while quiet leaders follow the geometry.
 private struct CookieSceneLabels: View {
     @ObservedObject var stage: CookieSceneStage
     let size: CGSize
@@ -322,49 +429,58 @@ private struct CookieSceneLabels: View {
     let reduceMotion: Bool
 
     var body: some View {
-        let shown = Array(stage.scene.labelled.prefix(stage.shownLabels).enumerated())
+        let available = Array(stage.scene.labelled.prefix(stage.shownLabels))
+        let recent = Array(available.filter { $0.id != stage.activePart }.suffix(stage.activePart == nil ? 6 : 5))
+        let visible = available.count <= 6 ? available : available.filter { part in recent.contains(where: { $0.id == part.id }) || part.id == stage.activePart }
+        let shown = Array(visible.enumerated())
         ZStack(alignment: .topLeading) {
             ForEach(shown, id: \.element.id) { index, part in
                 if let anchor = stage.anchors[part.id], let label = part.label {
-                    let pill = pillCentre(for: anchor)
-                    CookieCardInk(figures: [.line(unit(anchor), unit(pill))], seed: UInt32(index + 11), pen: 1.5, progress: 1)
-                        .fill(CookieMarksLayer.ink)
+                    let pill = CookieSceneLabelLayout.centre(index: index, count: shown.count, size: size)
+                    CookieCardInk(figures: [.line(unit(anchor), unit(pill))], seed: UInt32(index + 11), pen: 0.8, progress: 1)
+                        .fill(CookieMarksLayer.ink.opacity(stage.activePart == part.id ? 0.85 : 0.35))
                         .frame(width: size.width, height: size.height)
+                        .allowsHitTesting(false)
                     Circle()
                         .fill(CookieMarksLayer.ink)
-                        .frame(width: 6, height: 6)
+                        .frame(width: 4, height: 4)
                         .position(anchor)
                     Text(label)
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(inkText)
-                        .lineLimit(1)
-                        .fixedSize()
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Capsule().fill(paper))
-                        .overlay(Capsule().strokeBorder(CookieMarksLayer.ink.opacity(0.7), lineWidth: 1))
+                        .foregroundStyle(stage.activePart == part.id ? CookieMarksLayer.ink : inkText)
+                        .fontWeight(stage.activePart == part.id ? .bold : .medium)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 130)
+                        .padding(4)
+                        .shadow(color: paper, radius: 2)
+                        .shadow(color: paper, radius: 1)
+                        .contentShape(Rectangle())
+                        .pointerCursor()
                         .position(pill)
+                        .onTapGesture { stage.focus(part.id, hand: false) }
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityLabel("Focus on \(label)")
                         .transition(reduceMotion ? .identity : .opacity)
                 }
             }
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: stage.shownLabels)
-        .allowsHitTesting(false)
-    }
-
-    private func pillCentre(for anchor: CGPoint) -> CGPoint {
-        let middle = stage.middle ?? CGPoint(x: size.width / 2, y: size.height / 2)
-        var dx = anchor.x - middle.x, dy = anchor.y - middle.y
-        let length = (dx * dx + dy * dy).squareRoot()
-        if length < 1 { (dx, dy) = (0.9, -0.45) } else { (dx, dy) = (dx / length, dy / length) }
-        let reach: CGFloat = 48
-        return CGPoint(x: min(max(anchor.x + dx * reach, 50), size.width - 50),
-                       y: min(max(anchor.y + dy * reach, 14), size.height - 14))
     }
 
     private func unit(_ point: CGPoint) -> CGPoint {
         CGPoint(x: point.x / size.width, y: point.y / size.height)
+    }
+}
+
+/// Stable rails keep labels apart while their leader lines follow the rotating geometry.
+enum CookieSceneLabelLayout {
+    static func centre(index: Int, count: Int, size: CGSize) -> CGPoint {
+        let row = index / 2
+        let rows = max(1, (min(6, count) + 1) / 2)
+        return CGPoint(x: index % 2 == 0 ? 78 : size.width - 78,
+                       y: 74 + CGFloat(row) * (size.height - 148) / CGFloat(max(1, rows - 1)))
     }
 }
 
@@ -377,13 +493,41 @@ private struct CookieSceneLabels: View {
 @MainActor
 final class CookieScenePresenter {
     private var panel: NSPanel?
+    var previewWindowNumber: Int? { panel?.windowNumber }
+    var previewFrame: CGRect? { panel?.frame }
     private var stage: CookieSceneStage?
     private var schedules: [CookieSpeechClock.Scheduled] = []
     private weak var clock: CookieSpeechClock?
     private var monitors: [Any] = []
     private var fadeTimer: Task<Void, Never>?
+    private var lastActive = Date()
+
+    var teachingContext: String? {
+        guard let stage else { return nil }
+        return "Visible 3D model: \(stage.scene.title). Selected: \(stage.selectedPart ?? "none"). Exploded: \(stage.exploded). Parts: " + stage.scene.labelled.map { "\($0.id)=\($0.label ?? $0.id)" }.joined(separator: "; ")
+    }
+    func pauseTeaching() { cancelSchedules(); stage?.pauseTeaching() }
+    @discardableResult func apply(_ command: CookieVisualCommand) -> Bool {
+        guard let stage else { return false }
+        stage.apply(command)
+        return true
+    }
+    @discardableResult func focus(_ id: String) -> Bool {
+        guard let stage, stage.scene.labelled.contains(where: { $0.id == id }) else { return false }
+        stage.focus(id)
+        restartFadeTimer()
+        return true
+    }
 
     private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+    func prepare(_ scene: CookieScene, clock: CookieSpeechClock) {
+        cancelSchedules()
+        self.clock = clock
+        schedules.append(clock.schedule(atOffset: scene.offset) { [weak self] in
+            _ = self?.show(scene, near: nil)
+        })
+    }
 
     /// Puts the scene on the speech clock: it appears at its tag and its labels follow the sentence
     /// after it. Call from `onPlaybackStarted`.
@@ -411,6 +555,7 @@ final class CookieScenePresenter {
     }
 
     func dismiss() {
+        stage?.pauseTeaching()
         cancelSchedules()
         fadeTimer?.cancel()
         fadeTimer = nil
@@ -430,23 +575,42 @@ final class CookieScenePresenter {
 
     @discardableResult
     private func show(_ scene: CookieScene, near region: (rect: CGRect, display: CGRect)?) -> CookieSceneStage {
+        if let stage, stage.scene == scene { return stage }
         let newStage = CookieSceneStage(scene: scene, reduceMotion: reduceMotion)
         newStage.onInteract = { [weak self] in self?.restartFadeTimer() }
         let hosting = CookieSceneHostingView(rootView: CookieSceneView(stage: newStage, onClose: { [weak self] in self?.dismiss() }))
         let newPanel = CookieCardPanel(contentRect: CookieCardPresenter.frame(for: hosting.fittingSize, near: region))
         newPanel.contentView = hosting
+        newPanel.isMovableByWindowBackground = true
+        let expandedSize = newPanel.frame.size
+        hosting.rootView.onCollapse = { [weak newPanel] collapsed in
+            guard let panel = newPanel else { return }
+            let height = collapsed ? 160.0 : expandedSize.height
+            panel.setFrame(CGRect(x: panel.frame.minX, y: panel.frame.maxY - height, width: expandedSize.width, height: height), display: true)
+        }
         newPanel.alphaValue = 0
         newPanel.orderFrontRegardless()
-        // Cookie's hand goes to it as it opens.
-        CookieHand.shared.open(at: newPanel.frame)
+        // Use the renderer's projection, not OCR or model-generated screen coordinates.
+        newStage.onFocus = { [weak newPanel, weak hosting, weak newStage] local in
+            guard let panel = newPanel, let hosting, let stage = newStage else { return }
+            // GeometryReader reports the RealityView's origin in the hosting view.
+            let origin = stage.viewportOrigin
+            let point = CGPoint(x: panel.frame.minX + origin.x + local.x,
+                                y: panel.frame.maxY - origin.y - local.y)
+            if hosting.bounds.contains(CGPoint(x: origin.x + local.x, y: origin.y + local.y)) {
+                CookieHand.shared.teach(owner: stage.teachingOwner, at: point)
+            }
+        }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.22
             newPanel.animator().alphaValue = 1
         }
+        stage?.pauseTeaching()
         if let old = panel { fadeOut(old, stage: stage) }
         panel = newPanel
         stage = newStage
         installMonitors()
+        restartFadeTimer()
         NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
                              userInfo: [.announcement: scene.spokenSummary, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
         return newStage
@@ -467,12 +631,20 @@ final class CookieScenePresenter {
         })
     }
 
+    /// The same idle rule as cards (`CookieLessonIdle`): folded, the RealityView goes away and stops drawing.
     private func restartFadeTimer() {
-        fadeTimer?.cancel()
+        lastActive = Date()
+        guard fadeTimer == nil else { return }
         fadeTimer = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(45))
-            guard !Task.isCancelled else { return }
-            self?.dismiss()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled, let self, let stage = self.stage else { return }
+                switch CookieLessonIdle.step(idle: Date().timeIntervalSince(self.lastActive), collapsed: stage.collapsed) {
+                case .close: self.dismiss(); return
+                case .collapse: stage.pauseTeaching(); stage.collapsed = true
+                case .stay: break
+                }
+            }
         }
     }
 
@@ -488,7 +660,9 @@ final class CookieScenePresenter {
         let follow: (NSEvent) -> Void = { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let panel = self.panel else { return }
-                panel.ignoresMouseEvents = !self.cardRect.contains(NSEvent.mouseLocation)
+                let over = self.cardRect.contains(NSEvent.mouseLocation)
+                panel.ignoresMouseEvents = !over
+                if over { self.lastActive = Date() }
             }
         }
         if let moved = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved, handler: follow) { monitors.append(moved) }
@@ -503,21 +677,15 @@ final class CookieScenePresenter {
             }
             return zoomed ? nil : event
         }) { monitors.append(scrolls) }
-        // A click in another app, or Escape anywhere: the person has moved on.
-        if let clicks = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] _ in
-            MainActor.assumeIsolated { self?.dismiss() }
-        }) { monitors.append(clicks) }
-        if let clicks = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] event in
+        // As with cards: Escape elsewhere belongs to that app unless the pointer is over the model.
+        let escape: (NSEvent, Bool) -> Void = { [weak self] event, local in
             MainActor.assumeIsolated {
-                if let self, event.window !== self.panel { self.dismiss() }
+                guard event.keyCode == 53, let self else { return }
+                if local || self.cardRect.contains(NSEvent.mouseLocation) { self.dismiss() }
             }
-            return event
-        }) { monitors.append(clicks) }
-        let escape: (NSEvent) -> Void = { [weak self] event in
-            MainActor.assumeIsolated { if event.keyCode == 53 { self?.dismiss() } }
         }
-        if let keys = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: escape) { monitors.append(keys) }
-        if let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { escape($0); return $0 }) { monitors.append(keys) }
+        if let keys = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { escape($0, false) }) { monitors.append(keys) }
+        if let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { escape($0, true); return $0 }) { monitors.append(keys) }
     }
 }
 

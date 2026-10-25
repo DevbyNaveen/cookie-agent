@@ -39,7 +39,7 @@ final class NotchModel: ObservableObject {
         layout = NotchLayout(notchSize: notchSize, availableSize: availableSize)
     }
 
-    func topRadius(_ state: NotchState) -> CGFloat { state == .closed ? 6 : 14 }
+    func topRadius(_ state: NotchState) -> CGFloat { state == .home ? 26 : (state == .closed ? 6 : 14) }
 
     func bottomRadius(_ state: NotchState) -> CGFloat {
         switch state {
@@ -89,7 +89,7 @@ final class NotchPanelManager {
             defer: false
         )
         panel.isFloatingPanel = true
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 3)
+        panel.level = CookieWindowLevel.notch
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
@@ -102,11 +102,19 @@ final class NotchPanelManager {
         panel.orderFrontRegardless()
         installMonitors()
         applyPreferences()
-        agentDock = CookieAgentDock(companionManager: companionManager)
+        agentDock = CookieAgentDock()
         NotificationCenter.default.publisher(for: CookieAgentDock.openThread)
             .receive(on: RunLoop.main)
             .sink { [weak self] note in self?.openThread(note.object as? UUID) }
             .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: CookieWorkspaceStore.created)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] note in
+                guard let self, let thread = note.object as? UUID,
+                      self.companionManager.currentThreadID == thread, !ChatLock.shared.isLocked else { return }
+                self.openThread(thread)
+            }.store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
             .sink { [weak self] _ in self?.screenChanged() }
@@ -215,7 +223,7 @@ final class NotchPanelManager {
 
     private func islandRect(_ state: NotchState) -> NSRect {
         let size = model.size(state, voiceActive: companionManager.voiceState != .idle)
-        return NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - size.height,
+        return NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - model.layout.topInset(for: state) - size.height,
                       width: size.width, height: size.height)
     }
 
@@ -465,22 +473,29 @@ struct NotchShape: Shape {
     var topRadius: CGFloat
     var bottomRadius: CGFloat
 
-    var animatableData: AnimatablePair<CGFloat, CGFloat> {
-        get { AnimatablePair(topRadius, bottomRadius) }
-        set { topRadius = newValue.first; bottomRadius = newValue.second }
+    var floating: CGFloat = 0
+
+    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, CGFloat> {
+        get { AnimatablePair(AnimatablePair(topRadius, bottomRadius), floating) }
+        set {
+            topRadius = newValue.first.first
+            bottomRadius = newValue.first.second
+            floating = newValue.second
+        }
     }
 
     func path(in rect: CGRect) -> Path {
         let t = topRadius, b = min(bottomRadius, (rect.height - t) / 2, (rect.width - 2 * t) / 2)
+        let inset = t * (1 - floating)
         var p = Path()
-        p.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        p.addQuadCurve(to: CGPoint(x: rect.minX + t, y: rect.minY + t), control: CGPoint(x: rect.minX + t, y: rect.minY))
-        p.addLine(to: CGPoint(x: rect.minX + t, y: rect.maxY - b))
-        p.addQuadCurve(to: CGPoint(x: rect.minX + t + b, y: rect.maxY), control: CGPoint(x: rect.minX + t, y: rect.maxY))
-        p.addLine(to: CGPoint(x: rect.maxX - t - b, y: rect.maxY))
-        p.addQuadCurve(to: CGPoint(x: rect.maxX - t, y: rect.maxY - b), control: CGPoint(x: rect.maxX - t, y: rect.maxY))
-        p.addLine(to: CGPoint(x: rect.maxX - t, y: rect.minY + t))
-        p.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.minY), control: CGPoint(x: rect.maxX - t, y: rect.minY))
+        p.move(to: CGPoint(x: rect.minX + t * floating, y: rect.minY))
+        p.addQuadCurve(to: CGPoint(x: rect.minX + inset, y: rect.minY + t), control: CGPoint(x: rect.minX + inset, y: rect.minY))
+        p.addLine(to: CGPoint(x: rect.minX + inset, y: rect.maxY - b))
+        p.addQuadCurve(to: CGPoint(x: rect.minX + inset + b, y: rect.maxY), control: CGPoint(x: rect.minX + inset, y: rect.maxY))
+        p.addLine(to: CGPoint(x: rect.maxX - inset - b, y: rect.maxY))
+        p.addQuadCurve(to: CGPoint(x: rect.maxX - inset, y: rect.maxY - b), control: CGPoint(x: rect.maxX - inset, y: rect.maxY))
+        p.addLine(to: CGPoint(x: rect.maxX - inset, y: rect.minY + t))
+        p.addQuadCurve(to: CGPoint(x: rect.maxX - t * floating, y: rect.minY), control: CGPoint(x: rect.maxX - inset, y: rect.minY))
         p.closeSubpath()
         return p
     }
@@ -495,10 +510,11 @@ struct NotchSurface<Content: View>: View {
     let bottomRadius: CGFloat
     var closed = false
     var capturing = false
+    var floating: CGFloat = 0
     @ViewBuilder let content: Content
 
     var body: some View {
-        let shape = NotchShape(topRadius: topRadius, bottomRadius: bottomRadius)
+        let shape = NotchShape(topRadius: topRadius, bottomRadius: bottomRadius, floating: floating)
         ZStack(alignment: .top) {
             shape
                 .fill(closed ? Color.black : CK.island)
@@ -506,11 +522,16 @@ struct NotchSurface<Content: View>: View {
                 .overlay(shape.stroke(Color.white.opacity(capturing ? 0.85 : 0), lineWidth: 1.5)
                     .blur(radius: capturing ? 1.5 : 0))
             content
-                .padding(.horizontal, topRadius)
+                .padding(.horizontal, topRadius * (1 - floating))
                 .frame(width: size.width, height: size.height, alignment: .top)
         }
         .frame(width: size.width, height: size.height)
         // A child-only clip keeps its old bounds during a removal transition.
+        .overlay(alignment: .top) {
+            LinearGradient(colors: [.black.opacity(0.38), .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: min(120, size.height)).opacity(floating)
+                .allowsHitTesting(false)
+        }
         .compositingGroup()
         .clipShape(shape)
     }
@@ -534,9 +555,11 @@ struct NotchIslandView: View {
         let size = model.size(state, voiceActive: voiceActive && state == .closed)
         VStack(spacing: 0) {
             NotchSurface(size: size, topRadius: model.topRadius(state), bottomRadius: model.bottomRadius(state),
-                         closed: state == .closed, capturing: capturing) {
+                         closed: state == .closed, capturing: capturing, floating: state == .home ? 1 : 0) {
                 content(state)
             }
+            .shadow(color: .black.opacity(state == .home ? 0.22 : 0), radius: 10, y: 5)
+            .padding(.top, model.layout.topInset(for: state))
             .opacity(!model.hasNotch && state == .closed && !voiceActive ? 0 : 1)
             Spacer(minLength: 0)
         }
@@ -589,7 +612,7 @@ struct NotchIslandView: View {
                 .transition(contentTransition)
         case .home:
             CookieHomeView(mode: .notch, companionManager: companionManager, navigation: navigation,
-                           topInset: model.notchSize.height, popOut: popOut, close: { setState(.closed) })
+                           topInset: 30, popOut: popOut, close: { setState(.closed) })
                 .transition(contentTransition)
         case .notice:
             if let notice = model.notice {
@@ -606,37 +629,112 @@ struct NotchIslandView: View {
     }
 }
 
-/// While you talk: Cookie on the left of the notch, your voice on the right.
+/// While you talk: what Cookie is doing on the left of the notch, your voice on the right,
+/// both in that moment's colour.
 private struct LiveActivity: View {
     @ObservedObject var companionManager: CompanionManager
     let notchWidth: CGFloat
+    /// When the label last changed, so a long silent think can say so.
+    @State private var stepChangedAt = Date()
 
     var body: some View {
-        HStack(spacing: 0) {
-            CookieAvatar(size: 22, agent: CookieAgentStore.shared.agent(companionManager.currentThread?.agentID), mood: companionManager.characterMood, gaze: companionManager.gazeTowardPointer)
-                .frame(maxWidth: .infinity)
-            Color.clear.frame(width: notchWidth)
-            HStack(spacing: 3) {
-                Group {
-                    switch companionManager.voiceState {
-                    case .processing:
-                        ThinkingDots().scaleEffect(0.7)
-                    default:
-                        VoiceBars(level: companionManager.currentAudioPowerLevel,
-                                  live: companionManager.voiceState == .listening)
+        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+            let status = LiveStatus(voiceState: companionManager.voiceState, step: companionManager.workingStep,
+                                    waited: timeline.date.timeIntervalSince(stepChangedAt))
+            HStack(spacing: 0) {
+                LiveStatusLabel(status: status)
+                    .frame(maxWidth: .infinity)
+                Color.clear.frame(width: notchWidth)
+                HStack(spacing: 3) {
+                    Group {
+                        switch companionManager.voiceState {
+                        case .processing:
+                            ThinkingDots(tint: status.tint).scaleEffect(0.7)
+                        default:
+                            VoiceBars(level: companionManager.currentAudioPowerLevel,
+                                      live: companionManager.voiceState == .listening, tint: status.tint)
+                        }
                     }
+                    .scaleEffect(0.65).frame(width: 15, height: 18)
+                    Button(action: companionManager.stopResponse) {
+                        Image(systemName: "stop.fill").font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(CK.secondary).frame(width: 16, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).cookiePointingCursor().help("Stop · Escape")
+                    .accessibilityLabel("Stop Cookie")
                 }
-                .scaleEffect(0.65).frame(width: 15, height: 18)
-                Button(action: companionManager.stopResponse) {
-                    Image(systemName: "stop.fill").font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(CK.secondary).frame(width: 16, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain).cookiePointingCursor().help("Stop · Escape")
-                .accessibilityLabel("Stop Cookie")
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: .infinity)
+            .animation(CK.spring, value: status)
         }
+        .onChange(of: companionManager.workingStep) { _, _ in stepChangedAt = Date() }
+        .onChange(of: companionManager.voiceState) { _, _ in stepChangedAt = Date() }
+    }
+}
+
+/// One word for what Cookie is doing, and its colour. Tool steps ("Searching the web")
+/// are folded to their verb so the word fits beside the notch.
+struct LiveStatus: Equatable {
+    let word: String
+    let tint: Color
+
+    // ponytail: "Thinking harder" is time-based (8 s with no new step), not a signal from the model.
+    static let harderAfter: TimeInterval = 8
+
+    init(voiceState: CompanionVoiceState, step: String?, waited: TimeInterval) {
+        let thinking = Color(red: 0.70, green: 0.58, blue: 1.00)
+        switch voiceState {
+        case .idle, .listening:
+            (word, tint) = ("Listening", CK.accent)
+        case .responding:
+            (word, tint) = ("Speaking", Color(red: 0.42, green: 0.88, blue: 0.62))
+        case .processing:
+            let s = (step ?? "").lowercased()
+            if s.hasPrefix("look") || s.contains("screen") {
+                (word, tint) = ("Looking", Color(red: 0.36, green: 0.84, blue: 0.90))
+            } else if s.hasPrefix("search") || s.hasPrefix("read") || s.hasPrefix("looked") || s.contains("enkeon") {
+                (word, tint) = (s.hasPrefix("read") ? "Reading" : "Searching", Color(red: 0.40, green: 0.70, blue: 1.00))
+            } else if s.hasPrefix("check") || s.hasPrefix("verif") {
+                (word, tint) = ("Checking", Color(red: 1.00, green: 0.78, blue: 0.38))
+            } else if s.hasPrefix("writ") || s.hasPrefix("typ") || s.hasPrefix("updat") || s.hasPrefix("sav") {
+                (word, tint) = ("Writing", Color(red: 1.00, green: 0.62, blue: 0.45))
+            } else if s.hasPrefix("prepar") {
+                (word, tint) = ("Speaking", Color(red: 0.42, green: 0.88, blue: 0.62))
+            } else if s.isEmpty || s.hasPrefix("think") {
+                (word, tint) = (waited >= Self.harderAfter ? "Thinking harder" : "Thinking", thinking)
+            } else {
+                (word, tint) = ("Working", Color(red: 1.00, green: 0.78, blue: 0.38))
+            }
+        }
+    }
+}
+
+private struct LiveStatusLabel: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let status: LiveStatus
+
+    var body: some View {
+        HStack(spacing: 5) {
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { timeline in
+                let pulse = reduceMotion ? 1 : 0.55 + 0.45 * (sin(timeline.date.timeIntervalSinceReferenceDate * 3) + 1) / 2
+                Circle().fill(status.tint)
+                    .frame(width: 5, height: 5)
+                    .shadow(color: status.tint.opacity(0.9 * pulse), radius: 3 * pulse)
+                    .opacity(0.6 + 0.4 * pulse)
+            }
+            .frame(width: 8, height: 8)
+            Text(status.word)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(status.tint)
+                .lineLimit(1)
+                .fixedSize()
+                .contentTransition(.opacity)
+                .id(status.word)
+                .transition(.opacity.combined(with: .offset(y: 3)))
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Cookie: \(status.word)")
     }
 }
 
@@ -644,6 +742,7 @@ private struct VoiceBars: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let level: CGFloat
     let live: Bool
+    var tint: Color = CK.accent
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion)) { timeline in
@@ -653,7 +752,7 @@ private struct VoiceBars: View {
                     let wave = (sin(t * 7 + Double(i) * 1.1) + 1) / 2
                     let energy = live ? max(level, 0.12) : 0.35
                     Capsule()
-                        .fill(CK.accent)
+                        .fill(tint)
                         .frame(width: 2.5, height: 4 + 12 * energy * CGFloat(wave))
                 }
             }
@@ -713,6 +812,7 @@ private struct PeekView: View {
             composerPhase: CookieComposerPhase(voiceState: companionManager.voiceState,
                                               isWorking: companionManager.isWorking, holding: false),
             audioLevel: companionManager.currentAudioPowerLevel,
+            dictating: companionManager.isDictating,
             gaze: companionManager.gazeTowardPointer
         )
         .onAppear {

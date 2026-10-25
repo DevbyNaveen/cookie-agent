@@ -246,7 +246,7 @@ struct WorkItemView: View {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 4)
+        panel.level = CookieWindowLevel.notchPanel
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK else { return }
         let paths = panel.urls.map(\.path)

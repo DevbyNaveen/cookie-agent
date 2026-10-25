@@ -43,6 +43,11 @@ final class MenuBarPanelManager: NSObject {
         menu.addItem(item("Open Cookie", action: #selector(openCookieAction)))
         menu.addItem(item("Settings…", action: #selector(openSettingsAction)))
         menu.addItem(item(CookieTeach.shared.isTeaching ? "Stop teaching and save…" : "Teach Cookie a task", action: #selector(toggleTeaching)))
+        if CookieTeach.shared.isTeaching {
+            menu.addItem(item(CookieTeach.shared.isPaused ? "Resume teaching" : "Pause teaching", action: #selector(pauseTeaching)))
+            menu.addItem(item("Discard recording", action: #selector(discardTeaching)))
+        }
+        menu.addItem(item("Your taught tasks…", action: #selector(showTaughtTasks)))
         let help = NSMenu(title: "Help")
         help.addItem(item("Keyboard shortcuts", action: #selector(openShortcutsAction)))
         help.addItem(item("Set up Cookie…", action: #selector(openSetupAction)))
@@ -65,6 +70,20 @@ final class MenuBarPanelManager: NSObject {
     @objc private func openShortcutsAction() { openShortcuts() }
     @objc private func openSetupAction() { openSetup() }
     @objc private func quitCookie() { NSApp.terminate(nil) }
+    @objc private func pauseTeaching() { CookieTeach.shared.togglePause() }
+    @objc private func discardTeaching() { CookieTeach.shared.cancel() }
+    @objc private func showTaughtTasks() {
+        let records = CookieSkills.records()
+        let alert = NSAlert()
+        alert.messageText = "Your taught tasks"
+        alert.informativeText = records.isEmpty ? "No tasks saved yet. Choose Teach Cookie a task, demonstrate it, then review and save." : records.prefix(20).map { "• \($0.record.name) — \($0.record.steps.count) steps" }.joined(separator: "\n") + "\n\nAsk Cookie to run a task by name. Open its folder to inspect or remove it."
+        alert.addButton(withTitle: "Done")
+        alert.addButton(withTitle: "Open folder")
+        if alert.runModal() == .alertSecondButtonReturn {
+            try? FileManager.default.createDirectory(at: CookieSkills.userDirectory, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(CookieSkills.userDirectory)
+        }
+    }
     @objc private func toggleTeaching() { CookieTeach.shared.toggle() }
 
     /// Menu bar icon: the same Cookie creature the home and greeting show,

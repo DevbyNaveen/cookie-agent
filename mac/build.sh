@@ -63,6 +63,18 @@ if [ -x "$RECORDER" ]; then
 else
   echo "note: $RECORDER is missing (cargo build --release in cookie-recorder); meeting recording is left out"
 fi
+# Eyes and ears: cookie-sense (Vision text and faces, SpeechAnalyzer) in its own process, so a
+# Vision model that fails to load can't take Cookie down. A Swift package built against the macOS 27
+# SDK (it needs no SwiftUI, so no Xcode):
+#   (cd cookie-sense && SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX27.sdk swift build -c release --build-system native)
+# Without it Cookie reads screenshots in its own process and transcribes with SFSpeechRecognizer.
+SENSE="${COOKIE_SENSE_BIN:-cookie-sense/.build/release/cookie-sense}"
+if [ -x "$SENSE" ]; then
+  cp "$SENSE" "$APP/Contents/Helpers/cookie-sense"
+  codesign --force --options runtime $TIMESTAMP --identifier com.enkeon.cookie.sense --sign "$SIGN_ID" "$APP/Contents/Helpers/cookie-sense"
+else
+  echo "note: $SENSE is missing (see the command above); screen reading stays in-process"
+fi
 # Research and decks: the bundled Python (scripts/bundle-python.sh) running cookie-py,
 # every Mach-O signed inside-out before the app seals it (no entitlements needed, measured).
 if [ -d vendor/python ]; then

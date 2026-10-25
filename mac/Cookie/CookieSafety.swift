@@ -10,7 +10,8 @@
 //                 banking) is in front; blocked apps are also cut out of
 //                 every screenshot.
 //  Redactor     — on this Mac, before anything is sent: card numbers, IBANs
-//                 and API keys/private keys are blacked out, faces blurred.
+//                 and API keys/private keys are blacked out, faces blurred;
+//                 a picture whose text can't be checked is not sent at all.
 //  ChatVault    — chats are AES-GCM encrypted at rest, key in the Keychain.
 //  ChatLock     — optional Touch ID before chats are shown.
 //
@@ -165,44 +166,62 @@ enum Redactor {
         let blurredFaces: Int
     }
 
+    /// A check that is on could not be completed — text that couldn't be read, or read as
+    /// nothing on a picture that plainly isn't blank, or faces that couldn't be looked for:
+    /// the picture must not be sent.
+    struct Unchecked: LocalizedError {
+        var errorDescription: String? { "Couldn't check the screenshot for private details, so it wasn't sent" }
+    }
+
     private static let context = CIContext(options: [.useSoftwareRenderer: false])
 
-    static func redact(_ image: CGImage) -> Result {
+    /// The private details in a picture, every enabled check done, or `Unchecked`. A picture leaves
+    /// the Mac only after every check that is on has run and answered (Recall's rule: a frame that
+    /// can't be checked is dropped whole, never sent part-checked).
+    static func boxes(in read: CookieScreenRead, hideSecrets: Bool, blurFaces: Bool) throws -> (text: [CGRect], faces: [CGRect]) {
+        var textBoxes: [CGRect] = []
+        if hideSecrets {
+            guard read.textChecked else { throw Unchecked() }
+            for line in read.lines {
+                for range in SensitiveText.ranges(in: line.text) {
+                    // A secret whose words have no box can't be covered: not sent.
+                    guard let box = line.boundingBox(for: range) else { throw Unchecked() }
+                    textBoxes.append(box)
+                }
+            }
+        }
+        var faceBoxes: [CGRect] = []
+        if blurFaces {
+            guard let faces = read.faces else { throw Unchecked() }
+            faceBoxes = faces
+        }
+        return (textBoxes, faceBoxes)
+    }
+
+    static func redact(_ image: CGImage) async throws -> Result {
         let defaults = UserDefaults.standard
         let hideSecrets = defaults.object(forKey: hideSecretsKey) as? Bool ?? true
         let blurFaces = defaults.object(forKey: blurFacesKey) as? Bool ?? true
         guard hideSecrets || blurFaces else { return Result(image: image, hiddenText: 0, blurredFaces: 0) }
 
-        var textBoxes: [CGRect] = []
-        var faceBoxes: [CGRect] = []
-        let handler = VNImageRequestHandler(cgImage: image, options: [:])
-        var requests: [VNRequest] = []
-
-        let textRequest = VNRecognizeTextRequest()
-        textRequest.recognitionLevel = .accurate
-        textRequest.usesLanguageCorrection = false
-        if hideSecrets { requests.append(textRequest) }
-        let faceRequest = VNDetectFaceRectanglesRequest()
-        if blurFaces { requests.append(faceRequest) }
-
-        do { try handler.perform(requests) } catch {
-            print("⚠️ Redactor: Vision failed: \(error)")
+        let read: CookieScreenRead
+        do {
+            read = try await CookieVisionText.read(image, faces: blurFaces)
+        } catch {
+            print("⚠️ Redactor: the picture couldn't be read, not sending: \(error)")
+            throw Unchecked()
         }
-
-        if hideSecrets {
-            for observation in textRequest.results ?? [] {
-                guard let candidate = observation.topCandidates(1).first else { continue }
-                for range in SensitiveText.ranges(in: candidate.string) {
-                    if let box = try? candidate.boundingBox(for: range)?.boundingBox {
-                        textBoxes.append(box)
-                    }
-                }
-            }
+        let found: (text: [CGRect], faces: [CGRect])
+        do {
+            found = try boxes(in: read, hideSecrets: hideSecrets, blurFaces: blurFaces)
+        } catch {
+            print("⚠️ Redactor: a check didn't complete (text runs \(read.textRuns), rectangles \(read.textRectangles.map(String.init) ?? "failed"), uniform \(read.nearUniform), faces \(read.faces == nil ? "failed" : "ok")), not sending")
+            throw error
         }
-        if blurFaces {
-            faceBoxes = (faceRequest.results ?? []).map(\.boundingBox)
+        let textBoxes = found.text, faceBoxes = found.faces
+        guard !textBoxes.isEmpty || !faceBoxes.isEmpty else {
+            return Result(image: image, hiddenText: 0, blurredFaces: 0)
         }
-        guard !textBoxes.isEmpty || !faceBoxes.isEmpty else { return Result(image: image, hiddenText: 0, blurredFaces: 0) }
 
         let width = CGFloat(image.width), height = CGFloat(image.height)
         // Vision boxes are normalised with a bottom-left origin, as is Core Image.
@@ -223,7 +242,8 @@ enum Redactor {
             output = block.composited(over: output)
         }
         guard let rendered = context.createCGImage(output, from: base.extent) else {
-            return Result(image: image, hiddenText: 0, blurredFaces: 0)
+            print("⚠️ Redactor: couldn't render the redacted picture, not sending")
+            throw Unchecked()
         }
         return Result(image: rendered, hiddenText: textBoxes.count, blurredFaces: faceBoxes.count)
     }

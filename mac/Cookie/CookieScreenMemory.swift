@@ -9,7 +9,6 @@
 //
 
 import Foundation
-import Vision
 
 struct ScreenMemoryEntry: Codable, Equatable {
     var date: Date
@@ -51,7 +50,7 @@ final class CookieScreenMemory: ObservableObject {
     func remember(imageData: Data, app: String, date: Date = Date()) {
         guard Self.enabled else { return }
         Task.detached(priority: .utility) {
-            guard let text = Self.readText(from: imageData), text.count >= 20 else { return }
+            guard let text = await Self.readText(from: imageData), text.count >= 20 else { return }
             await MainActor.run { self.add(ScreenMemoryEntry(date: date, app: app, text: text)) }
         }
     }
@@ -113,13 +112,9 @@ final class CookieScreenMemory: ObservableObject {
         }
     }
 
-    nonisolated static func readText(from imageData: Data) -> String? {
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .fast
-        request.usesLanguageCorrection = false
-        let handler = VNImageRequestHandler(data: imageData, options: [:])
-        guard (try? handler.perform([request])) != nil else { return nil }
-        let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
-        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    nonisolated static func readText(from imageData: Data) async -> String? {
+        guard let image = CookieVisionText.image(from: imageData),
+              let lines = try? await CookieVisionText.lines(in: image), !lines.isEmpty else { return nil }
+        return lines.map(\.text).joined(separator: "\n")
     }
 }

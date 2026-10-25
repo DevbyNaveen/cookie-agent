@@ -18,7 +18,6 @@ final class CookieDockState: ObservableObject {
 @MainActor
 final class CookieAgentDock {
     static let openThread = Notification.Name("cookie.agentDock.openThread")
-    private static let foregroundID = UUID(uuidString: "C0011E00-0000-0000-0000-000000000001")!
 
     private let panel: NSPanel
     private let hosting: NSHostingView<AgentDockView>
@@ -30,16 +29,15 @@ final class CookieAgentDock {
     private var hoverTimer: Timer?
     var hidden = false { didSet { layout() } }
 
-    init(companionManager: CompanionManager) {
+    init() {
         hosting = NSHostingView(rootView: AgentDockView(state: state, stop: { entry in
-            if entry.background { CookieBackgroundRuns.shared.stop(entry.id) }
-            else { companionManager.stopResponse() }
+            CookieBackgroundRuns.shared.stop(entry.id)
         }, open: { entry in
             NotificationCenter.default.post(name: Self.openThread, object: entry.threadID)
         }))
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.isFloatingPanel = true
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 2)
+        panel.level = CookieWindowLevel.dock
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
@@ -58,33 +56,13 @@ final class CookieAgentDock {
         state.collapse = { [weak self] in self?.collapse() }
         installMonitors()
 
-        let foreground = companionManager.$voiceState.combineLatest(companionManager.$workingStep, companionManager.$workingThreadID, companionManager.$streamingText)
-            .map { [weak companionManager] voice, step, threadID, streaming -> DockEntry? in
-                guard let manager = companionManager, step != nil || voice == .processing || voice == .responding else { return nil }
-                let thread = manager.threads.first { $0.id == threadID }
-                let status: String
-                let line: String
-                switch voice {
-                case .responding:
-                    status = "Speaking"
-                    let reply = thread?.messages.last { $0.role == .assistant }?.text ?? streaming
-                    line = reply.isEmpty ? "Reading the reply out loud" : String(reply.prefix(240))
-                case .listening:
-                    status = "Listening"
-                    line = "Say it, then release the keys"
-                default:
-                    status = "Working"
-                    line = step ?? (streaming.isEmpty ? "Thinking through your request…" : String(streaming.prefix(240)))
-                }
-                return DockEntry(id: Self.foregroundID, agentID: thread?.agentID, threadID: thread?.id,
-                                 status: status, step: line, history: manager.workingHistory, background: false)
-            }
-        foreground.combineLatest(CookieBackgroundRuns.shared.$runs)
-            .map { front, runs -> [DockEntry] in
-                [front].compactMap { $0 } + runs.map { run in
+        // Only Cookies working on their own: the one answering you is already shown by the notch.
+        CookieBackgroundRuns.shared.$runs
+            .map { runs -> [DockEntry] in
+                runs.map { run in
                     DockEntry(id: run.id, agentID: run.agentID, threadID: run.threadID,
                               status: run.kind == .watcher ? "Watching" : run.kind == .handoff ? "Picking it up" : "Working on its own",
-                              step: run.step, history: run.history, background: true)
+                              step: run.step, history: run.history)
                 }
             }
             .removeDuplicates()
@@ -207,7 +185,6 @@ struct DockEntry: Identifiable, Equatable {
     let status: String
     let step: String
     let history: [String]
-    let background: Bool
 
     var phase: CookieComposerPhase {
         status == "Speaking" ? .speaking : status == "Listening" ? .listening : .thinking
