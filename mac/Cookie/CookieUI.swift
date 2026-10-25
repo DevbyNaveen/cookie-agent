@@ -189,6 +189,7 @@ struct PillButton: View {
 /// Three soft dots that breathe while Cookie works.
 struct ThinkingDots: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var tint: Color = .white
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion)) { timeline in
@@ -196,7 +197,7 @@ struct ThinkingDots: View {
             HStack(spacing: 4) {
                 ForEach(0..<3, id: \.self) { i in
                     Circle()
-                        .fill(Color.white.opacity(0.3 + 0.55 * (sin(t * 5 - Double(i) * 0.75) + 1) / 2))
+                        .fill(tint.opacity(0.3 + 0.55 * (sin(t * 5 - Double(i) * 0.75) + 1) / 2))
                         .frame(width: 6, height: 6)
                 }
             }

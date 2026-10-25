@@ -34,6 +34,7 @@ struct CookieChatView: View {
                             onScreenAccess: { companionManager.openScreenAccessSettings() }) { suggestion in
                     companionManager.sendTypedMessage(suggestion)
                 }
+                .id(companionManager.currentThreadID)
             }
             if recorder.phase != .idle {
                 MeetingBar(recorder: recorder)
@@ -155,11 +156,15 @@ private struct MessageList: View {
     let onScreenAccess: () -> Void
     let onSuggestion: (String) -> Void
 
+    @State private var followsLatest = true
+    @State private var userIsScrolling = false
+    @State private var isNearBottom = true
+
     var body: some View {
         let messages = companionManager.chatMessages
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: 22) {
                     ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
                         if index == 0 || message.date.timeIntervalSince(messages[index - 1].date) > 1800 {
                             Text(CookieTime.separator(message.date))
@@ -181,18 +186,38 @@ private struct MessageList: View {
                 .padding(.horizontal, roomy ? 32 : 22)
                 .padding(.top, 10)
                 .padding(.bottom, 24)
-                .animation(CK.spring, value: messages.count)
+
             }
-            .scrollIndicators(.never)
+            .scrollIndicators(.automatic)
             .defaultScrollAnchor(.bottom)
-            .onChange(of: messages.count) { _, _ in scrollToEnd(proxy) }
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentSize.height - geometry.visibleRect.maxY < 48
+            } action: { _, nearBottom in
+                isNearBottom = nearBottom
+            }
+            .onScrollPhaseChange { _, phase in
+                if phase == .interacting || phase == .tracking {
+                    userIsScrolling = true
+                    followsLatest = false
+                } else if phase == .idle {
+                    userIsScrolling = false
+                    followsLatest = isNearBottom
+                }
+            }
+            .onChange(of: messages.count) { _, _ in
+                if messages.last?.role == .user { followsLatest = true }
+                scrollToEnd(proxy)
+            }
             .onChange(of: companionManager.workingStep) { _, _ in scrollToEnd(proxy) }
             .onChange(of: companionManager.streamingText) { _, _ in scrollToEnd(proxy) }
         }
     }
 
     private func scrollToEnd(_ proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: 0.25)) {
+        guard followsLatest, !userIsScrolling else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
             if companionManager.workingStep != nil {
                 proxy.scrollTo("working", anchor: .bottom)
             } else {
@@ -202,7 +227,7 @@ private struct MessageList: View {
     }
 }
 
-private struct MessageRow: View {
+struct MessageRow: View {
     let message: CompanionChatMessage
     let isLast: Bool
     @ObservedObject var navigation: CookieNavigation
@@ -228,13 +253,13 @@ private struct MessageRow: View {
             }
             if !message.text.isEmpty {
                 Text(message.text)
-                    .font(.system(size: 13))
+                    .font(.system(size: 15, design: .rounded))
                     .foregroundStyle(.white)
-                    .lineSpacing(2)
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 8)
+                    .lineSpacing(4)
+                    .padding(.horizontal, 17)
+                    .padding(.vertical, 12)
                     .background(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        UnevenRoundedRectangle(topLeadingRadius: 23, bottomLeadingRadius: 23, bottomTrailingRadius: 8, topTrailingRadius: 23)
                             .fill(LinearGradient(colors: [CK.accent.opacity(0.95), CK.accent.opacity(0.82)], startPoint: .top, endPoint: .bottom))
                     )
                     .textSelection(.enabled)
@@ -249,12 +274,8 @@ private struct MessageRow: View {
             if !message.steps.isEmpty {
                 StepsDisclosure(steps: message.steps)
             }
-            Text(message.text)
-                .font(.system(size: 13))
-                .foregroundStyle(CK.text)
-                .lineSpacing(3)
+            CookieConversationReply(text: message.text)
                 .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 8) {
                 Text([CookieTime.short(message.date), message.duration.map(CookieTime.duration)].compactMap { $0 }.joined(separator: " · "))
@@ -270,7 +291,8 @@ private struct MessageRow: View {
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(copied ? CK.accent : CK.tertiary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plain).cookiePointingCursor()
+                .accessibilityLabel(copied ? "Copied" : "Copy reply")
                 .help("Copy")
                 .opacity(hovering || copied ? 1 : 0)
             }
@@ -300,7 +322,7 @@ private struct MessageRow: View {
                 .padding(.top, 4)
             }
         }
-        .padding(.trailing, 40)
+        .padding(.trailing, 16)
         .onHover { hovering = $0 }
         .animation(CK.quick, value: hovering)
     }
@@ -321,13 +343,26 @@ private struct MessageRow: View {
     }
 
     private var noteRow: some View {
-        Text(message.text.uppercased())
-            .font(.system(size: 10, weight: .medium, design: .monospaced))
-            .tracking(0.6)
+        Text(message.text)
+            .font(.system(size: 11, weight: .medium, design: .rounded))
             .foregroundStyle(CK.secondary)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(CK.hairline))
+    }
+}
+
+/// Shared by streaming and finished replies so their typography and wrapping stay consistent.
+struct CookieConversationReply: View {
+    let text: String
+
+    var body: some View {
+        Text(CompanionManager.visibleReply(text))
+            .font(.system(size: 15, design: .rounded))
+            .foregroundStyle(CK.text)
+            .lineSpacing(5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
     }
 }
 
@@ -389,12 +424,8 @@ private struct WorkingRow: View {
                     .padding(.vertical, 9)
                     .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(CK.fill))
             } else {
-                Text(text)
-                    .font(.system(size: 13))
-                    .foregroundStyle(CK.text)
-                    .lineSpacing(3)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.trailing, 40)
+                CookieConversationReply(text: text)
+                    .padding(.trailing, 16)
             }
             if text.isEmpty { stepLine }
         }
@@ -428,11 +459,12 @@ extension HarnessAction {
         case .settings?: return "Open System Settings?"
         case .app(let url)?: return "Open \(url.deletingPathExtension().lastPathComponent)?"
         case .web(let url)?: return "Open \(url.host ?? url.absoluteString)?"
-        case nil: return "Let Cookie use \(tool)?"
+        case nil: return tool == "workspace" ? "Update this workspace?" : "Let Cookie use \(tool)?"
         }
     }
 
     var consequence: String {
+        if tool == "workspace" { return "Saves a local draft in this conversation. Nothing is published or sent." }
         if tool == "start_task" { return "One yes covers this task in these apps. Sending, paying or deleting still asks. Esc stops it." }
         if tool == CookieRoutineWords.tool.name {
             if let agent = CookieRoutineWords.namedCookie { return "\(agent.name) does this job at those times on this Mac; it shows on your Board, where you can remove it." }
@@ -533,22 +565,17 @@ struct FromDataNote: View {
     }
 }
 
-/// The glass surface every approval card sits on (same family as the composer).
+/// A quiet surface shared by approvals and the recording controls.
 private struct ApprovalSurface: ViewModifier {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     func body(content: Content) -> some View {
-        let shell = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        let shell = RoundedRectangle(cornerRadius: 18, style: .continuous)
         content
-            .padding(14)
-            .background(shell.fill(LinearGradient(
-                colors: [CK.accent.opacity(0.10), Color.white.opacity(0.045)],
-                startPoint: .topLeading, endPoint: .bottomTrailing)))
-            .overlay(shell.strokeBorder(LinearGradient(
-                colors: [CK.accent.opacity(0.45), Color.white.opacity(0.08)],
-                startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.75))
+            .padding(16)
+            .background(shell.fill(LinearGradient(colors: [Color(white: 0.19), Color(white: 0.15)],
+                                                 startPoint: .top, endPoint: .bottom)))
+            .overlay(shell.strokeBorder(Color.white.opacity(0.065), lineWidth: 0.5))
             .clipShape(shell)
-            .shadow(color: CK.accent.opacity(reduceMotion ? 0 : 0.12), radius: 18, y: 6)
+            .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
     }
 }
 
@@ -562,6 +589,20 @@ struct ApprovalCard: View {
     @State private var showsDetails = false
 
     private var target: CookieOpen.Target? { action.openTarget }
+    private var workspaceSummary: String? {
+        guard action.tool == "workspace" else { return nil }
+        let arguments = MacOperator.args(of: action)
+        guard let payload = arguments["payload"] as? String,
+              let object = try? JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any] else { return nil }
+        let title = object["title"] as? String ?? object["id"] as? String ?? "Workspace output"
+        let summary = object["summary"] as? String ?? "Save an updated draft"
+        var lines = [title, summary]
+        if let content = object["content"] as? [String: Any], let grid = content["grid"] as? [[String]] {
+            lines.append("\(grid.count) rows · \(grid.map(\.count).max() ?? 0) columns")
+        }
+        return lines.joined(separator: "\n")
+    }
+
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -569,14 +610,14 @@ struct ApprovalCard: View {
                 ActionIcon(action: action)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(action.question)
-                        .font(.system(size: 13.5, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
                         .foregroundStyle(CK.text)
-                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(action.consequence)
                         .font(.system(size: 11.5))
                         .foregroundStyle(CK.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    if target != nil {
+                    if target != nil || workspaceSummary != nil {
                         Button { withAnimation(CK.quick) { showsDetails.toggle() } } label: {
                             HStack(spacing: 4) {
                                 Text(showsDetails ? "Hide details" : "Details")
@@ -593,28 +634,33 @@ struct ApprovalCard: View {
                         .padding(.top, 2)
                     }
                 }
-                Spacer(minLength: 12)
-                HStack(spacing: 8) {
-                    PillButton(title: "Not now") { answer(false) }
-                    if let target, CookieOpen.alwaysKey(target) != nil, action.fromData.isEmpty {
-                        PillButton(title: "Always allow") { CookieOpen.allowAlways(target); answer(true) }
-                            .help("Open \(action.question.dropFirst(5).dropLast()) without asking from now on. Undo in Settings → Privacy & safety.")
-                    }
-                    PillButton(title: action.tool == "start_task" ? "Start" : target == nil ? "Allow" : "Open",
-                               symbol: target == nil ? "checkmark" : "arrow.up.forward.app", primary: true) { answer(true) }
-                }
-                .layoutPriority(1)
+
             }
 
             if !action.fromData.isEmpty { FromDataNote(values: action.fromData) }
 
             // Anything but open shows exactly what would happen: the recipient, the amount.
-            if action.tool == "start_task" {
+            if let workspaceSummary {
+                Text(workspaceSummary).font(.system(size: 12)).foregroundStyle(CK.secondary).fixedSize(horizontal: false, vertical: true)
+                if showsDetails { PreviewText(text: action.preview) }
+            } else if action.tool == "start_task" {
                 let args = MacOperator.args(of: action)
                 PreviewText(text: "\(args["plan"] as? String ?? "")\n\nApps: \(args["apps"] as? String ?? "")")
             } else if target == nil || showsDetails, !action.preview.isEmpty {
                 PreviewText(text: action.preview)
             }
+            Divider().overlay(CK.hairline)
+                HStack(spacing: 8) {
+                    PillButton(title: "Not now") { answer(false) }
+                    if let target, CookieOpen.alwaysKey(target) != nil, action.fromData.isEmpty {
+                        Menu { Button("Always allow this destination") { CookieOpen.allowAlways(target); answer(true) } } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().cookiePointingCursor()
+                            .help("Open \(action.question.dropFirst(5).dropLast()) without asking from now on. Undo in Settings → Privacy & safety.")
+                    }
+                    PillButton(title: action.tool == "start_task" ? "Start" : target == nil ? "Allow" : "Open",
+                               symbol: target == nil ? "checkmark" : "arrow.up.forward.app", primary: true) { answer(true) }
+                }
+
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .modifier(ApprovalSurface())
         .accessibilityElement(children: .contain)
@@ -641,27 +687,31 @@ struct BatchApprovalCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Cookie wants to do \(approval.actions.count) things")
-                        .font(.system(size: 13.5, weight: .semibold))
+                    Text("Review \(approval.actions.count) actions")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
                         .foregroundStyle(CK.text)
                     Text("Untick anything you don't want. Nothing happens until you choose.")
                         .font(.system(size: 11.5))
                         .foregroundStyle(CK.secondary)
                 }
-                Spacer(minLength: 12)
-                HStack(spacing: 8) {
-                    PillButton(title: "Not now") { answer(Array(repeating: false, count: approval.actions.count)) }
-                    PillButton(title: count == approval.actions.count ? "Do all \(count)" : "Do \(count)", symbol: "checkmark", primary: true) { answer(ticked) }
-                        .disabled(count == 0)
-                        .opacity(count == 0 ? 0.45 : 1)
-                }
-                .layoutPriority(1)
+
             }
+            ScrollView {
             VStack(spacing: 6) {
                 ForEach(Array(approval.actions.enumerated()), id: \.offset) { index, action in
                     row(action, index: index)
                 }
             }
+            }.frame(maxHeight: 180)
+            Divider().overlay(CK.hairline)
+                HStack(spacing: 8) {
+                    PillButton(title: "Not now") { answer(Array(repeating: false, count: approval.actions.count)) }
+                    PillButton(title: "Allow \(count)", symbol: "checkmark", primary: true) { answer(ticked) }
+                        .disabled(count == 0)
+                        .opacity(count == 0 ? 0.45 : 1)
+                }
+
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .modifier(ApprovalSurface())
         .accessibilityElement(children: .contain)
@@ -721,19 +771,13 @@ struct AppApprovalCard: View {
                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(CK.accent.opacity(0.14)))
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.question)
-                        .font(.system(size: 13.5, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
                         .foregroundStyle(CK.text)
                     Text("\(item.actionName) · nothing happens unless you say yes.")
                         .font(.system(size: 11.5))
                         .foregroundStyle(CK.secondary)
                 }
-                Spacer(minLength: 12)
-                HStack(spacing: 8) {
-                    PillButton(title: "Not now") { answer(false) }
-                    PillButton(title: item.verb, symbol: "checkmark", primary: true) { answer(true) }
-                }
-                .disabled(busy)
-                .layoutPriority(1)
+
             }
             if let detail = item.detail, !detail.isEmpty {
                 PreviewText(text: detail)
@@ -745,6 +789,14 @@ struct AppApprovalCard: View {
             if let error {
                 Text(error).font(.system(size: 11)).foregroundStyle(Color.orange)
             }
+            Divider().overlay(CK.hairline)
+                HStack(spacing: 8) {
+                    PillButton(title: "Not now") { answer(false) }
+                    PillButton(title: item.verb, symbol: "checkmark", primary: true) { answer(true) }
+                }
+                .disabled(busy)
+
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .modifier(ApprovalSurface())
         .accessibilityElement(children: .contain)
@@ -825,17 +877,17 @@ private struct PreviewText: View {
     let text: String
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 11.5, design: .monospaced))
-            .foregroundStyle(CK.secondary)
-            .textSelection(.enabled)
-            .lineLimit(6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.black.opacity(0.18)))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.white.opacity(0.05)))
-            .transition(.opacity)
+        ScrollView {
+            Text(text)
+                .font(.system(size: 11.5, design: .monospaced))
+                .foregroundStyle(CK.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+        }
+        .frame(maxHeight: 100)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.black.opacity(0.15)))
+        .transition(.opacity)
     }
 }
 

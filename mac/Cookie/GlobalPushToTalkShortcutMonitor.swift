@@ -16,6 +16,14 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
     let cancellationPublisher = PassthroughSubject<Void, Never>()
     private var awaitsShortcutRelease = false
+    private(set) var isDictationShortcut = false
+    static func dictationHeld(_ raw: UInt64) -> Bool {
+        let flags = CGEventFlags(rawValue: raw)
+        return flags.contains([.maskControl, .maskCommand]) && !flags.contains(.maskAlternate)
+    }
+    private var activeShortcutHeld: Bool {
+        isDictationShortcut ? Self.dictationHeld(CGEventSource.flagsState(.combinedSessionState).rawValue) : BuddyPushToTalkShortcut.isPhysicallyHeld
+    }
 
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
@@ -123,7 +131,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// Someone else saw the keys let go (circle select's own check): end the
     /// press here too, so this monitor's state never disagrees with the keys.
     func releaseIfNotHeld() {
-        guard isShortcutCurrentlyPressed, !BuddyPushToTalkShortcut.isPhysicallyHeld else { return }
+        guard isShortcutCurrentlyPressed, !activeShortcutHeld else { return }
         print("🎙️ Global push-to-talk: released (missed release recovered)")
         setPressed(false)
         shortcutTransitionPublisher.send(.released)
@@ -151,7 +159,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             if let globalEventTap {
                 CGEvent.tapEnable(tap: globalEventTap, enable: true)
             }
-            if awaitsShortcutRelease && !BuddyPushToTalkShortcut.isPhysicallyHeld { awaitsShortcutRelease = false }
+            if awaitsShortcutRelease && !activeShortcutHeld { awaitsShortcutRelease = false }
             return Unmanaged.passUnretained(event)
         }
 
@@ -168,10 +176,23 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             return Unmanaged.passUnretained(event)
         }
         if awaitsShortcutRelease {
-            if !BuddyPushToTalkShortcut.isHeld(modifierFlagsRawValue: event.flags.rawValue,
+            if !Self.dictationHeld(event.flags.rawValue) && !BuddyPushToTalkShortcut.isHeld(modifierFlagsRawValue: event.flags.rawValue,
                                                spacePressed: CGEventSource.keyState(.combinedSessionState, key: 49)) {
                 awaitsShortcutRelease = false
             }
+            return Unmanaged.passUnretained(event)
+        }
+        if isShortcutCurrentlyPressed && isDictationShortcut {
+            if !Self.dictationHeld(event.flags.rawValue) {
+                setPressed(false)
+                shortcutTransitionPublisher.send(.released)
+            }
+            return Unmanaged.passUnretained(event)
+        }
+        if !isShortcutCurrentlyPressed && eventType == .flagsChanged && Self.dictationHeld(event.flags.rawValue) {
+            isDictationShortcut = true
+            setPressed(true)
+            shortcutTransitionPublisher.send(.pressed)
             return Unmanaged.passUnretained(event)
         }
         let shortcutTransition = BuddyPushToTalkShortcut.shortcutTransition(
@@ -186,6 +207,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             break
         case .pressed:
             print("🎙️ Global push-to-talk: pressed")
+            isDictationShortcut = false
             setPressed(true)
             shortcutTransitionPublisher.send(.pressed)
         case .released:

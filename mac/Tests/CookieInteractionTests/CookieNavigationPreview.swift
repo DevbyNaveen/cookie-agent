@@ -4,6 +4,50 @@ import SwiftUI
 @MainActor
 enum CookieNavigationPreview {
     static func render() {
+        let navigation = CookieNavigation()
+        snapshot("cookie-composer-spacious", content:
+            CookieComposerControl(draft: CookieChatDraft(), availableWidth: 298, voiceState: .idle, isWorking: false,
+                                  audioLevel: 0, startTalking: {}, finishTalking: {}, stopResponse: {}, sendMessage: { _, _, _ in }, recordMeeting: {})
+                .padding(18).frame(width: 334).background(CK.island))
+
+        let question = CompanionChatMessage(role: .user, text: "Cookie, show me a jet engine and explain the parts.")
+        let answer = CompanionChatMessage(role: .assistant, text: "A jet engine moves air through several stages. The fan at the front draws air in, and the compressor squeezes it to raise its pressure.\n\nFuel burns in the combustor. The hot gases spin the turbine, then rush through the nozzle to push the aircraft forward.")
+        for width: CGFloat in [680, 360] {
+            snapshot("cookie-conversation-\(Int(width))", content:
+                VStack(alignment: .leading, spacing: 22) {
+                    MessageRow(message: question, isLast: false, navigation: navigation, onShowScreen: {}, onScreenAccess: {}, onSuggestion: { _ in })
+                    MessageRow(message: answer, isLast: true, navigation: navigation, onShowScreen: {}, onScreenAccess: {}, onSuggestion: { _ in })
+                }.padding(24).frame(width: width).background(CK.island))
+        }
+        snapshot("cookie-floating-home-preview", content:
+            NotchSurface(size: CGSize(width: 928, height: 580), topRadius: 26, bottomRadius: 30, floating: 1) {
+                CookieHomeView(mode: .notch, companionManager: CompanionManager(), navigation: navigation, topInset: 30)
+            }.padding(.top, 44).padding(.horizontal, 16).padding(.bottom, 16))
+        snapshot("cookie-approval-compact", content:
+            ApprovalCard(action: HarnessAction(tool: "workspace", effect: "write", preview: "Monthly budget · Add income, expenses and totals", reason: "")) { _ in }
+                .padding(16).frame(width: 330).background(CK.island))
+        let workspace = CookieWorkspaceStore(persistent: false), thread = UUID()
+        snapshot("cookie-project-controls", content: CookieProjectPanel(store: workspace, manager: CompanionManager(), thread: thread, close: {}))
+        snapshot("cookie-scratchpad-controls", content: CookieScratchpad(store: workspace, thread: thread, close: {}))
+
+        var content = CookieArtifact.Content()
+        content.grid = [["Category", "Budget", "Actual"], ["Rent", "1200", "1200"], ["Groceries", "400", "470"], ["Dining out", "150", "210"], ["Total", "=SUM(B2:B4)", "=SUM(C2:C4)"]]
+        _ = try! workspace.put(thread: thread, id: "budget", title: "Monthly budget", kind: .sheet, content: content, base: nil, summary: "Budget")
+        snapshot("cookie-workspace-split", content:
+            HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 20) {
+                    HStack { Text("Conversation").font(.headline); Spacer(); Label("History", systemImage: "clock").font(.caption) }
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 20) {
+                            MessageRow(message: CompanionChatMessage(role: .user, text: "Build a monthly budget and explain my biggest expenses."), isLast: false, navigation: navigation, onShowScreen: {}, onScreenAccess: {}, onSuggestion: { _ in })
+                            MessageRow(message: CompanionChatMessage(role: .assistant, text: "Your budget is ready. Rent is the largest expense. Groceries and dining out are above budget.\n\nSelect a cell to change it, or ask me to explain a total."), isLast: true, navigation: navigation, onShowScreen: {}, onScreenAccess: {}, onSuggestion: { _ in })
+                        }
+                    }
+                    Text("Ask Cookie…").foregroundStyle(CK.secondary).padding(14).frame(maxWidth: .infinity, alignment: .leading).background(CK.fill, in: RoundedRectangle(cornerRadius: 16))
+                }.padding(18).frame(width: 334)
+                Rectangle().fill(CK.hairline).frame(width: 0.5)
+                CookieWorkspaceView(store: workspace, manager: CompanionManager(), thread: thread, showsComposer: false)
+            }.frame(width: 928, height: 550).background(CK.island).foregroundStyle(CK.text))
         let threads = sampleThreads()
         snapshot("cookie-settings-preview", content:
             HStack(spacing: 0) {

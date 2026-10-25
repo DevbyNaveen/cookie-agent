@@ -10,6 +10,7 @@
 import SwiftUI
 
 struct CookieHomeView: View {
+    @ObservedObject private var workspace = CookieWorkspaceStore.shared
     @ObservedObject private var agents = CookieAgentStore.shared
     enum Mode { case notch, window }
     @ObservedObject private var lock = ChatLock.shared
@@ -22,20 +23,26 @@ struct CookieHomeView: View {
     var popOut: () -> Void = {}
     var close: () -> Void = {}
 
+    private var showsWorkspace: Bool {
+        navigation.settingsPage == nil && !lock.isLocked && navigation.agentPage == nil &&
+        !navigation.showsWorkComposer && navigation.section == .chats && navigation.preview == nil &&
+        workspace.session(companionManager.currentThreadID).showing
+    }
+
     var body: some View {
         GeometryReader { geometry in
             let layout = CookieHomeLayout(width: geometry.size.width)
             HStack(spacing: 0) {
-                if layout.showsSidebar {
+                if layout.showsSidebar && !showsWorkspace {
                     sidebar(width: layout.sidebarWidth)
                 }
                 VStack(spacing: 0) {
-                    header(showsSidebarToggle: !layout.showsSidebar)
+                    header(showsSidebarToggle: !layout.showsSidebar || showsWorkspace, width: layout.width)
                     conversation(layout: layout)
                 }
             }
             .overlay(alignment: .leading) {
-                if !layout.showsSidebar && navigation.showsSidebarDrawer {
+                if (!layout.showsSidebar || showsWorkspace) && navigation.showsSidebarDrawer {
                     ZStack(alignment: .leading) {
                         Color.black.opacity(0.25)
                             .contentShape(Rectangle())
@@ -90,6 +97,8 @@ struct CookieHomeView: View {
                         CookieNewWorkView(store: WorkStore.shared, navigation: navigation, draft: navigation.workDraft)
                     } else if navigation.section == .board {
                         BoardView(store: WorkStore.shared, lists: ListStore.shared, companionManager: companionManager, navigation: navigation)
+                    } else if showsWorkspace, let thread = companionManager.currentThreadID {
+                        workspaceConversation(thread: thread, width: layout.width)
                     } else {
                         CookieChatView(companionManager: companionManager,
                                        dictation: companionManager.buddyDictationManager,
@@ -105,6 +114,40 @@ struct CookieHomeView: View {
         }
     }
 
+    private func workspaceConversation(thread: UUID, width: CGFloat) -> some View {
+        let chatWidth = min(370, max(300, width * 0.36))
+        return Group {
+            if width >= 720 {
+                HStack(spacing: 0) {
+                    workspaceChat.frame(width: chatWidth)
+                    Rectangle().fill(CK.hairline).frame(width: 0.5)
+                    CookieWorkspaceView(store: workspace, manager: companionManager, thread: thread, showsComposer: false)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            } else {
+                VSplitView {
+                    workspaceChat.frame(minHeight: 200)
+                    CookieWorkspaceView(store: workspace, manager: companionManager, thread: thread, showsComposer: false)
+                        .frame(minHeight: 200)
+                }
+            }
+        }
+    }
+
+    private var workspaceChat: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Conversation").font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Button { withAnimation(CK.quick) { navigation.showsSidebarDrawer.toggle() } } label: {
+                    Label("History", systemImage: "clock")
+                }.buttonStyle(.plain).cookiePointingCursor().foregroundStyle(CK.secondary)
+            }.font(.system(size: 11)).padding(.horizontal, 18).frame(height: 40)
+            CookieChatView(companionManager: companionManager, dictation: companionManager.buddyDictationManager,
+                           navigation: navigation)
+        }.background(CK.sidebar.opacity(0.35))
+    }
+
     private func previewPane(_ attachment: CookieAttachment) -> some View {
         FilePreviewPane(attachment: attachment) {
             withAnimation(CK.spring) { navigation.preview = nil }
@@ -113,37 +156,66 @@ struct CookieHomeView: View {
         .transition(.opacity)
     }
 
-    /// In the notch the top strip belongs to the camera: only the window
-    /// buttons sit there (right of the notch). The chat's name gets its own
-    /// row underneath. In the window there is no notch, so one row holds both.
-    private func header(showsSidebarToggle: Bool) -> some View {
+    private func header(showsSidebarToggle: Bool, width: CGFloat) -> some View {
         VStack(spacing: 0) {
-            if mode == .notch {
+            if showsWorkspace && width >= 720 {
+                HStack(spacing: 0) {
+                    HStack(spacing: 10) {
+                        sidebarToggle
+                        CookieAvatar(size: 22, agent: companionManager.currentAgent, mood: companionManager.characterMood, gaze: companionManager.gazeTowardPointer)
+                        Text(companionManager.currentAgent?.name ?? "Cookie").font(.system(size: 13, weight: .semibold))
+                        Spacer(minLength: 0)
+                    }.padding(.horizontal, 18).frame(width: min(370, max(300, width * 0.36)))
+                    Rectangle().fill(CK.hairline).frame(width: 0.5)
+                    Text(headerTitle).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                        .padding(.horizontal, 16).frame(maxWidth: .infinity, alignment: .leading)
+                    if mode == .notch {
+                        IslandButton(symbol: "macwindow.on.rectangle", help: "Open in a window", action: popOut)
+                        IslandButton(symbol: "xmark", help: "Close  (esc)", action: close).padding(.trailing, 14)
+                    }
+                }.frame(height: 48)
+            } else if mode == .notch {
                 HStack(spacing: 8) {
                     if showsSidebarToggle { sidebarToggle }
-                    Spacer()
+                    titleRow
+                    Button {
+                        _ = companionManager.ensureWorkspaceThread()
+                        workspace.setSession(companionManager.currentThreadID) { $0.showing.toggle() }
+                    } label: { Image(systemName: "square.stack.3d.up") }
+                    .buttonStyle(.plain).cookiePointingCursor().help("Workspace")
+                    Spacer(minLength: 0)
                     IslandButton(symbol: "macwindow.on.rectangle", help: "Open in a window", action: popOut)
                     IslandButton(symbol: "xmark", help: "Close  (esc)", action: close)
                 }
                 .padding(.horizontal, 14)
-                .frame(height: max(topInset, 30) + 6)
-                if navigation.settingsPage == nil && navigation.section == .chats && !navigation.showsWorkComposer && navigation.agentPage == nil {
-                    titleRow.frame(height: 30)
-                }
+                .frame(height: 48)
             } else {
                 HStack(spacing: 0) {
                     if showsSidebarToggle { sidebarToggle.padding(.leading, 78) }
                     titleRow
+                    Button {
+                        _ = companionManager.ensureWorkspaceThread()
+                        workspace.setSession(companionManager.currentThreadID) { $0.showing.toggle() }
+                    } label: { Image(systemName: "square.stack.3d.up") }
+                    .buttonStyle(.plain).cookiePointingCursor().padding(.trailing, 16).help("Workspace")
                 }
                 .frame(height: 52)
             }
         }
+        .overlay(alignment: .bottom) { Rectangle().fill(CK.hairline).frame(height: 0.5) }
     }
 
     private var sidebarToggle: some View {
         IslandButton(symbol: "sidebar.left", help: "Chats and settings", active: navigation.showsSidebarDrawer) {
             withAnimation(CK.spring) { navigation.showsSidebarDrawer.toggle() }
         }
+    }
+
+    private var headerTitle: String {
+        if let output = workspace.selected(companionManager.currentThreadID) { return output.title }
+        let title = companionManager.currentThread?.title ?? "New chat"
+        let words = title.split(whereSeparator: { $0.isWhitespace })
+        return words.count > 7 ? words.prefix(7).joined(separator: " ") + "…" : title
     }
 
     @ViewBuilder
@@ -162,7 +234,7 @@ struct CookieHomeView: View {
                         Text(agent.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(CK.secondary).lineLimit(1)
                         Text("·").foregroundStyle(CK.tertiary)
                     }
-                    Text(thread?.title ?? "New chat")
+                    Text(headerTitle)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(thread == nil ? CK.secondary : CK.text)
                         .lineLimit(1)
@@ -171,8 +243,8 @@ struct CookieHomeView: View {
             }
             .buttonStyle(.plain).cookiePointingCursor()
             .help(agent.map { "\($0.name) · \($0.role)" } ?? "This chat")
-            .padding(.horizontal, 48)
-            .frame(maxWidth: .infinity)
+            .padding(.horizontal, mode == .notch ? 4 : 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .transition(.opacity)
         } else {
             Color.clear
@@ -203,7 +275,7 @@ private struct Sidebar: View {
             threads: companionManager.threads, selectedThreadID: companionManager.currentThreadID,
             selectedAgentID: companionManager.currentAgent?.id,
             isWorking: companionManager.isWorking, isLocked: lock.isLocked,
-            topPadding: mode == .window ? 30 : 0, headerHeight: max(topInset, 36),
+            topPadding: 0, headerHeight: mode == .notch ? 48 : 52,
             newAgent: {
                 navigation.settingsPage = nil
                 navigation.showsWorkComposer = false

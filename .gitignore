@@ -6,3 +6,4 @@ node_modules/
 # Benchmark runs: logs, transcripts and spend ledgers stay local
 evals/agentdojo/runs*/
 evals/agentdojo/runs*.log
+/.build

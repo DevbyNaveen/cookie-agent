@@ -15,7 +15,13 @@ import AppKit
 import ApplicationServices
 
 enum CookieReadingPen {
-    static let maxPhrases = 3
+    struct Line {
+        let rect: CGRect
+        /// Indices in the whitespace/quote-normalized phrase, preserving real line breaks.
+        let characters: Range<Int>
+    }
+
+    static let maxPhrases = 8
     static let maxLines = 4
     /// About how fast a voice reads (150 words a minute): characters a second.
     static let charactersPerSecond = 15.0
@@ -32,11 +38,11 @@ enum CookieReadingPen {
     ///   - app: the app the question is about; nil reads only the screenshots.
     ///   - pointer: the mouse (AppKit global): of several matches, the nearest wins.
     static func find(_ phrases: [String], app: pid_t?, captures: [CompanionScreenCapture], pointer: CGPoint,
-                     mainHeight: CGFloat) async -> [[CGRect]?] {
+                     mainHeight: CGFloat) async -> [[Line]?] {
         await Task.detached(priority: .userInitiated) {
             let texts = app.map(textElements(app:)) ?? []
             var recognized: [Int: [CookieTextLine]] = [:]
-            var places: [[CGRect]?] = []
+            var places: [[Line]?] = []
             for phrase in phrases {
                 let needle = Folded([phrase]).characters
                 guard needle.count >= 2 else { places.append(nil); continue }
@@ -56,26 +62,40 @@ enum CookieReadingPen {
     /// One phrase's underlines: each line its own mark, drawn when the voice reaches the words
     /// that start it and inked over the time those words take to say.
     @MainActor
-    static func marks(lines: [CGRect], phrase: String, offset: Int, spokenLength: Int) -> [CookieResolvedDrawing] {
-        let total = max(1, lines.reduce(0) { $0 + $1.width })
-        let count = Double(phrase.utf16.count)
-        var before: CGFloat = 0
-        return lines.map { line in
-            let start = offset + Int((Double(before / total) * count).rounded())
-            let characters = Double(line.width / total) * count
-            before += line.width
+    static func marks(lines: [Line], phrase: String, offset: Int, spokenLength: Int) -> [CookieResolvedDrawing] {
+        let folded = Folded([phrase])
+        return lines.compactMap { found in
+            guard !found.characters.isEmpty, found.characters.upperBound <= folded.origins.count else { return nil }
+            let lower = folded.origins[found.characters.lowerBound].range.lowerBound.utf16Offset(in: phrase)
+            let upper = folded.origins[found.characters.upperBound - 1].range.upperBound.utf16Offset(in: phrase)
+            let line = found.rect
             let display = NSScreen.screens.first { $0.frame.intersects(line) }?.frame ?? NSScreen.main?.frame ?? .zero
             var mark = CookieResolvedDrawing(geometry: .underline(from: CGPoint(x: line.minX, y: line.minY - 1),
                                                                   to: CGPoint(x: line.maxX, y: line.minY - 1)),
                                              text: "", displayFrame: display)
-            mark.offset = min(start, spokenLength)
-            mark.readSeconds = min(4, max(0.3, characters / charactersPerSecond))
+            mark.offset = min(offset + lower, spokenLength)
+            mark.readRange = mark.offset..<max(mark.offset + 1, min(offset + upper, spokenLength))
+            mark.readSeconds = min(4, max(0.3, Double(upper - lower) / charactersPerSecond))
             return mark
         }
     }
 
-    private static func distance(_ lines: [CGRect], _ point: CGPoint) -> CGFloat {
-        guard let first = lines.first else { return .infinity }
+    /// Match the quote immediately after the tag, never a later repeated phrase.
+    /// Exact UTF-16 correspondence is required for playback-driven ink; paraphrases use
+    /// the ordinary drawing animation instead of pretending they share character timing.
+    static func spokenRange(of phrase: String, in spoken: String, near offset: Int) -> Range<Int>? {
+        let text = spoken as NSString
+        guard offset >= 0, offset < text.length else { return nil }
+        let tail = text.substring(from: offset)
+        let leading = tail.prefix { $0.isWhitespace }.utf16.count
+        let start = offset + leading
+        guard start + phrase.utf16.count <= text.length,
+              text.substring(with: NSRange(location: start, length: phrase.utf16.count)) == phrase else { return nil }
+        return start..<(start + phrase.utf16.count)
+    }
+
+    private static func distance(_ lines: [Line], _ point: CGPoint) -> CGFloat {
+        guard let first = lines.first?.rect else { return .infinity }
         return hypot(first.midX - point.x, first.midY - point.y)
     }
 
@@ -116,37 +136,45 @@ enum CookieReadingPen {
     }
 
     /// Each place the phrase is in one element's text, as that element's line rects (AppKit).
-    private static func appLines(_ needle: [Character], in text: TextElement, mainHeight: CGFloat) -> [[CGRect]] {
+    private static func appLines(_ needle: [Character], in text: TextElement, mainHeight: CGFloat) -> [[Line]] {
         let folded = Folded([text.text])
-        return folded.ranges(of: needle).prefix(3).compactMap { match -> [CGRect]? in
+        return folded.ranges(of: needle).prefix(3).compactMap { match -> [Line]? in
             let lower = folded.origins[match.lowerBound].range.lowerBound, upper = folded.origins[match.upperBound - 1].range.upperBound
             let location = text.text.utf16.distance(from: text.text.startIndex, to: lower)
             let length = text.text.utf16.distance(from: lower, to: upper)
             guard let rects = lineRects(text.element, CFRange(location: location, length: length)),
-                  rects.allSatisfy({ text.window.contains(CGPoint(x: $0.midX, y: $0.midY)) }) else { return nil }
-            return rects.map { CookieDrawingResolver.appKit($0, mainHeight: mainHeight) }
+                  rects.allSatisfy({ text.window.contains(CGPoint(x: $0.rect.midX, y: $0.rect.midY)) }) else { return nil }
+            return rects.compactMap { item in
+                let indices = match.filter { index in
+                    let start = folded.origins[index].range.lowerBound.utf16Offset(in: text.text)
+                    return item.characters.contains(start)
+                }
+                guard let first = indices.first, let last = indices.last else { return nil }
+                return Line(rect: CookieDrawingResolver.appKit(item.rect, mainHeight: mainHeight),
+                            characters: (first - match.lowerBound)..<(last - match.lowerBound + 1))
+            }
         }
     }
 
     /// The screen rects (CG global) of a character range, one per line it wraps across. Without
     /// line attributes the range's bounds are used only when they are one line tall.
-    private static func lineRects(_ element: AXUIElement, _ range: CFRange) -> [CGRect]? {
+    private static func lineRects(_ element: AXUIElement, _ range: CFRange) -> [Line]? {
         let end = range.location + range.length
         if let first = line(element, forIndex: range.location), let last = line(element, forIndex: end - 1),
            last >= first, last - first < maxLines {
-            var rects: [CGRect] = []
+            var rects: [Line] = []
             for number in first...last {
                 guard let line = self.range(element, forLine: number) else { return nil }
                 let lower = max(line.location, range.location), upper = min(line.location + line.length, end)
                 guard upper > lower else { continue }
                 guard let rect = bounds(element, CFRange(location: lower, length: upper - lower)) else { return nil }
-                rects.append(rect)
+                rects.append(Line(rect: rect, characters: lower..<upper))
             }
             return rects.isEmpty ? nil : rects
         }
         guard let whole = bounds(element, range), let glyph = bounds(element, CFRange(location: range.location, length: 1)),
               whole.height < glyph.height * 1.6 else { return nil }
-        return [whole]
+        return [Line(rect: whole, characters: range.location..<end)]
     }
 
     /// `kAXBoundsForRangeParameterizedAttribute`: an AXValue CFRange in, an AXValue CGRect out.
@@ -189,10 +217,10 @@ enum CookieReadingPen {
 
     /// Each place the phrase is in a screenshot's text, read across line breaks, as one AppKit rect
     /// per recognised line it touches.
-    private static func screenshotLines(_ needle: [Character], in lines: [CookieTextLine], capture: CompanionScreenCapture) -> [[CGRect]] {
+    static func screenshotLines(_ needle: [Character], in lines: [CookieTextLine], capture: CompanionScreenCapture) -> [[Line]] {
         let folded = Folded(lines.map(\.text))
-        return folded.ranges(of: needle).prefix(3).compactMap { match -> [CGRect]? in
-            var rects: [CGRect] = []
+        let exact = folded.ranges(of: needle).prefix(3).compactMap { match -> [Line]? in
+            var rects: [Line] = []
             var index = match.lowerBound
             while index < match.upperBound {
                 let piece = folded.origins[index].piece
@@ -205,12 +233,57 @@ enum CookieReadingPen {
                     let width = CGFloat(capture.screenshotWidthInPixels), height = CGFloat(capture.screenshotHeightInPixels)
                     let topLeft = CookieDrawingResolver.global(CGPoint(x: box.minX * width, y: (1 - box.maxY) * height), in: capture)
                     let bottomRight = CookieDrawingResolver.global(CGPoint(x: box.maxX * width, y: (1 - box.minY) * height), in: capture)
-                    rects.append(CGRect(x: topLeft.x, y: bottomRight.y, width: bottomRight.x - topLeft.x, height: topLeft.y - bottomRight.y))
+                    rects.append(Line(rect: CGRect(x: topLeft.x, y: bottomRight.y, width: bottomRight.x - topLeft.x, height: topLeft.y - bottomRight.y),
+                                      characters: (index - match.lowerBound)..<(last - match.lowerBound + 1)))
                 }
                 index = last + 1
             }
             return rects.isEmpty || rects.count > maxLines ? nil : rects
         }
+        if !exact.isEmpty { return exact }
+        // Fast Vision confuses letters in small terminal fonts. Recover only a unique,
+        // long multiword quote, never a short label or a changed number.
+        let phrase = String(needle)
+        guard needle.count >= 12, phrase.split(separator: " ").count >= 2 else { return [] }
+        let wordCount = phrase.split(separator: " ").count
+        var candidates: [[Line]] = []
+        for line in lines {
+            let words = CookieTextLine.wordRanges(in: line.text)
+            for count in max(1, wordCount - 1)...(wordCount + 1) where words.count >= count {
+            for start in 0...(words.count - count) {
+                let lower = words[start].lowerBound, upper = words[start + count - 1].upperBound
+                let nsRange = NSRange(location: lower, length: upper - lower)
+                let source = (line.text as NSString).substring(with: nsRange)
+                guard toleratesOCR(source, expected: phrase), let range = Range(nsRange, in: line.text),
+                      let box = line.boundingBox(for: range) else { continue }
+                let width = CGFloat(capture.screenshotWidthInPixels), height = CGFloat(capture.screenshotHeightInPixels)
+                let top = CookieDrawingResolver.global(CGPoint(x: box.minX * width, y: (1 - box.maxY) * height), in: capture)
+                let bottom = CookieDrawingResolver.global(CGPoint(x: box.maxX * width, y: (1 - box.minY) * height), in: capture)
+                candidates.append([Line(rect: CGRect(x: top.x, y: bottom.y, width: bottom.x - top.x, height: top.y - bottom.y),
+                                        characters: 0..<needle.count)])
+                if candidates.count > 1 { return [] }
+            }
+            }
+        }
+        return candidates
+    }
+
+    static func toleratesOCR(_ source: String, expected: String) -> Bool {
+        let a = Folded([source]).characters, b = Folded([expected]).characters
+        guard b.count >= 12, b.contains(" "),
+              a.filter({ $0.isNumber }) == b.filter({ $0.isNumber }) else { return false }
+        let limit = min(2, max(1, b.count / 24))
+        guard abs(a.count - b.count) <= limit else { return false }
+        var previous = Array(0...b.count)
+        for (i, character) in a.enumerated() {
+            var row = [i + 1] + Array(repeating: 0, count: b.count)
+            for j in b.indices {
+                row[j + 1] = min(previous[j + 1] + 1, row[j] + 1, previous[j] + (character == b[j] ? 0 : 1))
+            }
+            previous = row
+        }
+        return previous[b.count] <= limit
+
     }
 }
 

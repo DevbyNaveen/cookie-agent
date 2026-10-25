@@ -120,8 +120,8 @@ enum CookieSetupTests {
         let menuManager = MenuBarPanelManager(openCookie: { actions.append("open") }, openSettings: { actions.append("settings") },
                                               openShortcuts: { actions.append("shortcuts") }, openSetup: { actions.append("setup") })
         let menu = menuManager.makeMenu()
-        precondition(menu.items.map(\.title) == ["Open Cookie", "Settings…", "Teach Cookie a task", "Help", "", "Quit Cookie"])
-        for item in [menu.items[0], menu.items[1], menu.items[3].submenu!.items[0], menu.items[3].submenu!.items[1]] {
+        precondition(menu.items.map(\.title) == ["Open Cookie", "Settings…", "Teach Cookie a task", "Your taught tasks…", "Help", "", "Quit Cookie"])
+        for item in [menu.items[0], menu.items[1], menu.items[4].submenu!.items[0], menu.items[4].submenu!.items[1]] {
             _ = NSApp.sendAction(item.action!, to: item.target, from: item)
         }
         precondition(actions == ["open", "settings", "shortcuts", "setup"])

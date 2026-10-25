@@ -138,7 +138,7 @@ struct CookieScene: Equatable {
     /// Where on the speech clock each beat falls: the scene (and its title) at the tag, then each
     /// label, spread over the sentence after it.
     func revealOffsets(in spoken: String) -> [Int] {
-        CookieCard.beats(1 + labelled.count, from: offset, in: spoken, until: nil)
+        CookieCard.namedBeats(labelled.compactMap(\.label), from: offset, in: spoken)
     }
 
     // MARK: Reading

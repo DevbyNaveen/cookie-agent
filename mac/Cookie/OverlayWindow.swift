@@ -141,12 +141,33 @@ enum BuddyNavigationMode {
     case drawing
 }
 
+/// Speech must not replace the teaching pointer with a microphone animation.
+enum CookiePointerPresentation {
+    static func showsTriangle(voice: CompanionVoiceState, navigation: BuddyNavigationMode) -> Bool {
+        voice == .idle || voice == .responding || voice == .processing && navigation != .followingCursor
+    }
+
+    static func keepsPoint(voice: CompanionVoiceState) -> Bool { voice == .responding }
+}
+
 /// Where Cookie's hand goes when something it shows opens in its own window (a card, a 3D scene).
 /// Presenters call `open(at:)` with the window's frame; the pointer on that display glides to the
 /// window's corner, rests while it opens, and goes back to the person's cursor.
 @MainActor
 final class CookieHand: ObservableObject {
     static let shared = CookieHand()
+
+    struct Teaching: Equatable {
+        let owner: UUID
+        let point: CGPoint
+    }
+    @Published private(set) var teaching: Teaching?
+    func teach(owner: UUID, at point: CGPoint) {
+        if let current = teaching, current.owner == owner,
+           hypot(current.point.x - point.x, current.point.y - point.y) < 0.35 { return }
+        teaching = Teaching(owner: owner, point: point)
+    }
+    func stopTeaching(owner: UUID) { if teaching?.owner == owner { teaching = nil } }
 
     struct Visit: Equatable {
         let id = UUID()
@@ -267,8 +288,9 @@ struct BlueCursorView: View {
     /// What holds the hand away from the person's cursor: a card or scene opening (`visit`), an
     /// action about to run (`act`), a guided step waiting on the person (`guide`), an element
     /// explained on hover (`hover`); nil when nothing does.
-    private enum HandHold { case visit, act, guide, hover }
+    private enum HandHold { case visit, act, guide, hover, teaching }
     @State private var handHold: HandHold?
+    @State private var lastPenMark: UUID?
     /// The pill beside the hand while an action or a guided step holds it.
     @State private var handLabel = ""
     /// The guided step the hand rests on here.
@@ -436,8 +458,7 @@ struct BlueCursorView: View {
             // where Cookie is looking, and turns toward a target in flight.
             CookiePointer(size: 16, degrees: triangleRotationDegrees)
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle
-                    || companionManager.voiceState != .listening && buddyNavigationMode != .followingCursor) && !pointerAway ? cursorOpacity * pointerFade : 0)
+                .opacity(buddyIsVisibleOnThisScreen && CookiePointerPresentation.showsTriangle(voice: companionManager.voiceState, navigation: buddyNavigationMode) && !pointerAway ? cursorOpacity * pointerFade : 0)
                 .animation(.easeOut(duration: pointerAway ? 0.1 : 0.2), value: pointerAway)
                 .position(cursorPosition)
                 .animation(
@@ -463,12 +484,10 @@ struct BlueCursorView: View {
             CookiePressRipple(trigger: pressCount)
                 .position(pressPoint)
 
-            // Keep speech visibly active until playback ends; pointing still uses the directional chip.
-            BlueCursorWaveformView(audioPowerLevel: companionManager.voiceState == .responding ? 0.35 : companionManager.currentAudioPowerLevel,
-                                   active: buddyIsVisibleOnThisScreen && (companionManager.voiceState == .listening
-                                       || companionManager.voiceState == .responding && buddyNavigationMode == .followingCursor))
-                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .listening
-                    || companionManager.voiceState == .responding && buddyNavigationMode == .followingCursor) ? cursorOpacity : 0)
+            // Listening owns the microphone waveform; speaking keeps Cookie's triangle.
+            BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel,
+                                   active: buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening)
+                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
@@ -546,6 +565,7 @@ struct BlueCursorView: View {
             }
             startNavigatingToElement(screenLocation: location, newPoint: true)
         }
+        .onReceive(hand.$teaching) { cue in handTeaches(cue) }
         .onReceive(hand.$visit) { visit in handOpens(visit) }
         .onReceive(hand.$act) { act in handActs(act) }
         .onReceive(companionManager.$guideStep) { step in handGuides(step) }
@@ -560,7 +580,15 @@ struct BlueCursorView: View {
             if buddyNavigationMode == .drawing && handHold == nil { returnHandToCursor() }
             return
         }
-        // Flying to point at something comes first; the hand never fights it.
+        // A new spoken mark owns the hand. An older mark cannot steal it back from
+        // a later point, and ink must never interrupt an action or a guided step.
+        guard handHold != .act, handHold != .guide, handHold != .teaching else { return }
+        if lastPenMark != pen.markID {
+            lastPenMark = pen.markID
+            if buddyNavigationMode == .navigatingToTarget || buddyNavigationMode == .pointingAtTarget {
+                finishNavigationAndResumeFollowing()
+            }
+        }
         guard buddyNavigationMode == .followingCursor || buddyNavigationMode == .drawing else { return }
         let centre = Self.centre(placingTipAt: pen.point, degrees: pen.degrees)
         handHold = nil
@@ -574,6 +602,25 @@ struct BlueCursorView: View {
             triangleRotationDegrees = pen.degrees
         }
         buddyNavigationMode = .drawing
+    }
+
+    private func handTeaches(_ cue: CookieHand.Teaching?) {
+        guard let cue, screenFrame.contains(cue.point) else {
+            if handHold == .teaching { returnHandToCursor() }
+            return
+        }
+        guard handHold != .act, handHold != .guide else { return }
+        if buddyNavigationMode == .pointingAtTarget || buddyNavigationMode == .navigatingToTarget {
+            finishNavigationAndResumeFollowing()
+        }
+        handHold = .teaching
+        buddyNavigationMode = .drawing
+        handLabel = ""
+        let tip = convertScreenPointToSwiftUICoordinates(cue.point)
+        withAnimation(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.94)) {
+            cursorPosition = Self.centre(placingTipAt: tip, degrees: -35)
+            triangleRotationDegrees = -35
+        }
     }
 
     /// A card or a scene opened on this display: the hand goes to its corner, rests while it
@@ -880,6 +927,7 @@ struct BlueCursorView: View {
     /// One hold per pointing, cancelled by whatever replaces it.
     private func startPointingAtElement(session: UUID) {
         buddyNavigationMode = .pointingAtTarget
+        print("🎯 Pointer landed on display \(Int(screenFrame.minX)),\(Int(screenFrame.minY))")
         triangleRotationDegrees = -35.0
 
         navigationBubbleText = companionManager.detectedElementBubbleText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -889,6 +937,11 @@ struct BlueCursorView: View {
         let generation = companionManager.pointGeneration
         pointingHold = Task { @MainActor in
             try? await Task.sleep(for: .seconds(3))
+            while !Task.isCancelled, self.pointingSession == session,
+                  self.companionManager.pointGeneration == generation,
+                  CookiePointerPresentation.keepsPoint(voice: self.companionManager.voiceState) {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
             guard !Task.isCancelled, self.pointingSession == session, self.buddyNavigationMode == .pointingAtTarget,
                   self.companionManager.pointGeneration == generation else { return }
             if self.companionManager.pointPresentationID == presentation {

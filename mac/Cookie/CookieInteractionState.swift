@@ -55,11 +55,16 @@ struct NotchLayout {
         CGSize(width: min(960, max(0, availableSize.width)), height: min(660, max(0, availableSize.height)))
     }
 
+    /// Reserve the menu bar and a small air gap only for the expanded home.
+    func topInset(for state: NotchState) -> CGFloat {
+        state == .home ? min(max(notchSize.height, 24) + 4, panelSize.height * 0.2) : 0
+    }
+
     func size(for state: NotchState, voiceActive: Bool, threadCount: Int) -> CGSize {
         let preferredSize: CGSize
         switch state {
         case .closed:
-            preferredSize = CGSize(width: notchSize.width + 12 + (voiceActive ? 96 : 0), height: notchSize.height)
+            preferredSize = CGSize(width: notchSize.width + 12 + (voiceActive ? 196 : 0), height: notchSize.height)
         case .peek:
             preferredSize = CGSize(width: 488, height: CookiePeekMetrics.height(header: max(notchSize.height, 32)))
         case .home:
@@ -67,6 +72,6 @@ struct NotchLayout {
         case .notice:
             preferredSize = CGSize(width: 468, height: max(notchSize.height, 32) + 104)
         }
-        return CGSize(width: min(preferredSize.width, panelSize.width), height: min(preferredSize.height, panelSize.height))
+        return CGSize(width: min(preferredSize.width, panelSize.width), height: min(preferredSize.height, max(0, panelSize.height - topInset(for: state))))
     }
 }

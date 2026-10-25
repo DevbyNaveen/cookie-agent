@@ -24,6 +24,7 @@ struct PeekLine: Equatable, Identifiable {
     let tint: Color
     let title: String
     let detail: String
+    var activityDate: Date?
     var button: String?
     var action: PeekAction = .none
     /// A live reply is in progress; tracked work alone does not set this.
@@ -62,12 +63,22 @@ enum PeekLines {
         }
         if !chatsLocked {
             for thread in threads {
-                guard let reply = thread.messages.last, reply.role == .assistant || reply.role == .failure else { continue }
-                let firstLine = reply.text.split(whereSeparator: \.isNewline).first.map(String.init) ?? reply.text
-                consider(reply.date, PeekLine(kind: .latest, symbol: reply.role == .failure ? "exclamationmark.circle" : "bubble.left",
-                                              tint: reply.role == .failure ? .orange : CK.secondary, title: firstLine,
-                                              detail: "\(thread.title) · \(ago(reply.date, now: now))", button: "Open",
-                                              action: .openThread(thread.id)))
+                guard let activity = thread.messages.last else { continue }
+                let request = thread.messages.last(where: { $0.role == .user })
+                let question = preview(request?.text ?? "")
+                let title = question.isEmpty ? (request?.attachments.first?.name ?? "Conversation update") : question
+                let detail: String
+                switch activity.role {
+                case .user: detail = "Your message · Open to continue"
+                case .failure: detail = "Couldn't finish · " + preview(activity.text)
+                case .note: detail = preview(activity.text)
+                case .assistant: detail = preview(activity.text)
+                }
+                consider(activity.date, PeekLine(kind: .latest,
+                    symbol: activity.role == .failure ? "exclamationmark.circle" : "bubble.left",
+                    tint: activity.role == .failure ? .orange : CK.secondary,
+                    title: title, detail: detail.isEmpty ? "Open conversation" : detail,
+                    activityDate: activity.date, button: "Continue", action: .openThread(thread.id)))
             }
         }
         return best?.line ?? PeekLine(kind: .latest, symbol: "tray", tint: CK.tertiary, title: "Nothing new yet",
@@ -159,8 +170,19 @@ enum PeekLines {
         return text + ". Recall what we know about them and this topic, what I promised, and what's still open. Keep it to five short lines."
     }
 
+    /// A compact readable excerpt, never a generated or invented summary.
+    static func preview(_ text: String) -> String {
+        let spoken = CookieReplyTags.split(text, streaming: true).spoken
+        return spoken
+            .replacingOccurrences(of: #"\[([^\]]+)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"(?m)^\s*(?:#{1,6}\s+|[-*•]\s+|[0-9]+[.)]\s+)"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
     static func ago(_ date: Date, now: Date) -> String {
-        now.timeIntervalSince(date) < 60 ? "just now" : date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
+        now.timeIntervalSince(date) < 60 ? "just now" : RelativeDateTimeFormatter().localizedString(for: date, relativeTo: now)
     }
 }
 
@@ -169,12 +191,13 @@ enum PeekLines {
 struct CookiePeekMetrics {
     static let statusHeight: CGFloat = 82
     static let updateHeight: CGFloat = 62
+    static let latestHeight: CGFloat = 96
     static let rowSpacing: CGFloat = 4
     static let verticalPadding: CGFloat = 6
     static let composerHeight: CGFloat = 56
 
     static func height(header: CGFloat) -> CGFloat {
-        header + statusHeight + updateHeight * 2 + rowSpacing * 2 + verticalPadding * 2 + composerHeight
+        header + statusHeight + latestHeight + updateHeight + rowSpacing * 2 + verticalPadding * 2 + composerHeight
     }
 }
 
@@ -191,6 +214,7 @@ struct CookiePeekContent: View {
     @Binding var draft: String
     var composerPhase: CookieComposerPhase = .ready
     var audioLevel: CGFloat = 0
+    var dictating = false
     /// Where the character looks while Cookie points at something on screen.
     var gaze: CGFloat? = nil
     @FocusState private var typing: Bool
@@ -299,11 +323,11 @@ struct CookiePeekContent: View {
     private var activeVoiceContent: some View {
         HStack(spacing: 9) {
             CookieVoiceMedallion(phase: composerPhase, audioLevel: audioLevel, size: 28)
-            Text(composerPhase.title)
+            Text(dictating && composerPhase == .listening ? "Dictating" : composerPhase.title)
                 .font(.system(size: 12.5, weight: .medium)).lineLimit(1)
             Spacer(minLength: 4)
             if composerPhase == .listening {
-                Text("Release to send")
+                Text(dictating ? "Release to insert" : "Release to send")
                     .font(.system(size: 10.5)).foregroundStyle(CK.secondary).lineLimit(1)
             } else if composerPhase.canStop {
                 PeekUtilityButton(symbol: "stop.fill", title: "Stop response", size: 26) { perform(.stop) }
@@ -409,7 +433,10 @@ private struct PeekUpdateRow: View {
                 .frame(width: 30, height: 34).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 8) {
-                    Text(line.label.uppercased()).font(.system(size: 8, weight: .semibold)).tracking(0.8).foregroundStyle(CK.tertiary)
+                    Text((line.kind == .latest && line.activityDate != nil ? "Recent conversation" : line.label).uppercased()).font(.system(size: 8, weight: .semibold)).tracking(0.8).foregroundStyle(CK.tertiary)
+                    if let date = line.activityDate {
+                        Text(date, style: .relative).font(.system(size: 9)).foregroundStyle(CK.tertiary).lineLimit(1)
+                    }
                     Spacer(minLength: 0)
                     if let title = line.button {
                         HStack(spacing: 4) {
@@ -419,13 +446,13 @@ private struct PeekUpdateRow: View {
                         .foregroundStyle(line.action == .connectCalendar ? CK.accent : CK.secondary)
                     }
                 }
-                Text(line.title).font(.system(size: 12, weight: .medium)).foregroundStyle(CK.text).lineLimit(1)
-                Text(line.detail).font(.system(size: 10.5)).foregroundStyle(CK.secondary).lineLimit(1)
+                Text(line.title).font(.system(size: 12, weight: .medium)).foregroundStyle(CK.text).lineLimit(line.kind == .latest ? 2 : 1)
+                Text(line.detail).font(.system(size: 10.5)).foregroundStyle(CK.secondary).lineLimit(line.kind == .latest ? 2 : 1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .multilineTextAlignment(.leading).padding(.horizontal, 13)
-        .frame(height: CookiePeekMetrics.updateHeight)
+        .frame(height: line.kind == .latest ? CookiePeekMetrics.latestHeight : CookiePeekMetrics.updateHeight)
         .background(hovering && line.action != .none ? Color.white.opacity(0.035) : .clear,
                     in: RoundedRectangle(cornerRadius: 12))
         .contentShape(RoundedRectangle(cornerRadius: 12))

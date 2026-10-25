@@ -48,7 +48,7 @@ final class CookieInteractionTests {
             for state in [NotchState.closed, .peek, .home, .notice] {
                 let size = layout.size(for: state, voiceActive: true, threadCount: 100)
                 expectAtMost(size.width, availableSize.width)
-                expectAtMost(size.height, availableSize.height)
+                expectAtMost(size.height + layout.topInset(for: state), availableSize.height)
                 expectGreater(size.width, 0)
                 expectGreater(size.height, 0)
             }
@@ -58,7 +58,7 @@ final class CookieInteractionTests {
     func testStandardDisplayKeepsExistingIslandDimensions() {
         let layout = NotchLayout(notchSize: CGSize(width: 190, height: 32), availableSize: CGSize(width: 1400, height: 850))
         expectEqual(layout.size(for: .home, voiceActive: false, threadCount: 3), CGSize(width: 928, height: 580))
-        expectEqual(layout.size(for: .peek, voiceActive: false, threadCount: 3), CGSize(width: 488, height: 314))
+        expectEqual(layout.size(for: .peek, voiceActive: false, threadCount: 3), CGSize(width: 488, height: 348))
     }
 
     func testPreviewNeverSqueezesTheConversationBelowItsMinimum() {
@@ -519,7 +519,7 @@ final class CookieInteractionTests {
         let reply = CookieThread(id: UUID(), messages: [CompanionChatMessage(role: .user, text: "hi", date: now),
                                                         CompanionChatMessage(role: .assistant, text: "Hello there\nmore", date: now.addingTimeInterval(60))],
                                  updatedAt: now)
-        expectEqual(PeekLines.latest(threads: [reply], work: work.items, meetingNotes: nil, chatsLocked: false, now: now.addingTimeInterval(120)).title, "Hello there")
+        expectEqual(PeekLines.latest(threads: [reply], work: work.items, meetingNotes: nil, chatsLocked: false, now: now.addingTimeInterval(120)).title, "hi")
         expectEqual(PeekLines.latest(threads: [reply], work: work.items, meetingNotes: nil, chatsLocked: true).title, "Drafted the proposal")
         expectEqual(PeekLines.latest(threads: [], work: [], meetingNotes: .init(minutes: 30, promises: 2), chatsLocked: false).detail, "30 min · 2 promises")
         // Now: an approval beats work in progress; idle shows counts.
@@ -637,6 +637,18 @@ final class CookieInteractionTests {
 struct CookieInteractionCheckRunner {
     static func main() {
         setbuf(stdout, nil)
+        if CommandLine.arguments.contains("--verify-live-dictation") {
+            _ = NSApplication.shared
+            var finished = false
+            Task { @MainActor in
+                await CookieLiveWritingTests.run()
+                finished = true
+            }
+            let deadline = Date().addingTimeInterval(20)
+            while !finished && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+            precondition(finished, "Live writing verification timed out")
+            return
+        }
         let checks = CookieInteractionTests()
         checks.testPassingAcrossNotchDoesNotOpenItLater()
         print("PASS testPassingAcrossNotchDoesNotOpenItLater")
@@ -704,6 +716,9 @@ struct CookieInteractionCheckRunner {
         CookieDockPresentationTests.run()
         CookiePermissionTests.run()
         CookieSpeedTests.run()
+        CookieTeachingTests.run()
+        CookieVoiceActionTests.run()
+        CookieWorkspaceTests.run()
         var setupChecksFinished = false
         Task { @MainActor in
             await checks.testScreenCaptureGivesUpAtItsDeadline()
@@ -723,6 +738,7 @@ struct CookieInteractionCheckRunner {
         if CommandLine.arguments.contains("--render") {
             checks.renderComposerStates()
             CookieNavigationPreview.render()
+            CookieWorkspaceTests.render()
             CookiePeekPresentationTests.render()
             CookieNavigationPreview.renderWork()
             CookieSetupTests.render()

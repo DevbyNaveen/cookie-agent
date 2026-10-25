@@ -7,6 +7,7 @@
 //  opens the notch. First launch opens a dedicated setup window.
 //
 
+import Darwin
 import ServiceManagement
 import SwiftUI
 
@@ -34,6 +35,8 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private let companionManager = CompanionManager()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // GUI launches redirect stdout to a file; flush diagnostics as events happen.
+        setbuf(stdout, nil)
         print("🎯 Cookie: Starting...")
         print("🎯 Cookie: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
 

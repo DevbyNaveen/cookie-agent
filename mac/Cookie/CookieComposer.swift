@@ -16,7 +16,8 @@ struct CookieComposer: View {
             finishTalking: companionManager.stopTalkingFromButton,
             stopResponse: companionManager.stopResponse,
             sendMessage: { companionManager.sendTypedMessage($0, attachments: $1, withScreen: $2) },
-            recordMeeting: { CookieRecorder.shared.start() }
+            recordMeeting: { CookieRecorder.shared.start() },
+            dictating: companionManager.isDictating
         )
     }
 }
@@ -43,7 +44,7 @@ enum CookieComposerPhase {
     }
     var subtitle: String {
         switch self {
-        case .ready: return "With your screen for context"
+        case .ready: return "Ask, learn, or get something done"
         case .listening: return "Release to send"
         case .thinking: return "Making sense of it"
         case .speaking: return "Stop whenever you like"
@@ -65,6 +66,7 @@ struct CookieComposerControl: View {
     let sendMessage: (String, [CookieAttachment], Bool) -> Void
     /// Start recording a meeting (nil hides the button).
     var recordMeeting: (() -> Void)? = nil
+    var dictating = false
 
     @FocusState private var focused: Bool
     @State private var holding = false
@@ -75,6 +77,7 @@ struct CookieComposerControl: View {
     private var hasDraft: Bool {
         !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draft.attachments.isEmpty
     }
+    private var stacked: Bool { availableWidth < 460 }
     private var expanded: Bool { focused || hasDraft || availableWidth < 460 }
     private var voiceWidth: CGFloat { expanded ? 48 : max(48, (availableWidth - 28) * 0.6) }
     private var shell: RoundedRectangle { RoundedRectangle(cornerRadius: 22, style: .continuous) }
@@ -83,11 +86,22 @@ struct CookieComposerControl: View {
         VStack(spacing: 9) {
             VStack(spacing: 8) {
                 if !draft.attachments.isEmpty { attachments }
+                if stacked {
+                    messageField.padding(.horizontal, 8).frame(minHeight: 46, alignment: .topLeading)
+                    HStack(spacing: 4) {
+                        CookieVoiceControl(phase: phase, compact: true, holding: holding, audioLevel: audioLevel,
+                                           beginHolding: beginHolding, endHolding: endHolding, dictating: dictating)
+                            .frame(width: 44, height: 44)
+                        Spacer(minLength: 8)
+                        composerActions
+                    }
+                } else {
                 HStack(alignment: .bottom, spacing: 8) {
                     CookieVoiceControl(phase: phase, compact: expanded, holding: holding, audioLevel: audioLevel,
-                                       beginHolding: beginHolding, endHolding: endHolding)
+                                       beginHolding: beginHolding, endHolding: endHolding, dictating: dictating)
                         .frame(width: voiceWidth, height: 48)
                     typingField
+                }
                 }
             }
             .padding(8)
@@ -112,6 +126,20 @@ struct CookieComposerControl: View {
 
     private var typingField: some View {
         HStack(alignment: .bottom, spacing: 3) {
+            messageField
+            composerActions
+
+        }
+        .padding(7)
+        .frame(minHeight: 48)
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 15, style: .continuous)
+            .fill(Color.black.opacity(focused ? 0.19 : 0.12)))
+        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous)
+            .strokeBorder(Color.white.opacity(focused ? 0.07 : 0.035), lineWidth: 0.5))
+    }
+
+    private var messageField: some View {
             TextField(expanded ? "Message Cookie…" : "Or type…", text: $draft.text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
@@ -136,6 +164,9 @@ struct CookieComposerControl: View {
                     return .handled
                 }
 
+    }
+
+    @ViewBuilder private var composerActions: some View {
             if let recordMeeting {
                 ComposerIconButton(symbol: "record.circle", label: "Record a meeting (no bot joins the call)", action: recordMeeting)
             }
@@ -151,14 +182,6 @@ struct CookieComposerControl: View {
                                    enabled: hasDraft && phase.canSubmit, action: send)
                     .transition(.opacity)
             }
-        }
-        .padding(7)
-        .frame(minHeight: 48)
-        .frame(maxWidth: .infinity)
-        .background(RoundedRectangle(cornerRadius: 15, style: .continuous)
-            .fill(Color.black.opacity(focused ? 0.19 : 0.12)))
-        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous)
-            .strokeBorder(Color.white.opacity(focused ? 0.07 : 0.035), lineWidth: 0.5))
     }
 
     private var attachments: some View {
@@ -194,7 +217,7 @@ struct CookieComposerControl: View {
         HStack(spacing: 5) {
             if phase == .listening {
                 Circle().fill(CK.accent).frame(width: 4, height: 4)
-                Text("Release to send")
+                Text(dictating ? "Release to insert" : "Release to send")
             } else if phase.canStop {
                 Text("\(phase.title) · you can keep typing")
             } else if expanded {
@@ -266,6 +289,7 @@ private struct CookieVoiceControl: View {
     let audioLevel: CGFloat
     let beginHolding: () -> Void
     let endHolding: () -> Void
+    var dictating = false
     @State private var hovering = false
     @FocusState private var keyboardFocused: Bool
 
@@ -278,10 +302,10 @@ private struct CookieVoiceControl: View {
                 .animation(CK.quick, value: holding)
             if !compact {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(phase.title)
+                    Text(dictating && phase == .listening ? "Dictating" : phase.title)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(CK.text)
-                    Text(phase.subtitle)
+                    Text(dictating && phase == .listening ? "Release to insert" : phase.subtitle)
                         .font(.system(size: 10.5))
                         .foregroundStyle(CK.secondary)
                 }

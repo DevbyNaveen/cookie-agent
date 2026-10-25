@@ -236,6 +236,7 @@ final class MacOperator {
     }
 
     /// What Cookie last typed, and into which element, until the person moves on.
+    var selectionDestination: CookieTextDestination?
     private(set) var lastTyped: (element: AXUIElement, draft: CookieTypedDraft)?
     /// The chat a typed draft belongs to; the manager fills it in.
     var currentThreadID: (() -> UUID?)?
@@ -397,7 +398,7 @@ final class MacOperator {
         case "press": result = press(args)
         case "set_value": result = setValue(args)
         case "type_text": result = typeText(args)
-        case "replace_selection": result = replaceSelection(args)
+        case "replace_selection": result = await replaceSelection(args)
         case "key": result = key(args)
         case "scroll": result = scroll(args)
         case "drag": result = await drag(args)
@@ -591,18 +592,15 @@ final class MacOperator {
         return ("\(how) \(text.count) characters.", false)
     }
 
-    private func replaceSelection(_ args: [String: Any]) -> (String, Bool) {
+    private func replaceSelection(_ args: [String: Any]) async -> (String, Bool) {
         let text = args["text"] as? String ?? ""
         guard !text.isEmpty, text.count <= 5_000 else { return ("Replace with between 1 and 5,000 characters.", true) }
-        guard let target = Self.focusedElement() else { return ("Nothing has keyboard focus to replace in.", true) }
-        let selected = Self.string(target, kAXSelectedTextAttribute) ?? ""
-        guard !selected.isEmpty else { return ("Nothing is selected in the front app.", true) }
-        if AXUIElementSetAttributeValue(target, kAXSelectedTextAttribute as CFString, text as CFString) != .success {
-            guard Self.canPost() else { return ("Cookie needs permission to control the keyboard and mouse (Accessibility).", true) }
-            Self.paste(text)
+        guard let target = selectionDestination, !target.selected.isEmpty else {
+            return ("No original selection is bound to this request. Ask the person to select the text and hold the talk shortcut again.", true)
         }
-        remember(typed: text, into: target)
-        return ("Replaced the selection (\(selected.count) → \(text.count) characters).", false)
+        let result = await CookieTextInsertion.shared.insert(text, into: target)
+        if result.success { remember(typed: text, into: target.element); selectionDestination = nil }
+        return (result.message, !result.success)
     }
 
     private func remember(typed text: String, into element: AXUIElement?) {
@@ -622,7 +620,8 @@ final class MacOperator {
 
     /// The text selected in the front app, for a quick fix; nothing from secure fields or blocked apps.
     static func selectedTextInFrontApp() -> (app: String, text: String)? {
-        guard AXIsProcessTrusted(), let app = NSWorkspace.shared.frontmostApplication,
+        guard AXIsProcessTrusted(), !IsSecureEventInputEnabled(), !CaptureGuard.focusedElementIsSecure(),
+              let app = NSWorkspace.shared.frontmostApplication,
               !MacSafety.blocked(bundleID: app.bundleIdentifier, category: category(app)),
               let element = focusedElement(), string(element, kAXRoleAttribute) != "AXSecureTextField",
               let text = string(element, kAXSelectedTextAttribute)?.trimmingCharacters(in: .whitespacesAndNewlines),

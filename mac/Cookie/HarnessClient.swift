@@ -205,6 +205,7 @@ final class HarnessClient {
         let onToolStarted: () -> Void
         let onStep: (String) -> Void
         let onApproval: (HarnessApproval?) -> Void
+        let workspaceThreadID: UUID?
         let continuation: CheckedContinuation<String, Error>
     }
 
@@ -232,7 +233,7 @@ final class HarnessClient {
     /// Runs one question. Throws HarnessFailure with words for the person,
     /// or CancellationError when the caller's task was cancelled.
     func run(model: String, input text: String, instructions: String, images: [HarnessRequest.Image],
-             history: [HarnessRequest.Turn],
+             history: [HarnessRequest.Turn], workspaceThreadID: UUID? = nil, backgroundProject: Bool = false,
              onText: @escaping (String) -> Void,
              onStep: @escaping (String) -> Void,
              onApproval: @escaping (HarnessApproval?) -> Void,
@@ -243,14 +244,14 @@ final class HarnessClient {
         let request = HarnessRequest.Run(
             id: "cookie-\(runCounter)", model: model, input: text, instructions: instructions,
             // open, and the Mac tools: acting needs a task the person approved.
-            tools: [CookieOpen.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieRoutineWords.tool] + MacOperator.tools,
+            tools: (backgroundProject ? [] : [CookieOpen.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieRoutineWords.tool] + MacOperator.tools) + (workspaceThreadID == nil ? [] : [CookieWorkspaceTool.tool]),
             images: images,
             history: history,
             // On: left out, so the helper uses ENKEON_API_KEY from its environment.
             enkeon: enkeonKey == nil ? false : nil
         )
         return try await start(id: request.id, line: HarnessWire.encode(request),
-                               onText: onText, onStep: onStep, onApproval: onApproval, onToolStarted: onToolStarted)
+                               onText: onText, onStep: onStep, onApproval: onApproval, onToolStarted: onToolStarted, workspaceThreadID: workspaceThreadID)
     }
 
     /// A run is coming (the talk key went down): the helper is started if it isn't, with the
@@ -285,12 +286,12 @@ final class HarnessClient {
                        onText: @escaping (String) -> Void,
                        onStep: @escaping (String) -> Void,
                        onApproval: @escaping (HarnessApproval?) -> Void,
-                       onToolStarted: @escaping () -> Void = {}) async throws -> String {
+                       onToolStarted: @escaping () -> Void = {}, workspaceThreadID: UUID? = nil) async throws -> String {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 cancel() // one run at a time: an older one still going ends here
                 active = ActiveRun(id: id, onText: onText, onToolStarted: onToolStarted, onStep: onStep,
-                                   onApproval: onApproval, continuation: continuation)
+                                   onApproval: onApproval, workspaceThreadID: workspaceThreadID, continuation: continuation)
                 if Task.isCancelled { cancel(); return }
                 if helperBusy { queued = line } else { send(line); helperBusy = true }
             }
@@ -487,6 +488,14 @@ final class HarnessClient {
             // (or the approved task covered it).
             let name = line.name ?? ""
             let args = line.args ?? [:]
+            if name == CookieWorkspaceTool.tool.name {
+                let result: (String, Bool)
+                if let thread = run.workspaceThreadID { result = CookieWorkspaceTool.perform(args, thread: thread) }
+                else { result = ("No workspace is bound to this run.", true) }
+                if !result.1 { run.onStep("Updated workspace") }
+                send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.0, is_error: result.1)))
+                return
+            }
             if MacOperator.names.contains(name) {
                 Task { @MainActor in
                     let result = await MacOperator.shared.perform(name, args)

@@ -87,7 +87,10 @@ struct CookieMarksLayer: View {
             run()
             onPen?(pen(at: CACurrentMediaTime()))
         }
-        .onChange(of: clock.now) { _, now in onPen?(pen(at: now)) }
+         .onChange(of: clock.now) { _, now in
+            if mine.contains(where: \.readingActive) { clock.extend(until: now + 1) }
+            onPen?(pen(at: now))
+        }
         .onDisappear { onPen?(nil) }
     }
 
@@ -105,6 +108,9 @@ struct CookieMarksLayer: View {
         if instant || mark.revealedAt == 0 { return 1 }
         guard now >= mark.revealedAt else { return 0 }
         if reduceMotion { return 1 }
+        if let range = mark.readRange, let position = mark.readPosition {
+            return min(1, max(0, (position.visualOffset(at: now) - Double(range.lowerBound)) / Double(max(1, range.count))))
+        }
         let start = mark.revealedAt + Self.lead
         guard now >= start else { return 0 }
         let t = min(1, (now - start) / duration(of: mark, length: length))
@@ -119,7 +125,7 @@ struct CookieMarksLayer: View {
             mark.revealedAt + Self.lead + duration(of: mark, length: cache.strokes(for: mark, local: local).reduce(0) { $0 + $1.length })
                 + Self.hold + 0.1
         }.max() ?? 0
-        clock.run(until: end)
+        clock.run(until: mine.contains(where: \.readingActive) ? max(end, CACurrentMediaTime() + 1) : end)
     }
 
     /// The hand on the mark shown most recently: travelling to its first stroke, on the pen tip
@@ -132,21 +138,21 @@ struct CookieMarksLayer: View {
         let strokes = cache.strokes(for: mark, local: local)
         let total = strokes.reduce(0) { $0 + $1.length }
         let start = mark.revealedAt + Self.lead
-        guard now <= start + duration(of: mark, length: total) + Self.hold else { return nil }
+        guard mark.readingActive || now <= start + duration(of: mark, length: total) + Self.hold else { return nil }
         guard let first = strokes.first?.pen(at: 0) else {
             // A note or a number has no stroke: the hand goes to its spot and stays a moment.
-            return spot(of: mark).map { CookiePen(point: $0, degrees: -35, travelling: now < start) }
+            return spot(of: mark).map { CookiePen(markID: mark.id, point: $0, degrees: -35, travelling: now < start) }
         }
-        if now < start { return CookiePen(point: first.point, degrees: Self.degrees(first.heading), travelling: true) }
+        if now < start { return CookiePen(markID: mark.id, point: first.point, degrees: Self.degrees(first.heading), travelling: true) }
         var reach = total * CGFloat(progress(of: mark, at: now, length: total))
         for stroke in strokes {
             if reach <= stroke.length, let tip = stroke.pen(at: reach) {
-                return CookiePen(point: tip.point, degrees: Self.degrees(tip.heading), travelling: false)
+                return CookiePen(markID: mark.id, point: tip.point, degrees: Self.degrees(tip.heading), travelling: false)
             }
             reach -= stroke.length
         }
         guard let last = strokes.last, let end = last.pen(at: last.length) else { return nil }
-        return CookiePen(point: end.point, degrees: Self.degrees(end.heading), travelling: false)
+        return CookiePen(markID: mark.id, point: end.point, degrees: Self.degrees(end.heading), travelling: false)
     }
 
     /// A heading (radians) as the pointer's turn: its tip leads the way the pen moves.
@@ -168,6 +174,7 @@ struct CookieMarksLayer: View {
 /// Where Cookie's hand is while it draws, in the overlay's own coordinates: the pen point, the
 /// pointer's turn (CookiePointer degrees, 0 = tip up), and whether it is still gliding there.
 struct CookiePen: Equatable {
+    var markID: UUID
     var point: CGPoint
     var degrees: Double
     var travelling: Bool
@@ -368,6 +375,8 @@ final class CookieInkClock: ObservableObject {
     @Published private(set) var now = CACurrentMediaTime()
     private(set) var until: Double = 0
     fileprivate weak var view: CookieInkClockView?
+
+    func extend(until end: Double) { until = max(until, end) }
 
     func run(until end: Double) {
         until = max(until, end)

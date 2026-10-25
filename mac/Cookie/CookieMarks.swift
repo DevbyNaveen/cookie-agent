@@ -122,6 +122,17 @@ struct CookieResolvedDrawing: Equatable, Identifiable {
     /// The reading pen (`CookieReadingPen`): an underline under words being read, inked as a
     /// highlighter over the seconds those words take to say. Nil for every other mark.
     var readSeconds: Double?
+    /// Exact characters in the spoken quote; no estimated time for spoken reading.
+    var readRange: Range<Int>?
+    var readPosition: CookieSpeechPosition?
+
+    var readingProgress: Double? {
+        guard let range = readRange, let position = readPosition else { return nil }
+        return min(1, max(0, Double(position.offset - range.lowerBound) / Double(max(1, range.count))))
+    }
+    // Rest at the phrase until another cue takes over; don't bounce back to the user's mouse.
+    var readingActive: Bool { readPosition.map { !$0.ended } ?? false }
+
 
     /// The same wobble every frame and every redraw: seeded by where the mark is, not by chance.
     var seed: UInt32 {

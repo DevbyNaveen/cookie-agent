@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 /// The pure parts of a fast, correct turn: timing, streaming speech, pictures, the pointer.
 @MainActor
@@ -26,7 +27,61 @@ enum CookieSpeedTests {
         check("severalPointsFollowSpeechAndStopDropsFutureCues", severalPointsFollowSpeechAndStopDropsFutureCues)
         check("pointerMotionIsIndependentOfFrameRateAndDroppedFrames", pointerMotionIsIndependentOfFrameRateAndDroppedFrames)
         check("cacheUsageSurvivesTheHelperProtocol", cacheUsageSurvivesTheHelperProtocol)
+        check("speakingKeepsTheTriangleAndItsTarget", speakingKeepsTheTriangleAndItsTarget)
+        check("focusOutlinesWithoutDimmingTheScreen", focusOutlinesWithoutDimmingTheScreen)
+        check("readingFollowsHeardCharactersAndFreezesOnStop", readingFollowsHeardCharactersAndFreezesOnStop)
+        check("wrappedQuotesKeepTheirCharacterRanges", wrappedQuotesKeepTheirCharacterRanges)
+        check("ocrToleranceRejectsShortLabelsAndChangedNumbers", ocrToleranceRejectsShortLabelsAndChangedNumbers)
         print("\(passed) speed checks passed.")
+    }
+
+    static func ocrToleranceRejectsShortLabelsAndChangedNumbers() {
+        precondition(CookieReadingPen.toleratesOCR("Instructions to use points and undeplines", expected: "Instructions to use points and underlines"))
+        precondition(CookieReadingPen.toleratesOCR("No sc reen dimming", expected: "No screen dimming"))
+        precondition(!CookieReadingPen.toleratesOCR("Same", expected: "Save"))
+        precondition(!CookieReadingPen.toleratesOCR("Credits left: 19,902", expected: "Credits left: 18,902"))
+        precondition(!CookieReadingPen.toleratesOCR("The tab title above", expected: "No screen dimming"))
+    }
+
+    static func readingFollowsHeardCharactersAndFreezesOnStop() {
+        let position = CookieSpeechPosition()
+        position.move(to: 10, at: 1)
+        precondition(position.visualOffset(at: 1) == 0)
+        precondition(position.visualOffset(at: 1.1) > 8 && position.visualOffset(at: 1.1) < 10)
+        precondition(position.visualOffset(at: 2) <= 10, "ink cannot predict unheard characters")
+        let before = position.visualOffset(at: 1.1)
+        position.move(to: 20, at: 1.1)
+        precondition(abs(position.visualOffset(at: 1.1) - before) < 0.001, "retarget without a jump")
+        let clock = CookieSpeechClock()
+        var mark = CookieResolvedDrawing(geometry: .underline(from: .zero, to: CGPoint(x: 100, y: 0)), text: "", displayFrame: .zero)
+        mark.readRange = 10..<30
+        mark.readPosition = clock.position // may be scheduled before playback starts
+        clock.begin(text: String(repeating: "a", count: 50))
+        precondition(mark.readingProgress == 0 && mark.readingActive)
+        clock.advance(toOffset: 20, progress: 0.4)
+        precondition(mark.readingProgress == 0.5)
+        clock.advance(toOffset: 20, progress: 0.4) // audio paused: ink must not run ahead
+        precondition(mark.readingProgress == 0.5)
+        clock.stop()
+        precondition(mark.readingProgress == 0.5 && !mark.readingActive)
+        clock.begin(text: "a different reply")
+        clock.finish()
+        precondition(mark.readingProgress == 0.5, "another reply must not finish old ink")
+        mark.readPosition = clock.position
+        clock.begin(text: String(repeating: "b", count: 30))
+        clock.finish()
+        precondition(mark.readingProgress == 1 && !mark.readingActive)
+        precondition(CookieReadingPen.spokenRange(of: "No screen dimming", in: "First: No screen dimming means…", near: 7) == 7..<24)
+        precondition(CookieReadingPen.spokenRange(of: "No screen dimming", in: "This means no darkening. No screen dimming", near: 0) == nil)
+    }
+
+    static func wrappedQuotesKeepTheirCharacterRanges() {
+        // A narrow word on a very wide rendered line must not steal the next line's timing.
+        let lines = [CookieReadingPen.Line(rect: CGRect(x: 10, y: 50, width: 400, height: 15), characters: 0..<1),
+                     CookieReadingPen.Line(rect: CGRect(x: 10, y: 30, width: 30, height: 15), characters: 2..<12)]
+        let marks = CookieReadingPen.marks(lines: lines, phrase: "I understand", offset: 20, spokenLength: 32)
+        precondition(marks.map(\.offset) == [20, 22])
+        precondition(marks.map(\.readRange) == [20..<21, 22..<32])
     }
 
     static func aTurnLogsEveryStageItReachedAndNothingElse() {
@@ -290,6 +345,33 @@ enum CookieSpeedTests {
         precondition(event.usage?.input_tokens == 30 && event.usage?.output_tokens == 8)
         precondition(event.usage?.cache_read_tokens == 900 && event.usage?.cache_write_tokens == 50)
         precondition(event.text == nil)
+    }
+
+    static func speakingKeepsTheTriangleAndItsTarget() {
+        for mode: BuddyNavigationMode in [.followingCursor, .navigatingToTarget, .pointingAtTarget, .drawing] {
+            precondition(CookiePointerPresentation.showsTriangle(voice: .responding, navigation: mode))
+            precondition(!CookiePointerPresentation.showsTriangle(voice: .listening, navigation: mode))
+        }
+        precondition(CookiePointerPresentation.keepsPoint(voice: .responding))
+        precondition(!CookiePointerPresentation.keepsPoint(voice: .idle))
+        precondition(!CookiePointerPresentation.keepsPoint(voice: .listening))
+        precondition(!CookiePointerPresentation.showsTriangle(voice: .processing, navigation: .followingCursor))
+    }
+
+    static func focusOutlinesWithoutDimmingTheScreen() {
+        let screen = CGRect(x: 0, y: 0, width: 240, height: 160)
+        let focus = CookieSpotlight(rect: CGRect(x: 70, y: 50, width: 100, height: 60), displayFrame: screen)
+        let renderer = ImageRenderer(content: CookieSpotlightLayer(spotlight: focus, screenFrame: screen, typing: false))
+        renderer.scale = 1
+        guard let image = renderer.cgImage else { preconditionFailure("focus must render") }
+        let bitmap = NSBitmapImageRep(cgImage: image)
+        precondition((bitmap.colorAt(x: 10, y: 10)?.alphaComponent ?? 1) < 0.01, "outside focus must be transparent")
+        precondition((bitmap.colorAt(x: 120, y: 80)?.alphaComponent ?? 1) < 0.01, "text inside focus must be transparent")
+        var outlinePixels = 0
+        for y in 0..<160 { for x in 0..<240 {
+            if (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5 { outlinePixels += 1 }
+        } }
+        precondition(outlinePixels > 100 && outlinePixels < 2000, "only the region border should be painted")
     }
 
 }

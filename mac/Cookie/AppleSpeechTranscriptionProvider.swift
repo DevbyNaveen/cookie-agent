@@ -44,6 +44,7 @@ final class AppleSpeechTranscriptionProvider: BuddyTranscriptionProvider {
 
         return try AppleSpeechTranscriptionSession(
             speechRecognizer: speechRecognizer,
+            keyterms: keyterms,
             onTranscriptUpdate: onTranscriptUpdate,
             onFinalTranscriptReady: onFinalTranscriptReady,
             onError: onError
@@ -81,6 +82,7 @@ private final class AppleSpeechTranscriptionSession: NSObject, BuddyStreamingTra
 
     init(
         speechRecognizer: SFSpeechRecognizer,
+        keyterms: [String],
         onTranscriptUpdate: @escaping (String) -> Void,
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
@@ -95,6 +97,7 @@ private final class AppleSpeechTranscriptionSession: NSObject, BuddyStreamingTra
         recognitionRequest.shouldReportPartialResults = true
         recognitionRequest.taskHint = .dictation
         recognitionRequest.addsPunctuation = true
+        recognitionRequest.contextualStrings = Array(keyterms.prefix(100))
 
         // Your voice never leaves the Mac: no on-device model, no listening.
         guard speechRecognizer.supportsOnDeviceRecognition else {

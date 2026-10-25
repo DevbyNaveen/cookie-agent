@@ -16,7 +16,8 @@ enum CookieFeatureTests {
         testTheFaceSleepsAndLooksWhereItPoints()
         testMarksAreReadFromTheReplyAndLandOnTheDisplay()
         testWordsOnTheOverlayStayWholeOnTheDisplay()
-        print("9 feature checks passed.")
+        testTheNotchSaysWhatCookieIsDoing()
+        print("10 feature checks passed.")
     }
 
     private static func testWordsOnTheOverlayStayWholeOnTheDisplay() {
@@ -120,8 +121,8 @@ enum CookieFeatureTests {
             .key(app: "Mail", combo: "cmd+shift+d"),
         ]
         let markdown = CookieSkillWriter.markdown(name: "Send the weekly report", steps: steps, taughtOn: Date(timeIntervalSince1970: 0))
-        precondition(markdown.hasPrefix("---\nname: taught-send-the-weekly-report\ndescription: Send the weekly report — taught by the person"))
-        precondition(markdown.contains("4 steps in Mail, 1Password."))
+        precondition(markdown.hasPrefix("---\nname: taught-send-the-weekly-report\ndescription: \"Send the weekly report — taught on"))
+        precondition(markdown.contains("4 steps in Mail, 1Password"))
         precondition(markdown.contains("1. In Mail: press the button \"New Message\" (find it with look)."))
         precondition(markdown.contains("2. In Mail: type \"anna@northwind.example\" into \"To:\""))
         precondition(markdown.contains("3. In 1Password: the person typed something private here; ask them to do this step themselves."))
@@ -145,6 +146,22 @@ enum CookieFeatureTests {
         // A day later it's gone; the newest 300 stay.
         memory.add(ScreenMemoryEntry(date: now.addingTimeInterval(-25 * 3600), app: "Notes", text: "old words"))
         precondition(memory.recall("old words", now: now).isEmpty)
+    }
+
+    private static func testTheNotchSaysWhatCookieIsDoing() {
+        func word(_ state: CompanionVoiceState, _ step: String?, _ waited: TimeInterval = 0) -> String {
+            LiveStatus(voiceState: state, step: step, waited: waited).word
+        }
+        precondition(word(.listening, nil) == "Listening" && word(.responding, nil) == "Speaking")
+        precondition(word(.processing, "Looking at your screen") == "Looking")
+        precondition(word(.processing, "Searching the web") == "Searching" && word(.processing, "Reading a page") == "Reading")
+        precondition(word(.processing, "Checking a quote") == "Checking" && word(.processing, "Using calendar") == "Working")
+        precondition(word(.processing, "Thinking") == "Thinking" && word(.processing, nil, LiveStatus.harderAfter) == "Thinking harder")
+        // Every word fits its side of the notch: the narrowest live width leaves (196 + 12) / 2 pt a side.
+        for w in ["Listening", "Speaking", "Looking", "Searching", "Reading", "Checking", "Writing", "Working", "Thinking harder"] {
+            let width = (w as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold)]).width
+            precondition(width + 13 < 104, "\(w) is \(width) pt")
+        }
     }
 
     private static func testTheFaceSleepsAndLooksWhereItPoints() {

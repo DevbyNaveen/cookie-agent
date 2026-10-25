@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import QuartzCore
 
 /// The one clock both voices feed: ElevenLabs from its per-character start
 /// times (streamed with each audio chunk) against the audio player's position,
@@ -59,6 +60,9 @@ final class CookieSpeechClock {
     /// How much of the reply has been heard, 0...1.
     private(set) var progress = 0.0
 
+    /// A retained position lets ink finish without jumping back when the clock resets.
+    private(set) var position = CookieSpeechPosition()
+
     private var waiting: [Waiting] = []
     private var nextID = 0
 
@@ -99,6 +103,7 @@ final class CookieSpeechClock {
         self.progress = max(self.progress, min(1, max(0, progress)))
         guard offset > spokenOffset else { return }
         spokenOffset = offset
+        position.move(to: offset, at: CACurrentMediaTime())
         runWaiting(through: offset)
     }
 
@@ -107,12 +112,15 @@ final class CookieSpeechClock {
         guard isSpeaking else { return }
         progress = 1
         spokenOffset = max(spokenOffset, text.utf16.count)
+        position.move(to: spokenOffset, at: CACurrentMediaTime())
         runWaiting(through: .max)
         stop()
     }
 
     /// Stopped, interrupted or done: nothing waiting runs.
     func stop() {
+        position.ended = true
+        position = CookieSpeechPosition()
         waiting = []
         isSpeaking = false
         text = ""
@@ -128,4 +136,25 @@ final class CookieSpeechClock {
             due.action()
         }
     }
+}
+
+/// Read on the main actor by the overlay's display link; one instance per reply.
+final class CookieSpeechPosition: Equatable {
+    private(set) var offset = 0
+    private var displayStart = 0.0
+    private var changedAt = 0.0
+    var ended = false
+
+    func move(to offset: Int, at time: Double) {
+        displayStart = visualOffset(at: time)
+        changedAt = time
+        self.offset = max(self.offset, offset)
+    }
+
+    /// A 45 ms settling constant smooths character/word callbacks without predicting unheard text.
+    func visualOffset(at time: Double) -> Double {
+        if ended { return Double(offset) }
+        return Double(offset) + (displayStart - Double(offset)) * exp(-max(0, time - changedAt) / 0.045)
+    }
+    static func == (lhs: CookieSpeechPosition, rhs: CookieSpeechPosition) -> Bool { lhs === rhs }
 }

@@ -49,7 +49,11 @@ struct CookiePointPatch {
                             y: (capture.displayFrame.maxY - area.maxY) * scaleY,
                             width: area.width * scaleX, height: area.height * scaleY).integral
         guard let crop = source.cropping(to: pixels), let samples = Self.sample(crop) else { return nil }
-        self.area = area
+        // Match the integral source crop exactly; otherwise model resizing shifts the
+        // reference by a fraction of a pixel compared with a fresh Retina capture.
+        self.area = CGRect(x: capture.displayFrame.minX + pixels.minX / scaleX,
+                           y: capture.displayFrame.maxY - pixels.maxY / scaleY,
+                           width: pixels.width / scaleX, height: pixels.height / scaleY)
         self.image = crop
         self.samples = samples
     }
@@ -76,6 +80,18 @@ struct CookiePointPatch {
         let differences = zip(reference, current).map { abs(Int($0) - Int($1)) }
         return differences.reduce(0, +) < reference.count * 10
             && differences.filter { $0 > 32 }.count < reference.count / 12
+    }
+
+    func relocated(near point: CGPoint, display: CGRect) async -> CGPoint? {
+        guard !Task.isCancelled, let lines = try? await CookieVisionText.lines(in: image),
+              let line = lines.filter({ $0.text.count >= 8 }).min(by: { abs($0.box.midY - 0.5) < abs($1.box.midY - 0.5) }),
+              let found = await CookiePointTarget.onScreen(point, label: line.text, display: display) else { return nil }
+        let original = CGPoint(x: area.minX + line.box.midX * area.width, y: area.minY + line.box.midY * area.height)
+        let shift = CGVector(dx: found.x - original.x, dy: found.y - original.y)
+        var candidate = self
+        candidate.area = area.offsetBy(dx: shift.dx, dy: shift.dy)
+        guard !Task.isCancelled, display.contains(candidate.area), await candidate.isUnchanged() else { return nil }
+        return CGPoint(x: point.x + shift.dx, y: point.y + shift.dy)
     }
 
     func isUnchanged() async -> Bool {
@@ -109,6 +125,12 @@ enum CookiePointTarget {
         if let patch, await patch.isUnchanged() {
             guard !Task.isCancelled else { return .lost }
             return .found(point, element: nil, how: "the screenshot patch is unchanged")
+        }
+        // A descriptive label cannot relocate text. Recover an actual line from the
+        // model's picture before falling back to the label, including on the FIRST point.
+        if let patch, let relocated = await patch.relocated(near: point, display: display) {
+            guard !Task.isCancelled else { return .lost }
+            return .found(relocated, element: nil, how: "relocated text from the screenshot patch")
         }
         guard let label = label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty,
               label.lowercased() != "none" else { return patch == nil ? .unverified(point) : .lost }
