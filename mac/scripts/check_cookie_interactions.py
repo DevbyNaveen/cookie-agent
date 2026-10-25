@@ -12,9 +12,12 @@ source_files = sorted(
     if source.name != "CookieApp.swift"
 )
 executable = output_directory / "cookie-interaction-checks"
+# The same SDK build.sh picks (scripts/sdk.sh says why); empty means Xcode's default.
+sdk = subprocess.run([str(project_directory / "scripts" / "sdk.sh"), "app"], check=True, capture_output=True, text=True).stdout.strip()
+architecture = subprocess.run(["uname", "-m"], check=True, capture_output=True, text=True).stdout.strip()
 subprocess.run([
-    "swiftc", "-sdk", "/Library/Developer/CommandLineTools/SDKs/MacOSX15.5.sdk",
-    "-target", "arm64-apple-macosx15.0", "-swift-version", "5",
+    "swiftc", *(["-sdk", sdk] if sdk else []),
+    "-target", f"{architecture}-apple-macosx15.0", "-swift-version", "5",
     "-module-cache-path", str(output_directory / "module-cache"),
     *map(str, source_files),
     *map(str, sorted((project_directory / "Tests" / "CookieInteractionTests").glob("*.swift"))),

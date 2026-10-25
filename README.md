@@ -107,7 +107,14 @@ names it.
 - **Hide from screen sharing.** One switch asks macOS to leave Cookie's
   windows out of other apps' screen shares, wherever they honour it.
 
-Build it from [`mac/`](mac/).
+Build it from [`mac/`](mac/): `cd mac && ./build.sh`.
+
+## Which one?
+
+**On a Mac**, use Cookie for Mac: it is everything below, plus your voice and
+your screen. **On Linux or a server**, use `cookie page`
+in your browser or `cookie local` in a terminal. It is the same Cookie either
+way; you only need one.
 
 ## Start in a minute
 
