@@ -15,6 +15,13 @@ import Foundation
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
     let cancellationPublisher = PassthroughSubject<Void, Never>()
+    /// ⌃⌘ turned out to be the start of a Mac shortcut (⌃⌘Q, ⌃⌘F, ⌃⌘Space…) after dictation began:
+    /// drop what was heard, type nothing.
+    let dictationAbortPublisher = PassthroughSubject<Void, Never>()
+    /// ⌃⌘ is also how a dozen Mac shortcuts begin, so dictation starts only once the two keys
+    /// have been held this long with no other key; a key inside the window makes it a shortcut.
+    static let dictationArmDelay: TimeInterval = 0.2
+    private var dictationArm: Timer?
     private var awaitsShortcutRelease = false
     private(set) var isDictationShortcut = false
     static func dictationHeld(_ raw: UInt64) -> Bool {
@@ -108,6 +115,7 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
     func stop() {
         if isShortcutCurrentlyPressed { cancellationPublisher.send(()) }
+        disarmDictation()
         setPressed(false)
         hoverShortcutPublisher.send(false)
         awaitsShortcutRelease = false
@@ -124,8 +132,26 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     }
 
     func cancelUntilRelease() {
-        awaitsShortcutRelease = awaitsShortcutRelease || isShortcutCurrentlyPressed
+        awaitsShortcutRelease = awaitsShortcutRelease || isShortcutCurrentlyPressed || dictationArm != nil
+        disarmDictation()
         setPressed(false)
+    }
+
+    /// The arming window passed: ⌃⌘ are still held (read from the keys unless a check says) and no
+    /// other key came, so this is dictation.
+    func confirmDictation(held: Bool? = nil) {
+        guard dictationArm != nil else { return }
+        disarmDictation()
+        guard !isShortcutCurrentlyPressed, !awaitsShortcutRelease,
+              held ?? Self.dictationHeld(CGEventSource.flagsState(.combinedSessionState).rawValue) else { return }
+        isDictationShortcut = true
+        setPressed(true)
+        shortcutTransitionPublisher.send(.pressed)
+    }
+
+    private func disarmDictation() {
+        dictationArm?.invalidate()
+        dictationArm = nil
     }
 
     /// Someone else saw the keys let go (circle select's own check): end the
@@ -182,17 +208,34 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             }
             return Unmanaged.passUnretained(event)
         }
+        if dictationArm != nil {
+            if eventType == .keyDown {
+                // ⌃⌘ plus a key: a Mac shortcut. Nothing started, and nothing does until both are up.
+                disarmDictation()
+                awaitsShortcutRelease = true
+            } else if !Self.dictationHeld(event.flags.rawValue) {
+                disarmDictation()
+            }
+            return Unmanaged.passUnretained(event)
+        }
         if isShortcutCurrentlyPressed && isDictationShortcut {
-            if !Self.dictationHeld(event.flags.rawValue) {
+            if eventType == .keyDown {
+                // A slow shortcut, after dictation had started: it was never meant to be dictated.
+                print("🎙️ Dictation: a shortcut key came while ⌃⌘ were held; nothing typed")
+                setPressed(false)
+                awaitsShortcutRelease = true
+                dictationAbortPublisher.send(())
+            } else if !Self.dictationHeld(event.flags.rawValue) {
                 setPressed(false)
                 shortcutTransitionPublisher.send(.released)
             }
             return Unmanaged.passUnretained(event)
         }
         if !isShortcutCurrentlyPressed && eventType == .flagsChanged && Self.dictationHeld(event.flags.rawValue) {
-            isDictationShortcut = true
-            setPressed(true)
-            shortcutTransitionPublisher.send(.pressed)
+            // The tap's run loop is the main one, so the timer fires on the main thread.
+            let arm = Timer(timeInterval: Self.dictationArmDelay, repeats: false) { [weak self] _ in self?.confirmDictation() }
+            dictationArm = arm
+            RunLoop.main.add(arm, forMode: .common)
             return Unmanaged.passUnretained(event)
         }
         let shortcutTransition = BuddyPushToTalkShortcut.shortcutTransition(

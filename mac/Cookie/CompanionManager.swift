@@ -348,6 +348,7 @@ final class CompanionManager: ObservableObject {
     private var regionFallbackTask: Task<Void, Never>?
     private var voiceInteractionID = UUID()
     private var cancellationCancellable: AnyCancellable?
+    private var dictationAbortCancellable: AnyCancellable?
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
@@ -672,6 +673,9 @@ final class CompanionManager: ObservableObject {
         cancellationCancellable = globalPushToTalkShortcutMonitor.cancellationPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.cancelCurrentInteraction() }
+        dictationAbortCancellable = globalPushToTalkShortcutMonitor.dictationAbortPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.abandonDictation() }
         shortcutTransitionCancellable = globalPushToTalkShortcutMonitor
             .shortcutTransitionPublisher
             .receive(on: DispatchQueue.main)
@@ -720,6 +724,7 @@ final class CompanionManager: ObservableObject {
             let dictationTarget = textDestinationAtPress
             let pasteTarget = dictating && dictationTarget == nil ? CookiePasteDestination.capture() : nil
             if dictating, CaptureGuard.focusedElementIsSecure() || CaptureGuard.refusal() != nil {
+                isDictating = false
                 voiceState = .idle
                 CookieNotifications.shared.post(.reply, threadID: nil, title: "Dictation unavailable here", body: "Choose a non-private text field before dictating.", panelOpen: false)
                 return
@@ -1035,6 +1040,18 @@ final class CompanionManager: ObservableObject {
     }
 
     /// Escape/Stop releases input first; late audio, captures and transcripts cannot restart the turn.
+    /// ⌃⌘ dictation that turned into a Mac shortcut: forget what was heard so nothing is typed.
+    private func abandonDictation() {
+        guard isDictating else { return }
+        voiceInteractionID = UUID()
+        pendingKeyboardShortcutStartTask?.cancel()
+        pendingKeyboardShortcutStartTask = nil
+        buddyDictationManager.cancelCurrentDictation(preserveDraftText: false)
+        isDictating = false
+        voiceState = .idle
+        scheduleTransientHideIfNeeded()
+    }
+
     func cancelCurrentInteraction() {
         guard voiceState != .idle || currentResponseTask != nil || elevenLabsTTSClient.isActive
             || buddyDictationManager.isDictationInProgress || pendingKeyboardShortcutStartTask != nil
@@ -1208,6 +1225,11 @@ final class CompanionManager: ObservableObject {
     /// person talked, plays the response aloud. The cursor stays in the spinner/processing state until
     /// TTS audio begins playing. The response may include a [POINT:x,y:label]
     /// tag which triggers the buddy to fly to that element on screen.
+    private static func isTerminal(pid: pid_t, element: AXUIElement) -> Bool {
+        CookieTeach.isTerminal(bundleID: NSRunningApplication(processIdentifier: pid)?.bundleIdentifier,
+                               field: [MacOperator.label(element), MacOperator.string(element, kAXRoleDescriptionAttribute) ?? ""])
+    }
+
     private func insertDictation(_ transcript: String, into target: CookieTextDestination?, pasteTarget: CookiePasteDestination?, interactionID: UUID) {
         currentResponseTask?.cancel()
         selectionAtPress = nil
@@ -1223,9 +1245,11 @@ final class CompanionManager: ObservableObject {
             if CookieDictationText.isUndo(transcript) {
                 result = await CookieTextInsertion.shared.undo()
             } else if let target {
-                result = await CookieTextInsertion.shared.insert(CookieDictationText.clean(transcript), into: target)
+                let terminal = Self.isTerminal(pid: target.pid, element: target.element)
+                result = await CookieTextInsertion.shared.insert(CookieDictationText.clean(transcript, terminal: terminal), into: target)
             } else if let pasteTarget {
-                result = await CookieTextInsertion.shared.insert(CookieDictationText.clean(transcript), into: pasteTarget)
+                let terminal = Self.isTerminal(pid: pasteTarget.pid, element: pasteTarget.element)
+                result = await CookieTextInsertion.shared.insert(CookieDictationText.clean(transcript, terminal: terminal), into: pasteTarget)
             } else {
                 result = ("This field doesn't expose an editable text range. Your dictation is kept here to copy.", false)
             }
@@ -1411,7 +1435,9 @@ final class CompanionManager: ObservableObject {
                 }
 
                 let selection = selectedText
-                MacOperator.shared.selectionDestination = requestMode == .edit ? editTarget : nil
+                // Bound whenever something was selected: whether to change it is the model's call (and
+                // the person's, on the approval card), not a keyword list's.
+                MacOperator.shared.selectionDestination = selection != nil ? editTarget : nil
                 let teachingContext = [cardPresenter.teachingContext, scenePresenter.teachingContext].compactMap { $0 }.joined(separator: "\n")
                 let input = Self.promptText(transcript, attachments: attachments)
                     + CookieWorkspaceStore.shared.context(threadID)

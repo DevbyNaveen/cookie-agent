@@ -196,9 +196,13 @@ final class CookieTeach: ObservableObject {
             }
             let copy = event.copy()
             let timestamp = event.timestamp
+            // Read at the keystroke, not when the main thread gets to it: by then a password's
+            // Tab may already have moved focus to an ordinary field.
+            let secure = type == .keyDown && IsSecureEventInputEnabled()
+            let pid = pid_t(event.getIntegerValueField(.eventTargetUnixProcessID))
             Task { @MainActor in
                 guard timestamp >= teach.startedTimestamp else { return }
-                teach.handle(type: type, event: copy ?? event)
+                teach.handle(type: type, event: copy ?? event, secure: secure, pid: pid)
             }
             return Unmanaged.passUnretained(event)
         }
@@ -257,13 +261,26 @@ final class CookieTeach: ObservableObject {
         if let reason { CookieNotifications.shared.post(.reply, threadID: nil, title: "Teaching stopped", body: reason, panelOpen: false) }
     }
 
-    private func handle(type: CGEventType, event: CGEvent) {
+    /// Terminals take passwords (sudo, ssh) in ordinary text, with no secure field and usually no
+    /// secure input, so nothing typed in one is recorded; its keys (Return, shortcuts) still are.
+    static let terminalBundleIDs: Set<String> = [
+        "com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "net.kovidgoyal.kitty",
+        "org.alacritty", "com.mitchellh.ghostty", "co.zeit.hyper", "com.github.wez.wezterm", "dev.commandline.waveterm",
+    ]
+
+    /// A terminal app, or a terminal inside another app (an editor's panel names itself "Terminal").
+    static func isTerminal(bundleID: String?, field: [String]) -> Bool {
+        if let bundleID, terminalBundleIDs.contains(bundleID) { return true }
+        return field.contains { $0.range(of: "terminal", options: .caseInsensitive) != nil }
+    }
+
+    private func handle(type: CGEventType, event: CGEvent, secure: Bool, pid: pid_t) {
         guard isTeaching, !isPaused else { return }
         if steps.count >= 199 || Date().timeIntervalSince(startedAt) > 900 {
             stop()
             return
         }
-        let app = NSWorkspace.shared.frontmostApplication
+        let app = (pid > 0 ? NSRunningApplication(processIdentifier: pid) : nil) ?? NSWorkspace.shared.frontmostApplication
         if app?.bundleIdentifier == Bundle.main.bundleIdentifier { return }
         let appName = app?.localizedName ?? "the app"
         if MacSafety.blocked(bundleID: app?.bundleIdentifier, category: app.flatMap(MacOperator.category)) { return }
@@ -298,7 +315,8 @@ final class CookieTeach: ObservableObject {
                 return
             }
             let focused = MacOperator.focusedElement()
-            if focused == nil || IsSecureEventInputEnabled() || CaptureGuard.focusedElementIsSecure() {
+            if focused == nil || secure || CaptureGuard.focusedElementIsSecure()
+                || Self.isTerminal(bundleID: app?.bundleIdentifier, field: focused.map { [MacOperator.label($0), MacOperator.string($0, kAXRoleDescriptionAttribute) ?? ""] } ?? []) {
                 flushTyping()
                 if steps.last != .typedSomethingPrivate(app: appName) { steps.append(.typedSomethingPrivate(app: appName)) }
                 return

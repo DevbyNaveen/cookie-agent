@@ -79,21 +79,29 @@ enum CookieWorkspaceTests {
     static func testHTMLPreviewIsolation() {
         var content = CookieArtifact.Content()
         content.body = """
-        <h1 id="heading">Preview works</h1><button id="test" onclick="parent.postMessage({selection:'clicked'},'*')">Click</button>
-        <script>addEventListener('DOMContentLoaded',()=>{document.getElementById('test').click();fetch('https://example.invalid/blocked').then(()=>parent.postMessage({issue:'NETWORK ESCAPED'},'*')).catch(()=>parent.postMessage({selection:'network-blocked'},'*'));});</script>
+        <h1 id="heading">Preview works</h1><button id="test" onclick="top.postMessage({selection:'forged'},'*');top.postMessage({issue:'clicked'},'*')">Click</button>
+        <script>window.parent={postMessage(){}};addEventListener('DOMContentLoaded',()=>{document.getElementById('test').click();fetch('https://example.invalid/blocked').then(()=>top.postMessage({issue:'NETWORK ESCAPED'},'*')).catch(()=>top.postMessage({issue:'network-blocked'},'*'));});</script>
         """
         let artifact = CookieArtifact(id: "html-test", threadID: UUID(), title: "Test", kind: .html, revisions: [.init(summary: "Test", content: content)])
-        var clicked = false, blocked = false, escaped = false
+        var clicked = false, blocked = false, escaped = false, forged = false
         let view = CookieWorkspaceWeb(artifact: artifact, scrollY: 0, focus: nil,
-            onSelection: { clicked = clicked || $0 == "clicked"; blocked = blocked || $0 == "network-blocked" },
-            onScroll: { _ in }, onIssue: { print("HTML fixture issue: " + $0); escaped = escaped || $0 == "NETWORK ESCAPED" })
+            onSelection: { _ in forged = true },
+            onScroll: { _ in }, onIssue: { clicked = clicked || $0 == "clicked"; blocked = blocked || $0 == "network-blocked"; escaped = escaped || $0 == "NETWORK ESCAPED" })
         let hosting = NSHostingView(rootView: view.frame(width: 500, height: 300))
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 500, height: 300), styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = hosting; hosting.layoutSubtreeIfNeeded()
         let deadline = Date().addingTimeInterval(12)
         while !(clicked && blocked) && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
         window.close()
         precondition(clicked && blocked && !escaped, "HTML must execute local interactions but block network access")
+        precondition(!forged, "a selection without a real click must never reach the model")
+        var gate = CookieClickGate()
+        precondition(!gate.take(now: 5), "no click, no selection")
+        gate.click(at: 10)
+        precondition(gate.take(now: 10.2) && !gate.take(now: 10.3), "one click, one selection")
+        gate.click(at: 20)
+        precondition(!gate.take(now: 21.5), "a stale click doesn't count")
         print("Workspace HTML interaction and network-isolation check passed.")
     }
 

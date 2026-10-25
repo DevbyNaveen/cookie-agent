@@ -8,7 +8,10 @@ enum CookieRequestMode: String {
     static func choose(_ text: String, selection: Bool, visual: Bool) -> Self {
         let text = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         func contains(_ words: [String]) -> Bool { words.contains { text.contains($0) } }
-        if selection && contains(["shorter", "longer", "rewrite", "translate", "grammar", "friendlier", "formal", "email", "bullet", "summarize", "summarise", "fix this", "make this"]) { return .edit }
+        // Only words that ask for the selection to change. Asking about it ("summarize this", "who sent
+        // this email") is a question; the selection stays bound either way and the model decides.
+        if selection && contains(["shorter", "longer", "shorten", "rewrite", "rephrase", "reword", "translate", "grammar", "spelling", "typo",
+                                  "friendlier", "formal", "polish", "simplify", "fix this", "fix it", "make this", "make it", "turn this into", "turn it into"]) { return .edit }
         if contains(["on my screen", "this screen", "on screen", "this button", "this paragraph", "this feature", "these feature", "this list", "these items", "what's this", "what is this", "point at", "point to", "click", "open the app"]) { return .screen }
         if visual && contains(["this part", "that part", "explode", "assemble", "airflow", "rotate", "zoom", "next part", "previous part", "reset model"]) { return .lesson }
         if contains(["diagram", "3d", "teach me", "how does", "how do", "explain", "show me how"]) { return .lesson }
@@ -23,7 +26,7 @@ enum CookieRequestMode: String {
 
     var guidance: String {
         switch self {
-        case .edit: return "The user wants their captured selection edited. Use replace_selection, preserve meaning and formatting unless asked, and give one short confirmation. Do not capture the screen for a text-only edit."
+        case .edit: return "The user most likely wants their captured selection changed. If so, use replace_selection, preserve meaning and formatting unless asked, and give one short confirmation; if they are asking about it instead, answer and leave it as it is. Do not capture the screen for a text-only edit."
         case .lesson: return "Teach visually when it helps. Reuse the current visual, explain one relationship at a time, and coordinate its parts with TEACH. For a process use a diagram, not a bullet list. For an app tutorial request a screen look if required."
         case .work: return "Work quietly through tools or connectors. Return concrete results with sources where available. No pointer, diagram, or screen capture unless the user asks about screen content. Never claim a connector action succeeded without its result."
         case .screen: return "Ground each point in the supplied screen. Explain versus act according to the user's request."
@@ -41,12 +44,23 @@ enum CookieDictationText {
     static func isUndo(_ text: String) -> Bool {
         ["scratch that", "undo that", "undo dictation"].contains(text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)))
     }
-    static func clean(_ text: String) -> String {
+    /// `terminal`: the destination runs what it's given, so a line break would be Return. Cookie never
+    /// sends Return; spoken line breaks become spaces there.
+    static func clean(_ text: String, terminal: Bool = false) -> String {
         var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if result.lowercased().hasPrefix("literal ") { return String(result.dropFirst(8)) }
-        // Only explicit formatting commands; never rewrite someone's wording through a model.
-        for (phrase, replacement) in [("new paragraph", "\n\n"), ("new line", "\n")] {
-            result = result.replacingOccurrences(of: "\\b" + phrase + "\\b[.,]? *", with: replacement, options: [.regularExpression, .caseInsensitive])
+        if result.lowercased().hasPrefix("literal ") { result = String(result.dropFirst(8)) } else {
+            // Only explicit formatting commands; never rewrite someone's wording through a model.
+            // A command ends the utterance or is followed by a new sentence ("…thanks new line Best,"),
+            // so "a new line of credit" stays words.
+            for (phrase, replacement) in [("new paragraph", "\n\n"), ("new line", "\n")] {
+                // Case-insensitive for the phrase only: under a global flag \p{Lu} would match lowercase too.
+                result = result.replacingOccurrences(of: "(?i:\\b" + phrase + "\\b)[.,!?]?(?:\\s*$| +(?=\\p{Lu}))", with: replacement,
+                                                     options: .regularExpression)
+            }
+        }
+        if terminal {
+            result = result.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }.joined(separator: " ")
         }
         for term in vocabulary {
             let pattern = "(?<![\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: term) + "(?![\\p{L}\\p{N}])"
