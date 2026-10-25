@@ -160,6 +160,26 @@ impl Agent {
         self
     }
 
+    /// Cookie's own notes at `path` (`notes.rs`), for an agent with no Enkeon
+    /// account: the notes ride in the instructions, and `note` / `forget_note`
+    /// keep them. With Enkeon, nothing changes: context has one place to go.
+    /// Call it after `instructions`, which replaces them.
+    pub fn notes(mut self, path: std::path::PathBuf) -> Self {
+        if self.enkeon.is_some() {
+            return self;
+        }
+        let mut more = vec![crate::notes::NOTES_INSTRUCTIONS.to_string()];
+        more.extend(crate::notes::block(&crate::notes::load(&path)));
+        for text in more {
+            if !self.instructions.is_empty() {
+                self.instructions.push_str("\n\n");
+            }
+            self.instructions.push_str(&text);
+        }
+        self.tools.extend(crate::notes::tools(path));
+        self
+    }
+
     /// How hard the model thinks; its reasoning is kept for the provider
     /// that wrote it and never shown as the answer.
     pub fn reasoning(mut self, effort: Effort) -> Self {

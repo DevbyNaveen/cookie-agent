@@ -698,6 +698,7 @@ async fn run_job(state: &Arc<State>, id: &str, conversation: &str, text: &str, l
     let mut agent = Agent::new(&opts.model)?
         .instructions(instructions)
         .tools(tools)
+        .notes(opts.home.join("NOTES.md"))
         .approver(PageApprover { state: state.clone(), run: id.to_string() })
         .trace(trace);
     if opts.ask {
@@ -705,14 +706,20 @@ async fn run_job(state: &Arc<State>, id: &str, conversation: &str, text: &str, l
     }
     let mut session = Session::open(opts.home.join("conversations").join(format!("{conversation}.jsonl"))).await?;
     let control = RunControl { cancel: live.cancel.clone(), ..RunControl::default() };
-    // Tools that are not this folder's (Enkeon's `recall` and `remember`, when
-    // a key is set) show from their events: the name, and whether it worked.
+    // Tools that are not this folder's (Enkeon's `recall` and `remember` when
+    // a key is set, else Cookie's notes) show from their events: the name, and
+    // whether it worked.
     let mut other: HashMap<String, usize> = HashMap::new();
     agent
         .run_streaming(&mut session, Message::user(text), &control, &mut |event| match event {
             Event::TextDelta(t) => live.update(|s| s.text.push_str(&t)),
             Event::ToolCallStarted { id, name } if !named.contains(&name) => {
-                let what = if name == "remember" { "Saved to your context" } else { "Your context" };
+                let what = match name.as_str() {
+                    "remember" => "Saved to your context",
+                    "note" => "Kept a note",
+                    "forget_note" => "Removed a note",
+                    _ => "Your context",
+                };
                 live.update(|s| {
                     other.insert(id, s.steps.len());
                     s.steps.push(json!({"at_ms": started.elapsed().as_millis() as u64, "tool": name, "what": what, "ok": true}));

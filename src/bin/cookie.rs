@@ -151,7 +151,9 @@ const LOCAL_HELP: &str = "cookie local [folder] — Cookie on your own machine.
 
 It answers from the folder you open it in (read only; default: this one),
 the web through your search key if you set one, and pages it reads. It can't
-send, write or delete anything.
+send, delete or change your files. Without Enkeon it keeps a few notes between
+conversations in ~/.cookie/NOTES.md (COOKIE_HOME moves it): a file you can read
+and edit, refused when full rather than trimmed. With Enkeon, context goes there.
 
   --model provider:model   which model (default: anthropic:claude-sonnet-4-6
                            when ANTHROPIC_API_KEY is set; or COOKIE_MODEL)
@@ -163,6 +165,13 @@ send, write or delete anything.
 
 Web search, from the first key set: EXA_API_KEY, TINYFISH_API_KEY (free),
 BRAVE_SEARCH_API_KEY. Without one, Cookie reads only pages you name.";
+
+/// Where Cookie keeps what it keeps on this computer: COOKIE_HOME, else ~/.cookie.
+fn cookie_home() -> Option<std::path::PathBuf> {
+    std::env::var_os("COOKIE_HOME")
+        .map(Into::into)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cookie")))
+}
 
 /// `cookie local`: the chat, with Cookie's local tools, instructions and
 /// permission, on a model picked from the environment when none is named.
@@ -213,6 +222,9 @@ async fn local_command(args: &[String]) -> Result<(), Failure> {
         format!("searching the web with {}", s.name())
     });
     let mut agent = agent.tools(local::tools(Some(root), search, ask));
+    if let Some(home) = cookie_home() {
+        agent = agent.notes(home.join("NOTES.md"));
+    }
     if ask {
         agent = agent.policy(Policy::default().confirm_data());
     }
@@ -223,7 +235,7 @@ async fn local_command(args: &[String]) -> Result<(), Failure> {
     let prompt = std::io::stdin().is_terminal();
     if prompt {
         eprintln!(
-            "Cookie, on {model}. Reading {shown} (read only), {web}. It can't send, write or delete anything.\n\
+            "Cookie, on {model}. Reading {shown} (read only), {web}. It can't send, delete or change your files.\n\
              Try: \"What does this project do?\" · \"Where do we handle refunds?\" · \"Summarise https://…\"\n\
              /exit or Ctrl-D to leave; Ctrl-C stops an answer."
         );
@@ -238,7 +250,8 @@ folder you open it in (read only; default: this one). Jobs run as in `cookie
 local`; a page address Cookie found in what it read waits for your yes on the
 page. Everything is kept in --home (default ~/.cookie): one file per job, one
 per conversation, your routines (each job runs at its hour on this computer's
-clock), and SOUL.md, your own words on how Cookie should be.
+clock), SOUL.md, your own words on how Cookie should be, and NOTES.md, the
+few notes Cookie keeps between conversations when Enkeon isn't connected.
 
   --model provider:model   the model (default: Anthropic when ANTHROPIC_API_KEY is set)
   --permission ask|full    ask before opening an address from what it read (default: ask)
@@ -285,9 +298,9 @@ async fn page_command(args: &[String]) -> Result<(), Failure> {
     };
     // A model that can't be reached is said now, not on the first job.
     Agent::new(&model).map_err(failed)?;
-    let home = match home.or_else(|| std::env::var_os("COOKIE_HOME").map(Into::into)) {
+    let home = match home.or_else(cookie_home) {
         Some(home) => home,
-        None => std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cookie")).ok_or_else(|| Failure::Usage("set --home".into()))?,
+        None => return Err(Failure::Usage("set --home".into())),
     };
     // The built page: given, or this repo's `web/out`, or `page/` beside the binary (a release
     // archive carries it there).

@@ -44,10 +44,16 @@ only asks when the answer really changes the work.
 
 ## It knows your team
 
-Cookie keeps notes: what was decided, who said what, what is still open. It
-reads them before it answers, so you never explain the same thing twice. With
-[Enkeon](https://enkeon.com), those notes are shared by your whole team and
-every AI tool you use.
+In `cookie local` and Cookie's page, Cookie keeps a few notes between
+conversations in `~/.cookie/NOTES.md`: lasting preferences, facts about your
+work, corrections. It's one small file you can read and edit. When it's full,
+a new note is refused until Cookie replaces or removes an old one, so nothing
+is dropped without you seeing it. A note never holds a secret.
+
+With [Enkeon](https://enkeon.com), Cookie keeps far more, and your whole team
+and every AI tool you use share it. A correction replaces the old fact
+everywhere, each person's private work stays theirs, and everything is backed
+up.
 
 ## Every answer shows its sources
 
@@ -146,7 +152,7 @@ for one person is here. Enkeon makes it work for a whole team.
 |---|---|
 | Cookie itself: tools, MCP servers, skills, helpers | Cookie for your whole team |
 | Cookie's page on your machine | The page for every teammate, with their own jobs |
-| `cookie local` on your folder | Your team's shared notes, across everyone and every AI tool |
+| `cookie local` on your folder, with a small notes file | Your team's shared context, across everyone and every AI tool, backed up |
 | Your own Slack bot, mailbox and MCP servers | One-click Gmail, Slack, Drive, Notion, Linear and more |
 | The approval rules and the approval card | Team roles: who can give Cookie a job, from where |
 

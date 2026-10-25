@@ -25,6 +25,7 @@ pub mod mcp;
 pub mod page;
 pub mod message;
 pub mod model_id;
+pub mod notes;
 pub mod policy;
 pub mod provider;
 pub mod providers;
