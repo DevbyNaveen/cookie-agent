@@ -1354,10 +1354,10 @@ mod tests {
     #[tokio::test]
     async fn the_cookie_profile_and_its_sources_come_from_the_harness() {
         let mut c = start(Arc::new(Scripted::new(vec![])));
-        c.send(json!({"type": "profile", "id": "p1", "options": {"team": "Honeyb", "search": true, "act": true}})).await;
+        c.send(json!({"type": "profile", "id": "p1", "options": {"team": "Northwind", "search": true, "act": true}})).await;
         let p = c.next().await;
         assert_eq!(p["type"], "profile", "{p}");
-        assert!(p["instructions"].as_str().unwrap().contains("Honeyb"));
+        assert!(p["instructions"].as_str().unwrap().contains("Northwind"));
         assert!(p["tools"].as_array().unwrap().iter().any(|t| t["name"] == "web_search"));
         c.send(json!({"type": "sources", "id": "s1", "answer": "Acme renews in March [s1].", "usable": [false, true]})).await;
         let s = c.next().await;

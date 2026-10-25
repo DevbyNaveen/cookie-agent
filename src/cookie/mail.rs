@@ -271,8 +271,8 @@ fn address_domain(addr: &str) -> &str {
 }
 
 /// A Cookie address taken apart: the team's local part and, for a reply to a
-/// draft, the draft it answers (`honeyb+d_<id>@…`), or for a reply to
-/// Cookie's questions, the run that asked them (`honeyb+q_<hex>@…` → `ck_<hex>`).
+/// draft, the draft it answers (`northwind+d_<id>@…`), or for a reply to
+/// Cookie's questions, the run that asked them (`northwind+q_<hex>@…` → `ck_<hex>`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Address {
@@ -708,7 +708,7 @@ mod tests {
     use super::*;
 
     const D: &str = "cookie.enkeon.com";
-    const SIG: &str = "\n\n—\nCookie · from Honeyb's context, by Enkeon";
+    const SIG: &str = "\n\n—\nCookie · from Northwind's context, by Enkeon";
 
     #[test]
     fn own_text_stops_at_the_quote() {
@@ -755,17 +755,17 @@ mod tests {
     #[test]
     fn thread_people_leave_cookie_out_and_dedupe() {
         let m = Mail {
-            from: "matiss@honeyb.lv".into(),
-            to: vec!["honeyb@cookie.enkeon.com".into(), "Anna@acme.com".into()],
-            cc: vec!["anna@acme.com".into(), "matiss@honeyb.lv".into(), "ops@honeyb.lv".into()],
+            from: "mara@northwind.example".into(),
+            to: vec!["northwind@cookie.enkeon.com".into(), "Anna@acme.com".into()],
+            cc: vec!["anna@acme.com".into(), "mara@northwind.example".into(), "ops@northwind.example".into()],
             ..Mail::default()
         };
-        assert_eq!(thread_people(&m, D), vec!["matiss@honeyb.lv", "anna@acme.com", "ops@honeyb.lv"]);
+        assert_eq!(thread_people(&m, D), vec!["mara@northwind.example", "anna@acme.com", "ops@northwind.example"]);
     }
 
     #[test]
     fn the_signature_names_the_team() {
-        assert_eq!(signature("Honeyb"), SIG);
+        assert_eq!(signature("Northwind"), SIG);
     }
 
     #[test]
@@ -807,12 +807,12 @@ mod tests {
     fn inputs_carry_the_job_and_the_answers() {
         assert_eq!(input_for("Brief", "m@h.lv (on your team)", "Acme", None), "Subject: Brief\nFrom: m@h.lv (on your team)\n\nAcme");
         assert_eq!(
-            input_for("Leads", "Matiss (on your team)", "Baltics", Some(("Find leads", "Which region?"))),
-            "Subject: Leads\nFrom: Matiss (on your team)\n\nThe job:\nFind leads\n\nBefore starting, you asked:\nWhich region?\n\nTheir answer:\nBaltics\n\nNow do the job."
+            input_for("Leads", "Mara (on your team)", "Baltics", Some(("Find leads", "Which region?"))),
+            "Subject: Leads\nFrom: Mara (on your team)\n\nThe job:\nFind leads\n\nBefore starting, you asked:\nWhich region?\n\nTheir answer:\nBaltics\n\nNow do the job."
         );
-        assert_eq!(from_line("slack", "", "Matiss"), "Matiss, in Slack (on your team)");
-        assert_eq!(from_line("email", "m@h.lv", "Matiss"), "m@h.lv (on your team)");
-        assert_eq!(from_line("page", "", "Matiss"), "Matiss (on your team)");
+        assert_eq!(from_line("slack", "", "Mara"), "Mara, in Slack (on your team)");
+        assert_eq!(from_line("email", "m@h.lv", "Mara"), "m@h.lv (on your team)");
+        assert_eq!(from_line("page", "", "Mara"), "Mara (on your team)");
         assert_eq!(
             context_for(&["anna@acme.com".into()], true, "quoted"),
             "People outside the team on this thread: anna@acme.com.\n\nThis Slack channel includes people outside the team.\n\nquoted"
@@ -832,38 +832,38 @@ mod tests {
     #[test]
     fn only_an_aligned_signature_proves_the_sender() {
         let d = |s: &str| vec![s.to_string()];
-        assert!(proves_from("matiss@honeyb.lv", &d("honeyb.lv")));
+        assert!(proves_from("mara@northwind.example", &d("northwind.example")));
         // Gmail-style: the provider signs for its own domain, which IS the From domain.
         assert!(proves_from("someone@gmail.com", &d("gmail.com")));
         // A mailing service signing only as itself proves nothing about the From.
-        assert!(!proves_from("matiss@honeyb.lv", &d("sendgrid.net")));
-        assert!(!proves_from("matiss@honeyb.lv", &[]));
-        assert!(!proves_from("not-an-address", &d("honeyb.lv")));
+        assert!(!proves_from("mara@northwind.example", &d("sendgrid.net")));
+        assert!(!proves_from("mara@northwind.example", &[]));
+        assert!(!proves_from("not-an-address", &d("northwind.example")));
     }
 
     #[test]
     fn addresses_parse_team_and_draft() {
-        let plain = Address { local: "honeyb".into(), draft: None, question: None };
-        assert_eq!(parse_address("Cookie <HoneyB@Cookie.Enkeon.com>", D), Some(plain.clone()));
-        assert_eq!(parse_address("honeyb+d_abc123@cookie.enkeon.com", D), Some(Address { draft: Some("d_abc123".into()), ..plain.clone() }));
-        assert_eq!(parse_address("honeyb+q_9f8e@cookie.enkeon.com", D), Some(Address { question: Some("ck_9f8e".into()), ..plain.clone() }));
+        let plain = Address { local: "northwind".into(), draft: None, question: None };
+        assert_eq!(parse_address("Cookie <NorthWind@Cookie.Enkeon.com>", D), Some(plain.clone()));
+        assert_eq!(parse_address("northwind+d_abc123@cookie.enkeon.com", D), Some(Address { draft: Some("d_abc123".into()), ..plain.clone() }));
+        assert_eq!(parse_address("northwind+q_9f8e@cookie.enkeon.com", D), Some(Address { question: Some("ck_9f8e".into()), ..plain.clone() }));
         // A tag that is not a draft or a question is ignored, not trusted.
-        assert_eq!(parse_address("honeyb+x@cookie.enkeon.com", D), Some(plain.clone()));
-        assert_eq!(parse_address("honeyb+d_@cookie.enkeon.com", D), Some(plain.clone()));
-        assert_eq!(parse_address("honeyb+q_x-y@cookie.enkeon.com", D), Some(plain));
-        assert_eq!(parse_address("honeyb@enkeon.com", D), None);
-        assert_eq!(parse_address("honeyb@evil-cookie.enkeon.com.attacker.io", D), None);
+        assert_eq!(parse_address("northwind+x@cookie.enkeon.com", D), Some(plain.clone()));
+        assert_eq!(parse_address("northwind+d_@cookie.enkeon.com", D), Some(plain.clone()));
+        assert_eq!(parse_address("northwind+q_x-y@cookie.enkeon.com", D), Some(plain));
+        assert_eq!(parse_address("northwind@enkeon.com", D), None);
+        assert_eq!(parse_address("northwind@evil-cookie.enkeon.com.attacker.io", D), None);
         assert_eq!(parse_address("x@cookie.enkeon.com", ""), None);
     }
 
     fn mail() -> Mail {
         Mail {
-            message_id: "m1@honeyb.lv".into(),
+            message_id: "m1@northwind.example".into(),
             in_reply_to: "a0@acme.com".into(),
             references: vec!["a0@acme.com".into()],
-            from: "matiss@honeyb.lv".into(),
-            to: vec!["honeyb@cookie.enkeon.com".into(), "anna@acme.com".into()],
-            cc: vec!["ops@honeyb.lv".into()],
+            from: "mara@northwind.example".into(),
+            to: vec!["northwind@cookie.enkeon.com".into(), "anna@acme.com".into()],
+            cc: vec!["ops@northwind.example".into()],
             subject: "Renewal".into(),
             text: "Cookie, draft the reply.\n\nOn Mon, Anna wrote:\n> price?".into(),
             automatic: false,
@@ -874,8 +874,8 @@ mod tests {
         RouteFacts {
             mail: mail(),
             cookie_domain: D.into(),
-            cookie_rcpt: "honeyb@cookie.enkeon.com".into(),
-            address: parse_address("honeyb@cookie.enkeon.com", D).unwrap(),
+            cookie_rcpt: "northwind@cookie.enkeon.com".into(),
+            address: parse_address("northwind@cookie.enkeon.com", D).unwrap(),
             member: Some("usr_1".into()),
             proven: true,
             asked_ok: false,
@@ -889,7 +889,7 @@ mod tests {
                 assert_eq!(own, "Cookie, draft the reply.");
                 assert!(context.starts_with("On Mon"));
                 assert_eq!(subject, "Renewal");
-                assert_eq!(origin["mail"]["message_id"], "m1@honeyb.lv");
+                assert_eq!(origin["mail"]["message_id"], "m1@northwind.example");
             }
             other => panic!("{other:?}"),
         }
@@ -898,7 +898,7 @@ mod tests {
     #[test]
     fn a_reply_to_a_draft_is_routed_to_the_draft_first() {
         let mut f = facts();
-        f.address = parse_address("honeyb+d_abc@cookie.enkeon.com", D).unwrap();
+        f.address = parse_address("northwind+d_abc@cookie.enkeon.com", D).unwrap();
         // Even unproven and automatic: the draft's own check decides.
         f.proven = false;
         f.mail.automatic = true;
@@ -908,9 +908,9 @@ mod tests {
     #[test]
     fn answers_start_only_for_the_proven_member_who_was_asked() {
         let mut f = facts();
-        f.address = parse_address("honeyb+q_9f8e@cookie.enkeon.com", D).unwrap();
-        f.mail.to = vec!["honeyb+q_9f8e@cookie.enkeon.com".into()];
-        f.cookie_rcpt = "honeyb+q_9f8e@cookie.enkeon.com".into();
+        f.address = parse_address("northwind+q_9f8e@cookie.enkeon.com", D).unwrap();
+        f.mail.to = vec!["northwind+q_9f8e@cookie.enkeon.com".into()];
+        f.cookie_rcpt = "northwind+q_9f8e@cookie.enkeon.com".into();
         f.asked_ok = true;
         assert_eq!(route(&f), Route::Answers { run: "ck_9f8e".into(), own: "Cookie, draft the reply.".into() });
         // Not the asked member, or unproven → read as an ordinary message.
@@ -931,7 +931,7 @@ mod tests {
         f.mail.cc = vec![];
         assert_eq!(route(&f), Route::Silent { why: "bcc".into() });
         // Cookie visible under another tag of the same team counts.
-        f.mail.cc = vec!["HoneyB+d_x@cookie.enkeon.com".into()];
+        f.mail.cc = vec!["NorthWind+d_x@cookie.enkeon.com".into()];
         assert!(matches!(route(&f), Route::Job { .. }));
     }
 
@@ -949,7 +949,7 @@ mod tests {
     #[test]
     fn route_over_the_line_reads_the_address_from_the_recipient() {
         let m = json!({"type": "mail", "op": "route", "mail": mail(), "cookie_domain": D,
-                       "cookie_rcpt": "honeyb@cookie.enkeon.com", "member": "usr_1", "proven": true});
+                       "cookie_rcpt": "northwind@cookie.enkeon.com", "member": "usr_1", "proven": true});
         let r = rpc(&m).unwrap();
         assert_eq!(r["kind"], "job");
         assert_eq!(r["own"], "Cookie, draft the reply.");
@@ -960,11 +960,11 @@ mod tests {
     fn reply_facts() -> ReplyFacts {
         ReplyFacts {
             mail: Some(mail()),
-            member_email: "matiss@honeyb.lv".into(),
-            local: "honeyb".into(),
+            member_email: "mara@northwind.example".into(),
+            local: "northwind".into(),
             cookie_domain: D.into(),
             run_id: "ck_9f8e".into(),
-            team: "Honeyb".into(),
+            team: "Northwind".into(),
             subject: "Renewal".into(),
             outsiders: vec![],
             answer: None,
@@ -980,12 +980,12 @@ mod tests {
         assert_eq!(
             plan_reply(&f).unwrap(),
             Reply::Questions {
-                to: vec!["matiss@honeyb.lv".into()],
-                reply_to: "honeyb+q_9f8e@cookie.enkeon.com".into(),
+                to: vec!["mara@northwind.example".into()],
+                reply_to: "northwind+q_9f8e@cookie.enkeon.com".into(),
                 subject: "Re: Renewal".into(),
                 text: format!("Before I start, a few quick questions:\n\n1. Which region?\n\nReply to this email and I'll get going.{SIG}\nSee how Cookie worked it out: https://x/j"),
-                in_reply_to: "m1@honeyb.lv".into(),
-                references: vec!["a0@acme.com".into(), "m1@honeyb.lv".into()],
+                in_reply_to: "m1@northwind.example".into(),
+                references: vec!["a0@acme.com".into(), "m1@northwind.example".into()],
             }
         );
         // The reply-to round-trips to the run.
@@ -995,11 +995,11 @@ mod tests {
 
     #[test]
     fn no_answer_is_a_failure_note_and_a_page_job_answers_at_the_members_address() {
-        let f = ReplyFacts { mail: None, member_email: "Matiss@Honeyb.lv".into(), answer: Some("  ".into()), link: String::new(), ..reply_facts() };
+        let f = ReplyFacts { mail: None, member_email: "Mara@Northwind.example".into(), answer: Some("  ".into()), link: String::new(), ..reply_facts() };
         assert_eq!(
             plan_reply(&f).unwrap(),
             Reply::Failure {
-                to: vec!["matiss@honeyb.lv".into()],
+                to: vec!["mara@northwind.example".into()],
                 subject: "Cookie: Renewal".into(),
                 text: format!("Cookie couldn't finish this one, sorry. Try again, or ask it in smaller steps.{SIG}"),
                 in_reply_to: String::new(),
@@ -1013,17 +1013,17 @@ mod tests {
     #[test]
     fn a_team_only_thread_is_answered_in_place_with_everyone_copied() {
         let mut m = mail();
-        m.to = vec!["honeyb@cookie.enkeon.com".into(), "Ilze@honeyb.lv".into()];
+        m.to = vec!["northwind@cookie.enkeon.com".into(), "Ines@northwind.example".into()];
         let f = ReplyFacts { mail: Some(m), answer: Some(" Price is 40. ".into()), ..reply_facts() };
         assert_eq!(
             plan_reply(&f).unwrap(),
             Reply::Thread {
-                to: vec!["matiss@honeyb.lv".into()],
-                cc: vec!["ilze@honeyb.lv".into(), "ops@honeyb.lv".into()],
+                to: vec!["mara@northwind.example".into()],
+                cc: vec!["ines@northwind.example".into(), "ops@northwind.example".into()],
                 subject: "Re: Renewal".into(),
                 text: format!("Price is 40.{SIG}\nSee how Cookie worked it out: https://x/j"),
-                in_reply_to: "m1@honeyb.lv".into(),
-                references: vec!["a0@acme.com".into(), "m1@honeyb.lv".into()],
+                in_reply_to: "m1@northwind.example".into(),
+                references: vec!["a0@acme.com".into(), "m1@northwind.example".into()],
             }
         );
     }
@@ -1035,16 +1035,16 @@ mod tests {
         assert_eq!(
             draft,
             DraftPlan {
-                to: vec!["matiss@honeyb.lv".into(), "anna@acme.com".into()],
-                cc: vec!["ops@honeyb.lv".into()],
+                to: vec!["mara@northwind.example".into(), "anna@acme.com".into()],
+                cc: vec!["ops@northwind.example".into()],
                 subject: "Re: Renewal".into(),
                 body: format!("Price is 40.{SIG}"),
-                in_reply_to: "m1@honeyb.lv".into(),
-                references: vec!["a0@acme.com".into(), "m1@honeyb.lv".into()],
+                in_reply_to: "m1@northwind.example".into(),
+                references: vec!["a0@acme.com".into(), "m1@northwind.example".into()],
             }
         );
-        assert_eq!(notice.to, vec!["matiss@honeyb.lv"]);
-        assert_eq!(notice.reply_to, "honeyb+d_abc@cookie.enkeon.com");
+        assert_eq!(notice.to, vec!["mara@northwind.example"]);
+        assert_eq!(notice.reply_to, "northwind+d_abc@cookie.enkeon.com");
         assert_eq!(notice.subject, "Draft: Re: Renewal");
         assert_eq!(
             notice.text,
@@ -1057,7 +1057,7 @@ mod tests {
 
     #[test]
     fn notices_say_what_did_not_happen() {
-        let f = NoticeFacts { team: "Honeyb".into(), sender_domain: "acme.com".into(), ..NoticeFacts::default() };
+        let f = NoticeFacts { team: "Northwind".into(), sender_domain: "acme.com".into(), ..NoticeFacts::default() };
         let n = notice("owner", &f).unwrap();
         assert_eq!(n.subject, "Cookie didn't reply to an outside sender");
         assert_eq!(n.text, format!("Someone at acme.com emailed Cookie. They aren't on your team, so Cookie didn't reply or do anything.{SIG}"));
@@ -1070,9 +1070,9 @@ mod tests {
         let n = notice("out_of_credits", &NoticeFacts { subject: "Renewal".into(), allowance: 100, now: 1_792_627_200.0, ..f.clone() }).unwrap();
         assert_eq!(n.subject, "Re: Renewal");
         assert!(n.text.starts_with("Cookie has used its 100 credits for October"));
-        let n = notice("draft_unclear", &NoticeFacts { subject: "Draft: Re: Renewal".into(), local: "honeyb".into(), draft_id: "d_abc".into(), cookie_domain: D.into(), ..f.clone() }).unwrap();
+        let n = notice("draft_unclear", &NoticeFacts { subject: "Draft: Re: Renewal".into(), local: "northwind".into(), draft_id: "d_abc".into(), cookie_domain: D.into(), ..f.clone() }).unwrap();
         assert_eq!(n.text, "Cookie didn't send anything. Reply \"send\" to send the draft, or \"skip\".");
-        assert_eq!(n.reply_to.as_deref(), Some("honeyb+d_abc@cookie.enkeon.com"));
+        assert_eq!(n.reply_to.as_deref(), Some("northwind+d_abc@cookie.enkeon.com"));
         assert!(notice("nope", &f).is_err());
     }
 
@@ -1081,14 +1081,14 @@ mod tests {
         assert_eq!(rpc(&json!({"op": "decision", "text": "Send\n\nOn Mon, x wrote:\n> skip"})).unwrap()["decision"], "send");
         assert_eq!(rpc(&json!({"op": "split", "text": "hi\n> q"})).unwrap(), json!({"own": "hi", "quoted": "> q"}));
         assert_eq!(rpc(&json!({"op": "lookup", "subject": "hy", "own": "hy"})).unwrap()["query"], "hy");
-        assert_eq!(rpc(&json!({"op": "address", "address": "honeyb+d_a1@cookie.enkeon.com", "cookie_domain": D})).unwrap()["address"]["draft"], "d_a1");
+        assert_eq!(rpc(&json!({"op": "address", "address": "northwind+d_a1@cookie.enkeon.com", "cookie_domain": D})).unwrap()["address"]["draft"], "d_a1");
         assert_eq!(rpc(&json!({"op": "address", "address": "a@b.com", "cookie_domain": D})).unwrap()["address"], Value::Null);
-        let i = rpc(&json!({"op": "input", "subject": "S", "own": "O", "trigger": "page", "member_name": "Matiss", "parent": {"job": "J", "questions": "Q"}})).unwrap();
-        assert_eq!(i["from_line"], "Matiss (on your team)");
+        let i = rpc(&json!({"op": "input", "subject": "S", "own": "O", "trigger": "page", "member_name": "Mara", "parent": {"job": "J", "questions": "Q"}})).unwrap();
+        assert_eq!(i["from_line"], "Mara (on your team)");
         assert!(i["input"].as_str().unwrap().ends_with("Their answer:\nO\n\nNow do the job."));
-        assert_eq!(rpc(&json!({"op": "people", "mail": mail(), "cookie_domain": D})).unwrap()["people"], json!(["matiss@honeyb.lv", "anna@acme.com", "ops@honeyb.lv"]));
+        assert_eq!(rpc(&json!({"op": "people", "mail": mail(), "cookie_domain": D})).unwrap()["people"], json!(["mara@northwind.example", "anna@acme.com", "ops@northwind.example"]));
         let o = rpc(&json!({"op": "origin", "mail": mail()})).unwrap();
-        assert_eq!(rpc(&json!({"op": "from_origin", "origin": o["origin"]})).unwrap()["mail"]["from"], "matiss@honeyb.lv");
+        assert_eq!(rpc(&json!({"op": "from_origin", "origin": o["origin"]})).unwrap()["mail"]["from"], "mara@northwind.example");
         assert_eq!(rpc(&json!({"op": "automatic", "precedence": "list"})).unwrap()["automatic"], true);
         assert!(rpc(&json!({"op": "nope"})).is_err());
     }

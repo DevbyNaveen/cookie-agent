@@ -823,7 +823,7 @@ mod tests {
             "- Send the first 5 cold emails to the Riga list — tell me if you want me to draft them\n\nWhich of these do you want to move on first?",
             "## What I can do right now\n\n- Write the outbound email template + follow-up\n\nJust say which and I\u{2019}ll do it immediately.",
             "The only blocker between you and more paying customers is sending. What do you want me to draft or prep to make that easier right now?",
-            "And ask Honeyb for a one-line quote.\n\nWhat's actually stopping you from opening that file right now?",
+            "And ask Northwind for a one-line quote.\n\nWhat's actually stopping you from opening that file right now?",
             "Do you want me to write the first 5 emails now? I can do it against the company list.",
             "Give me a name — one company from your lead list — and I'll write the email right now. Or say \"pick one\" and I'll pull a target.",
         ] {

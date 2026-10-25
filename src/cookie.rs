@@ -517,9 +517,9 @@ mod tests {
     #[test]
     fn past_jobs_and_chase_are_offered_only_when_asked_for() {
         let names = |p: Value| p["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
-        let plain = names(profile(&Options { team: "Honeyb".into(), ..Options::default() }));
+        let plain = names(profile(&Options { team: "Northwind".into(), ..Options::default() }));
         assert!(!plain.iter().any(|n| n == "past_jobs" || n == "chase"));
-        let both = names(profile(&Options { team: "Honeyb".into(), past_jobs: true, chase: true, ..Options::default() }));
+        let both = names(profile(&Options { team: "Northwind".into(), past_jobs: true, chase: true, ..Options::default() }));
         assert!(both.iter().any(|n| n == "past_jobs") && both.iter().any(|n| n == "chase"));
         assert_eq!(past_jobs_decl()["effect"], "read");
         assert_eq!(chase_decl()["effect"], "write", "a chase is kept, so it is a write");
@@ -527,39 +527,39 @@ mod tests {
 
     #[test]
     fn the_plan_guidance_and_the_teams_soul_land_in_the_instructions() {
-        let planned = profile(&Options { team: "Honeyb".into(), plan: true, ..Options::default() });
+        let planned = profile(&Options { team: "Northwind".into(), plan: true, ..Options::default() });
         let text = planned["instructions"].as_str().unwrap();
         assert!(text.contains(plan::PLANNING.trim()), "planning guidance is inserted, never silently dropped");
         assert!(text.find(plan::PLANNING.trim()).unwrap() < text.find(PLAN_BEFORE).unwrap());
-        let soul = profile(&Options { team: "Honeyb".into(), soul: Some("  Be warm and blunt. We sell to Baltic CTOs.  ".into()), ..Options::default() });
-        assert!(soul["instructions"].as_str().unwrap().ends_with("In Honeyb's own words, how you should be:\nBe warm and blunt. We sell to Baltic CTOs."));
-        let long = profile(&Options { team: "Honeyb".into(), soul: Some("ä".repeat(5_000)), ..Options::default() });
+        let soul = profile(&Options { team: "Northwind".into(), soul: Some("  Be warm and blunt. We sell to Baltic CTOs.  ".into()), ..Options::default() });
+        assert!(soul["instructions"].as_str().unwrap().ends_with("In Northwind's own words, how you should be:\nBe warm and blunt. We sell to Baltic CTOs."));
+        let long = profile(&Options { team: "Northwind".into(), soul: Some("ä".repeat(5_000)), ..Options::default() });
         assert!(long["instructions"].as_str().unwrap().matches('ä').count() == SOUL_CHARS, "a SOUL is capped by characters, never cut mid-letter");
-        let none = profile(&Options { team: "Honeyb".into(), soul: Some("   ".into()), ..Options::default() });
+        let none = profile(&Options { team: "Northwind".into(), soul: Some("   ".into()), ..Options::default() });
         assert!(!none["instructions"].as_str().unwrap().contains("own words"));
     }
 
     #[test]
         fn instructions_are_stable_for_a_team() {
-        assert_eq!(instructions("Honeyb", None), instructions("Honeyb", None), "same bytes every run → prompt cache reuse");
-        assert!(instructions("Honeyb", None).contains(SEARCHING), "the no-search swap finds its sentence");
-        let no_search = profile(&Options { team: "Honeyb".into(), ..Options::default() });
+        assert_eq!(instructions("Northwind", None), instructions("Northwind", None), "same bytes every run → prompt cache reuse");
+        assert!(instructions("Northwind", None).contains(SEARCHING), "the no-search swap finds its sentence");
+        let no_search = profile(&Options { team: "Northwind".into(), ..Options::default() });
         assert!(no_search["instructions"].as_str().unwrap().contains(NO_SEARCH) && !no_search["instructions"].as_str().unwrap().contains(SEARCHING));
-        let search = profile(&Options { team: "Honeyb".into(), search: true, ..Options::default() });
+        let search = profile(&Options { team: "Northwind".into(), search: true, ..Options::default() });
         assert!(search["instructions"].as_str().unwrap().contains(SEARCHING));
-        assert!(instructions("Honeyb", None).contains("recall"));
-        assert!(!instructions("Honeyb", None).contains("app_call"), "no acting unless it is on");
-        assert!(instructions("Honeyb", Some(permission::Level::Smart)).contains("app_call"));
+        assert!(instructions("Northwind", None).contains("recall"));
+        assert!(!instructions("Northwind", None).contains("app_call"), "no acting unless it is on");
+        assert!(instructions("Northwind", Some(permission::Level::Smart)).contains("app_call"));
         use permission::Level::*;
         for act in [None, Some(Ask), Some(Smart), Some(Full)] {
-            assert!(!instructions("Honeyb", act).contains("memory"), "customer-facing words say context, not memory");
+            assert!(!instructions("Northwind", act).contains("memory"), "customer-facing words say context, not memory");
         }
     }
 
     #[test]
     fn the_profile_carries_everything_a_client_needs() {
-        let p = profile(&Options { team: "Honeyb".into(), search: true, ask_first: true, save: true, act: true, helpers: true, ..Options::default() });
-        assert!(p["instructions"].as_str().unwrap().contains("Honeyb"));
+        let p = profile(&Options { team: "Northwind".into(), search: true, ask_first: true, save: true, act: true, helpers: true, ..Options::default() });
+        assert!(p["instructions"].as_str().unwrap().contains("Northwind"));
         assert!(p["tools"].as_array().unwrap().iter().any(|t| t["name"] == "app_call"));
         assert_eq!(p["check_after"], json!(["app_call"]));
         assert_eq!(p["helpers"][0]["name"], "researcher");
@@ -567,7 +567,7 @@ mod tests {
         assert_eq!(p["prompt"].as_str().unwrap().len(), 16);
         let other = profile(&Options { team: "Acme".into(), ..Options::default() });
         assert_ne!(p["prompt"], other["prompt"], "another prompt, another fingerprint");
-        let quiet = profile(&Options { team: "Honeyb".into(), ..Options::default() });
+        let quiet = profile(&Options { team: "Northwind".into(), ..Options::default() });
         assert_eq!(quiet["helpers"], json!([]));
         assert_eq!(quiet["check_after"], json!([]));
     }
