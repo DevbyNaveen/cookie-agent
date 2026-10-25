@@ -914,7 +914,7 @@ mod tests {
     #[test]
     fn a_correction_is_heard_and_thanks_is_not() {
         assert!(is_correction("That's not right, the renewal is in March"));
-        assert!(is_correction("No, it was Honeyb"));
+        assert!(is_correction("No, it was Northwind"));
         assert!(is_correction("you missed the second invoice"));
         assert!(!is_correction("Thanks! And their pricing?"));
         assert!(!is_correction("Now do the same for Northwind"));

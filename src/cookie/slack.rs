@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn notices_and_ops_over_the_line() {
-        assert_eq!(notice("not_member", "Honeyb", 0, 0).unwrap(), "Cookie only takes jobs from people on Honeyb.");
+        assert_eq!(notice("not_member", "Northwind", 0, 0).unwrap(), "Cookie only takes jobs from people on Northwind.");
         assert_eq!(notice("empty", "", 0, 0).unwrap(), "What should I do? Ask me in the same message.");
         assert!(notice("out_of_credits", "", 500, 1_792_627_200).unwrap().contains("credits for October"));
         let r = rpc(&json!({"op": "ask", "body": event("app_mention", json!({})), "bot_user_id": "UBOT"})).unwrap();
