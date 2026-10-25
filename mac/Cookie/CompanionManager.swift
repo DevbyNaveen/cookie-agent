@@ -349,6 +349,8 @@ final class CompanionManager: ObservableObject {
     private var voiceInteractionID = UUID()
     private var cancellationCancellable: AnyCancellable?
     private var dictationAbortCancellable: AnyCancellable?
+    /// Counts replies, so work a cancelled reply finishes late can tell it is no longer current.
+    private var replyGeneration = 0
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
@@ -1040,6 +1042,11 @@ final class CompanionManager: ObservableObject {
     }
 
     /// Escape/Stop releases input first; late audio, captures and transcripts cannot restart the turn.
+    private func releaseLessonHand() {
+        cardPresenter.pauseTeaching()
+        scenePresenter.pauseTeaching()
+    }
+
     /// The reply drew a card or scene and none of it could be shown.
     static func pictureFailed(_ tags: [CookieReplyTag], shown: Bool) -> Bool {
         !shown && tags.contains { $0.kind == "CARD" || $0.kind == "SCENE" }
@@ -1292,6 +1299,8 @@ final class CompanionManager: ObservableObject {
             return
         }
         currentResponseTask?.cancel()
+        replyGeneration += 1
+        let generation = replyGeneration
         elevenLabsTTSClient.stopPlayback()
         let selectedText = selectionAtPress
         let editTarget = textDestinationAtPress
@@ -1571,6 +1580,8 @@ final class CompanionManager: ObservableObject {
                             let resolved = CookieReadingPen.marks(lines: lines, phrase: read.phrase, offset: offset,
                                                                  spokenLength: offset + read.phrase.utf16.count)
                             print("✏️ Reading resolved: \(lines.count) lines; speech-aligned=\(quote != nil)")
+                            // Found after a newer reply began: its offsets mean nothing on that reply's clock.
+                            guard self.replyGeneration == generation else { return [] }
                             if speakReply, self.elevenLabsTTSClient.isActive {
                                 for line in resolved {
                                     self.markSchedules.append(self.speechClock.schedule(atOffset: line.offset) {
@@ -1765,6 +1776,16 @@ final class CompanionManager: ObservableObject {
                     placedPoints.last?.show()
                     if let card = cards.first { cardPresenter.showNow(card, near: cardRegion) }
                     if let scene { scenePresenter.showNow(scene, near: cardRegion) }
+                }
+                // The lesson stays for follow-ups; the emphasis and the hand belong to the explanation
+                // and end with it. A typed answer keeps them a moment so the eye can find the part.
+                if heard { releaseLessonHand() }
+                else {
+                    Task { [weak self] in
+                        try? await Task.sleep(for: .seconds(3))
+                        guard let self, self.currentResponseTask == nil else { return }
+                        self.releaseLessonHand()
+                    }
                 }
                 replyFinished.send((threadID, reply))
                 outcome = ""

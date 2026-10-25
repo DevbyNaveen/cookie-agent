@@ -139,9 +139,13 @@ final class CookieSceneStage: ObservableObject {
         }
     }
 
-    func focus(_ id: String) {
+    /// As on cards: the hand follows the active part only while Cookie explains it.
+    private var handFollows = false
+
+    func focus(_ id: String, hand: Bool = true) {
         guard scene.labelled.contains(where: { $0.id == id }) else { return }
         collapsed = false
+        handFollows = hand
         activePart = id
         selectedPart = id
         parts[id]?.isEnabled = true
@@ -152,12 +156,13 @@ final class CookieSceneStage: ObservableObject {
             if part.id == id { material.baseColor = .init(tint: NSColor.systemOrange) }
             parts[part.id]?.model?.materials = [material]
         }
-        if let anchor = anchors[id] { onFocus(anchor) }
+        if hand, let anchor = anchors[id] { onFocus(anchor) }
     }
 
     func pauseTeaching() {
         explosionTask?.cancel()
         explosionTask = nil
+        handFollows = false
         activePart = nil
         CookieHand.shared.stopTeaching(owner: teachingOwner)
         for part in scene.parts { parts[part.id]?.model?.materials = [Self.material(part)] }
@@ -258,7 +263,7 @@ final class CookieSceneStage: ObservableObject {
         if points.count != anchors.count || points.contains(where: { id, point in
             anchors[id].map { abs($0.x - point.x) + abs($0.y - point.y) > 0.25 } ?? true
         }) { anchors = points }
-        if let activePart, let point = points[activePart] { onFocus(point) }
+        if handFollows, let activePart, let point = points[activePart] { onFocus(point) }
         if let centre, middle.map({ abs($0.x - centre.x) + abs($0.y - centre.y) > 0.25 }) ?? true { middle = centre }
     }
 
@@ -453,7 +458,7 @@ private struct CookieSceneLabels: View {
                         .contentShape(Rectangle())
                         .pointerCursor()
                         .position(pill)
-                        .onTapGesture { stage.focus(part.id) }
+                        .onTapGesture { stage.focus(part.id, hand: false) }
                         .accessibilityAddTraits(.isButton)
                         .accessibilityLabel("Focus on \(label)")
                         .transition(reduceMotion ? .identity : .opacity)
@@ -495,6 +500,7 @@ final class CookieScenePresenter {
     private weak var clock: CookieSpeechClock?
     private var monitors: [Any] = []
     private var fadeTimer: Task<Void, Never>?
+    private var lastActive = Date()
 
     var teachingContext: String? {
         guard let stage else { return nil }
@@ -604,6 +610,7 @@ final class CookieScenePresenter {
         panel = newPanel
         stage = newStage
         installMonitors()
+        restartFadeTimer()
         NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
                              userInfo: [.announcement: scene.spokenSummary, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
         return newStage
@@ -624,9 +631,21 @@ final class CookieScenePresenter {
         })
     }
 
+    /// The same idle rule as cards (`CookieLessonIdle`): folded, the RealityView goes away and stops drawing.
     private func restartFadeTimer() {
-        fadeTimer?.cancel()
-        fadeTimer = nil // The lesson stays available for follow-up questions; Close/Escape dismiss it.
+        lastActive = Date()
+        guard fadeTimer == nil else { return }
+        fadeTimer = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled, let self, let stage = self.stage else { return }
+                switch CookieLessonIdle.step(idle: Date().timeIntervalSince(self.lastActive), collapsed: stage.collapsed) {
+                case .close: self.dismiss(); return
+                case .collapse: stage.pauseTeaching(); stage.collapsed = true
+                case .stay: break
+                }
+            }
+        }
     }
 
     // MARK: Pointer and keys
@@ -641,7 +660,9 @@ final class CookieScenePresenter {
         let follow: (NSEvent) -> Void = { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let panel = self.panel else { return }
-                panel.ignoresMouseEvents = !self.cardRect.contains(NSEvent.mouseLocation)
+                let over = self.cardRect.contains(NSEvent.mouseLocation)
+                panel.ignoresMouseEvents = !over
+                if over { self.lastActive = Date() }
             }
         }
         if let moved = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved, handler: follow) { monitors.append(moved) }
@@ -656,11 +677,15 @@ final class CookieScenePresenter {
             }
             return zoomed ? nil : event
         }) { monitors.append(scrolls) }
-        let escape: (NSEvent) -> Void = { [weak self] event in
-            MainActor.assumeIsolated { if event.keyCode == 53 { self?.dismiss() } }
+        // As with cards: Escape elsewhere belongs to that app unless the pointer is over the model.
+        let escape: (NSEvent, Bool) -> Void = { [weak self] event, local in
+            MainActor.assumeIsolated {
+                guard event.keyCode == 53, let self else { return }
+                if local || self.cardRect.contains(NSEvent.mouseLocation) { self.dismiss() }
+            }
         }
-        if let keys = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: escape) { monitors.append(keys) }
-        if let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { escape($0); return $0 }) { monitors.append(keys) }
+        if let keys = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { escape($0, false) }) { monitors.append(keys) }
+        if let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { escape($0, true); return $0 }) { monitors.append(keys) }
     }
 }
 

@@ -85,6 +85,25 @@ enum CookieTeachingTests {
             precondition(presenter.teachingContext?.contains("Selected: compressor") == true)
             presenter.dismiss()
         }
-        print("6 teaching checks passed.")
+        // A lesson folds when left alone and closes much later; it never stays open over the work forever.
+        precondition(CookieLessonIdle.step(idle: 10, collapsed: false) == .stay)
+        precondition(CookieLessonIdle.step(idle: CookieLessonIdle.collapseAfter, collapsed: false) == .collapse)
+        precondition(CookieLessonIdle.step(idle: CookieLessonIdle.collapseAfter, collapsed: true) == .stay)
+        precondition(CookieLessonIdle.step(idle: CookieLessonIdle.closeAfter, collapsed: true) == .close)
+        // The hand goes to a node while Cookie explains it, never to one the person clicked, and
+        // lets go when the explanation ends.
+        let tapped = CookieCardReveal(card: card)
+        var handMoves = 0
+        tapped.onFocus = { _ in handMoves += 1 }
+        tapped.anchors = ["sun": CGPoint(x: 10, y: 10), "water": CGPoint(x: 20, y: 20)]
+        tapped.focus("sun", hand: false)
+        precondition(handMoves == 0 && tapped.activeNode == "sun", "a clicked node is highlighted, not pointed at")
+        tapped.focus("water")
+        precondition(handMoves > 0, "a node Cookie names is pointed at")
+        let explained = handMoves
+        tapped.pauseTeaching()
+        tapped.pointAtActiveNode()
+        precondition(handMoves == explained && tapped.activeNode == nil)
+        print("7 teaching checks passed.")
     }
 }

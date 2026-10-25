@@ -580,9 +580,11 @@ struct BlueCursorView: View {
             if buddyNavigationMode == .drawing && handHold == nil { returnHandToCursor() }
             return
         }
-        // A new spoken mark owns the hand. An older mark cannot steal it back from
-        // a later point, and ink must never interrupt an action or a guided step.
-        guard handHold != .act, handHold != .guide, handHold != .teaching else { return }
+        // A new spoken mark owns the hand, a lesson's included (a quote read after a part was
+        // named). An older mark cannot steal it back from a later point or lesson, and ink must
+        // never interrupt an action or a guided step.
+        guard handHold != .act, handHold != .guide else { return }
+        if handHold == .teaching, lastPenMark == pen.markID { return }
         if lastPenMark != pen.markID {
             lastPenMark = pen.markID
             if buddyNavigationMode == .navigatingToTarget || buddyNavigationMode == .pointingAtTarget {
