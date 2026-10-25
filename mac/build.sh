@@ -1,7 +1,12 @@
 #!/bin/sh
 # Build Cookie.app without Xcode: SwiftPM binary + hand-assembled bundle, signed with the hardened runtime.
+# One command builds everything: Cookie's core, its helpers and the app, with the SDKs this Mac has.
 set -e
 cd "$(dirname "$0")"
+command -v cargo >/dev/null || { echo "error: Rust is needed (https://rustup.rs), 1.91 or later" >&2; exit 1; }
+RUSTV=$(rustc --version | awk '{print $2}')
+[ "$(printf '1.91.0\n%s\n' "$RUSTV" | sort -V | head -1)" = "1.91.0" ] || { echo "error: Rust $RUSTV is too old; 1.91 or later (rustup update)" >&2; exit 1; }
+APP_SDK=$(scripts/sdk.sh app)
 # Cookie thinks through `cookie serve`, this repo's core, bundled as a helper.
 # Built here with Amazon Bedrock (the `bedrock` cargo feature, Rust 1.91+), so every
 # provider Settings offers can answer. COOKIE_HARNESS_BIN uses a binary you built instead.
@@ -18,8 +23,9 @@ fi
 # its permissions again after each rebuild).
 SIGN_ID="${COOKIE_SIGN_ID:--}"
 TIMESTAMP=""; [ "$1" = "--release" ] && TIMESTAMP="--timestamp"
-# ponytail: SDK 26+ makes SwiftUI @State a macro whose plugin ships only with Xcode; 15.5 has no macro
-SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.5.sdk swift build -c release --build-system native
+# scripts/sdk.sh says why the SDK matters (empty: Xcode's own default).
+if [ -n "$APP_SDK" ]; then SDKROOT="$APP_SDK" swift build -c release --build-system native
+else swift build -c release --build-system native; fi
 APP=build/Cookie.app
 rm -rf "$APP" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Helpers"
 cp .build/release/Cookie "$APP/Contents/MacOS/Cookie"
@@ -48,32 +54,40 @@ $P -c "Add :CFBundleExecutable string Cookie" -c "Add :CFBundleIdentifier string
 cp "$HARNESS" "$APP/Contents/Helpers/cookie"
 codesign --force --options runtime $TIMESTAMP --identifier com.enkeon.cookie.harness --sign "$SIGN_ID" "$APP/Contents/Helpers/cookie"
 # Files: cookie-tools (spreadsheets, documents, pages, CSV), a signed helper like the harness.
+[ -n "$COOKIE_TOOLS_BIN" ] || (cd cookie-tools && cargo build --release)
 TOOLS="${COOKIE_TOOLS_BIN:-cookie-tools/target/release/cookie-tools}"
 if [ -x "$TOOLS" ]; then
   cp "$TOOLS" "$APP/Contents/Helpers/cookie-tools"
   codesign --force --options runtime $TIMESTAMP --identifier com.enkeon.cookie.tools --sign "$SIGN_ID" "$APP/Contents/Helpers/cookie-tools"
 else
-  echo "note: $TOOLS is missing (cargo build --release in cookie-tools); files are left out"
+  echo "note: $TOOLS is missing; files are left out"
 fi
 # Meetings: cookie-recorder (microphone + the call's sound, sent to Enkeon a minute at a time).
+[ -n "$COOKIE_RECORDER_BIN" ] || (cd cookie-recorder && cargo build --release)
 RECORDER="${COOKIE_RECORDER_BIN:-cookie-recorder/target/release/cookie-recorder}"
 if [ -x "$RECORDER" ]; then
   cp "$RECORDER" "$APP/Contents/Helpers/cookie-recorder"
   codesign --force --options runtime $TIMESTAMP --identifier com.enkeon.cookie.recorder --sign "$SIGN_ID" "$APP/Contents/Helpers/cookie-recorder"
 else
-  echo "note: $RECORDER is missing (cargo build --release in cookie-recorder); meeting recording is left out"
+  echo "note: $RECORDER is missing; meeting recording is left out"
 fi
 # Eyes and ears: cookie-sense (Vision text and faces, SpeechAnalyzer) in its own process, so a
-# Vision model that fails to load can't take Cookie down. A Swift package built against the macOS 27
-# SDK (it needs no SwiftUI, so no Xcode):
-#   (cd cookie-sense && SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX27.sdk swift build -c release --build-system native)
-# Without it Cookie reads screenshots in its own process and transcribes with SFSpeechRecognizer.
+# Vision model that fails to load can't take Cookie down. A Swift package built against a macOS 26+
+# SDK (it needs no SwiftUI, so no Xcode). Without it Cookie reads screenshots in its own process and
+# transcribes with SFSpeechRecognizer.
+if [ -z "$COOKIE_SENSE_BIN" ]; then
+  if SENSE_SDK=$(scripts/sdk.sh sense); then
+    (cd cookie-sense && SDKROOT="$SENSE_SDK" swift build -c release --build-system native)
+  else
+    echo "note: no macOS 26+ SDK here, so cookie-sense is left out"
+  fi
+fi
 SENSE="${COOKIE_SENSE_BIN:-cookie-sense/.build/release/cookie-sense}"
 if [ -x "$SENSE" ]; then
   cp "$SENSE" "$APP/Contents/Helpers/cookie-sense"
   codesign --force --options runtime $TIMESTAMP --identifier com.enkeon.cookie.sense --sign "$SIGN_ID" "$APP/Contents/Helpers/cookie-sense"
 else
-  echo "note: $SENSE is missing (see the command above); screen reading stays in-process"
+  echo "note: $SENSE is missing; screen reading stays in-process"
 fi
 # Research and decks: the bundled Python (scripts/bundle-python.sh) running cookie-py,
 # every Mach-O signed inside-out before the app seals it (no entitlements needed, measured).

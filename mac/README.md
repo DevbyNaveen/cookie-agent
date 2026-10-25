@@ -26,25 +26,34 @@ with your own model key or your Enkeon sign-in.
 
 ## Build
 
-Needs macOS 15 or later, Rust 1.91+ and the Command Line Tools for Xcode
-(no full Xcode). From `mac/`:
+Needs macOS 15 or later, Rust 1.91+ (https://rustup.rs) and either Xcode or
+just the Command Line Tools for Xcode (`xcode-select --install`). From `mac/`:
 
 ```sh
-(cd cookie-tools && cargo build --release)     # files: spreadsheets, documents, pages, CSV
-(cd cookie-recorder && cargo build --release)  # meeting recording
-(cd cookie-sense && SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX27.sdk swift build -c release --build-system native)  # screen reading and on-device speech, out of process
-scripts/bundle-python.sh                       # research and decks: Cookie's own Python
-./build.sh                                     # → build/Cookie.app
+./build.sh          # → build/Cookie.app
+open build/Cookie.app
 ```
 
-`build.sh` builds Cookie's core itself (`cargo build --release --bin cookie
---features bedrock`, so every model provider in Settings can answer) and
-bundles each helper it finds; a missing helper is left out with a note, and
-the feature it serves is off. `COOKIE_HARNESS_BIN`, `COOKIE_TOOLS_BIN` and
-`COOKIE_RECORDER_BIN` point it at binaries you built elsewhere.
+That one command builds Cookie's core (`cookie serve`, with every model
+provider Settings offers), its helpers (files, meeting recording, screen
+reading and on-device speech) and the app, with the SDKs this Mac has
+(`scripts/sdk.sh` picks them):
 
-Set `COOKIE_SIGN_ID` to your Developer ID to keep macOS's permission grants
-across rebuilds; without it the app is signed ad hoc.
+- **Cookie itself** builds with Xcode, or with the Command Line Tools and their
+  macOS 15 SDK. From SDK 26 on, SwiftUI needs a compiler plugin that only Xcode
+  has, so with the tools alone a Mac that has only SDK 26+ is told to install
+  Xcode or the Command Line Tools for Xcode 16.
+- **cookie-sense** needs a macOS 26 or later SDK; without one it is left out
+  and Cookie reads the screen in its own process.
+- **Research and decks** need Cookie's own Python: run `scripts/bundle-python.sh`
+  once before `./build.sh`; without it they are left out.
+
+An app you build yourself opens without Gatekeeper's warning. It is signed ad
+hoc, so macOS asks for its permissions again after each rebuild; set
+`COOKIE_SIGN_ID` to any code-signing identity you have
+(`security find-identity -v -p codesigning`) to keep them.
+`COOKIE_HARNESS_BIN`, `COOKIE_TOOLS_BIN`, `COOKIE_RECORDER_BIN` and
+`COOKIE_SENSE_BIN` use binaries you built elsewhere.
 
 ## Checks
 
