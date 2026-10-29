@@ -40,7 +40,7 @@ pub fn instructions(team: &str, act: Option<permission::Level>) -> String {
          you answer where they asked.\n\
          \n\
          How you are:\n\
-         - Do the job. The deliverable is the thing itself — the drafts, the list, the plan, the answer — never an \
+         - Do the job. The deliverable is the thing itself (the drafts, the list, the plan, the answer), never an \
          offer to make it or a description of what you would do. If you could do it now, do it now; never end by \
          asking whether you should. When you went with an assumption, say it in one line.\n\
          - Decide what you can decide. Small choices are yours to make; ask only when a wrong guess would waste real \
@@ -48,8 +48,8 @@ pub fn instructions(team: &str, act: Option<permission::Level>) -> String {
          - Know before you speak. Look in {team}'s context before you answer about them, before you ask anyone to \
          repeat themselves, and before you say you do not know. Never state a price, date, name or promise you did \
          not find. When the team does not know something, {SEARCHING_SLOT}\n\
-         - Think like someone on the team. Notice what matters to what they are working on — a win, a risk, a date \
-         slipping — and connect it to the job.\n\
+         - Think like someone on the team. Notice what matters to what they are working on (a win, a risk, a date \
+         slipping) and connect it to the job.\n\
          - Agree because it is right, not because someone pushed. When someone is frustrated, take the weight: a \
          line at most to acknowledge it, then the next concrete thing, done.\n\
          - Size the reply to the ask. Lead with the answer; no filler, no restating the job, no closing offers. Talk \
@@ -210,7 +210,7 @@ pub fn helper_decls(search: bool) -> Value {
     json!([
         {
             "name": "researcher",
-            "description": "Hand one question to a researcher with its own fresh context: it looks it up in the team's context and on the web, reads the pages, and reports back what it found. Give it the whole task in one go — it sees nothing else. For one company, use company_researcher. Its report keeps the [sN] tags of what it read: end your paragraphs with those tags. Do small lookups yourself.",
+            "description": "Hand one question to a researcher with its own fresh context: it looks it up in the team's context and on the web, reads the pages, and reports back what it found. Give it the whole task in one go: it sees nothing else. For one company, use company_researcher. Its report keeps the [sN] tags of what it read: end your paragraphs with those tags. Do small lookups yourself.",
             "instructions": fit(HELPER_INSTRUCTIONS),
             "tools": tools,
         },
@@ -235,7 +235,7 @@ pub fn helper_decls(search: bool) -> Value {
 const COMPANY_STEPS: usize = 12;
 const VERIFIER_STEPS: usize = 6;
 
-const COMPANY_FOCUS: &str = "You research one company. Start at its own site (`read_site` with a focus on what the task asks), then news, funding and hiring. Report what it does, its size and customers, recent signals with their dates, and how it fits what the task judges it against — each line with its tags. If you cannot confirm the company is the one meant, say so first.";
+const COMPANY_FOCUS: &str = "You research one company. Start at its own site (`read_site` with a focus on what the task asks), then news, funding and hiring. Report what it does, its size and customers, recent signals with their dates, and how it fits what the task judges it against, each line with its tags. If you cannot confirm the company is the one meant, say so first.";
 
 const VERIFIER_INSTRUCTIONS: &str = "You check one claim for Cookie, a teammate who answers the team's jobs. Look for it in the team's own context with `recall`, then on the page it came from, then the web: search, then read the pages you rely on (`read_site` for one company's own site). Every result starts with a tag like [source s3]. Answer in at most three lines: SUPPORTED, NOT SUPPORTED or CONTRADICTED; the exact words from the source that decide it, with its tag; and what the source says instead, if it differs. Never guess: if you could not find it, say NOT SUPPORTED and what you looked at.";
 
@@ -570,6 +570,27 @@ mod tests {
         let quiet = profile(&Options { team: "Northwind".into(), ..Options::default() });
         assert_eq!(quiet["helpers"], json!([]));
         assert_eq!(quiet["check_after"], json!([]));
+    }
+
+    /// Models write the way their prompt is written: dashes in what Cookie
+    /// is told came back in what Cookie wrote.
+    #[test]
+    fn nothing_cookie_is_told_has_a_dash() {
+        use permission::Level::*;
+        let mut told: Vec<String> = Vec::new();
+        for act in [false, true] {
+            for permission in [Ask, Smart, Full] {
+                let p = profile(&Options { team: "Northwind".into(), search: act, ask_first: true, save: true, act, permission, plan: true, watch: true, helpers: true, past_jobs: true, chase: true, ..Options::default() });
+                told.extend([p["instructions"].to_string(), p["tools"].to_string(), p["helpers"].to_string(), helper_decls(false).to_string()]);
+            }
+        }
+        told.extend(SKILLS.iter().map(|(_, body)| body.to_string()));
+        told.extend([check::CHECK_PROMPT, check::REVISE_PROMPT, permission::JUDGE_PROMPT, crate::lessons::DISTILL_PROMPT, crate::lessons::PROCEDURE_PROMPT,
+            crate::local::LOCAL_INSTRUCTIONS, crate::notes::NOTES_INSTRUCTIONS, crate::enkeon::ENKEON_INSTRUCTIONS, crate::enkeon::ENKEON_RECALL_ONLY_INSTRUCTIONS,
+            crate::compaction::SUMMARY_PROMPT, crate::quarantine::QUARANTINE_PROMPT, plan::PLANNING].map(String::from));
+        for text in told {
+            assert!(!text.contains(['\u{2014}', '\u{2013}']), "a dash in what Cookie is told: {text}");
+        }
     }
 
     #[test]

@@ -48,7 +48,7 @@ customer in the team's context, or that you could not read.
 
 Five to ten companies, best first. For each, one short paragraph:
 
-`<Company> (<site>) — <what it does>. <The signal, with its date>. Fits because <reason from the team's context>. Approach: <role>, through <the company's public contact or careers page>.`
+`<Company> (<site>): <what it does>. <The signal, with its date>. Fits because <reason from the team's context>. Approach: <role>, through <the company's public contact or careers page>.`
 
 Then one line on what you searched and what you left out, so the team knows
 how wide you looked. Save the list to the team's context with `remember`

@@ -80,7 +80,7 @@ pub fn join_input(job: &str, join: &str, answers: &[(String, Option<String>)]) -
         .enumerate()
         .map(|(i, (title, a))| match a {
             Some(a) => format!("Part {}: {title}\n{a}", i + 1),
-            None => format!("Part {}: {title}\n(this part did not finish — say so)", i + 1),
+            None => format!("Part {}: {title}\n(this part did not finish; say so)", i + 1),
         })
         .collect();
     (input, format!("What each part found:\n\n{}", parts.join("\n\n")))

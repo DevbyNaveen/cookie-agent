@@ -39,7 +39,7 @@ impl Artifacts {
         let preview: String = text.chars().take(PREVIEW).collect();
         let id = format!("art-{}", NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
         self.0.lock().unwrap().push(Artifact { id: id.clone(), from: from.to_string(), text });
-        format!("[{id} from {from}: {length} characters; this is the start — read more with read_artifact]\n{preview}…")
+        format!("[{id} from {from}: {length} characters; this is the start; read more with read_artifact]\n{preview}…")
     }
 
     pub(crate) fn tool(&self) -> Arc<dyn Tool> {
@@ -81,7 +81,7 @@ impl Tool for ReadArtifact {
         let length = artifact.text.chars().count();
         let page: String = artifact.text.chars().skip(offset).take(PAGE).collect();
         let end = offset.saturating_add(PAGE).min(length);
-        Ok(format!("[{id} from {}: characters {offset}–{end} of {length}]\n{page}", artifact.from))
+        Ok(format!("[{id} from {}: characters {offset} to {end} of {length}]\n{page}", artifact.from))
     }
 }
 

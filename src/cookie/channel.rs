@@ -100,7 +100,7 @@ pub fn notice(kind: &str, team: &str, link: &str) -> String {
             "This chat isn't linked to {team} yet. Open Cookie's settings in Enkeon, choose this app under Chat apps, and send the code it shows here."
         ),
         "linked" => format!("Linked. You can give Cookie jobs for {team} here; answers come back only to you."),
-        "bad_code" => "That code didn't work. Codes last 15 minutes — open Cookie's settings for a new one.".to_string(),
+        "bad_code" => "That code didn't work. Codes last 15 minutes. Open Cookie's settings for a new one.".to_string(),
         "out_of_credits" => format!("Cookie has used this month's credits for {team}, so it can't take this one."),
         "working" => "On it.".to_string(),
         "failed" => format!("Cookie couldn't finish this one, sorry. Try again, or ask it in smaller steps.{more}"),

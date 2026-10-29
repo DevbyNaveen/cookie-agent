@@ -433,13 +433,13 @@ pub fn app_call_decl(level: Level) -> Value {
     });
     let mut required = vec!["app", "action"];
     let description = match level {
-        Level::Ask => "Run one action on a connected app, by the exact name `apps` gives. Reading runs at once. A change (create, update, send, delete) is not done yet: it waits for the person's yes on Cookie's page and runs exactly as you wrote it once they say yes — never send it again, and say in your answer what is waiting. Before changing a record, read it first: a change to a record this job has not read is refused.",
+        Level::Ask => "Run one action on a connected app, by the exact name `apps` gives. Reading runs at once. A change (create, update, send, delete) is not done yet: it waits for the person's yes on Cookie's page and runs exactly as you wrote it once they say yes. Never send it again, and say in your answer what is waiting. Before changing a record, read it first: a change to a record this job has not read is refused.",
         Level::Smart => {
-            props["needs_yes"] = json!({"type": "boolean", "description": "true: wait for the person's yes. false: run now — only for a change their own words clearly asked for. Sends outside the team and deletes always wait."});
+            props["needs_yes"] = json!({"type": "boolean", "description": "true: wait for the person's yes. false: run now, only for a change their own words clearly asked for. Sends outside the team and deletes always wait."});
             required.push("needs_yes");
-            "Run one action on a connected app, by the exact name `apps` gives. Reading runs at once. A change runs at once when you set `needs_yes` false and the rules allow it; otherwise it waits for the person's yes and runs exactly as you wrote it — never send it again. The result says which happened. Before changing a record, read it first: a change to a record this job has not read is refused."
+            "Run one action on a connected app, by the exact name `apps` gives. Reading runs at once. A change runs at once when you set `needs_yes` false and the rules allow it; otherwise it waits for the person's yes and runs exactly as you wrote it. Never send it again. The result says which happened. Before changing a record, read it first: a change to a record this job has not read is refused."
         }
-        Level::Full => "Run one action on a connected app, by the exact name `apps` gives. Changes run at once; a send is held a few minutes for the person's undo; what can't be undone (a delete, a payment) waits for their yes unless they allowed it. Before changing a record, read it first — a change to a record this job has not read is refused.",
+        Level::Full => "Run one action on a connected app, by the exact name `apps` gives. Changes run at once; a send is held a few minutes for the person's undo; what can't be undone (a delete, a payment) waits for their yes unless they allowed it. Before changing a record, read it first: a change to a record this job has not read is refused.",
     };
     json!({
         "name": "app_call",

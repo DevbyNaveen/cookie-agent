@@ -147,7 +147,7 @@ async fn chat_command(args: &[String]) -> Result<(), Failure> {
     chat(&agent, &mut session, input, &mut std::io::stdout(), &mut interrupts, prompt).await.map_err(failed)
 }
 
-const LOCAL_HELP: &str = "cookie local [folder] — Cookie on your own machine.
+const LOCAL_HELP: &str = "cookie local [folder]: Cookie on your own machine.
 
 It answers from the folder you open it in (read only; default: this one),
 the web through your search key if you set one, and pages it reads. It can't
@@ -243,7 +243,7 @@ async fn local_command(args: &[String]) -> Result<(), Failure> {
     chat(&agent, &mut session, input, &mut std::io::stdout(), &mut interrupts, prompt).await.map_err(failed)
 }
 
-const PAGE_HELP: &str = "cookie page [folder] — Cookie's page on your own machine.
+const PAGE_HELP: &str = "cookie page [folder]: Cookie's page on your own machine.
 
 The board, the conversations and the chat, as Enkeon's teams use them, for the
 folder you open it in (read only; default: this one). Jobs run as in `cookie

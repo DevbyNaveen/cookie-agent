@@ -434,7 +434,7 @@ fn create_routine(state: &Arc<State>, body: &Value) -> Response<Body> {
     // Only a weekly routine has a day; the others keep Monday, as Enkeon's do.
     let weekday = if cadence == "weekly" { n("weekday", 1, 7) } else { Some(1) };
     let (Some(weekday), Some(hour), Some(minute)) = (weekday, n("hour", 0, 23), n("minute", 0, 59)) else {
-        return error(StatusCode::BAD_REQUEST, "bad_time", "A routine needs a weekday 1–7 (Monday is 1), an hour 0–23 and a minute 0–59.");
+        return error(StatusCode::BAD_REQUEST, "bad_time", "A routine needs a weekday from 1 to 7 (Monday is 1), an hour from 0 to 23 and a minute from 0 to 59.");
     };
     if job.is_empty() || !matches!(cadence, "daily" | "weekly" | "hourly") {
         return error(StatusCode::BAD_REQUEST, "bad_routine", "A routine needs a job and a cadence: daily, weekly or hourly.");

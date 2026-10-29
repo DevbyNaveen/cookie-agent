@@ -252,7 +252,7 @@ impl Message {
                 // Always replaced: the view is rebuilt from the full session each
                 // time, so an output that only looks cleared is cleared too.
                 let size = output.chars().count();
-                *output = format!("[cleared: tool output from turn {turn}, {size} characters — ask again if you need it]");
+                *output = format!("[cleared: tool output from turn {turn}, {size} characters; ask again if you need it]");
             }
         }
     }

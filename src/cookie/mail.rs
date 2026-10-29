@@ -114,7 +114,7 @@ pub fn reply_subject(subject: &str) -> String {
 
 /// The line under every reply Cookie writes for a team.
 pub fn signature(team: &str) -> String {
-    format!("\n\n—\nCookie · from {team}'s context, by Enkeon")
+    format!("\n\n-- \nCookie · from {team}'s context, by Enkeon")
 }
 
 /// Everyone on the thread except Cookie, de-duplicated, From first.
@@ -529,7 +529,7 @@ pub fn plan_reply(f: &ReplyFacts) -> Result<Reply, String> {
         .collect();
     let body = format!("{answer}{sig}");
     let text = format!(
-        "Here's a reply for the thread. It goes to {} — people outside your team — so it waits for you.\n\n\
+        "Here's a reply for the thread. It goes to {}, outside your team, so it waits for you.\n\n\
          Reply \"send\" to send it as Cookie, or \"skip\".\n\n\
          ─────────────\n{body}\n─────────────\n{link}",
         f.outsiders.join(", "),
@@ -708,7 +708,7 @@ mod tests {
     use super::*;
 
     const D: &str = "cookie.enkeon.com";
-    const SIG: &str = "\n\n—\nCookie · from Northwind's context, by Enkeon";
+    const SIG: &str = "\n\n-- \nCookie · from Northwind's context, by Enkeon";
 
     #[test]
     fn own_text_stops_at_the_quote() {
@@ -1049,7 +1049,7 @@ mod tests {
         assert_eq!(
             notice.text,
             format!(
-                "Here's a reply for the thread. It goes to anna@acme.com — people outside your team — so it waits for you.\n\nReply \"send\" to send it as Cookie, or \"skip\".\n\n─────────────\nPrice is 40.{SIG}\n─────────────\n\nSee how Cookie worked it out: https://x/j"
+                "Here's a reply for the thread. It goes to anna@acme.com, outside your team, so it waits for you.\n\nReply \"send\" to send it as Cookie, or \"skip\".\n\n─────────────\nPrice is 40.{SIG}\n─────────────\n\nSee how Cookie worked it out: https://x/j"
             )
         );
         assert!(plan_reply(&ReplyFacts { draft_id: String::new(), ..f }).is_err(), "a draft needs its id");

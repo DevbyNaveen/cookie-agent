@@ -100,8 +100,8 @@ async fn get_json(request: reqwest::RequestBuilder) -> Result<Value, String> {
     let status = resp.status();
     if !status.is_success() {
         let why = match status.as_u16() {
-            402 | 429 => " — the search allowance is used up for now",
-            401 | 403 => " — the search key was refused",
+            402 | 429 => ": the search allowance is used up for now",
+            401 | 403 => ": the search key was refused",
             _ => "",
         };
         return Err(format!("web search failed ({status}){why}"));
