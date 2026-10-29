@@ -38,10 +38,18 @@ target="$arch-$os"
 
 version="${COOKIE_VERSION:-}"
 if [ -z "$version" ]; then
-  version=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
-    sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1) ||
-    fail "could not read the latest release of $REPO"
-  [ -n "$version" ] || fail "$REPO has no release yet"
+  # The answer and its HTTP status, so a failed lookup is never taken for
+  # a project with no release (GitHub answers 404 only for that).
+  latest=$(curl -sSL -w '\n%{http_code}' "https://api.github.com/repos/$REPO/releases/latest") ||
+    fail "could not look up the latest release of $REPO (no answer from GitHub); try again, or set COOKIE_VERSION"
+  status=$(printf '%s\n' "$latest" | tail -n 1)
+  case "$status" in
+    200) ;;
+    404) fail "$REPO has no release yet" ;;
+    *) fail "could not look up the latest release of $REPO (GitHub answered HTTP $status, often its rate limit); try again later, or set COOKIE_VERSION" ;;
+  esac
+  version=$(printf '%s\n' "$latest" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
+  [ -n "$version" ] || fail "could not read the latest release of $REPO from GitHub's answer; set COOKIE_VERSION"
 fi
 
 name="cookie-$version-$target"
