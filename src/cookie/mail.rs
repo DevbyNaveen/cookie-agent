@@ -133,15 +133,25 @@ pub fn thread_people(mail: &Mail, cookie_domain: &str) -> Vec<String> {
 const MONTHS: [&str; 12] =
     ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-/// The UTC month (1–12) of a Unix time, by the proleptic Gregorian calendar
-/// (Howard Hinnant's `civil_from_days`).
-fn month_of(epoch_secs: i64) -> usize {
+/// The UTC month (1–12) and day of the month of a Unix time, by the
+/// proleptic Gregorian calendar (Howard Hinnant's `civil_from_days`).
+fn month_day(epoch_secs: i64) -> (usize, i64) {
     let z = epoch_secs.div_euclid(86_400) + 719_468;
     let doe = z.rem_euclid(146_097);
     let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
-    (if mp < 10 { mp + 3 } else { mp - 9 }) as usize
+    ((if mp < 10 { mp + 3 } else { mp - 9 }) as usize, doy - (153 * mp + 2) / 5 + 1)
+}
+
+fn month_of(epoch_secs: i64) -> usize {
+    month_day(epoch_secs).0
+}
+
+/// "30 October" for a time on that day (UTC).
+pub fn day_name(epoch_secs: i64) -> String {
+    let (m, d) = month_day(epoch_secs);
+    format!("{d} {}", MONTHS[m - 1])
 }
 
 /// ("October", "1 November") for a time in October.
@@ -785,6 +795,9 @@ mod tests {
         // 2024-12-31 23:59:59 → December, renewing in January.
         assert_eq!(month_name(1_735_689_599), ("December".into(), "1 January".into()));
         assert_eq!(month_name(1_735_689_600).0, "January");
+        assert_eq!(day_name(1_793_361_600), "30 October");
+        assert_eq!(day_name(0), "1 January");
+        assert_eq!(day_name(1_709_164_800), "29 February", "a leap day");
         // 2023-11-14 22:13:20.
         assert_eq!(month_name(1_700_000_000).0, "November");
         // Before 1970: 1969-12-31 23:59:59.

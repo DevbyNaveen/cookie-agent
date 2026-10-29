@@ -88,6 +88,14 @@ pub struct Signal {
     pub what: String,
     /// A plan's day (epoch seconds); 0 = none.
     pub due: f64,
+    /// Who or which tool made the change, as the client names them ("Mara",
+    /// "Claude Code"). Empty: not known, and the notice says only "someone".
+    pub by: String,
+    /// When the change was written (epoch seconds); 0 = not known.
+    pub changed_at: f64,
+    /// A contradicted decision's maker and day, when the client knows them.
+    pub decided_by: String,
+    pub decided_at: f64,
 }
 
 /// How much the team wanted one kind of signal, and when that was set.
@@ -164,6 +172,8 @@ pub struct Write {
     pub branch: String,
     pub outside: bool,
     pub by_person: bool,
+    /// Who or which tool wrote it ([`Signal::by`]).
+    pub by: String,
 }
 
 /// What the client counts for the team.
@@ -318,6 +328,9 @@ pub fn signal_of(write: &Write, owed: &[(String, String, String)], now: f64) -> 
             hard: true,
             what: plan_name.clone(),
             due: 0.0,
+            by: write.by.clone(),
+            changed_at: now,
+            ..Signal::default()
         },
         _ => Signal {
             id: write.id.clone(),
@@ -330,6 +343,9 @@ pub fn signal_of(write: &Write, owed: &[(String, String, String)], now: f64) -> 
             hard: false,
             what: write.name.clone(),
             due: 0.0,
+            by: write.by.clone(),
+            changed_at: now,
+            ..Signal::default()
         },
     }
 }
@@ -381,15 +397,24 @@ pub fn consider(subject: &mut Subject, team: &Team, now: f64) -> Verdict {
     if score < NOTICE_AT {
         return Verdict::Wait;
     }
+    // Only what supports this notice: the hard cues that fired it, else the
+    // writes that built it up without a tool's own bookkeeping. A checkpoint
+    // listed under a contradicted decision only confused the person reading.
+    let mut cues = std::mem::take(&mut subject.cues);
+    if hard {
+        cues.retain(|c| c.hard);
+    } else {
+        cues.retain(|c| !matches!(c.kind.as_str(), "checkpoint" | "episode"));
+    }
     let notice = Notice {
         subject: subject.key.clone(),
-        title: subject.title.clone(),
+        title: title(subject, &cues),
         branch: subject.branch.clone(),
         hard,
         utility: score,
         level,
-        question: question(&subject.cues),
-        cues: std::mem::take(&mut subject.cues),
+        question: question(&cues),
+        cues,
     };
     subject.level = 0.0;
     subject.updated_at = now;
@@ -449,6 +474,7 @@ pub fn due_cues(plans: &[Plan], now: f64) -> Vec<(Plan, Signal)> {
             hard: true,
             what: p.name.clone(),
             due: p.due,
+            ..Signal::default()
         };
         out.push((p.clone(), signal));
     }
@@ -519,19 +545,97 @@ pub fn send_to(p: &Person) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Why this notice, in one sentence a person reads first: the hard cue that
-/// fired it, else what built up.
+/// What a notice is about, by name, for its subject line: the thing its
+/// writes are about, else what the cue it asks about names. Never a bare
+/// branch: "Cookie noticed: main" told the person nothing (2026-10-30).
+pub fn title(subject: &Subject, cues: &[Signal]) -> String {
+    let thing = (!subject.key.ends_with("|*"))
+        .then(|| subject.title.strip_suffix(&format!(" · {}", subject.branch)))
+        .flatten()
+        .map(str::to_string)
+        .or_else(|| asked(cues).map(|(c, _)| c.what.clone()))
+        .or_else(|| cues.iter().rev().map(|c| c.what.trim()).find(|w| !w.is_empty()).map(str::to_string));
+    match thing {
+        Some(t) => clip(&t, 80),
+        None if is_main(&subject.branch) => "new notes from the team".to_string(),
+        None => format!("new notes on the {} branch", subject.branch),
+    }
+}
+
+fn is_main(branch: &str) -> bool {
+    branch.trim().is_empty() || branch.trim().eq_ignore_ascii_case("main")
+}
+
+/// Why this notice, read first: what changed, where, who did it and when, as
+/// far as the cues say. A contradicted decision is named, with its maker and
+/// day when known; a plan's day speaks for itself; a build-up says who wrote
+/// how much about what. Nothing a cue does not carry is said.
 pub fn why_now(n: &Notice) -> String {
+    let place = if is_main(&n.branch) { String::new() } else { format!(" on the {} branch", n.branch.trim()) };
+    let who = |c: &Signal| match c.by.trim() {
+        "" if c.outside => "Mail or a synced app".to_string(),
+        "" => "Someone on the team".to_string(),
+        by => by.to_string(),
+    };
+    let on = |at: f64| if at > 0.0 { format!("On {}, ", crate::cookie::mail::day_name(at as i64)) } else { String::new() };
+    if let Some(c) = n.cues.iter().find(|c| c.hard && c.kind == "conflict") {
+        let decision = match c.what.trim() {
+            "" => "a decision the team made".to_string(),
+            what => format!("the decision “{}”", clip(what, 80)),
+        };
+        let mut made = Vec::new();
+        if !c.decided_by.trim().is_empty() {
+            made.push(format!("by {}", c.decided_by.trim()));
+        }
+        if c.decided_at > 0.0 {
+            made.push(format!("on {}", crate::cookie::mail::day_name(c.decided_at as i64)));
+        }
+        let made = if made.is_empty() { String::new() } else { format!(", made {}", made.join(" ")) };
+        let when = on(c.changed_at);
+        let actor = if when.is_empty() { who(c) } else { first_lower(&who(c)) };
+        return format!("{when}{actor} wrote something{place} that goes against {decision}{made}.");
+    }
     if let Some(c) = n.cues.iter().find(|c| c.hard && !c.why.is_empty()) {
         return c.why.clone();
     }
-    let people = n.cues.iter().filter(|c| c.by_person).count();
-    let notes = n.cues.len();
-    let plural = |k: usize, one: &str, many: &str| if k == 1 { one.to_string() } else { format!("{k} {many}") };
-    if people > 0 {
-        format!("{} about {} from your team", plural(notes, "A new note", "new notes"), n.title)
-    } else {
-        format!("{} about {} came in", plural(notes, "A new note", "new notes"), n.title)
+    let notes = if n.cues.len() == 1 { "a note".to_string() } else { format!("{} notes", n.cues.len()) };
+    let mut people: Vec<String> = Vec::new();
+    for by in n.cues.iter().map(|c| c.by.trim()).filter(|b| !b.is_empty()) {
+        if !people.iter().any(|p| p == by) {
+            people.push(by.to_string());
+        }
+    }
+    let days: Vec<f64> = n.cues.iter().map(|c| c.changed_at).filter(|t| *t > 0.0).collect();
+    let since = match (days.iter().copied().reduce(f64::min), days.iter().copied().reduce(f64::max)) {
+        (Some(a), Some(b)) if crate::cookie::mail::day_name(a as i64) == crate::cookie::mail::day_name(b as i64) => {
+            format!(" on {}", crate::cookie::mail::day_name(a as i64))
+        }
+        (Some(a), Some(_)) => format!(" since {}", crate::cookie::mail::day_name(a as i64)),
+        _ => String::new(),
+    };
+    let writers = match people.as_slice() {
+        [] if n.cues.iter().any(|c| c.by_person) => "Your team".to_string(),
+        [] => return format!("{} about {}{place} came in from mail or synced apps{since}.", first_upper(&notes), n.title),
+        [one] => one.clone(),
+        [a, b] => format!("{a} and {b}"),
+        [a, b, rest @ ..] => format!("{a}, {b} and {}", if rest.len() == 1 { rest[0].clone() } else { format!("{} more", rest.len()) }),
+    };
+    format!("{writers} wrote {notes} about {}{place}{since}.", n.title)
+}
+
+fn first_upper(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+}
+
+/// "Someone on the team" mid-sentence; a name stays as written.
+fn first_lower(s: &str) -> String {
+    match s {
+        "Someone on the team" | "Mail or a synced app" => {
+            let mut c = s.chars();
+            c.next().map(|f| f.to_lowercase().chain(c).collect()).unwrap_or_default()
+        }
+        name => name.to_string(),
     }
 }
 
@@ -544,6 +648,11 @@ pub fn why_now(n: &Notice) -> String {
 /// matter for what you are working on?"; a build-up of decisions, plans or
 /// requirements — about the latest. `None` when no cue names its thing.
 pub fn question(cues: &[Signal]) -> Option<String> {
+    asked(cues).map(|(_, q)| q)
+}
+
+/// The cue a notice asks about, and the question.
+fn asked<'a>(cues: &'a [Signal]) -> Option<(&'a Signal, String)> {
     let ask = |c: &Signal| -> Option<String> {
         let what = clip(&c.what, 80);
         if what.is_empty() {
@@ -562,7 +671,9 @@ pub fn question(cues: &[Signal]) -> Option<String> {
             _ => return None,
         })
     };
-    cues.iter().filter(|c| c.hard).find_map(ask).or_else(|| cues.iter().rev().filter(|c| !c.hard).find_map(ask))
+    let pair = |c: &'a Signal| ask(c).map(|q| (c, q));
+    let found = cues.iter().filter(|c| c.hard).find_map(pair);
+    found.or_else(|| cues.iter().rev().filter(|c| !c.hard).find_map(pair))
 }
 
 /// The weekday of an epoch time, in UTC.
@@ -915,10 +1026,80 @@ mod tests {
     #[test]
     fn a_notice_says_why_now() {
         let cue = |kind: &str, why: &str, hard: bool| Signal { kind: kind.into(), why: why.into(), hard, by_person: true, ..Signal::default() };
-        let mut n = Notice { title: "Acme".into(), cues: vec![cue("fact", "", false), cue("decision", "", false)], ..Notice::default() };
-        assert_eq!(why_now(&n), "2 new notes about Acme from your team");
+        let mut n = Notice { title: "Acme".into(), branch: "main".into(), cues: vec![cue("fact", "", false), cue("decision", "", false)], ..Notice::default() };
+        assert_eq!(why_now(&n), "Your team wrote 2 notes about Acme.");
+        // Who and when, only as far as the cues say.
+        let thu = 1_793_275_200.0;
+        n.cues[0].by = "Mara".into();
+        n.cues[1].by = "Claude Code".into();
+        n.cues[0].changed_at = thu;
+        n.cues[1].changed_at = thu + 86_400.0;
+        n.branch = "pricing".into();
+        assert_eq!(why_now(&n), "Mara and Claude Code wrote 2 notes about Acme on the pricing branch since 29 October.");
+        let synced = Notice { cues: vec![Signal { by_person: false, outside: true, ..cue("fact", "", false) }], ..n.clone() };
+        assert_eq!(why_now(&synced), "A note about Acme on the pricing branch came in from mail or synced apps.");
         n.cues.push(cue("past_due", "Past its day: Quote", true));
         assert_eq!(why_now(&n), "Past its day: Quote");
+    }
+
+    /// The notice that confused the founder (2026-10-30): titled "main", a
+    /// contradiction that never named who or where, and checkpoints listed
+    /// as evidence. Now it names the decision, says who wrote what where and
+    /// when, lists only the cue that fired, and ends on one question.
+    #[test]
+    fn a_contradiction_names_the_decision_who_where_and_when_and_lists_only_what_supports_it() {
+        let now = 1_793_361_600.0;
+        let mut s = Subject::new("main", &[], now);
+        for i in 0..3 {
+            let w = Write { id: format!("k{i}"), kind: "checkpoint".into(), name: format!("Checkpoint {i}: notch polish"), branch: "main".into(), by_person: true, ..Write::default() };
+            add(&mut s, signal_of(&w, &[], now), now);
+        }
+        let conflict = Signal {
+            id: "c1".into(), kind: "conflict".into(), hard: true, by_person: true, salience: 10.0,
+            why: "The work makes the Home state floating and expanded".into(), what: "Idle Home stays a capsule".into(),
+            by: "Claude Code".into(), changed_at: now, decided_by: "Mara".into(), decided_at: now - 18.0 * 86_400.0, ..Signal::default()
+        };
+        add(&mut s, conflict, now);
+        let Verdict::Notice(n) = consider(&mut s, &Team::default(), now) else { panic!("a contradiction is noticed at once") };
+        assert_eq!(n.title, "Idle Home stays a capsule", "named for what it is about, never the bare branch");
+        assert_eq!(n.cues.len(), 1, "only the cue that fired it: {:?}", n.cues);
+        assert_eq!(why_now(&n), "On 30 October, Claude Code wrote something that goes against the decision “Idle Home stays a capsule”, made by Mara on 12 October.");
+        assert_eq!(n.question.as_deref(), Some("Is “Idle Home stays a capsule” still the plan?"));
+        // What the client does not say is not said.
+        let bare = Notice { branch: "home-redesign".into(), cues: vec![Signal { kind: "conflict".into(), hard: true, what: "Idle Home stays a capsule".into(), ..Signal::default() }], ..n.clone() };
+        assert_eq!(why_now(&bare), "Someone on the team wrote something on the home-redesign branch that goes against the decision “Idle Home stays a capsule”.");
+    }
+
+    #[test]
+    fn a_title_names_the_thing_never_a_bare_branch() {
+        let named = |what: &str, kind: &str| Signal { kind: kind.into(), what: what.into(), ..Signal::default() };
+        assert_eq!(title(&Subject::new("acme", &["Renewal".into()], 0.0), &[named("x", "decision")]), "Renewal");
+        assert_eq!(title(&Subject::new("main", &[], 0.0), &[named("Move to Postgres", "decision")]), "Move to Postgres");
+        assert_eq!(title(&Subject::new("main", &[], 0.0), &[named("", "fact")]), "new notes from the team");
+        assert_eq!(title(&Subject::new("ops", &[], 0.0), &[]), "new notes on the ops branch");
+        // Who wrote a write rides from the client's write to its cue.
+        let r = rpc(&json!({"op": "add", "now": 5.0, "write": {"id": "m1", "kind": "decision", "name": "Price stays", "branch": "acme", "by": "Mara", "by_person": true}})).unwrap();
+        assert_eq!((r["signal"]["by"].as_str(), r["signal"]["changed_at"].as_f64()), (Some("Mara"), Some(5.0)));
+    }
+
+    /// Every sentence a notice is built from, through the voice check.
+    #[test]
+    fn every_notice_template_reads_like_a_person_wrote_it() {
+        let c = |kind: &str, hard: bool| Signal { kind: kind.into(), hard, what: "Send Anna the quote".into(), why: "w".into(), by_person: true, due: 1_793_361_600.0, ..Signal::default() };
+        let mut texts = Vec::new();
+        for kind in ["conflict", "due_soon", "past_due", "plan_cue", "page_change", "decision", "plan", "requirement"] {
+            let hard = !matches!(kind, "decision" | "plan" | "requirement");
+            texts.extend(question(&[c(kind, hard)]));
+            let n = Notice { title: "Acme".into(), branch: "acme".into(), cues: vec![Signal { by: "Mara".into(), changed_at: 1.0, decided_by: "Ines".into(), decided_at: 2.0, ..c(kind, hard) }], ..Notice::default() };
+            texts.push(why_now(&n));
+        }
+        texts.extend(due_cues(&[Plan { id: "p".into(), name: "Quote".into(), due: 100.0, to: Some("Anna".into()), ..Plan::default() }, Plan { id: "q".into(), name: "Quote".into(), due: 7_200.0, ..Plan::default() }], 3_600.0).into_iter().map(|(_, s)| s.why));
+        texts.push(signal_of(&decision("m1"), &[("renewal".into(), "p1".into(), "Quote".into())], 0.0).why);
+        texts.extend([title(&Subject::new("main", &[], 0.0), &[]), title(&Subject::new("ops", &[], 0.0), &[])]);
+        texts.extend(["the team's work went quiet", "it could not wait for a quieter moment"].map(String::from));
+        for t in texts {
+            assert!(crate::cookie::voice::check(&t).is_empty(), "{t}: {:?}", crate::cookie::voice::check(&t));
+        }
     }
 
     #[test]
