@@ -5,21 +5,83 @@
 <h1 align="center">Cookie Agent</h1>
 <p align="center"><b>by <a href="https://enkeon.com">Enkeon</a></b></p>
 
-<h3 align="center">The teammate that does the work.</h3>
+<h3 align="center">The teammate that writes the follow-up for you.</h3>
 
 <p align="center">
-Ask in Slack, by email, on its own page or from your AI tools.<br>
-Cookie reads what your team knows, does the job, and answers right where you asked.
+Cookie writes to the people you are waiting on, in your voice.<br>
+When they go quiet, a short nudge waits as a draft. You read it and send it.
 </p>
 
 <p align="center">
-  <a href="#start-in-a-minute">Start in a minute</a> ·
-  <a href="#cookies-page">The page</a> ·
-  <a href="#open-source-and-enkeon">Open source and Enkeon</a> ·
-  <a href="https://enkeon.com">enkeon.com</a>
+  <a href="#install">Install</a> ·
+  <a href="#the-follow-up-job">The follow-up job</a> ·
+  <a href="#research-with-sources">Research</a> ·
+  <a href="#competitor-watch">Competitor watch</a> ·
+  <a href="#open-source-and-enkeon">Open source and Enkeon</a>
 </p>
 
 ---
+
+## The follow-up job
+
+Point Cookie at your inbox and ask it to write to someone outside the team:
+a client who owes you an answer, a lead, a supplier. Cookie writes the
+message and leaves it as a draft for you to send. When a reply is really
+needed, it sets a follow-up: if they have not answered after the days it
+chose, a short nudge, written from the thread, waits as a draft too. If they
+reply, the follow-up ends. Nothing goes out without you.
+
+Your drafts sound like you, not like an AI:
+
+- **Your voice.** Give Cookie a few messages you really sent (`voice` in its
+  profile), and it matches their tone, length, greeting and sign-off. It
+  never borrows their content.
+- **Checked before you see it.** The drafts Cookie hands to your apps and
+  the answers it gives are read for the habits that give AI writing away:
+  dashes used as punctuation, "it's not X, it's Y", lists of three "no ...",
+  stock phrases, words about being an AI. One that has them goes back to be
+  rewritten once before it reaches you.
+
+The inbox, the waiting and the sending run with [Enkeon](https://enkeon.com),
+which connects your mail in one click. What decides the words is here: the
+`chase` follow-up, the voice examples and the check (`src/cookie/voice.rs`,
+also a `voice_check` line on `cookie serve` for any text you want checked).
+
+## Research with sources
+
+Ask what you would ask a teammate: who to talk to this week, what a company
+does, where in your project refunds are handled. Cookie looks things up in
+your folder and on the web, reads the pages, and every fact says where it
+came from: a page address or a `path:line`. When Cookie hands a question to
+one of its researchers, the report is checked against the pages it read
+before Cookie uses it.
+
+## Competitor watch
+
+Name your competitors. Cookie researches each one, keeps an eye on the
+pricing, changelog and careers pages they really have (never an address it
+made up), and writes a dated baseline with its sources, so the next change
+has something to be compared with. The `watch-competitors` skill ships with
+Cookie's profile; reading the watched pages every few hours is done by the
+app that runs Cookie, which Enkeon does for you.
+
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DevbyNaveen/cookie-agent/main/install.sh | sh
+```
+
+It downloads the latest release for your Mac or Linux machine, checks it
+against the SHA-256 published with it, and puts `cookie` in
+`/usr/local/bin` (or `~/.local/bin`) with its page beside it. Then:
+
+```sh
+export ANTHROPIC_API_KEY=sk-ant-...
+cd ~/your-project && cookie local     # in the terminal
+cookie page ~/your-project            # on its page: http://localhost:4747/me/local/cookie
+```
+
+From source instead: `cargo install --git https://github.com/DevbyNaveen/cookie-agent --locked`.
 
 ## One Cookie. Everywhere you work.
 
@@ -122,11 +184,9 @@ your screen. **On Linux or a server**, use `cookie page`
 in your browser or `cookie local` in a terminal. It is the same Cookie either
 way; you only need one.
 
-## Start in a minute
+## Ask about your folder
 
 ```sh
-cargo install --git https://github.com/DevbyNaveen/cookie-agent --locked
-export ANTHROPIC_API_KEY=sk-ant-...
 export TINYFISH_API_KEY=...      # optional: free web search (or EXA_API_KEY, BRAVE_SEARCH_API_KEY)
 cd ~/your-project && cookie local
 ```
@@ -134,7 +194,7 @@ cd ~/your-project && cookie local
 Ask it what you would ask a teammate who just read your folder: *"What does
 this project do?"*, *"Where do we handle refunds?"*, *"Summarise
 https://…"*. It looks through the folder, searches the web, reads pages, and
-says where each fact came from — a `path:line` or a page address.
+says where each fact came from: a `path:line` or a page address.
 
 `cookie local` only reads. A page address it found inside a page, a file or a
 search result is shown to you before it is opened (`--permission ask`, the
@@ -268,6 +328,13 @@ your tools (answer with `tool_result`), `approval` when something needs a
 person (answer with `approve` — no answer means no), and `done` or `error`.
 `cancel` stops a run now, `finish_turn` after this turn. Your tools go
 through the same gates as Rust ones, and their results are untrusted.
+
+A tool declared with `"voice": ["subject", "body"]` has those arguments
+read before the call goes anywhere: words that read like an AI's
+(`cookie::voice`) send the call back to the model once to be rewritten, and
+the rewrite goes through as written. `{"type": "voice_check", "id": "v1",
+"text": "…"}` runs the same check on any text, with no model, and answers
+`{"ok": false, "problems": [{"rule": "dash", "excerpt": "…"}]}`.
 
 A `run` may also carry, besides `instructions`, `session` (a file to resume),
 `skills` (a folder of `SKILL.md` skills, offered through `use_skill`),
