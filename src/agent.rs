@@ -935,6 +935,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn each_outbound_text_keeps_its_own_rewrite_until_it_is_used() {
+        let made = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let spec = crate::tool::ToolSpec { name: "app_call".into(), description: "d".into(), schema: json!({"type": "object"}), effect: Effect::Write,
+            guarded_args: vec![], parallel_safe: false, delegates: false, foreign: false };
+        let to = |app: &str, n: u8| json!({"app": app, "action": "send", "body": format!("Note {n} \u{2014} ready.")});
+        let (a, _) = agent(vec![
+            Scripted::call("c1", "app_call", to("gmail", 1)),
+            // Another app's text is checked on its own, never let through on gmail's pass.
+            Scripted::call("c2", "app_call", to("slack", 2)),
+            // A read in between keeps both passes.
+            Scripted::call("c3", "weather", json!({"city": "Riga"})),
+            Scripted::call("c4", "app_call", to("slack", 4)),
+            Scripted::call("c5", "app_call", to("gmail", 5)),
+            // Both passes are used: the next text is checked again.
+            Scripted::call("c6", "app_call", to("gmail", 6)),
+            Scripted::call("c7", "app_call", json!({"app": "gmail", "action": "send", "body": "Note 7 is ready."})),
+            // A clean rewrite used the pass too: this one is checked.
+            Scripted::call("c8", "app_call", to("gmail", 8)),
+            Scripted::text("done"),
+        ]);
+        let a = a.tool(Drafts(spec, made.clone())).tool(weather()).approver(FnApprover(|_: &ApprovalRequest| true));
+        assert_eq!(a.run("send them").await.unwrap(), "done");
+        assert_eq!(*made.lock().unwrap(), ["Note 4 \u{2014} ready.", "Note 5 \u{2014} ready.", "Note 7 is ready."]);
+    }
+
+    #[tokio::test]
     async fn an_unrelated_read_does_not_verify_a_change() {
         let (a, _) = agent(vec![
             Scripted::call("c1", "send_email", json!({"to": "anna@x.com"})),

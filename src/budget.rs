@@ -211,8 +211,9 @@ pub(crate) struct LoopGuard {
     unchecked: Vec<crate::verification::Pending>,
     /// Calls already warned about repeating: the next repeat stops the run.
     warned: std::collections::HashSet<String>,
-    /// Calls sent back last batch to be rewritten (`Tool::send_back`), by
-    /// tool: that many of its calls in the next batch go through as written.
+    /// Calls sent back to be rewritten (`Tool::send_back`), by
+    /// `calls::rewrite_key`: that many later calls with the same key go
+    /// through as written, each pass kept until a call uses it.
     rewrites: std::collections::HashMap<String, usize>,
 }
 
@@ -286,15 +287,20 @@ impl LoopGuard {
     }
 
     /// All unresolved changes get one reminder; this is not a verified receipt.
-    /// What last batch sent back, for this batch to let through; what this
-    /// batch sends back starts again from nothing.
-    pub(crate) fn take_rewrites(&mut self) -> std::collections::HashMap<String, usize> {
-        std::mem::take(&mut self.rewrites)
+    /// Whether a call with this key is the rewrite of one sent back earlier;
+    /// if so its pass is used up.
+    pub(crate) fn use_rewrite(&mut self, key: &str) -> bool {
+        let Some(owed) = self.rewrites.get_mut(key).filter(|n| **n > 0) else { return false };
+        *owed -= 1;
+        if *owed == 0 {
+            self.rewrites.remove(key);
+        }
+        true
     }
 
-    /// A call of `tool` was sent back to be rewritten.
-    pub(crate) fn sent_back(&mut self, tool: &str) {
-        *self.rewrites.entry(tool.to_string()).or_default() += 1;
+    /// A call with this key was sent back to be rewritten.
+    pub(crate) fn sent_back(&mut self, key: String) {
+        *self.rewrites.entry(key).or_default() += 1;
     }
 
     pub(crate) fn take_unchecked(&mut self) -> Option<String> {

@@ -119,7 +119,8 @@ pub trait Tool: Send + Sync {
     /// Words that send this call back to the model unrun, once, before
     /// anything else decides on it: the text it carries for a person reads
     /// like an AI wrote it (`cookie::voice`). The call is answered with
-    /// them as an error; the next call of this tool goes through as written.
+    /// them as an error; the next call carrying the same text (this tool, and
+    /// for `app_call` the same app and action) goes through as written.
     fn send_back(&self, _args: &Value) -> Option<String> {
         None
     }

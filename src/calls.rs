@@ -41,6 +41,14 @@ pub(crate) struct Toolset {
     pub(crate) foreign: bool,
 }
 
+/// Which outbound text a call carries, for its one rewrite (`Tool::send_back`):
+/// the tool, and for `app_call` the app and action, so a Slack post never
+/// uses the pass a Gmail draft was owed.
+fn rewrite_key(name: &str, args: &Value) -> String {
+    let part = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    format!("{name}\u{0}{}\u{0}{}", part("app"), part("action"))
+}
+
 impl Agent {
     /// This agent's tools plus `extra` (Enkeon's), the artifact reader when
     /// there are sub-agents, and the search tool when there are many; checked.
@@ -82,8 +90,9 @@ impl Agent {
 
         // Actions that need a person, put to them together once every call is decided.
         let mut asks: Vec<(usize, Arc<dyn Tool>, ApprovalRequest)> = Vec::new();
-        // Rewrites of calls the last batch sent back: they go through as written.
-        let mut rewrites = loop_guard.take_rewrites();
+        // Calls this batch sends back: their passes start with the next batch,
+        // so a second such call in this batch is checked on its own.
+        let mut returned: Vec<String> = Vec::new();
         for (index, (_, name, args)) in calls.iter().enumerate() {
             // Arguments that were not JSON: answered with what was wrong, never run.
             if let Some(wrong) = args.get(crate::provider::MALFORMED_ARGS).and_then(|v| v.as_str()) {
@@ -121,14 +130,12 @@ impl Agent {
             // Words for a person that read like an AI's go back once to be
             // rewritten, before anyone is asked about them; the rewrite goes
             // through whatever it says, so this never loops.
-            if let Some(note) = tool.send_back(args) {
-                match rewrites.get_mut(name.as_str()).filter(|n| **n > 0) {
-                    Some(owed) => *owed -= 1,
-                    None => {
-                        loop_guard.sent_back(name);
-                        outcomes[index] = Some((note, true));
-                        continue;
-                    }
+            let key = rewrite_key(name, args);
+            if !loop_guard.use_rewrite(&key) {
+                if let Some(note) = tool.send_back(args) {
+                    returned.push(key);
+                    outcomes[index] = Some((note, true));
+                    continue;
                 }
             }
             match policy.decide(tool.spec(), args, provenance, tool.preview(args)) {
@@ -157,6 +164,9 @@ impl Agent {
                     outcomes[index] = Some((reason, true));
                 }
             }
+        }
+        for key in returned {
+            loop_guard.sent_back(key);
         }
         // A loop stop already answered every call ("Not run"): nobody is asked.
         if !asks.is_empty() && matches!(stop, Stop::No) {
