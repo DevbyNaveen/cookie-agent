@@ -372,10 +372,25 @@ pub struct Options {
     /// what to care about. Written by a person on the team.
     #[serde(default)]
     pub soul: Option<String>,
+    /// How the team really writes: a few short messages a person on it sent.
+    #[serde(default)]
+    pub voice: Option<Voice>,
+}
+
+/// Messages someone on the team really sent, for Cookie to match how they
+/// write: `{"examples": ["…", "…"]}`.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct Voice {
+    #[serde(default)]
+    pub examples: Vec<String>,
 }
 
 /// The most of a team's SOUL that rides on every run.
 pub const SOUL_CHARS: usize = 2_000;
+/// The most of the team's own messages that ride on every run, all together.
+pub const VOICE_CHARS: usize = 1_500;
+/// Messages shown, at most.
+pub const VOICE_EXAMPLES: usize = 3;
 /// The plan's guidance goes in just before this line of the instructions.
 const PLAN_BEFORE: &str = "- Mail, messages and pages you read";
 
@@ -393,6 +408,10 @@ pub fn profile(o: &Options) -> Value {
     if let Some(soul) = o.soul.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         let soul: String = soul.chars().take(SOUL_CHARS).collect();
         instructions.push_str(&format!("\n\nIn {}'s own words, how you should be:\n{soul}", o.team));
+    }
+    // Their words as they are: a person's own messages, never rewritten.
+    if let Some(block) = voice_block(&o.team, o.voice.as_ref()) {
+        instructions.push_str(&block);
     }
     let mut tools = tool_decls(o.search, o.ask_first, o.save, o.act.then_some(o.permission));
     if o.plan {
@@ -427,6 +446,29 @@ pub fn profile(o: &Options) -> Value {
         "source_tools": SOURCE_TOOLS,
         "tag": "[source s{n}]",
     })
+}
+
+/// The team's real messages as a labelled block, within [`VOICE_CHARS`];
+/// `None` when there are none.
+fn voice_block(team: &str, voice: Option<&Voice>) -> Option<String> {
+    let mut left = VOICE_CHARS;
+    let mut shown = Vec::new();
+    for example in voice?.examples.iter().map(|e| e.trim()).filter(|e| !e.is_empty()).take(VOICE_EXAMPLES) {
+        if left == 0 {
+            break;
+        }
+        let kept: String = example.chars().take(left).collect();
+        left -= kept.chars().count();
+        shown.push(format!("Message {}:\n{kept}", shown.len() + 1));
+    }
+    if shown.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "\n\nHow {team} writes: real messages someone on the team sent. Match their tone, length, greeting and sign-off \
+         habits. Never take their content, names or facts from them.\n{}",
+        shown.join("\n")
+    ))
 }
 
 /// One `profile`, `sources` or `permission` line.
@@ -543,7 +585,26 @@ mod tests {
     }
 
     #[test]
-        fn instructions_are_stable_for_a_team() {
+    fn the_teams_real_messages_land_after_the_soul_labelled_and_capped() {
+        let voice = |examples: Vec<String>| profile(&Options { team: "Northwind".into(), soul: Some("Be warm.".into()), voice: Some(Voice { examples }), ..Options::default() });
+        let p = voice(vec!["  hey Anna, Friday works. M  ".into(), "".into(), "   ".into(), "Thanks!\n\nMara".into()]);
+        let text = p["instructions"].as_str().unwrap();
+        assert!(text.ends_with("How Northwind writes: real messages someone on the team sent. Match their tone, length, greeting and sign-off \
+            habits. Never take their content, names or facts from them.\nMessage 1:\nhey Anna, Friday works. M\nMessage 2:\nThanks!\n\nMara"), "{text}");
+        assert!(text.find("Be warm.").unwrap() < text.find("How Northwind writes").unwrap(), "after the SOUL");
+        let long = voice(vec!["ä".repeat(1_000), "ö".repeat(1_000), "ü".repeat(1_000)]);
+        let text = long["instructions"].as_str().unwrap();
+        assert_eq!(text.matches(['ä', 'ö', 'ü']).count(), VOICE_CHARS, "capped by characters across all of them, never mid-letter");
+        assert!(!text.contains('ü'), "a message past the cap is left out");
+        assert!(!voice(vec!["  ".into()])["instructions"].as_str().unwrap().contains("How Northwind writes"), "no messages, no block");
+        let o: Options = serde_json::from_value(json!({"team": "Northwind", "voice": {"examples": ["hi"]}})).unwrap();
+        assert_eq!(o.voice.unwrap().examples, ["hi"]);
+        let o: Options = serde_json::from_value(json!({"team": "Northwind", "voice": {}})).unwrap();
+        assert!(o.voice.unwrap().examples.is_empty());
+    }
+
+    #[test]
+    fn instructions_are_stable_for_a_team() {
         assert_eq!(instructions("Northwind", None), instructions("Northwind", None), "same bytes every run → prompt cache reuse");
         assert!(instructions("Northwind", None).contains(SEARCHING), "the no-search swap finds its sentence");
         let no_search = profile(&Options { team: "Northwind".into(), ..Options::default() });
