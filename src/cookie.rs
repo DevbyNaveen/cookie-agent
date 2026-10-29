@@ -13,6 +13,7 @@ pub mod plan;
 pub mod promise;
 pub mod watch;
 pub mod slack;
+pub mod voice;
 
 use serde_json::{json, Value};
 use sha2::Digest;
@@ -186,7 +187,9 @@ fn chase_decl() -> Value {
             "about": {"type": "string", "description": "What the reply is needed for, in a few words (shown to the person)."}
         }, "required": ["after_days", "about"]},
         "effect": "write",
-        "parallel_safe": false
+        "parallel_safe": false,
+        // Shown to the person on their page.
+        "voice": ["about"]
     })
 }
 

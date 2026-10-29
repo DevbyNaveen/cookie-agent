@@ -211,6 +211,9 @@ pub(crate) struct LoopGuard {
     unchecked: Vec<crate::verification::Pending>,
     /// Calls already warned about repeating: the next repeat stops the run.
     warned: std::collections::HashSet<String>,
+    /// Calls sent back last batch to be rewritten (`Tool::send_back`), by
+    /// tool: that many of its calls in the next batch go through as written.
+    rewrites: std::collections::HashMap<String, usize>,
 }
 
 /// What a repeated call comes to.
@@ -283,6 +286,17 @@ impl LoopGuard {
     }
 
     /// All unresolved changes get one reminder; this is not a verified receipt.
+    /// What last batch sent back, for this batch to let through; what this
+    /// batch sends back starts again from nothing.
+    pub(crate) fn take_rewrites(&mut self) -> std::collections::HashMap<String, usize> {
+        std::mem::take(&mut self.rewrites)
+    }
+
+    /// A call of `tool` was sent back to be rewritten.
+    pub(crate) fn sent_back(&mut self, tool: &str) {
+        *self.rewrites.entry(tool.to_string()).or_default() += 1;
+    }
+
     pub(crate) fn take_unchecked(&mut self) -> Option<String> {
         if self.unchecked.is_empty() { return None }
         Some(std::mem::take(&mut self.unchecked).into_iter().map(|p| p.tool).collect::<Vec<_>>().join(", "))

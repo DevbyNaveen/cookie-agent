@@ -229,7 +229,9 @@ impl Agent {
 
     /// Send a top-level answer back once when it ends by offering work it
     /// could have done ("want me to draft them?") or by handing the job back
-    /// to the person, with a note to do that work now.
+    /// to the person, with a note to do that work now; or when it reads like
+    /// an AI wrote it (`cookie::voice`), with the words to rewrite. Once:
+    /// the second answer stands.
     pub fn finish_check(mut self) -> Self {
         self.finish_check = true;
         self

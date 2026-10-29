@@ -82,6 +82,8 @@ impl Agent {
 
         // Actions that need a person, put to them together once every call is decided.
         let mut asks: Vec<(usize, Arc<dyn Tool>, ApprovalRequest)> = Vec::new();
+        // Rewrites of calls the last batch sent back: they go through as written.
+        let mut rewrites = loop_guard.take_rewrites();
         for (index, (_, name, args)) in calls.iter().enumerate() {
             // Arguments that were not JSON: answered with what was wrong, never run.
             if let Some(wrong) = args.get(crate::provider::MALFORMED_ARGS).and_then(|v| v.as_str()) {
@@ -114,6 +116,19 @@ impl Agent {
                 if let Some(earlier) = loop_guard.already_done(name, args) {
                     outcomes[index] = Some((format!("{ALREADY_DONE}{earlier}"), false));
                     continue;
+                }
+            }
+            // Words for a person that read like an AI's go back once to be
+            // rewritten, before anyone is asked about them; the rewrite goes
+            // through whatever it says, so this never loops.
+            if let Some(note) = tool.send_back(args) {
+                match rewrites.get_mut(name.as_str()).filter(|n| **n > 0) {
+                    Some(owed) => *owed -= 1,
+                    None => {
+                        loop_guard.sent_back(name);
+                        outcomes[index] = Some((note, true));
+                        continue;
+                    }
                 }
             }
             match policy.decide(tool.spec(), args, provenance, tool.preview(args)) {

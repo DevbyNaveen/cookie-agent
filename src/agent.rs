@@ -52,8 +52,9 @@ pub struct Agent {
     /// finish its turn ends with an answer made from what it found, in one
     /// more model call, instead of an error that loses the work.
     pub(crate) close_with_answer: bool,
-    /// A top-level answer that ends by offering work it could do, or by
-    /// handing the job back, is sent back once to do it (`Agent::finish_check`).
+    /// A top-level answer that ends by offering work it could do, by
+    /// handing the job back, or in words that read like an AI's, is sent
+    /// back once to do it (`Agent::finish_check`).
     pub(crate) finish_check: bool,
     /// Every action of a run, hashed, chained and signed (`trace`).
     pub(crate) trace: Option<crate::trace::Tracer>,
@@ -500,14 +501,17 @@ impl Agent {
                         _ => said.push(answer),
                     }
                     let answer = said.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
-                    // Ended by offering the work instead of doing it: sent
-                    // back once, and the reply it writes replaces this one.
-                    if self.finish_check && start.depth == 0 && !sent_back && ends_on_an_offer(&answer) {
-                        sent_back = true;
-                        said = Vec::new();
-                        cut = false;
-                        session.append(Message::harness_note(FINISH_NOTE)).await?;
-                        continue;
+                    // Ended by offering the work instead of doing it, or
+                    // reads like an AI wrote it: sent back once, and the
+                    // reply it writes replaces this one.
+                    if self.finish_check && start.depth == 0 && !sent_back {
+                        if let Some(note) = finish_note(&answer) {
+                            sent_back = true;
+                            said = Vec::new();
+                            cut = false;
+                            session.append(Message::harness_note(note)).await?;
+                            continue;
+                        }
                     }
                     if let Some(schema) = &self.output_schema {
                         crate::provider::check_output(schema, &answer)?;
@@ -598,6 +602,19 @@ const FINISH_NOTE: &str = "Before this goes out: your reply ends by offering wor
     back. Do that work now: write the drafts, the list, the plan, the decision itself, and look things up first if \
     you need to. Keep a question only for what you truly cannot decide, or before anything is sent, published or \
     paid for, and then ask just that one. Write your whole reply again; it replaces the one above.";
+
+/// What an answer is told before it goes out, if anything: it offered work
+/// it could do, or it reads like an AI wrote it (`cookie::voice`), or both.
+fn finish_note(answer: &str) -> Option<String> {
+    let offer = ends_on_an_offer(answer);
+    let voice = crate::cookie::voice::check(answer);
+    match (offer, voice.is_empty()) {
+        (false, true) => None,
+        (true, true) => Some(FINISH_NOTE.to_string()),
+        (false, false) => Some(format!("{}\nWrite your whole reply again; it replaces the one above.", crate::cookie::voice::note(&voice))),
+        (true, false) => Some(format!("{FINISH_NOTE}\n\n{}", crate::cookie::voice::note(&voice))),
+    }
+}
 
 /// Does the answer's last paragraph offer work or hand the job back? Both
 /// halves must be there: it asks or waits for a word ("…?", "just say"),
@@ -857,6 +874,64 @@ mod tests {
         let (a, p) = agent(vec![Scripted::text("Here are the three emails.")]);
         assert_eq!(a.finish_check().run("get me customers").await.unwrap(), "Here are the three emails.");
         assert_eq!(p.seen().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_reads_like_an_ai_wrote_it_is_rewritten_once_before_anyone_sees_it() {
+        let (a, p) = agent(vec![
+            Scripted::text("It's not a delay, it's a reset \u{2014} Acme moved the call to Friday."),
+            Scripted::text("Acme moved the call to Friday \u{2014} still."),
+        ]);
+        let answer = a.finish_check().run("when is the Acme call?").await.unwrap();
+        assert_eq!(answer, "Acme moved the call to Friday \u{2014} still.", "rewritten once, never looped");
+        let note = p.seen()[1].last().unwrap().text();
+        assert!(note.contains("read like an AI wrote it") && note.contains("a dash used as punctuation") && note.contains("reveal"), "{note}");
+        // Both at once: one send-back that names both.
+        let (a, p) = agent(vec![Scripted::text("Here is the plan \u{2014} short.\n\nWant me to draft them?"), Scripted::text("Here are the drafts.")]);
+        assert_eq!(a.finish_check().run("x").await.unwrap(), "Here are the drafts.");
+        let note = p.seen()[1].last().unwrap().text();
+        assert!(note.starts_with("Before this goes out") && note.contains("a dash used as punctuation"), "{note}");
+    }
+
+    /// A draft tool that holds its `body` to `cookie::voice`.
+    struct Drafts(crate::tool::ToolSpec, Arc<std::sync::Mutex<Vec<String>>>);
+
+    #[async_trait::async_trait]
+    impl Tool for Drafts {
+        fn spec(&self) -> &crate::tool::ToolSpec {
+            &self.0
+        }
+        fn send_back(&self, args: &Value) -> Option<String> {
+            let found = crate::cookie::voice::in_args(args, &["body".to_string()]);
+            (!found.is_empty()).then(|| crate::cookie::voice::note(&found))
+        }
+        async fn call(&self, args: Value) -> std::result::Result<String, String> {
+            self.1.lock().unwrap().push(args["body"].as_str().unwrap_or_default().to_string());
+            Ok("drafted".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_draft_in_an_ai_voice_goes_back_once_and_its_rewrite_goes_through() {
+        let made = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let spec = crate::tool::ToolSpec { name: "draft".into(), description: "d".into(), schema: json!({"type": "object"}), effect: Effect::Write,
+            guarded_args: vec![], parallel_safe: false, delegates: false, foreign: false };
+        let dash = |n: u8| json!({"body": format!("Draft {n} \u{2014} ready.")});
+        let (a, p) = agent(vec![
+            Scripted::call_many(&[("c1", "draft", dash(1)), ("c2", "draft", json!({"body": "Draft 2 is ready."}))]),
+            Scripted::call("c3", "draft", dash(3)),
+            Scripted::call("c4", "draft", dash(4)),
+            Scripted::call("c5", "draft", dash(5)),
+            Scripted::text("done"),
+        ]);
+        // What a call is answered with counts as read, like any tool output:
+        // later changes ask a person (here, one who says yes).
+        let a = a.tool(Drafts(spec, made.clone())).approver(FnApprover(|_: &ApprovalRequest| true));
+        assert_eq!(a.run("draft them").await.unwrap(), "done");
+        assert_eq!(*made.lock().unwrap(), ["Draft 2 is ready.", "Draft 3 \u{2014} ready.", "Draft 5 \u{2014} ready."],
+            "each call is sent back once at most: the next one goes through as written, and the one after is checked again");
+        let first = p.seen()[1].last().unwrap().clone();
+        assert!(matches!(&first.content()[0], Content::ToolResult { output, is_error: true, .. } if output.contains("a dash used as punctuation")));
     }
 
     #[tokio::test]

@@ -386,6 +386,11 @@ pub struct ToolDecl {
     /// When it may run, by what the run has already used.
     #[serde(default)]
     pub order: Option<OrderDecl>,
+    /// Arguments, by name, whose words a person will read (`subject`,
+    /// `body`): a call whose words read like an AI's is sent back once to be
+    /// rewritten (`cookie::voice`, `Tool::send_back`).
+    #[serde(default)]
+    pub voice: Vec<String>,
 }
 
 /// When a tool may run, by what this run has already used (its own tools,
@@ -501,12 +506,18 @@ struct WireTool {
     /// The helper that holds this copy of the tool; `None` for the run's own.
     agent: Option<String>,
     order: Option<OrderDecl>,
+    voice: Vec<String>,
 }
 
 #[async_trait]
 impl Tool for WireTool {
     fn spec(&self) -> &ToolSpec {
         &self.spec
+    }
+
+    fn send_back(&self, args: &Value) -> Option<String> {
+        let found = crate::cookie::voice::in_args(args, &self.voice);
+        (!found.is_empty()).then(|| crate::cookie::voice::note(&found))
     }
 
     async fn call(&self, args: Value) -> std::result::Result<String, String> {
@@ -683,7 +694,7 @@ fn helpers(
                 .iter()
                 .find(|t| &t.name == name)
                 .ok_or_else(|| format!("helper `{}`: the run has no tool `{name}`", helper.name))?;
-            child = child.tool(WireTool { spec: tool_spec(decl)?, wire: wire.clone(), agent: Some(helper.name.clone()), order: decl.order.clone() });
+            child = child.tool(WireTool { spec: tool_spec(decl)?, wire: wire.clone(), agent: Some(helper.name.clone()), order: decl.order.clone(), voice: decl.voice.clone() });
         }
         let inner = crate::subagent::SubAgent::reader(&helper.name, &helper.description, child).map_err(|e| e.to_string())?;
         agent = agent.tool(HelperTool { inner, wire: wire.clone() });
@@ -723,7 +734,7 @@ fn build(
     }
     agent = agent.policy(policy);
     for decl in &request.tools {
-        agent = agent.tool(WireTool { spec: tool_spec(decl)?, wire: wire.clone(), agent: None, order: decl.order.clone() });
+        agent = agent.tool(WireTool { spec: tool_spec(decl)?, wire: wire.clone(), agent: None, order: decl.order.clone(), voice: decl.voice.clone() });
     }
     agent = helpers(agent, request, wire, make_child)?;
     if request.close_with_answer {
@@ -880,9 +891,10 @@ where
             // State in, state out: the client keeps what Cookie pays
             // attention to and what it learned, and asks where a mail or
             // Slack answer goes; these never wait on a run.
-            kind @ ("attention" | "lessons" | "profile" | "sources" | "permission" | "plan" | "watch" | "breaker" | "channel" | "mail" | "slack" | "redact" | "promises") => {
+            kind @ ("attention" | "lessons" | "profile" | "sources" | "permission" | "plan" | "watch" | "breaker" | "channel" | "mail" | "slack" | "redact" | "promises" | "voice_check") => {
                 let result = match kind {
                     "attention" => crate::attention::rpc(&message),
+                    "voice_check" => crate::cookie::voice::rpc(&message),
                     "redact" => crate::redact::rpc(&message),
                     "lessons" => crate::lessons::rpc(&message),
                     "mail" => crate::cookie::mail::rpc(&message),
@@ -1309,6 +1321,47 @@ mod tests {
 
     fn email_tools() -> Value {
         json!([{"name": "send_email", "description": "Send", "schema": {"type": "object"}, "effect": "outbound", "guard": ["to"]}])
+    }
+
+    #[tokio::test]
+    async fn the_voice_check_is_a_short_ask() {
+        let mut c = start(Arc::new(Scripted::new(vec![])));
+        c.send(json!({"type": "voice_check", "id": "v1", "text": "It's ready \u{2014} almost."})).await;
+        let reply = c.next().await;
+        assert_eq!((reply["type"].as_str(), reply["id"].as_str(), reply["ok"].as_bool()), (Some("voice_check"), Some("v1"), Some(false)), "{reply}");
+        assert_eq!(reply["problems"][0], json!({"rule": "dash", "excerpt": "It's ready \u{2014} almost."}));
+        c.send(json!({"type": "voice_check", "id": "v2", "text": "See you Friday."})).await;
+        assert_eq!(c.next().await, json!({"type": "voice_check", "id": "v2", "ok": true, "problems": []}));
+        c.send(json!({"type": "voice_check", "id": "v3"})).await;
+        assert_eq!(c.next().await["type"], "error");
+    }
+
+    /// A draft that reads like an AI wrote it goes back to the model before
+    /// the client (or a person) ever sees it; its rewrite goes through.
+    #[tokio::test]
+    async fn a_draft_in_an_ai_voice_is_rewritten_once_before_the_client_sees_it() {
+        let tools = json!([crate::cookie::permission::app_call_decl(crate::cookie::permission::Level::Ask)]);
+        let draft = |body: &str| json!({"app": "gmail", "action": "GMAIL_CREATE_DRAFT", "args": {"to": "anna@acme.example", "subject": "Friday", "body": body}});
+        let p = Arc::new(Scripted::new(vec![
+            Scripted::call("d1", "app_call", draft("It's not a delay, it's a reset.")),
+            Scripted::call("d2", "app_call", draft("We moved the call \u{2014} Friday works.")),
+            Scripted::text("Drafted."),
+        ]));
+        let mut c = start(p.clone());
+        c.send(run("draft a note to anna@acme.example about Friday", tools)).await;
+        // What the call was answered with counts as read, so the change is
+        // put to the person: shown the rewrite, never the first draft.
+        let asked = c.next().await;
+        assert_eq!(asked["type"], "approval", "{asked}");
+        assert!(asked["preview"].as_str().unwrap().contains("We moved the call"), "{asked}");
+        c.send(json!({"type": "approve", "id": asked["id"], "allow": true})).await;
+        let call = c.next().await;
+        assert_eq!(call["type"], "tool_call", "{call}");
+        assert_eq!(call["args"]["args"]["body"], "We moved the call \u{2014} Friday works.", "the first never reached the client; the rewrite went through as written");
+        let sent_back = results(&p.seen()[1]);
+        assert!(sent_back[0].1 && sent_back[0].0.contains("reveal"), "{sent_back:?}");
+        c.send(json!({"type": "tool_result", "id": call["id"], "output": "drafted"})).await;
+        assert_eq!(c.next().await["answer"], "Drafted.");
     }
 
     #[tokio::test]

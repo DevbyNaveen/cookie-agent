@@ -46,6 +46,9 @@ const PIECES: &[&str] = &[
     "User-agent: *", "Disallow: /", "Allow: /a", "1234567890abcdef", "ck_0ec0135180384d428c7abcd78d8b20c2",
     "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
     "ääääääääääääääääääääääääääääääääääääääääääääääääää", "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+    // The shapes the voice check looks for.
+    "–", "’", "it's not ", "It isn’t ", ", it's ", ". It is ", "No ", "no ", " and no ", " -- ", "&mdash;", "Москва", "not just ", " but ",
+    "As an AI", "delve", "。", "，",
 ];
 
 /// Inputs that broke a text function on real data. Tried first, every time.
@@ -223,6 +226,17 @@ mod tests {
                 let _ = crate::cookie::plan::part_input(a, &plan, 0);
                 let _ = crate::cookie::plan::join_input(a, b, &[(a.to_string(), Some(b.to_string())), (b.to_string(), None)]);
             }
+        });
+    }
+
+    #[test]
+    fn the_voice_check_reads_any_text() {
+        each(11, N, |t| {
+            let found = crate::cookie::voice::check(t);
+            assert!(found.len() <= crate::cookie::voice::MAX_PROBLEMS);
+            assert!(found.iter().all(|p| !p.excerpt.is_empty()), "every problem shows its words");
+            let _ = crate::cookie::voice::in_args(&json!({"body": t, "x": [{"subject": t}]}), &["body".into(), "subject".into()]);
+            let _ = crate::cookie::voice::note(&found);
         });
     }
 
