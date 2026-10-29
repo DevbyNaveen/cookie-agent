@@ -58,15 +58,18 @@ const FILLER: &[&str] = &[
 const AI_SELF: &[&str] = &["as an ai", "as a language model", "i'm an ai", "i am an ai", "i'm just an ai", "your ai assistant"];
 
 /// The tells in `text`, in the order of the rules, at most [`MAX_PROBLEMS`].
+/// Only Cookie's own prose is read: code, quoted lines and words in
+/// quotation marks are someone else's ([`prose`]).
 pub fn check(text: &str) -> Vec<Problem> {
     let mut out = Vec::new();
-    dashes(text, &mut out);
-    reveals(text, &mut out);
-    negation_lists(text, &mut out);
+    let scan = prose(text);
+    dashes(&scan, text, &mut out);
+    reveals(&scan, text, &mut out);
+    negation_lists(&scan, text, &mut out);
     for (rule, list) in [("filler", FILLER), ("ai_self", AI_SELF)] {
         for phrase in list {
             let mut from = 0;
-            while let Some((start, end)) = find(text, phrase, from) {
+            while let Some((start, end)) = find(&scan, phrase, from) {
                 out.push(Problem { rule, excerpt: around(text, start, end) });
                 from = end;
             }
@@ -126,39 +129,113 @@ pub fn rpc(m: &Value) -> Result<Value, String> {
     Ok(json!({"ok": problems.is_empty(), "problems": problems}))
 }
 
+/// `text` with what is not the writer's own prose blanked out, byte for
+/// byte, so places in it are places in `text`: fenced code, `code spans`,
+/// lines quoted with `>`, and words inside quotation marks. A pair is only
+/// closed on its own line, so a stray mark never hides the rest.
+fn prose(text: &str) -> String {
+    let mut keep = vec![true; text.len()];
+    let mut fenced = false;
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        let t = line.trim_start();
+        let fence = t.starts_with("```") || t.starts_with("~~~");
+        if fenced || fence || t.starts_with('>') {
+            keep[at..at + line.len()].fill(false);
+        }
+        fenced ^= fence;
+        at += line.len();
+    }
+    // Code first, so a quotation mark inside code opens nothing.
+    for (open, close) in [("`", "`"), ("\"", "\""), ("\u{201C}", "\u{201D}"), ("\u{201E}", "\u{201C}"), ("\u{AB}", "\u{BB}")] {
+        let mut from = 0;
+        while let Some(start) = text.get(from..).and_then(|t| t.find(open)).map(|i| i + from) {
+            from = start + open.len();
+            if !keep[start] {
+                continue;
+            }
+            let line_end = text[from..].find('\n').map_or(text.len(), |i| i + from);
+            let Some(end) = text[from..line_end].find(close).map(|i| i + from + close.len()) else { continue };
+            keep[start..end].fill(false);
+            from = end;
+        }
+    }
+    text.char_indices().map(|(i, c)| if c == '\n' || keep[i] { c.to_string() } else { " ".repeat(c.len_utf8()) }).collect()
+}
+
+/// Short words that are everyday grammar in German, French, Polish and
+/// other languages written in Latin letters, and not English words. Where
+/// any is found, a spaced en dash is that language's own punctuation.
+const OTHER_LANGUAGE: &[&str] = &[
+    // German, French, Polish, Spanish, Italian, Portuguese, Dutch, Nordic.
+    // Not words English borrows or splits off (`et al.`, `per se`, `Los
+    // Angeles`, `.com`, `non-profit`, `I've`).
+    "der", "das", "und", "ist", "nicht", "ein", "eine", "mit", "für", "auf", "sich", "wir", "ich", "bitte", "noch", "les", "est",
+    "une", "du", "des", "pour", "avec", "nous", "vous", "je", "sur", "dans", "qui", "que", "jest", "się", "nie", "że", "oraz", "dla",
+    "es", "por", "para", "una", "il", "di", "che", "não", "uma", "het", "een", "niet", "ik", "och", "är", "att", "og", "ikke", "jeg",
+    "det", "som",
+];
+
+fn other_language(text: &str) -> bool {
+    text.split(|c: char| !c.is_alphabetic()).any(|w| OTHER_LANGUAGE.contains(&w.to_lowercase().as_str()))
+}
+
+/// A line that reads as a command or SQL, where `--` ends a command's
+/// options or starts a comment: `git checkout -- a.rs`, `SELECT 1 -- note`.
+fn is_code_line(line: &str) -> bool {
+    const SQL: [&str; 9] = ["SELECT", "INSERT", "UPDATE", "DELETE", "WITH", "CREATE", "ALTER", "DROP", "FROM"];
+    const SHELL: [&str; 26] = [
+        "git", "cargo", "npm", "npx", "pnpm", "yarn", "docker", "kubectl", "psql", "curl", "rm", "cp", "mv", "ls", "grep", "sed", "ssh",
+        "python", "python3", "node", "make", "brew", "pip", "sh", "bash", "sudo",
+    ];
+    let t = line.trim_start();
+    let first = t.trim_start_matches("$ ").split_whitespace().next().unwrap_or_default();
+    t.starts_with("$ ") || SQL.contains(&first) || SHELL.contains(&first)
+}
+
 /// Em and en dashes used as punctuation, their HTML names, and ` -- `
-/// standing in for one. Not: a hyphen in a word or a range (`2-3`), an en
-/// dash between two numbers (`2019–2021`), or a dash after Cyrillic, where
-/// it is grammar (`Москва — столица`).
-fn dashes(text: &str, out: &mut Vec<Problem>) {
-    for (i, c) in text.char_indices() {
+/// standing in for one, in `scan` ([`prose`]); excerpts come from `text`.
+/// Not: a hyphen in a word or a range (`2-3`), an en dash between two
+/// numbers (`2019–2021`), a dash after Cyrillic, where it is grammar
+/// (`Москва — столица`), or a spaced en dash outside English, where it is
+/// punctuation (`Die Lieferung kommt – endlich`).
+fn dashes(scan: &str, text: &str, out: &mut Vec<Problem>) {
+    let other = other_language(scan);
+    for (i, c) in scan.char_indices() {
         if c != '\u{2014}' && c != '\u{2013}' {
             continue;
         }
         let end = i + c.len_utf8();
-        let before = text[..i].chars().next_back();
-        let after = text[end..].chars().next();
+        let before = scan[..i].chars().next_back();
+        let after = scan[end..].chars().next();
         if c == '\u{2013}' && before.is_some_and(|b| b.is_ascii_digit()) && after.is_some_and(|a| a.is_ascii_digit()) {
             continue;
         }
-        if text[..i].chars().rev().find(|c| !c.is_whitespace()).is_some_and(|c| ('\u{0400}'..='\u{04FF}').contains(&c)) {
+        let word_before = scan[..i].chars().rev().find(|c| !c.is_whitespace());
+        if word_before.is_some_and(|c| ('\u{0400}'..='\u{04FF}').contains(&c)) {
+            continue;
+        }
+        // An en dash is an AI's tell only in English prose.
+        if c == '\u{2013}' && (other || !word_before.is_some_and(|c| c.is_ascii())) {
             continue;
         }
         out.push(Problem { rule: "dash", excerpt: around(text, i, end) });
     }
     for entity in ["&mdash;", "&ndash;"] {
         let mut from = 0;
-        while let Some((start, end)) = find(text, entity, from) {
+        while let Some((start, end)) = find(scan, entity, from) {
             out.push(Problem { rule: "dash", excerpt: around(text, start, end) });
             from = end;
         }
     }
     // A word, a space, `--`, a space: a dash typed with hyphens. A line that
-    // is only `-- ` (a mail signature's separator) is not one.
+    // is only `-- ` (a mail signature's separator) is not one, nor is a
+    // command or SQL.
     let mut from = 0;
-    while let Some(at) = text.get(from..).and_then(|t| t.find(" -- ")).map(|at| at + from) {
-        let line_before = text[..at].rsplit('\n').next().unwrap_or_default();
-        if !line_before.trim().is_empty() {
+    while let Some(at) = scan.get(from..).and_then(|t| t.find(" -- ")).map(|at| at + from) {
+        let line_before = scan[..at].rsplit('\n').next().unwrap_or_default();
+        let line = format!("{line_before}{}", scan[at..].split('\n').next().unwrap_or_default());
+        if !line_before.trim().is_empty() && !is_code_line(&line) {
             out.push(Problem { rule: "dash", excerpt: around(text, at + 1, at + 3) });
         }
         from = at + 3;
@@ -181,16 +258,31 @@ fn sentences(text: &str) -> Vec<(usize, usize)> {
 
 const SUBJECTS: [&str; 3] = ["it", "this", "that"];
 
-/// "It's not X, it's Y", "This isn't X. It's Y", "not just X, but Y".
-fn reveals(text: &str, out: &mut Vec<Problem>) {
+/// The first word of `s`, lower-cased, without punctuation.
+fn first_word(s: &str) -> String {
+    s.split_whitespace().next().unwrap_or_default().trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()
+}
+
+/// Do X and Y read as one thing put in place of another: the same lead
+/// word ("about price" / "about trust") or both a noun with an article
+/// ("a plan" / "a wish")? "urgent" / "fine Monday" are two statements.
+fn parallel(x: &str, y: &str) -> bool {
+    const ARTICLES: [&str; 3] = ["a", "an", "the"];
+    let (x, y) = (first_word(x), first_word(y));
+    !x.is_empty() && (x == y || (ARTICLES.contains(&x.as_str()) && ARTICLES.contains(&y.as_str())))
+}
+
+/// "It's not X, it's Y", "This isn't X. It's Y", "not just X, but Y", in
+/// `scan` ([`prose`]); excerpts come from `text`.
+fn reveals(scan: &str, text: &str, out: &mut Vec<Problem>) {
     let negative: Vec<String> = SUBJECTS
         .iter()
         .flat_map(|s| [format!("{s}'s not "), format!("{s} is not "), format!("{s} isn't "), format!("{s} was not "), format!("{s} wasn't ")])
         .collect();
     let positive: Vec<String> = SUBJECTS.iter().flat_map(|s| [format!("{s}'s "), format!("{s} is "), format!("{s} was ")]).collect();
-    let spans = sentences(text);
+    let spans = sentences(scan);
     for (n, &(a, b)) in spans.iter().enumerate() {
-        let s = &text[a..b];
+        let s = &scan[a..b];
         for neg in &negative {
             let Some((_, neg_end)) = find(s, neg, 0) else { continue };
             // In the same sentence, after a comma, a semicolon or a colon.
@@ -198,11 +290,13 @@ fn reveals(text: &str, out: &mut Vec<Problem>) {
                 .iter()
                 .flat_map(|p| [", ", "; ", ": "].map(|sep| format!("{sep}{p}")))
                 .find_map(|p| find(s, &p, neg_end).map(|(_, end)| end));
-            // Or the next sentence starts with the turn.
+            // Or the next sentence starts with the turn, and puts one thing
+            // in place of the other.
             let next = spans.get(n + 1).filter(|_| turn.is_none() && starts(s, neg)).and_then(|&(c, d)| {
-                let t = &text[c..d];
+                let t = &scan[c..d];
                 let lead = t.len() - t.trim_start().len();
-                positive.iter().find_map(|p| matches_at(t.trim_start(), 0, p)).map(|e| c + lead + e)
+                let t = t.trim_start();
+                positive.iter().find_map(|p| matches_at(t, 0, p)).filter(|&e| parallel(&s[neg_end..], &t[e..])).map(|e| c + lead + e)
             });
             if let Some(end) = turn.map(|e| a + e).or(next) {
                 out.push(Problem { rule: "reveal", excerpt: around(text, a, end.min(text.len())) });
@@ -224,8 +318,9 @@ fn starts(s: &str, phrase: &str) -> bool {
 }
 
 /// Three or more short "no …" items in a row: "No meetings, no fluff, no
-/// surprises", or the same as three sentences.
-fn negation_lists(text: &str, out: &mut Vec<Problem>) {
+/// surprises", or the same as three sentences, in `scan` ([`prose`]);
+/// excerpts come from `text`.
+fn negation_lists(scan: &str, text: &str, out: &mut Vec<Problem>) {
     let mut run: Vec<(usize, usize)> = Vec::new();
     let mut items = 0;
     let flush = |run: &mut Vec<(usize, usize)>, items: &mut usize, out: &mut Vec<Problem>| {
@@ -236,9 +331,9 @@ fn negation_lists(text: &str, out: &mut Vec<Problem>) {
         *items = 0;
     };
     let mut start = 0;
-    let ends = text.char_indices().filter(|(_, c)| matches!(c, ',' | ';' | '.' | '!' | '?' | '\n' | '\u{3001}' | '\u{FF0C}' | '\u{3002}'));
-    for (i, c) in ends.chain(std::iter::once((text.len(), ' '))) {
-        let segment = &text[start..i];
+    let ends = scan.char_indices().filter(|(_, c)| matches!(c, ',' | ';' | '.' | '!' | '?' | '\n' | '\u{3001}' | '\u{FF0C}' | '\u{3002}'));
+    for (i, c) in ends.chain(std::iter::once((scan.len(), ' '))) {
+        let segment = &scan[start..i];
         let lead = segment.len() - segment.trim_start().len();
         let words = segment.split_whitespace().count();
         let item = ["no ", "and no ", "or no ", "nor "].iter().any(|p| starts(segment, p)) && (2..=6).contains(&words);
@@ -249,7 +344,7 @@ fn negation_lists(text: &str, out: &mut Vec<Problem>) {
         } else if !segment.trim().is_empty() {
             flush(&mut run, &mut items, out);
         }
-        start = (i + c.len_utf8()).min(text.len());
+        start = (i + c.len_utf8()).min(scan.len());
     }
     flush(&mut run, &mut items, out);
 }
@@ -392,6 +487,60 @@ mod tests {
         }
         assert_eq!(rules("Die Lieferung \u{2014} endlich."), ["dash"]);
         assert_eq!(rules("東京 \u{2014} 会議"), ["dash"]);
+    }
+
+    #[test]
+    fn code_quoted_lines_and_words_in_quotation_marks_are_not_the_writers() {
+        for fine in [
+            "Run `git checkout -- src/main.rs` to drop the change.",
+            "The log said:\n```\nstep 1 \u{2014} done\nIt's not a bug, it's a feature\n```\nAll good now.",
+            "~~~sql\nSELECT id FROM users -- the active ones\n~~~",
+            "Anna wrote:\n> It's not late \u{2014} it's early.\nSo Friday it is.",
+            "The ad said \"No meetings, no fluff, no surprises\" and that was all.",
+            "Acme called it \u{201C}a game changer \u{2014} truly\u{201D} on the call.",
+            "Er schrieb \u{201E}Es ist fertig \u{2014} endlich\u{201C} gestern.",
+        ] {
+            assert!(check(fine).is_empty(), "{fine}: {:?}", check(fine));
+        }
+        // What is outside the code or the quote is still read, and shown as written.
+        let found = check("Use `a -- b`. It's ready \u{2014} mostly.");
+        assert_eq!(found.iter().map(|p| p.rule).collect::<Vec<_>>(), ["dash"]);
+        assert_eq!(found[0].excerpt, "Use `a -- b`. It's ready \u{2014} mostly.");
+        // A quotation mark that is never closed hides nothing.
+        assert_eq!(rules("He said \"it's ready \u{2014} mostly."), ["dash"]);
+    }
+
+    #[test]
+    fn a_double_hyphen_in_a_command_or_sql_is_not_a_dash() {
+        for fine in ["git checkout -- src/main.rs", "$ cargo run -- --help", "SELECT id FROM users -- the active ones", "rm -- -file.txt"] {
+            assert!(check(fine).is_empty(), "{fine}: {:?}", check(fine));
+        }
+        assert_eq!(rules("Git is fine -- we pushed."), ["dash"], "a sentence is still a sentence");
+    }
+
+    #[test]
+    fn a_spaced_en_dash_is_punctuation_outside_english() {
+        for fine in [
+            "Die Lieferung kommt am Montag \u{2013} bitte bestätige den Termin.",
+            "Le colis arrive lundi \u{2013} merci de confirmer avec nous.",
+            "Spotkanie jest w środę \u{2013} proszę potwierdzić.",
+            "El pedido llega el lunes \u{2013} por favor confirma.",
+            "東京 \u{2013} 会議",
+        ] {
+            assert!(check(fine).is_empty(), "{fine}: {:?}", check(fine));
+        }
+        assert_eq!(rules("The parcel comes Monday \u{2013} please confirm."), ["dash"]);
+        assert_eq!(rules("Die Lieferung \u{2014} endlich."), ["dash"], "an em dash is still one");
+        assert_eq!(rules("Per se we are late \u{2013} sorry, et al."), ["dash"], "borrowed words are English");
+    }
+
+    #[test]
+    fn two_plain_statements_are_not_a_reveal() {
+        for fine in ["It isn't urgent. It's fine Monday.", "This is not ready. It is due Friday.", "It wasn't Anna. It was late anyway."] {
+            assert!(check(fine).is_empty(), "{fine}: {:?}", check(fine));
+        }
+        assert_eq!(rules("It isn't a delay. It's a reset."), ["reveal"]);
+        assert_eq!(rules("This isn't about price. It's about trust."), ["reveal"]);
     }
 
     #[test]
