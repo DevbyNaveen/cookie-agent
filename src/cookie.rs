@@ -320,7 +320,10 @@ fn is_tag_list(inner: &str) -> bool {
 }
 
 /// The skills Cookie carries, as `(name, SKILL.md)`.
-pub const SKILLS: &[(&str, &str)] = &[("find-leads", include_str!("cookie/skills/find-leads/SKILL.md"))];
+pub const SKILLS: &[(&str, &str)] = &[
+    ("find-leads", include_str!("cookie/skills/find-leads/SKILL.md")),
+    ("watch-competitors", include_str!("cookie/skills/watch-competitors/SKILL.md")),
+];
 
 /// The skills, written once to a folder named by their content
 /// (`<dir>/<name>/SKILL.md`) for `RunRequest::skills`. `None` when it cannot
@@ -664,5 +667,12 @@ mod tests {
     fn the_skills_are_written_where_a_run_reads_them() {
         let dir = skills_dir().expect("a temp folder is writable");
         assert!(dir.join("find-leads").join("SKILL.md").is_file());
+        let loaded = crate::skills::Skills::from_dir(dir).expect("every bundled skill parses");
+        let mut names: Vec<&str> = loaded.list().iter().map(|s| s.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["find-leads", "watch-competitors"]);
+        let watch = SKILLS.iter().find(|(n, _)| *n == "watch-competitors").unwrap().1;
+        assert!(["company_researcher", "watch_page", "read_site", "[sN]", "today's date"].iter().all(|w| watch.contains(w)), "it names the tools it uses");
+        assert!(voice::check(watch).is_empty(), "{:?}", voice::check(watch));
     }
 }
