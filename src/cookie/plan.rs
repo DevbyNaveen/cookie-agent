@@ -71,24 +71,77 @@ pub fn part_input(job: &str, plan: &Plan, index: usize) -> (String, String) {
     (input, context)
 }
 
+/// One part as the join reads it: its title, its answer (`None`: it did not
+/// finish), and its source check as the client's `check` line returned it
+/// (`{status, problems: [{paragraph, why}]}`), when it had one.
+pub type Part = (String, Option<String>, Option<Value>);
+
 /// What the joining job is given: the job and how to join as its input,
-/// each part's answer as context (Cookie's own work, read as such).
-pub fn join_input(job: &str, join: &str, answers: &[(String, Option<String>)]) -> (String, String) {
-    let input = format!("{job}\n\n(The parts of this job are done. Put their answers together for the person: {join}.)");
+/// each part's answer as context (Cookie's own work, read as such). Parts
+/// that failed their source check are named in the input and marked in the
+/// context, so the join never states their unsupported claims as fact.
+pub fn join_input(job: &str, join: &str, answers: &[Part]) -> (String, String) {
+    let status = |check: &Option<Value>| check.as_ref().and_then(|c| c["status"].as_str()).unwrap_or("").to_string();
+    let named = |want: &str| -> Vec<String> {
+        answers.iter().enumerate().filter(|(_, (_, a, c))| a.is_some() && status(c) == want).map(|(i, (t, _, _))| format!("{} ({t})", i + 1)).collect()
+    };
+    let mut input = format!("{job}\n\n(The parts of this job are done. Put their answers together for the person: {join}.)");
+    let (failed, unchecked) = (named("unsupported"), named("unavailable"));
+    if !failed.is_empty() {
+        input.push_str(&format!(
+            "\n(Parts that failed their source check: {}. Never state their unsupported claims as fact; say plainly what could not be confirmed.)",
+            failed.join(", ")
+        ));
+    }
+    if !unchecked.is_empty() {
+        input.push_str(&format!("\n(Parts whose sources could not be checked: {}. Where their claims matter, say they are unconfirmed.)", unchecked.join(", ")));
+    }
     let parts: Vec<String> = answers
         .iter()
         .enumerate()
-        .map(|(i, (title, a))| match a {
-            Some(a) => format!("Part {}: {title}\n{a}", i + 1),
+        .map(|(i, (title, a, check))| match a {
+            Some(a) => {
+                let problems: Vec<String> = check
+                    .as_ref()
+                    .and_then(|c| c["problems"].as_array())
+                    .into_iter()
+                    .flatten()
+                    .map(|p| format!("paragraph {}: {}", p["paragraph"], p["why"].as_str().unwrap_or_default()))
+                    .collect();
+                match status(check).as_str() {
+                    "unsupported" if !problems.is_empty() => format!("Part {}: {title}\n{a}\n(This part failed its source check: {}.)", i + 1, problems.join("; ")),
+                    "unsupported" => format!("Part {}: {title}\n{a}\n(This part failed its check: it does not do what its task asked.)", i + 1),
+                    "unavailable" => format!("Part {}: {title}\n{a}\n(This part's sources could not be checked.)", i + 1),
+                    _ => format!("Part {}: {title}\n{a}", i + 1),
+                }
+            }
             None => format!("Part {}: {title}\n(this part did not finish; say so)", i + 1),
         })
         .collect();
     (input, format!("What each part found:\n\n{}", parts.join("\n\n")))
 }
 
+/// `[title, answer|null]` or `[title, answer|null, check]`.
+fn parts_of(answers: &Value) -> Result<Vec<Part>, String> {
+    answers
+        .as_array()
+        .ok_or("`answers` is a list of [title, answer, check?]")?
+        .iter()
+        .map(|a| match a.as_array().map(Vec::as_slice) {
+            Some([t, ans, rest @ ..]) if t.is_string() && (ans.is_string() || ans.is_null()) && rest.len() <= 1 => Ok((
+                t.as_str().unwrap_or_default().to_string(),
+                ans.as_str().map(str::to_string),
+                rest.first().filter(|c| c.is_object()).cloned(),
+            )),
+            _ => Err("each answer is [title, answer|null, check?]".to_string()),
+        })
+        .collect()
+}
+
 /// One `plan` line: `{op: "check", args}` → `{parts: [[title, task]], join}`,
 /// or `{op: "part", job, args, index}` → `{input, context}`, or `{op: "join",
-/// job, join, answers: [[title, answer|null]]}` → `{input, context}`.
+/// job, join, answers: [[title, answer|null, check?]]}` → `{input, context}`;
+/// `check` is the part's `check` reply, when its answer was checked.
 pub fn rpc(m: &Value) -> Result<Value, String> {
     match m["op"].as_str().unwrap_or_default() {
         "check" => {
@@ -105,7 +158,7 @@ pub fn rpc(m: &Value) -> Result<Value, String> {
             Ok(json!({"input": input, "context": context}))
         }
         "join" => {
-            let answers: Vec<(String, Option<String>)> = serde_json::from_value(m["answers"].clone()).map_err(|e| format!("`answers`: {e}"))?;
+            let answers = parts_of(&m["answers"])?;
             let (input, context) = join_input(m["job"].as_str().unwrap_or(""), m["join"].as_str().unwrap_or(""), &answers);
             Ok(json!({"input": input, "context": context}))
         }
@@ -138,9 +191,27 @@ mod tests {
         let (input, context) = part_input("Compare Acme and Beta", &p, 1);
         assert!(input.starts_with("Find Beta's pricing") && input.contains("part 2 of 2"));
         assert!(context.contains("Compare Acme and Beta"));
-        let (input, context) = join_input("Compare Acme and Beta", &p.join, &[("Acme".into(), Some("A costs 5".into())), ("Beta".into(), None)]);
-        assert!(input.contains("a comparison table"));
+        let (input, context) = join_input("Compare Acme and Beta", &p.join, &[("Acme".into(), Some("A costs 5".into()), None), ("Beta".into(), None, None)]);
+        assert!(input.contains("a comparison table") && !input.contains("source check"));
         assert!(context.contains("Part 1: Acme\nA costs 5") && context.contains("did not finish"));
         assert_eq!(rpc(&json!({"op": "check", "args": plan()})).unwrap()["parts"][0][0], "Acme");
+    }
+
+    #[test]
+    fn the_join_is_told_which_parts_failed_their_checks() {
+        let r = rpc(&json!({"op": "join", "job": "Compare Acme, Beta and Gamma", "join": "a table", "answers": [
+            ["Acme", "Acme costs 5 [s1].", {"status": "supported", "ok": true, "problems": []}],
+            ["Beta", "Beta costs 9 [s3].\n\nIt has 40 staff [s4].", {"status": "unsupported", "ok": false, "problems": [{"paragraph": 1, "why": "price not in source"}]}],
+            ["Gamma", "Gamma is new.", {"status": "unavailable", "ok": false, "problems": []}],
+            ["Delta", null]
+        ]})).unwrap();
+        let (input, context) = (r["input"].as_str().unwrap(), r["context"].as_str().unwrap());
+        assert!(input.contains("Parts that failed their source check: 2 (Beta).") && input.contains("could not be checked: 3 (Gamma)."), "{input}");
+        assert!(context.contains("Part 1: Acme\nAcme costs 5 [s1].\n\nPart 2"), "a supported part is as it was: {context}");
+        assert!(context.contains("(This part failed its source check: paragraph 1: price not in source.)"), "{context}");
+        assert!(context.contains("(This part's sources could not be checked.)") && context.contains("Part 4: Delta\n(this part did not finish"));
+        // The two-element form a client already sends still reads.
+        assert!(rpc(&json!({"op": "join", "job": "j", "join": "x", "answers": [["A", "a"], ["B", null]]})).is_ok());
+        assert!(rpc(&json!({"op": "join", "job": "j", "join": "x", "answers": [["A"]]})).is_err());
     }
 }

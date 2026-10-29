@@ -213,16 +213,19 @@ pub fn helper_decls(search: bool) -> Value {
     json!([
         {
             "name": "researcher",
-            "description": "Hand one question to a researcher with its own fresh context: it looks it up in the team's context and on the web, reads the pages, and reports back what it found. Give it the whole task in one go: it sees nothing else. For one company, use company_researcher. Its report keeps the [sN] tags of what it read: end your paragraphs with those tags. Do small lookups yourself.",
+            "description": "Hand one question to a researcher with its own fresh context: it looks it up in the team's context and on the web, reads the pages, and reports back what it found. Give it the whole task in one go: it sees nothing else. For one company, use company_researcher. Its report keeps the [sN] tags of what it read: end your paragraphs with those tags. It is checked against its sources first, and a note above it says what the check found. Do small lookups yourself.",
             "instructions": fit(HELPER_INSTRUCTIONS),
             "tools": tools,
+            // Its report is checked against what it read before Cookie gets it.
+            "check_sources": true,
         },
         {
             "name": "company_researcher",
-            "description": "Hand one company to a researcher: what it does, its size and customers, recent news, funding and hiring, and whether it fits what the job is looking for. Name the company (and its site, if you have it) and what to judge it against. For several companies, start several at once, one each. Its report keeps the [sN] tags of what it read.",
+            "description": "Hand one company to a researcher: what it does, its size and customers, recent news, funding and hiring, and whether it fits what the job is looking for. Name the company (and its site, if you have it) and what to judge it against. For several companies, start several at once, one each. Its report keeps the [sN] tags of what it read, and is checked against its sources first; a note above it says what the check found.",
             "instructions": fit(&format!("{HELPER_INSTRUCTIONS} {COMPANY_FOCUS}")),
             "tools": tools,
             "max_steps": COMPANY_STEPS,
+            "check_sources": true,
         },
         {
             "name": "verifier",

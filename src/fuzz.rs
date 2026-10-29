@@ -224,7 +224,8 @@ mod tests {
         pairs(10, N, |a, b| {
             if let Ok(plan) = crate::cookie::plan::check(&json!({"parts": [[a, b], [b, a]], "join": a})) {
                 let _ = crate::cookie::plan::part_input(a, &plan, 0);
-                let _ = crate::cookie::plan::join_input(a, b, &[(a.to_string(), Some(b.to_string())), (b.to_string(), None)]);
+                let check = json!({"status": "unsupported", "problems": [{"paragraph": 1, "why": a}]});
+                let _ = crate::cookie::plan::join_input(a, b, &[(a.to_string(), Some(b.to_string()), Some(check)), (b.to_string(), None, None)]);
             }
         });
     }

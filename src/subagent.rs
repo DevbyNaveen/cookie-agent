@@ -7,6 +7,8 @@ use serde_json::{json, Value};
 use crate::{
     agent::{Agent, Event},
     error::{Error, Result},
+    label::Source,
+    message::Message,
     tool::{Effect, Spend, Tool, ToolContext, ToolSpec},
 };
 
@@ -16,7 +18,14 @@ pub const MAX_DEPTH: usize = 3;
 pub struct SubAgent {
     spec: ToolSpec,
     agent: Agent,
+    /// A checker and a reviser of its answer (`source_checked`).
+    checks: Option<(Agent, Agent)>,
 }
+
+/// What the parent reads above a report whose check could not be done.
+const UNCHECKED: &str = "(Not checked: this report could not be checked against its sources, so treat its claims as unconfirmed.)";
+/// What the parent reads above a report that did not do its task.
+const MISSED: &str = "(Checked: this report does not do what its task asked.)";
 
 impl SubAgent {
     /// A sub-agent that only looks things up: every tool it holds must be `Read`.
@@ -54,8 +63,91 @@ impl SubAgent {
                 foreign: false,
             },
             agent,
+            checks: None,
         }
     }
+
+    /// Check its answer against what it read before the parent gets it: a
+    /// paragraph whose `[sN]` sources do not back it (`cookie::check`) is
+    /// rewritten once to what they support, and the parent is told what was
+    /// found; one that cannot be rewritten is marked where it stands, never
+    /// dropped. The check and the rewrite are model calls of this agent's
+    /// model with no tools, paid from the parent's budget like the
+    /// sub-agent's own. A report that cites nothing goes back as it is.
+    pub fn source_checked(mut self) -> Self {
+        let fresh = |prompt: &str| {
+            let mut agent = Agent::with_provider(self.agent.provider.clone(), self.agent.model.clone()).without_enkeon().instructions(prompt);
+            agent.price = self.agent.price;
+            agent
+        };
+        self.checks = Some((fresh(crate::cookie::check::CHECK_PROMPT), fresh(crate::cookie::check::REVISE_PROMPT)));
+        self
+    }
+
+    /// The answer as the parent receives it, after its source check.
+    async fn supervised(&self, task: &str, answer: String, read: &[(usize, String)], context: &ToolContext) -> String {
+        use crate::cookie::check::{check_input, revise_input, verdict, CheckStatus, Verdict};
+        let Some((checker, reviser)) = &self.checks else { return answer };
+        let cites = answer.match_indices("[s").any(|(i, _)| answer[i + 2..].starts_with(|c: char| c.is_ascii_digit()));
+        let Some(input) = check_input(task, &answer, read).filter(|_| cites) else { return answer };
+        let name = format!("{} check", self.spec.name);
+        let v = consult(checker, &name, input, context).await.map(|raw| verdict(&raw)).unwrap_or_else(|_| Verdict::unavailable());
+        let found = || {
+            v.problems.iter().map(|p| format!("paragraph {}: {}", p["paragraph"], p["why"].as_str().unwrap_or_default())).collect::<Vec<_>>().join("; ")
+        };
+        match v.status {
+            CheckStatus::Supported => answer,
+            CheckStatus::Unavailable => format!("{UNCHECKED}\n\n{answer}"),
+            CheckStatus::Unsupported if v.problems.is_empty() => format!("{MISSED}\n\n{answer}"),
+            CheckStatus::Unsupported => match consult(reviser, &name, revise_input(task, &answer, &v.problems, read), context).await {
+                Ok(revised) if !revised.trim().is_empty() => format!(
+                    "(Checked against its sources: some claims went further than the sources and were rewritten once to what they support. \
+                     The check found: {}.)\n\n{}",
+                    found(),
+                    revised.trim()
+                ),
+                // No rewrite: each paragraph the check found wanting is marked where it stands.
+                _ => answer
+                    .split("\n\n")
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .enumerate()
+                    .map(|(i, p)| match v.problems.iter().find(|q| q["paragraph"] == i + 1) {
+                        Some(q) => format!("{p} (Not supported by its sources: {}.)", q["why"].as_str().unwrap_or_default()),
+                        None => p.to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            },
+        }
+    }
+}
+
+/// One call of a tool-less checking agent on text that holds what was read
+/// (untrusted), paid from the parent's pool; its events go to the parent.
+async fn consult(agent: &Agent, name: &str, text: String, context: &ToolContext) -> Result<String> {
+    let (reply, _spent, events) = agent.run_delegated(name, Message::untrusted(text, Source::Tool(name.to_string())), context).await;
+    let wrapped = events.into_iter().map(|event| Event::SubAgent { name: name.to_string(), event: Box::new(event) });
+    context.events.lock().expect("events lock").extend(wrapped);
+    reply
+}
+
+/// What a sub-agent read that an answer may cite: each tool result that
+/// starts with a source tag (`[source s3]`), by its step.
+fn sources_read(session: &crate::session::Session) -> Vec<(usize, String)> {
+    session
+        .messages()
+        .iter()
+        .flat_map(|m| m.content())
+        .filter_map(|c| match c {
+            crate::message::Content::ToolResult { output, is_error: false, .. } => {
+                let rest = output.strip_prefix("[source s")?;
+                let (step, text) = rest.split_once(']')?;
+                Some((step.parse().ok()?, text.trim_start().to_string()))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 #[async_trait]
@@ -77,7 +169,8 @@ impl Tool for SubAgent {
         let Some(task) = args["task"].as_str().filter(|t| !t.trim().is_empty()) else {
             return Err("a sub-agent needs a `task`".into());
         };
-        let (result, spent, events) = self.agent.run_delegated(&self.spec.name, crate::message::Message::delegated(task), context).await;
+        let mut session = crate::session::Session::in_memory();
+        let (result, spent, events) = self.agent.run_delegated_in(&self.spec.name, &mut session, Message::delegated(task), context).await;
         context
             .events
             .lock()
@@ -85,7 +178,9 @@ impl Tool for SubAgent {
             .extend(events.into_iter().map(|event| Event::SubAgent { name: self.spec.name.clone(), event: Box::new(event) }));
         // `spent` is already in the parent's pool: the child charged it live.
         let _ = spent;
-        result.map(|answer| context.artifacts.keep(&self.spec.name, answer)).map_err(|e| e.to_string())
+        let answer = result.map_err(|e| e.to_string())?;
+        let answer = self.supervised(task, answer, &sources_read(&session), context).await;
+        Ok(context.artifacts.keep(&self.spec.name, answer))
     }
 
 }
@@ -100,9 +195,19 @@ impl Agent {
         input: crate::message::Message,
         context: &ToolContext,
     ) -> (Result<String>, Spend, Vec<Event>) {
-        use crate::{agent::{RunControl, Start}, budget::Meter, session::Session};
+        self.run_delegated_in(name, &mut crate::session::Session::in_memory(), input, context).await
+    }
+
+    /// The same, in a session the caller keeps (to read what it read).
+    pub(crate) async fn run_delegated_in(
+        &self,
+        name: &str,
+        session: &mut crate::session::Session,
+        input: crate::message::Message,
+        context: &ToolContext,
+    ) -> (Result<String>, Spend, Vec<Event>) {
+        use crate::{agent::{RunControl, Start}, budget::Meter};
         use tracing::Instrument;
-        let mut session = Session::in_memory();
         // A person steers the run they asked, never its helpers directly.
         let control = RunControl { cancel: context.cancel.clone(), ..Default::default() };
         let budget = self.budget.min(&context.budget);
@@ -126,7 +231,7 @@ impl Agent {
         let mut open = Vec::new();
         let span = crate::telemetry::agent_span(Some(name), &self.model, self.provider_name.as_deref());
         let result = self
-            .drive(&mut session, vec![input], &control, &mut |e| events.push(e), &mut open, start, &mut meter)
+            .drive(session, vec![input], &control, &mut |e| events.push(e), &mut open, start, &mut meter)
             .instrument(span.clone())
             .await;
         if let Err(error) = &result {
@@ -247,6 +352,98 @@ mod tests {
         assert!(matches!(parent.run("weather?").await, Err(Error::Budget(_))));
         assert_eq!(child_p.seen().len(), 2, "the child got the 2 calls the parent had left");
         assert_eq!(parent_p.seen().len(), 1, "the parent was charged and stopped");
+    }
+
+    /// A researcher that reads one source, answers, and is checked: the
+    /// child's script, then the checker's and the reviser's replies on the
+    /// same model.
+    fn researcher(script: Vec<crate::provider::ModelResponse>) -> (Arc<Scripted>, SubAgent) {
+        let source = tool("read_src", "r", json!({"type": "object"}), Effect::Read, |_| async move { Ok("[source s1]\nAcme costs 5 EUR and sells in Riga.".to_string()) });
+        let (p, child) = scripted(script);
+        (p, SubAgent::reader("researcher", "x", child.tool(source)).unwrap().source_checked())
+    }
+
+    /// What the parent was handed back by its helper.
+    fn handed_back(parent: &Scripted) -> String {
+        match &parent.seen()[1].last().unwrap().content()[0] {
+            Content::ToolResult { output, .. } => output.clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn lead(helper: SubAgent) -> (Arc<Scripted>, Agent) {
+        let (p, parent) = scripted(vec![Scripted::call("h1", "researcher", json!({"task": "Acme's price"})), Scripted::text("done")]);
+        (p, parent.tool(helper))
+    }
+
+    #[tokio::test]
+    async fn a_report_that_goes_beyond_its_sources_is_rewritten_once_and_the_parent_is_told() {
+        let (child_p, helper) = researcher(vec![
+            Scripted::call("r1", "read_src", json!({})),
+            Scripted::text("Acme costs 9 EUR [s1].\n\nIt sells in Riga [s1]."),
+            Scripted::text("{\"ok\": false, \"problems\": [{\"paragraph\": 1, \"why\": \"price not in source\"}]}"),
+            Scripted::text("Acme costs 5 EUR [s1].\n\nIt sells in Riga [s1]."),
+        ]);
+        let (parent_p, parent) = lead(helper);
+        assert_eq!(parent.run("what does Acme cost?").await.unwrap(), "done");
+        let got = handed_back(&parent_p);
+        assert!(got.starts_with("(Checked against its sources:") && got.contains("paragraph 1: price not in source"), "{got}");
+        assert!(got.ends_with("Acme costs 5 EUR [s1].\n\nIt sells in Riga [s1]."), "{got}");
+        let seen = child_p.seen();
+        assert_eq!(seen.len(), 4, "the report, one check, one rewrite: never a second round");
+        assert!(seen[2][0].text().contains("Paragraph 1:\nAcme costs 9 EUR.\nSource s1:\nAcme costs 5 EUR"), "the checker reads each paragraph beside what it read");
+        assert!(seen[2][0].origin().is_untrusted(), "what was read stays untrusted in the check");
+    }
+
+    #[tokio::test]
+    async fn a_report_that_cannot_be_rewritten_is_marked_where_it_stands_never_dropped() {
+        let (_, helper) = researcher(vec![
+            Scripted::call("r1", "read_src", json!({})),
+            Scripted::text("Acme costs 9 EUR [s1].\n\nIt sells in Riga [s1]."),
+            Scripted::text("{\"ok\": false, \"problems\": [{\"paragraph\": 1, \"why\": \"price not in source\"}]}"),
+            Scripted::text("  "),
+        ]);
+        let (parent_p, parent) = lead(helper);
+        parent.run("x").await.unwrap();
+        assert_eq!(handed_back(&parent_p), "Acme costs 9 EUR [s1]. (Not supported by its sources: price not in source.)\n\nIt sells in Riga [s1].");
+    }
+
+    #[tokio::test]
+    async fn a_supported_report_or_one_citing_nothing_goes_back_as_it_is_and_an_unreadable_check_is_said() {
+        let (child_p, helper) = researcher(vec![Scripted::call("r1", "read_src", json!({})), Scripted::text("Acme costs 5 EUR [s1]."), Scripted::text("{\"ok\": true}")]);
+        let (parent_p, parent) = lead(helper);
+        parent.run("x").await.unwrap();
+        assert_eq!(handed_back(&parent_p), "Acme costs 5 EUR [s1].");
+        assert_eq!(child_p.seen().len(), 3);
+
+        let (child_p, helper) = researcher(vec![Scripted::text("I could not find Acme's price.")]);
+        let (parent_p, parent) = lead(helper);
+        parent.run("x").await.unwrap();
+        assert_eq!(handed_back(&parent_p), "I could not find Acme's price.");
+        assert_eq!(child_p.seen().len(), 1, "nothing cited, nothing to check");
+
+        let (_, helper) = researcher(vec![Scripted::call("r1", "read_src", json!({})), Scripted::text("Acme costs 5 EUR [s1]."), Scripted::text("looks fine to me")]);
+        let (parent_p, parent) = lead(helper);
+        parent.run("x").await.unwrap();
+        assert_eq!(handed_back(&parent_p), format!("{UNCHECKED}\n\nAcme costs 5 EUR [s1]."), "a check that gave no verdict is never a pass");
+    }
+
+    #[tokio::test]
+    async fn the_check_is_paid_from_the_parents_budget() {
+        let script = || vec![
+            Scripted::call("r1", "read_src", json!({})),
+            Scripted::text("Acme costs 9 EUR [s1]."),
+            Scripted::text("{\"ok\": false, \"problems\": [{\"paragraph\": 1, \"why\": \"price not in source\"}]}"),
+            Scripted::text("Acme costs 5 EUR [s1]."),
+        ];
+        // The parent's call, the helper's two, the check and the rewrite: five.
+        let budget = |steps| Budget { max_steps: steps, max_tokens: 1_000_000, max_dollars: None };
+        let (_, helper) = researcher(script());
+        let (_, parent) = lead(helper);
+        assert!(matches!(parent.budget(budget(5)).run("x").await, Err(Error::Budget(_))), "nothing left for the parent's answer");
+        let (_, helper) = researcher(script());
+        let (_, parent) = lead(helper);
+        assert_eq!(parent.budget(budget(6)).run("x").await.unwrap(), "done");
     }
 
     struct Hangs;

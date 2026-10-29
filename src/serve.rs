@@ -229,6 +229,10 @@ pub struct HelperDecl {
     /// Model calls this helper may make, at most (still within the run's).
     #[serde(default)]
     pub max_steps: Option<usize>,
+    /// Check its report against the sources it read before the run gets it
+    /// (`SubAgent::source_checked`), paid from the run's budget.
+    #[serde(default)]
+    pub check_sources: bool,
 }
 
 /// Helpers one run may declare.
@@ -696,7 +700,10 @@ fn helpers(
                 .ok_or_else(|| format!("helper `{}`: the run has no tool `{name}`", helper.name))?;
             child = child.tool(WireTool { spec: tool_spec(decl)?, wire: wire.clone(), agent: Some(helper.name.clone()), order: decl.order.clone(), voice: decl.voice.clone() });
         }
-        let inner = crate::subagent::SubAgent::reader(&helper.name, &helper.description, child).map_err(|e| e.to_string())?;
+        let mut inner = crate::subagent::SubAgent::reader(&helper.name, &helper.description, child).map_err(|e| e.to_string())?;
+        if helper.check_sources {
+            inner = inner.source_checked();
+        }
         agent = agent.tool(HelperTool { inner, wire: wire.clone() });
     }
     Ok(agent)
