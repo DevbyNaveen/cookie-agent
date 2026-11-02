@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleURLTypes</key>
+	<array><dict><key>CFBundleURLName</key><string>Enkeon Voice meeting sources</string><key>CFBundleURLSchemes</key><array><string>enkeon-voice</string></array></dict></array>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Enkeon uses your microphone for dictation and meetings you explicitly start. Meeting recording continues until you pause or stop it.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Enkeon turns what you say into text on this Mac.</string>
+	<key>VoiceTranscriptionProvider</key>
+	<string>parakeet</string>
+</dict>
+</plist>

@@ -1,0 +1,299 @@
+ENKEON RECALL — RESEARCH AND PROPOSED ARCHITECTURE
+Research date: 2026-11-01
+Status: design proposal; no backend changes, deployment, downloads, or paid experiments.
+
+DECISION
+Build adaptive retrieval over original evidence plus versioned structured assertions.
+Optimize complete, current, supported evidence per millisecond and per returned token.
+Do not claim world-best performance or scientific novelty before controlled evaluation.
+The proposed differentiation is the combination of conflict-aware evidence selection,
+workload-specific risk budgets, correction-driven retrieval adaptation, and efficient
+invalidation across apps. Each component has precedents; this combination is a hypothesis.
+
+RESEARCH METHOD AND LIMITS
+Read the existing local report and directly checked selected engine code. Searched papers,
+primary project repositories, model cards, Reddit practitioner accounts, and X. Opened
+primary sources including October 23/26 papers and the October 20 NVIDIA model release.
+X searches did not provide useful directly verifiable evidence; an identified announcement
+returned HTTP 403. No X opinions are treated as evidence. Reddit reports are firsthand
+operational anecdotes, not controlled comparisons. Vendor and paper scores below were
+not reproduced. This is a focused research review, not an exhaustive systematic review.
+
+WHAT THE EVIDENCE CHANGES
+1. Hybrid retrieval is a useful baseline, not a complete memory design. Hindsight combines
+   retrieval paths; Graphiti preserves temporal relationships and provenance. [1,2]
+2. Original evidence must remain searchable. FlexA-Mem (Oct 23) combines retained history
+   with budget-adaptive rendering; its findings caution against relying entirely on
+   LLM-written memory under tight context budgets. [3]
+3. The access index can adapt independently of stored facts. AMIE (Oct 26) updates bounded
+   access weights, reporting modest absolute downstream improvements. It also documents
+   harm when suppression hides frequently useful records. Treat as an experiment. [4]
+4. Typed facts, source spans and temporal edges are promising. SodaMem reports 92.8% on
+   LongMemEval-S, but that is best of three and uses the same reader/judge model; costs
+   exclude ingestion. These qualifications preclude a universal winner claim. [5]
+5. Agent Zero uses timeline, graph and documentary views plus an agentic reader. Its
+   reported 95.6% LongMemEval is end-to-end, not the accuracy or latency of a fast recall
+   endpoint. Citation availability alone does not establish that a claim is entailed. [6]
+6. Temporal contradiction cannot be inferred reliably from cosine similarity. MemStrata
+   studies structural validity; Enkeon still needs scope and cardinality controls. [7]
+7. MemReranker is memory-specific research worth testing. Public 4B weights are available;
+   the 0.6B model discussed in the paper was not verified as downloadable. [8,9]
+8. MemDelta demonstrates that changing embeddings/readers can reverse comparisons. Hold
+   those variables constant when attributing improvements to architecture. [10]
+9. Letta's filesystem baseline is important: a strong agent using simple tools can do
+   well. The retrieval endpoint and the downstream agent must be evaluated separately. [11]
+10. Contextual indexing helps retain a passage's meaning. Keep canonical indexing text
+    identical across ingest and rebuild, and distinguish derived context from quotation. [12]
+11. Conformal claim filtering illustrates the precision/coverage trade-off: high reported
+    support can coincide with refusing most output. Never optimize accuracy alone. [13]
+12. A recent Reddit operator reported that consolidation left many records inaccessible
+    through vector search. This motivates a retained-source fallback, but the small,
+    environment-specific experiment is not a product ranking. [14]
+
+CURRENT ENKEON: LIMITED DIRECT VERIFICATION
+In /Users/naveen/Desktop/thinkingroot/crates/thinkingroot-serve/src/engine.rs:
+- Around 2437–2519: fast reranker defaults to eight candidates and 128-token pairs;
+  missing model serves fused ordering. These are source defaults, not verified live config.
+- Around 2483: comments explicitly identify mixed rank ramps/raw cosine scales.
+- Around 2523: fixed cutoff is based on a raw logit transformed through sigmoid.
+- Around 2308: the existing confidence band explicitly is not a calibrated probability.
+In crates/thinkingroot-cli/src/main.rs around 526, no-leak evaluation is distinguished
+from gold-session injection. Oracle-assisted results cannot establish real recall quality.
+The prior 40-question report is diagnostic, not a clean held-out baseline: some gold IDs
+and branches are uncertain. Do not publish its percentages without auditing its labels.
+This architecture proposal does not depend on claiming those defects are all root causes.
+
+DATA MODEL: PRESERVE THE HISTORY; INDEX MULTIPLE VIEWS
+A. Source event: original text/transcript, source offsets or timestamps, source identity,
+   actor, ingestion time, event time if known, ACL, branch memberships, content version.
+   Append changes as events; deletion obligations override historical retention.
+B. Assertion: subject ID, predicate, typed value, qualifiers (project, environment, unit,
+   currency, geography), assertion kind, polarity, modality, source-event spans,
+   extraction version/confidence, user-confirmation status, valid interval and recorded
+   interval. Unknown values remain unknown. One event may support multiple assertions.
+C. Episode: bounded contextual passage and ordered event links, for explanations and
+   questions whose answers are lost when text is split into individual facts.
+D. Relationship projection: entity aliases and sourced edges connecting assertions and
+   episodes. The graph is a rebuildable index, not a second competing source of truth.
+
+Keep existing kind, lifecycle/state and weight fields. Query relevance, epistemic support,
+validity and lifecycle are distinct dimensions. 'Critical' does not mean 'correct'; a
+'broken' plan can be exactly what a historical question asks for. Map actual current
+state semantics in the migration rather than inventing new meanings for existing enums.
+
+Immediate write path: persist source plus explicit metadata; make lexical/exact retrieval
+available and issue a monotonically increasing memory epoch. Async extraction/embedding
+must not create a period where a newly saved instruction is unfindable. Preserve pending
+source records in a recent-write retrieval path. Projection jobs are idempotent and versioned.
+
+UPDATES AND TIME
+Two timestamps answer different questions: when a fact applied, and when Enkeon learned
+it. Support both 'what was true then?' and 'what did we know then?'.
+Supersession key: tenant + subject + predicate + relevant scope/qualifiers. Replace only
+single-valued relations with a confirmed update or validated explicit correction. Multiple
+email addresses, projects or preferences are not automatically contradictions. A plan,
+a tentative idea and an observed outcome must not silently replace one another.
+Keep disputed alternatives with their sources. Recency alone never settles authority.
+Deletion invalidates all derived assertions, embeddings, summaries and caches; tombstones
+must be checked even while background index cleanup is unfinished.
+
+QUERY CONTRACT
+RecallRequest: query, explicit scope, optional task/session context, temporal mode,
+minimum memory epoch, latency deadline, token budget, consumer mode.
+Hard filters: tenant, ACL, deletion and caller-requested confinement. Every retrieval path
+uses the same predicate and eligibility is checked again before returning results.
+Soft signals: current project, entity hypotheses, desired kind, recency preference.
+Never convert a guessed project into an irreversible hard filter.
+
+Recognize IDs, aliases and dates cheaply; keep several hypotheses when ambiguous.
+The phrase 'where do we run it?' cannot always be understood by a one-millisecond rule.
+Use supplied conversational context; retain lexical and dense search when parsing is
+uncertain. A small classifier or bounded planner is optional, benchmarked separately.
+
+SEARCH ALGORITHM — INITIAL VALUES ARE EXPERIMENT SETTINGS
+1. Build query hypotheses and obtain a consistent snapshot/epoch.
+2. In parallel retrieve approximately 24 lexical and 24 dense candidates, plus up to
+   8 exact/assertion matches. Reserve a limited candidate share for user-confirmed
+   decisions and pending recent sources; this guarantees consideration, not correctness.
+3. Merge by stable evidence IDs using unweighted reciprocal rank fusion as baseline.
+   RRF(q,d)=sum_over_paths 1/(k + rank_path(q,d)); k=60 is a starting value to sweep.
+   Normalize neither cosine nor BM25 into a fake probability. Collapse duplicate views
+   of the same evidence, but retain independent corroboration and opposing assertions.
+4. Score a deduplicated pool (initially 24, configurable up to 48) with one reranker on
+   query + minimal relevant context + candidate evidence. Account for sequence length
+   and queue time, not merely candidate count. Do not truncate away negation or scope.
+5. Expand selected candidates into evidence bundles: exact supporting source span,
+   applicable update chain, relevant unresolved conflict, and an explanation link when
+   the question asks why. Expansion may replace redundant candidates within the budget.
+6. Check bundle sufficiency. A question comparing old/new decisions needs both. A high
+   top score cannot compensate for missing one required fact or unresolved entity identity.
+7. If evidence is incomplete and time remains, choose ONE bounded next operation:
+   broader lexical search, another entity hypothesis, raw-source search, time-window
+   expansion, or capped graph traversal (initially 2 hops / 64 visited nodes).
+8. Select the evidence set under the token budget. Prefer coverage of requested facts,
+   current validity where appropriate, source independence and low redundancy. Preserve
+   contradictions instead of hiding them to maximize apparent confidence.
+9. Return evidence, status, scope actually searched, time mode, snapshot epoch, sources,
+   and a continuation cursor if truncated. Never label an incomplete timeout 'no memory'.
+
+Conceptual selection objective (proposal, not a learned or validated algorithm):
+  maximize supported query-facet coverage + useful corroboration
+           - redundant evidence - unresolved temporal/scope mismatch
+  subject to ACL, source availability, token budget and latency deadline.
+Use a small greedy selector with explicit constraints first. An exact optimizer or graph
+neural network is not warranted until simpler selection fails an identified workload.
+
+ADAPTIVE CONTROLLER — THE RESEARCH HYPOTHESIS
+For optional operation a, estimate:
+  value(a) = expected reduction in unsupported/missing evidence
+             - lambda * extra_latency - mu * compute_cost.
+Start with transparent rules learned from trace analysis. Fit a small policy only after
+collecting representative labeled traces; tune on validation, evaluate prospectively.
+Do not pretend to measure expected value without data. Cap total work and expose partial
+results when the deadline is reached. No generative LLM is required in the common fast
+path, but embedding/reranker inference still consumes computation and input tokens.
+
+WHAT ENKEON SHOULD MAKE DISTINCTIVE
+1. Conflict-aware evidence bundles: answer + supporting span + relevant correction or
+   disagreement. Proposed benefit: fewer authoritative-looking stale answers.
+2. Query-specific work allocation: easy exact questions avoid expensive expansion;
+   ambiguous, temporal and multi-source questions receive more retrieval work.
+3. Learning from corrections: record when a user selects different evidence or explicitly
+   corrects an answer. Use bounded, query-family-specific adjustments. Never let a
+   popular result become more 'true' simply because it was clicked or auto-inserted.
+   Replay against untouched queries and periodically reset/decay learned access weights.
+4. One evidence contract across voice, meetings and coding tools. Voice autocomplete
+   uses stricter eligibility/uncertainty rules and fewer tokens; interactive questions
+   may show alternatives and sources; explicit research may use an agentic reader.
+5. Change-aware cache: cache verified bundles using tenant, ACL version, scope, temporal
+   mode, model/index versions and memory epoch. An edit/delete invalidates dependent
+   cache entries before they can be used again. If dependencies are uncertain, invalidate
+   at the broader tenant epoch. This is correctness infrastructure, not proof of novelty.
+
+CONFIDENCE AND USER EXPERIENCE
+Ranking score is not probability of truth. Calibrate probability of evidence sufficiency
+on separately labeled data, with features including relevance, coverage, entity ambiguity,
+source quality, validity/conflicts, search agreement and operation failures. Deduplicate
+before using top-score margins; ten copies are not ten supporting sources.
+Return statuses such as supported, partial, conflicting, not_found_in_scope, unavailable.
+A conformal or selective-prediction experiment must state its distribution assumptions;
+calibration may fail on new users/languages or distribution shift. Monitor risk/coverage
+and recalibrate. Source citations validate traceability, not semantic correctness.
+
+Illustrative Enkeon case, not a live recall result:
+User asks the GPU budget. Evidence says '$5 total for one month'. Return that constraint,
+its source and date. Generic GPU prices are related but do not answer the question.
+A later '$50 for production' does not overwrite the research budget unless scope matches.
+For sentence suggestions, insert neither amount until the intended project/budget is clear.
+
+MODEL SHORTLIST (BENCHMARK CANDIDATES, NOT SELECTED WINNERS)
+- Existing dense embedder and fast reranker: retain as reproducible baseline; verify actual
+  deployed artifacts and hashes rather than inferring them from source comments.
+- microsoft/harrier-oss-v1-270m: 270M, 640-dimensional, MIT, 94 languages listed. Evaluate
+  multilingual short-memory retrieval, ONNX parity, CPU latency and re-embedding cost.
+  Its general MTEB score does not establish personal-memory quality. [15]
+- cross-encoder/ettin-reranker-32m-v1: small Apache-2.0 English model for CPU experiments.
+  Compare with current model at identical pool sizes/token lengths. [16]
+- IAAR-Shanghai/MemReranker-4B: Apache-2.0, memory-oriented teacher/deep-path candidate.
+  Do not promise public 0.6B availability. [8,9]
+- KaLM-Reranker-V1-Nano-R2: multilingual Apache-2.0 challenger; inspect exported/runtime
+  support and measure on target hardware before adoption. [17]
+- NVIDIA Nemotron-3.5-Rerank-8B-BF16: October 20 release, 8.38B, text/image reranking,
+  OpenMDW-1.1. Relevant to a future document/image path, not automatically a sensible
+  fast recall default. Its ViDoRe claim is a different task. [18]
+Do not add GPU infrastructure merely to use a newer model. Late-interaction, learned
+sparse retrieval and a task-trained compact reranker are separate ablations, not mandatory
+services. A graph database migration is also unnecessary to test bounded adjacency lookup.
+
+COST AND PERFORMANCE
+Proposed fast-path target: warm engine p95 <=200 ms at a named production load/corpus
+size; separately measure network-inclusive latency and cold starts. No measured new
+latency is claimed. Deep research is explicit and may take seconds.
+Track CPU-seconds/query, RAM, vector/index bytes, ingestion and extraction tokens, retry
+cost, backfill cost, cache hit rate, and cost per successful supported answer. Model input
+length and source size make universal '50–100 extra tokens' estimates unjustified.
+Prefer bounded async enrichment and a small resident CPU path. Reuse runtime pools and
+avoid unbounded request fan-out. Do not promise a $5/month production capacity without
+measuring query volume, infrastructure and account pricing.
+
+EVALUATION AND DELIVERY
+Build three independent datasets: training, calibration/validation, and a frozen test.
+Split by user/project and time, not random paraphrases of the same source. Begin with an
+audited 300-question pilot; grow beyond 1,000 for credible category/risk estimates. Include
+unanswerable, temporal, exact identifiers, cross-branch, ambiguous names, multi-evidence,
+source disagreement, deleted facts, repeated clutter, multilingual and voice-transcript
+errors. Keep sequential updates and deletion tests in addition to static snapshots.
+
+Report retrieval all-evidence recall@k, MRR/nDCG where appropriate, answer support/citation
+accuracy, stale/current errors, scope leaks, precision-versus-coverage, false refusals,
+p50/p95/p99 latency, and cost. Bootstrap by user/session where samples are correlated.
+At low claimed error rates, report confidence intervals and enough accepted examples;
+zero failures in a tiny sample is not proof of a zero failure rate.
+
+Compare raw lexical search, dense-only, hybrid+rerank, current production, proposed design,
+and at least one matched open-source memory system. Keep reader, judge, embeddings,
+context budget, hardware and corpus constant for architecture comparisons. Also report
+separate optimized-system comparisons, clearly labeled. Audit judges with human labels.
+Public benchmarks: LongMemEval and V2, plus long-corpus/multi-hop suites suited to the
+workload; verify the exact release and protocol. No gold-session injection. [19,20]
+
+Ablation sequence:
+A baseline plus correct scope/snapshot semantics;
+B original source + structured/contextual views;
+C evidence bundles and conflict-aware packing;
+D calibrated adaptive expansion;
+E correction-driven access adaptation;
+F model swaps, separately and together.
+Require a practically meaningful improvement with uncertainty reported, no scope/delete
+regressions, and latency/cost within declared budgets. A rollback path and shadow results
+are required before rollout. Existing plumbing repairs enable a fair test but do not
+replace this research program. No rollout authorized or performed by this document.
+
+SOURCE REGISTER (accessed 2026-11-01)
+[1] Hindsight peer-reviewed system description:
+https://aclanthology.org/2026.acl-demo.27/
+[2] Graphiti primary repository:
+https://github.com/getzep/graphiti
+[3] FlexA-Mem, submitted 2026-10-23:
+https://arxiv.org/abs/2610.33274
+[4] AMIE, submitted 2026-10-26, full text inspected:
+https://arxiv.org/html/2610.34977v1
+[5] SodaMem:
+https://arxiv.org/abs/2608.08055
+[6] Agent Zero Memory:
+https://arxiv.org/abs/2608.29606
+[7] Temporal Validity / MemStrata:
+https://arxiv.org/abs/2606.26511
+[8] MemReranker paper and public weights:
+https://arxiv.org/abs/2605.06132
+https://huggingface.co/IAAR-Shanghai/MemReranker-4B
+[9] Public 0.6B availability question (no release confirmation found):
+https://huggingface.co/IAAR-Shanghai/MemReranker-4B/discussions/4
+[10] MemDelta controlled evaluation:
+https://arxiv.org/abs/2606.29914
+[11] Letta's filesystem benchmark:
+https://www.letta.com/blog/benchmarking-ai-agent-memory/
+[12] Anthropic contextual retrieval:
+https://www.anthropic.com/research/contextual-retrieval
+[13] Conformal Factuality Control for Multi-Hop RAG:
+https://arxiv.org/abs/2609.38222
+[14] Firsthand Reddit operational report (not a controlled comparison):
+https://www.reddit.com/r/hermesagent/comments/1xer2wi/my_mnemosyne_benchmark_results_and_why_im_looking/
+[15] Microsoft Harrier primary card; community ONNX packaging exists but not tested:
+https://huggingface.co/microsoft/harrier-oss-v1-270m
+https://huggingface.co/onnx-community/harrier-oss-v1-270m-ONNX
+[16] Ettin model card:
+https://huggingface.co/cross-encoder/ettin-reranker-32m-v1
+[17] KaLM model card:
+https://huggingface.co/KaLM-Embedding/KaLM-Reranker-V1-Nano-R2
+[18] NVIDIA model card and release date:
+https://huggingface.co/nvidia/Nemotron-3.5-Rerank-8B-BF16
+[19] LongMemEval:
+https://arxiv.org/abs/2410.10813
+[20] LongMemEval-V2:
+https://arxiv.org/abs/2605.12493
+Additional reviewed leads: HippoRAG 2 https://arxiv.org/abs/2502.14802 ;
+CalibraRL https://arxiv.org/abs/2610.35142 ;
+ToolChain-CRC https://arxiv.org/abs/2606.18467 ;
+Mem0 https://github.com/mem0ai/mem0 ;
+Hindsight implementation https://github.com/vectorize-io/hindsight .
