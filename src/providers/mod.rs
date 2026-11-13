@@ -9,6 +9,7 @@ pub mod anthropic;
 pub mod bedrock;
 #[cfg(feature = "bedrock")]
 pub mod eventstream;
+pub mod failover;
 mod fence;
 pub mod gemini;
 pub mod openai;
