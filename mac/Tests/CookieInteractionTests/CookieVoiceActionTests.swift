@@ -4,6 +4,7 @@ import Combine
 @MainActor
 enum CookieVoiceActionTests {
     static func run() {
+        CookieConversationModeTests.run()
         let examples: [(String, Bool, Bool, CookieRequestMode)] = [
             ("Find five leads for my business", false, false, .work),
             ("Research solar panel manufacturers", false, false, .work),

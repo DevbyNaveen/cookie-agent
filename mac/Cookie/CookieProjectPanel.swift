@@ -10,6 +10,7 @@ struct CookieProjectPanel: View {
     @State private var preference = ""
     @State private var problem: String?
     @State private var scratch = false
+    @State private var productTools = false
     private var session: CookieWorkspaceSession { store.session(thread) }
 
     var body: some View {
@@ -49,6 +50,7 @@ struct CookieProjectPanel: View {
                             }.padding(8)
                         }
                     }
+                    Button("Context, alternatives & workflows…") { productTools = true }
                     GroupBox("Scratchpad") {
                         HStack { Text("Sketch connected boxes, then turn them into an editable output."); Spacer(); Button("Open scratchpad") { scratch = true } }.padding(8)
                     }
@@ -95,6 +97,7 @@ struct CookieProjectPanel: View {
             }
         }.padding(20).frame(width: 640, height: 620).foregroundStyle(CK.text).background(CK.island)
             .buttonStyle(.bordered).onAppear { preference = session.formatPreference ?? ""; brief = session.jobBrief ?? "" }
+            .sheet(isPresented: $productTools) { CookieProductPanel(store: store, manager: manager, thread: thread) { productTools = false } }
             .sheet(isPresented: $scratch) { CookieScratchpad(store: store, thread: thread) { scratch = false } }
     }
     private var jobStatus: String {

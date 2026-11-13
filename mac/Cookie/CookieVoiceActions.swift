@@ -12,7 +12,7 @@ enum CookieRequestMode: String {
         // this email") is a question; the selection stays bound either way and the model decides.
         if selection && contains(["shorter", "longer", "shorten", "rewrite", "rephrase", "reword", "translate", "grammar", "spelling", "typo",
                                   "friendlier", "formal", "polish", "simplify", "fix this", "fix it", "make this", "make it", "turn this into", "turn it into"]) { return .edit }
-        if contains(["on my screen", "this screen", "on screen", "this button", "this paragraph", "this feature", "these feature", "this list", "these items", "what's this", "what is this", "point at", "point to", "click", "open the app"]) { return .screen }
+        if contains(["underline", "highlight this", "highlight that", "circle this", "circle that", "draw a circle", "bullet point", "already shared", "already been shared", "on my screen", "this screen", "on screen", "this button", "this paragraph", "this feature", "these feature", "this list", "these items", "what's this", "what is this", "point at", "point to", "click", "open the app"]) { return .screen }
         if visual && contains(["this part", "that part", "explode", "assemble", "airflow", "rotate", "zoom", "next part", "previous part", "reset model"]) { return .lesson }
         if contains(["diagram", "3d", "teach me", "how does", "how do", "explain", "show me how"]) { return .lesson }
         if contains(["research", "find ", "leads", "connector", "calendar", "inbox", "gmail", "schedule", "draft", "search the web"]) { return .work }
@@ -21,7 +21,7 @@ enum CookieRequestMode: String {
 
     static func refersToPrevious(_ text: String) -> Bool {
         let text = text.lowercased()
-        return ["this", "that", "these", "those", "same", "next part"].contains { text.range(of: "\\b" + $0 + "\\b", options: .regularExpression) != nil }
+        return ["this", "that", "these", "those", "same", "next part", "there", "it"].contains { text.range(of: "\\b" + $0 + "\\b", options: .regularExpression) != nil }
     }
 
     var guidance: String {

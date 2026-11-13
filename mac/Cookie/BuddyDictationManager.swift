@@ -303,6 +303,9 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         super.init()
     }
 
+    var supportsPartialTranscripts: Bool { transcriptionProvider.supportsPartialTranscripts }
+    var currentRecognizedText: String { latestRecognizedText }
+
     func updateContextualKeyterms(_ contextualKeyterms: [String]) {
         self.contextualKeyterms = contextualKeyterms
     }

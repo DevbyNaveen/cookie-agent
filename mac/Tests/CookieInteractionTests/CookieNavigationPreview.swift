@@ -10,6 +10,14 @@ enum CookieNavigationPreview {
                                   audioLevel: 0, startTalking: {}, finishTalking: {}, stopResponse: {}, sendMessage: { _, _, _ in }, recordMeeting: {})
                 .padding(18).frame(width: 334).background(CK.island))
 
+        for width: CGFloat in [298, 680] {
+            snapshot("cookie-conversation-mode-\(Int(width))", content:
+                CookieComposerControl(draft: CookieChatDraft(), availableWidth: width, voiceState: .listening, isWorking: false,
+                    audioLevel: 0.45, startTalking: {}, finishTalking: {}, stopResponse: {}, sendMessage: { _, _, _ in },
+                    conversationMode: true, toggleConversation: {})
+                    .padding(18).frame(width: width + 36).background(CK.island))
+        }
+
         let question = CompanionChatMessage(role: .user, text: "Cookie, show me a jet engine and explain the parts.")
         let answer = CompanionChatMessage(role: .assistant, text: "A jet engine moves air through several stages. The fan at the front draws air in, and the compressor squeezes it to raise its pressure.\n\nFuel burns in the combustor. The hot gases spin the turbine, then rush through the nozzle to push the aircraft forward.")
         for width: CGFloat in [680, 360] {
@@ -27,12 +35,24 @@ enum CookieNavigationPreview {
             ApprovalCard(action: HarnessAction(tool: "workspace", effect: "write", preview: "Monthly budget · Add income, expenses and totals", reason: "")) { _ in }
                 .padding(16).frame(width: 330).background(CK.island))
         let workspace = CookieWorkspaceStore(persistent: false), thread = UUID()
+        snapshot("cookie-conversation-preferences", content: CookieConversationPreferencesView(start: {}))
+        snapshot("cookie-product-context", content: CookieProductPanel(store: workspace, manager: CompanionManager(), thread: thread, close: {}))
         snapshot("cookie-project-controls", content: CookieProjectPanel(store: workspace, manager: CompanionManager(), thread: thread, close: {}))
         snapshot("cookie-scratchpad-controls", content: CookieScratchpad(store: workspace, thread: thread, close: {}))
 
         var content = CookieArtifact.Content()
         content.grid = [["Category", "Budget", "Actual"], ["Rent", "1200", "1200"], ["Groceries", "400", "470"], ["Dining out", "150", "210"], ["Total", "=SUM(B2:B4)", "=SUM(C2:C4)"]]
         _ = try! workspace.put(thread: thread, id: "budget", title: "Monthly budget", kind: .sheet, content: content, base: nil, summary: "Budget")
+        _ = workspace.verify(workspace.selected(thread)!)
+        snapshot("cookie-product-review", content: CookieProductPanel(store: workspace, manager: CompanionManager(), thread: thread, close: {}, tab: "Review"))
+        let lessonThread = UUID()
+        var lesson = CookieArtifact.Content()
+        lesson.controls = [.init(id: "voltage", label: "Voltage", minimum: 0, maximum: 24, value: 12, unit: "V"), .init(id: "resistance", label: "Resistance", minimum: 1, maximum: 100, value: 10, unit: "Ω")]
+        lesson.nodes = [.init(id: "v", label: "Voltage (V)", x: 0.1, y: 0.1, formula: "=A1"), .init(id: "r", label: "Resistance (Ω)", x: 0.9, y: 0.1, formula: "=A2"), .init(id: "i", label: "Current (A)", x: 0.5, y: 0.8, formula: "=A1/A2")]
+        lesson.edges = [.init(from: "v", to: "i"), .init(from: "r", to: "i")]
+        _ = try! workspace.put(thread: lessonThread, id: "lesson", title: "Ohm’s law", kind: .diagram, content: lesson, base: nil, summary: "Example")
+        snapshot("cookie-interactive-lesson", content: CookieWorkspaceView(store: workspace, manager: CompanionManager(), thread: lessonThread, showsComposer: false).frame(width: 650, height: 450).background(CK.island))
+        snapshot("cookie-product-workflows", content: CookieProductPanel(store: workspace, manager: CompanionManager(), thread: thread, close: {}, tab: "Workflows"))
         snapshot("cookie-workspace-split", content:
             HStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 20) {

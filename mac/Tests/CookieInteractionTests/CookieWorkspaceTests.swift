@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor
 enum CookieWorkspaceTests {
     static func run() {
+        CookieProductFeatureTests.run()
         testFormulasAndExports()
         testVersionsIsolationAndDependencies()
         testToolAndSources()

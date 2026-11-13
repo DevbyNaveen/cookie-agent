@@ -16,6 +16,7 @@ protocol BuddyStreamingTranscriptionSession: AnyObject {
 }
 
 protocol BuddyTranscriptionProvider {
+    var supportsPartialTranscripts: Bool { get }
     var displayName: String { get }
     var requiresSpeechRecognitionPermission: Bool { get }
     var isConfigured: Bool { get }
@@ -27,6 +28,10 @@ protocol BuddyTranscriptionProvider {
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession
+}
+
+extension BuddyTranscriptionProvider {
+    var supportsPartialTranscripts: Bool { false }
 }
 
 enum BuddyTranscriptionProviderFactory {

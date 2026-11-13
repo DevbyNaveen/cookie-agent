@@ -71,9 +71,9 @@ impl Search {
         }
     }
 
-    async fn search(&self, http: &reqwest::Client, query: &str) -> Result<String, String> {
+    async fn search(&self, http: &reqwest::Client, query: &str, objective: &str) -> Result<String, String> {
         if let Some(key) = &self.exa {
-            match exa(http, key, query).await {
+            match exa(http, key, query, objective).await {
                 Ok(text) => return Ok(text),
                 Err(e) if self.tinyfish.is_none() && self.brave.is_none() => return Err(e),
                 Err(_) => {}
@@ -109,8 +109,13 @@ async fn get_json(request: reqwest::RequestBuilder) -> Result<Value, String> {
     resp.json().await.map_err(|e| format!("web search response: {e}"))
 }
 
-async fn exa(http: &reqwest::Client, key: &str, query: &str) -> Result<String, String> {
-    let body = json!({"query": query, "type": "auto", "numResults": RESULTS, "contents": {"highlights": true}});
+/// Exa's recommended request: query, objective, highlights. `numResults` is a deliberate
+/// context budget (8, not Exa's 10), shared with the other engines.
+async fn exa(http: &reqwest::Client, key: &str, query: &str, objective: &str) -> Result<String, String> {
+    let mut body = json!({"query": query, "type": "auto", "numResults": RESULTS, "contents": {"highlights": true}});
+    if !objective.is_empty() {
+        body["objective"] = json!(objective);
+    }
     let v = get_json(http.post("https://api.exa.ai/search").header("x-api-key", key).json(&body)).await?;
     Ok(results(query, v["results"].as_array(), |r| {
         let passages: Vec<String> = r["highlights"].as_array().into_iter().flatten().filter_map(Value::as_str).map(one_line).collect();
@@ -223,7 +228,10 @@ pub fn tools(root: Option<PathBuf>, search: Option<Search>, ask: bool) -> Vec<Ar
             tool(
                 "web_search",
                 "Search the web. Returns titles, addresses and passages from each page.",
-                json!({"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}),
+                json!({"type": "object", "properties": {
+                    "query": {"type": "string"},
+                    "objective": {"type": "string", "description": "Goal for this search turn; say which documents should rank first, which should be excluded, and what specific facts or figures to pull from them."}
+                }, "required": ["query", "objective"]}),
                 Effect::Read,
                 move |args: Value| {
                     let (search, http) = (search.clone(), http.clone());
@@ -232,7 +240,8 @@ pub fn tools(root: Option<PathBuf>, search: Option<Search>, ask: bool) -> Vec<Ar
                         if query.is_empty() {
                             return Err("Say what to search for.".to_string());
                         }
-                        search.search(&http, &query).await
+                        let objective = args["objective"].as_str().unwrap_or_default().trim().to_string();
+                        search.search(&http, &query, &objective).await
                     }
                 },
             )
@@ -501,7 +510,9 @@ pub fn strip_html(html: &str) -> String {
             // ASCII-only lowering keeps every byte where it was, so positions
             // found in `lower` are positions in `s` (`to_lowercase` can grow a string).
             let lower = s.to_ascii_lowercase();
-            let Some(start) = lower.find(&format!("<{tag}")) else { break };
+            // `<head` must not match `<header`: the name has to end where the tag's name ends.
+            let open = format!("<{tag}");
+            let Some(start) = lower.match_indices(&open).map(|(i, _)| i).find(|&i| lower[i + open.len()..].starts_with(|c: char| c == '>' || c == '/' || c.is_ascii_whitespace())) else { break };
             let end = lower[start..].find(&format!("</{tag}>")).map_or(s.len(), |e| start + e + tag.len() + 3);
             s.replace_range(start..end, " ");
         }
@@ -571,6 +582,13 @@ mod tests {
         let page = "<html><head><title>x</title><style>p{}</style></head><body><nav>Home</nav><h1>Acme &amp; Co</h1>\
                     <script>alert(1)</script><p>Raised&nbsp;$12M&#33;</p><p>In <b>Riga</b>.</p></body></html>";
         assert_eq!(strip_html(page), "Home\nAcme & Co\nRaised $12M!\nIn Riga.");
+    }
+
+    #[test]
+    fn a_header_element_is_not_mistaken_for_head() {
+        // Before: `<head` matched `<header`, found no `</head>` after it, and dropped the rest of the page.
+        let page = "<html><head><title>x</title></head><body><header class=\"top\">Acme</header><main><h1>Memory for agents</h1><p>Shared context.</p></main></body></html>";
+        assert_eq!(strip_html(page), "Acme\nMemory for agents\nShared context.");
     }
 
     #[test]

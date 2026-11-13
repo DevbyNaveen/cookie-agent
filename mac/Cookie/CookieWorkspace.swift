@@ -4,7 +4,7 @@ import Foundation
 struct CookieArtifact: Codable, Identifiable, Equatable {
     enum Kind: String, Codable, CaseIterable { case html, document, sheet, diagram, scene }
     struct Block: Codable, Equatable, Identifiable { var id: String; var text: String }
-    struct Node: Codable, Equatable, Identifiable { var id: String; var label: String; var x: Double; var y: Double }
+    struct Node: Codable, Equatable, Identifiable { var id: String; var label: String; var x: Double; var y: Double; var formula: String? = nil }
     struct Edge: Codable, Equatable { var from: String; var to: String }
     struct Source: Codable, Equatable, Identifiable {
         var id: String; var title: String; var url: String; var retrievedAt: String
@@ -19,10 +19,12 @@ struct CookieArtifact: Codable, Identifiable, Equatable {
         var edges: [Edge] = []
         var sources: [Source] = []
         var dependencies: [String: String] = [:]
-        enum CodingKeys: String, CodingKey { case body, blocks, grid, nodes, edges, sources, dependencies }
+        var controls: [CookieLessonControl]?
+        enum CodingKeys: String, CodingKey { case body, blocks, grid, nodes, edges, sources, dependencies, controls }
         init() {}
         init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
+            controls = try values.decodeIfPresent([CookieLessonControl].self, forKey: .controls)
             body = try values.decodeIfPresent(String.self, forKey: .body) ?? ""
             blocks = try values.decodeIfPresent([Block].self, forKey: .blocks) ?? []
             grid = try values.decodeIfPresent([[String]].self, forKey: .grid) ?? []
@@ -68,6 +70,9 @@ struct CookieWorkspaceSession: Codable, Equatable {
     var jobState: String?
     var scratchNodes: [CookieArtifact.Node]?
     var scratchConnected: Bool?
+    var receipts: [String: CookieVerificationReceipt]?
+    var alternatives: [String: CookieAlternativeOrigin]?
+    var contextClips: [CookieContextClip]?
 
 }
 
@@ -222,6 +227,7 @@ final class CookieWorkspaceStore: ObservableObject {
             if let position = current.blocks.firstIndex(where: { $0.id == id }) { current.blocks.remove(at: position) }
             if let value { current.blocks.insert(value, at: min(before.blocks.firstIndex(where: { $0.id == id }) ?? current.blocks.count, current.blocks.count)) }
         }
+        try restore(before.controls, after.controls, &current.controls)
         try restore(before.nodes, after.nodes, &current.nodes)
         try restore(before.edges, after.edges, &current.edges)
         try restore(before.sources, after.sources, &current.sources)
@@ -241,6 +247,10 @@ final class CookieWorkspaceStore: ObservableObject {
               content.nodes.count <= 80, content.nodes.allSatisfy({ $0.x.isFinite && $0.y.isFinite && (0...1).contains($0.x) && (0...1).contains($0.y) }), content.edges.count <= 160, content.sources.count <= 200,
               Set(content.blocks.map(\.id)).count == content.blocks.count,
               Set(content.nodes.map(\.id)).count == content.nodes.count else { throw Failure("Output exceeds workspace limits or repeats a target id.") }
+        let controls = content.controls ?? []
+        guard controls.count <= 8, Set(controls.map(\.id)).count == controls.count,
+              controls.allSatisfy({ $0.minimum.isFinite && $0.maximum.isFinite && $0.value.isFinite && $0.minimum < $0.maximum && ($0.minimum...$0.maximum).contains($0.value) && $0.label.count <= 80 }),
+              content.nodes.allSatisfy({ ($0.formula?.count ?? 0) <= 500 }) else { throw Failure("Invalid lesson controls or formulas.") }
         if kind == .scene, CookieScene(tag: .init(kind: "SCENE", body: content.body, offset: 0)) == nil { throw Failure("The 3D scene does not match Cookie's scene format.") }
     }
     func checks(_ artifact: CookieArtifact) -> [String] {
@@ -256,6 +266,11 @@ final class CookieWorkspaceStore: ObservableObject {
             }
         }
         if artifact.kind == .diagram {
+            for node in content.nodes where node.formula != nil {
+                let controls = content.controls ?? []
+                let grid = controls.map { [String($0.value)] } + [[node.formula ?? ""]]
+                if case .failure(let reason) = CookieSheet(grid: grid).value(row: controls.count, column: 0) { issues.append("Interactive node \(node.id): \(reason)") }
+            }
             let ids = Set(content.nodes.map(\.id))
             for edge in content.edges where !ids.contains(edge.from) || !ids.contains(edge.to) { issues.append("A connector has a missing endpoint.") }
         }

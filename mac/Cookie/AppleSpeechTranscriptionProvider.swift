@@ -22,6 +22,7 @@ struct AppleSpeechTranscriptionProviderError: LocalizedError {
 }
 
 final class AppleSpeechTranscriptionProvider: BuddyTranscriptionProvider {
+    let supportsPartialTranscripts = true
     let displayName = "Apple Speech"
     let requiresSpeechRecognitionPermission = true
     let isConfigured = true
