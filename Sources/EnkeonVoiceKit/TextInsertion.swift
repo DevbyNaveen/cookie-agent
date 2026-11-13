@@ -5,7 +5,8 @@ public enum DictationText {
     /// Personal vocabulary, one term per line: spelled as written and passed to the recognizer.
     public static let vocabularyKey = "enkeon.dictation.vocabulary"
     static var vocabulary: [String] {
-        Array((UserDefaults.standard.string(forKey: vocabularyKey) ?? "").split(separator: "\n")
+        // The product's own name is always spelled right ("Enkion", "Encon" → Enkeon).
+        ["Enkeon"] + Array((UserDefaults.standard.string(forKey: vocabularyKey) ?? "").split(separator: "\n")
             .map { String($0.prefix(80)).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.prefix(100))
     }
     /// Recognition hints are used only after Option explicitly selects editing.
@@ -35,6 +36,8 @@ public enum DictationText {
                                                      options: .regularExpression)
             }
         }
+        // The recognizer spells the product's own name as letters ("NQN", "N.Q.N."): too short for NameCorrection.
+        result = result.replacingOccurrences(of: #"\b[Nn]\.? ?[Qq]\.? ?[Nn]\b\.?(?=\s|$|[,!?])"#, with: "Enkeon", options: .regularExpression)
         if terminal {
             result = result.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }.joined(separator: " ")
@@ -190,23 +193,39 @@ final class TextInsertion {
         guard !text.isEmpty, text.utf16.count <= 20_000 else { return ("Dictate between 1 and 20,000 characters.", false) }
         guard !Task.isCancelled, destination.unchanged() else { return ("The original field or selection changed. Your text is kept in Enkeon; nothing was inserted.", false) }
         let expected = destination.replacing(with: text)
-        if AXUIElementSetAttributeValue(destination.element, kAXSelectedTextAttribute as CFString, text as CFString) != .success {
+        let wroteDirectly = AXUIElementSetAttributeValue(destination.element, kAXSelectedTextAttribute as CFString, text as CFString) == .success
+        if !wroteDirectly {
             guard allowPaste else { return ("This terminal could not replace the input safely. Copy the revision instead.", false) }
             guard destination.unchanged(), !Task.isCancelled else { return ("The field changed. Nothing was pasted.", false) }
             await pastePreservingClipboard(text)
         }
-        // Some editors apply accessibility writes on their next UI turn.
-        for _ in 0..<8 {
-            if TextFieldAccess.string(destination.element, kAXValueAttribute) == expected {
-                receipt = Receipt(destination: destination, inserted: text, after: expected)
-                return ("Inserted in \(destination.app). Say “scratch that” with the dictation shortcut to undo.", true)
+        if await confirmed(expected, in: destination) {
+            receipt = Receipt(destination: destination, inserted: text, after: expected)
+            return ("Inserted in \(destination.app). Say “scratch that” with the dictation shortcut to undo.", true)
+        }
+        receipt = nil
+        // Web editors (X, LinkedIn, Claude) accept the write but ignore it. Field and cursor exactly as
+        // before means nothing landed, so pasting once can't duplicate anything.
+        // ponytail: assumes a write unseen after 400 ms never lands; a slower editor would get it twice.
+        if wroteDirectly, allowPaste, !Task.isCancelled, destination.unchanged() {
+            await pastePreservingClipboard(text)
+            if await confirmed(expected, in: destination) {
+                return ("Inserted in \(destination.app). Use the app's Undo if needed.", true)
             }
-            if Task.isCancelled { break }
-            try? await Task.sleep(for: .milliseconds(50))
+            return ("Pasted into \(destination.app) without sending. This editor cannot confirm its text; check the insertion. Use the app's Undo if needed.", true)
         }
         // Never retry an uncertain write: that could duplicate a paragraph.
-        receipt = nil
         return ("The editor didn't confirm the insertion. Check the field before trying again; your text is kept in Enkeon.", false)
+    }
+
+    /// Some editors apply accessibility writes on their next UI turn.
+    private func confirmed(_ expected: String, in destination: TextDestination) async -> Bool {
+        for _ in 0..<8 {
+            if TextFieldAccess.string(destination.element, kAXValueAttribute) == expected { return true }
+            if Task.isCancelled { return false }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return false
     }
 
     func insert(_ text: String, into destination: PasteDestination) async -> (message: String, success: Bool) {

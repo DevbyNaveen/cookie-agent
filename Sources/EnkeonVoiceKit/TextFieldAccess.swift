@@ -49,6 +49,19 @@ enum TextFieldAccess {
         return bundle.object(forInfoDictionaryKey: "LSApplicationCategoryType") as? String
     }
 
+    /// Chromium browsers and Electron apps (Chrome, X and LinkedIn in a browser, Claude, Slack) build
+    /// their accessibility tree only when an assistive app asks, so until then there is no focused
+    /// field to type into. Electron answers AXManualAccessibility; Chrome only AXEnhancedUserInterface,
+    /// which is set only when the first is refused because it can slow window animations.
+    static func exposeFields(_ app: NSRunningApplication) {
+        guard AXIsProcessTrusted(), app.processIdentifier != getpid() else { return }
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(element, 0.2)
+        if AXUIElementSetAttributeValue(element, "AXManualAccessibility" as CFString, kCFBooleanTrue) != .success {
+            AXUIElementSetAttributeValue(element, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        }
+    }
+
     static func focusedElement() -> AXUIElement? {
         guard let value = attribute(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute),
               CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }

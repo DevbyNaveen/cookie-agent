@@ -136,6 +136,13 @@ public final class DictationController: ObservableObject {
     private var memoryChosen = false
 
     public init() {
+        // Chrome and Electron apps hide their fields until asked; ask as each app comes to the front,
+        // so the field is there by the time the key goes down.
+        NSWorkspace.shared.frontmostApplication.map(TextFieldAccess.exposeFields)
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didActivateApplicationNotification)
+            .compactMap { $0.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication }
+            .sink { TextFieldAccess.exposeFields($0) }
+            .store(in: &cancellables)
         dictation.$isMicrophoneReady
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.isMicrophoneReady = $0 }

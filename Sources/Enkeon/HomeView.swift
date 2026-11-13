@@ -568,18 +568,23 @@ private struct AppRing: View {
                         Text("\(Int(total))").font(.system(size: 15, weight: .semibold)).monospacedDigit().foregroundStyle(Theme.text)
                     }
                     .frame(width: 74, height: 74)
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(apps.indices, id: \.self) { index in
-                            HStack(spacing: 7) {
-                                Circle().fill(palette[index % palette.count]).frame(width: 8, height: 8)
-                                Text(apps[index].app).font(.system(size: 12)).foregroundStyle(Theme.text).lineLimit(1)
-                                Spacer(minLength: 4)
-                                Text("\(apps[index].count)").font(.system(size: 12)).monospacedDigit().foregroundStyle(Theme.tertiary)
+                    // A long app list scrolls inside the card instead of stretching it.
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(apps.indices, id: \.self) { index in
+                                HStack(spacing: 7) {
+                                    Circle().fill(palette[index % palette.count]).frame(width: 8, height: 8)
+                                    Text(apps[index].app).font(.system(size: 12)).foregroundStyle(Theme.text).lineLimit(1)
+                                    Spacer(minLength: 4)
+                                    Text("\(apps[index].count)").font(.system(size: 12)).monospacedDigit().foregroundStyle(Theme.tertiary)
+                                }
                             }
                         }
                     }
+                    .scrollIndicators(.automatic)
+                    .frame(minHeight: 74)
                 }
-                Spacer(minLength: 0)
+                .frame(maxHeight: .infinity, alignment: .top)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
