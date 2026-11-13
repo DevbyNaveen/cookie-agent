@@ -89,7 +89,8 @@ cookie-agent/
     Cookie/            the app
     VoiceKit/          ← enkeon-voice/Sources/EnkeonVoiceKit (module name kept: EnkeonVoiceKit)
     VoiceUI/           ← enkeon-voice/Sources/Enkeon pages/overlays used by Cookie (see table)
-    voice-app/         ← the standalone Enkeon Voice app target, kept building, not shipped
+    voice/             ← enkeon-voice imported whole (subtree); the standalone app stays
+                         buildable at git tag `enkeon-voice-app-v0` once its views move into Cookie
     sense/             one speech helper (cookie-sense and enkeon-sense merged)
     cookie-recorder/ cookie-tools/ cookie-py/ skills/ scripts/ Tests/
 ```
