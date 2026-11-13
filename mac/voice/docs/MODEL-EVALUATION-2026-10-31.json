@@ -1,0 +1,278 @@
+{
+  "date": "2026-10-31",
+  "machine": "Apple M4, 16 GB",
+  "scope": "Small smoke subsets; not a production accuracy or M1 certification",
+  "metric": "Last audio buffer to final helper event; excludes cleanup, insertion, UI and recall",
+  "cloud": "BLOCKED: no configured editor API credential; mock transport passed",
+  "runs": [
+    {
+      "run": "speech",
+      "complete": true,
+      "summary": {
+        "engine": "speech",
+        "clips": 12,
+        "normalized_wer": 0.05303030303030303,
+        "silence_false_positives": 0,
+        "p50_ms": 72.60279100000133,
+        "p95_ms": 198.64395799999812
+      },
+      "groups": [
+        {
+          "group": "English synthetic",
+          "clips": 11,
+          "normalized_wer": 0.05303030303030303
+        }
+      ],
+      "fixtures": [
+        {
+          "clip": "accented/aman-1.aiff",
+          "audio_sha256": "d8a19396b7327bb656bdbf1cbfa3f707079f910d3bdf8e86c4d03a66e91f9eac"
+        },
+        {
+          "clip": "accented/rishi-0.aiff",
+          "audio_sha256": "868808c6f5e6660d324ea8731b24e55047e73890cf0d047cc5d7b87aacb081c4"
+        },
+        {
+          "clip": "accented/tessa-2.aiff",
+          "audio_sha256": "a4f66f7d25dc17c7f4617cafe7b8961f4227bc6eb190a4d516f9aa59674865f4"
+        },
+        {
+          "clip": "clean/daniel-1.aiff",
+          "audio_sha256": "9e154a5a0766cc4cf5963bd7c7811072523e5e2458c29435b4d904de52794043"
+        },
+        {
+          "clip": "clean/karen-2.aiff",
+          "audio_sha256": "cdc99960eb3a1a65797f28d2ebd5a2ed02a1a49008bd2dc2c89856cf0aede70a"
+        },
+        {
+          "clip": "clean/samantha-0.aiff",
+          "audio_sha256": "37b85cca9ad0681f5b28b6431d6febcf0bbdcc40570cfa1d228d5c6a4b32ea6a"
+        },
+        {
+          "clip": "names/daniel-1.aiff",
+          "audio_sha256": "8052d7dbae1b3fd6f08a9813935260db7260f9e6f6255f2a8de0a296b4240873"
+        },
+        {
+          "clip": "names/moira-2.aiff",
+          "audio_sha256": "8144c6185782e764fc939d67abd96fe9f534c5837b7a60b76f1c4c88ae3bfa9e"
+        },
+        {
+          "clip": "names/samantha-0.aiff",
+          "audio_sha256": "99d071c6bfbfd5bf88c3fea83909f046861e80985d0cf96a93ee4cb90ee0d553"
+        },
+        {
+          "clip": "numbers/daniel-1.aiff",
+          "audio_sha256": "5c094e7f8a1e669e84ea01dc769c47ce36220efa09b24d5fc9a6c694e964de60"
+        },
+        {
+          "clip": "numbers/samantha-0.aiff",
+          "audio_sha256": "e36af0a194b855c6b2d8450d20e71eac8e4cb3ee1ea291e2627326cc44a65ba2"
+        },
+        {
+          "clip": "silence/quiet.wav",
+          "audio_sha256": "20eaebffe1816e0ffa6f7f854f5ef4ea80d5349faaf0ce1fec1b713e7fde58fa"
+        }
+      ]
+    },
+    {
+      "run": "parakeet",
+      "complete": true,
+      "summary": {
+        "engine": "parakeet",
+        "clips": 18,
+        "normalized_wer": 0.1601423487544484,
+        "silence_false_positives": 0,
+        "p50_ms": 1308.8865829999747,
+        "p95_ms": 2703.942249999983
+      },
+      "groups": [
+        {
+          "group": "English synthetic",
+          "clips": 11,
+          "normalized_wer": 0.030303030303030304
+        },
+        {
+          "group": "Latvian FLEURS",
+          "clips": 6,
+          "normalized_wer": 0.2751677852348993
+        }
+      ],
+      "fixtures": [
+        {
+          "clip": "accented/aman-1.aiff",
+          "audio_sha256": "d8a19396b7327bb656bdbf1cbfa3f707079f910d3bdf8e86c4d03a66e91f9eac"
+        },
+        {
+          "clip": "accented/rishi-0.aiff",
+          "audio_sha256": "868808c6f5e6660d324ea8731b24e55047e73890cf0d047cc5d7b87aacb081c4"
+        },
+        {
+          "clip": "accented/tessa-2.aiff",
+          "audio_sha256": "a4f66f7d25dc17c7f4617cafe7b8961f4227bc6eb190a4d516f9aa59674865f4"
+        },
+        {
+          "clip": "clean/daniel-1.aiff",
+          "audio_sha256": "9e154a5a0766cc4cf5963bd7c7811072523e5e2458c29435b4d904de52794043"
+        },
+        {
+          "clip": "clean/karen-2.aiff",
+          "audio_sha256": "cdc99960eb3a1a65797f28d2ebd5a2ed02a1a49008bd2dc2c89856cf0aede70a"
+        },
+        {
+          "clip": "clean/samantha-0.aiff",
+          "audio_sha256": "37b85cca9ad0681f5b28b6431d6febcf0bbdcc40570cfa1d228d5c6a4b32ea6a"
+        },
+        {
+          "clip": "latvian/lv_lv_0000.wav",
+          "audio_sha256": "4d9deb48ac1d634d88d28741ca5fbd69d1c0cd76bc05e35cb37c33ee5297f8ba"
+        },
+        {
+          "clip": "latvian/lv_lv_0001.wav",
+          "audio_sha256": "9e640854da6fe85abe13b7cb4acd48b881cbc810eecd2489a35d8edb48887145"
+        },
+        {
+          "clip": "latvian/lv_lv_0002.wav",
+          "audio_sha256": "d2a6a4fcb412c8a05097e119290bf308c9714282911e956b337ce008f8158e9e"
+        },
+        {
+          "clip": "latvian/lv_lv_0003.wav",
+          "audio_sha256": "e2358ea8ff63f18dbdc046f134d576d8a89751817129e4255765c96015ea756b"
+        },
+        {
+          "clip": "latvian/lv_lv_0004.wav",
+          "audio_sha256": "2605722dc10ebe5cddfad03b285596b9f88cfa82fbb13640b5d1cdaca9d4a0f7"
+        },
+        {
+          "clip": "latvian/lv_lv_0005.wav",
+          "audio_sha256": "2275672e139890e54a4590e6c80a6ddd9cf9934c566a3e303463387d230216b1"
+        },
+        {
+          "clip": "names/daniel-1.aiff",
+          "audio_sha256": "8052d7dbae1b3fd6f08a9813935260db7260f9e6f6255f2a8de0a296b4240873"
+        },
+        {
+          "clip": "names/moira-2.aiff",
+          "audio_sha256": "8144c6185782e764fc939d67abd96fe9f534c5837b7a60b76f1c4c88ae3bfa9e"
+        },
+        {
+          "clip": "names/samantha-0.aiff",
+          "audio_sha256": "99d071c6bfbfd5bf88c3fea83909f046861e80985d0cf96a93ee4cb90ee0d553"
+        },
+        {
+          "clip": "numbers/daniel-1.aiff",
+          "audio_sha256": "5c094e7f8a1e669e84ea01dc769c47ce36220efa09b24d5fc9a6c694e964de60"
+        },
+        {
+          "clip": "numbers/samantha-0.aiff",
+          "audio_sha256": "e36af0a194b855c6b2d8450d20e71eac8e4cb3ee1ea291e2627326cc44a65ba2"
+        },
+        {
+          "clip": "silence/quiet.wav",
+          "audio_sha256": "20eaebffe1816e0ffa6f7f854f5ef4ea80d5349faaf0ce1fec1b713e7fde58fa"
+        }
+      ]
+    },
+    {
+      "run": "parakeet-batch",
+      "complete": true,
+      "summary": {
+        "engine": "parakeet-batch",
+        "clips": 18,
+        "normalized_wer": 0.1494661921708185,
+        "silence_false_positives": 0,
+        "p50_ms": 642.4825830000032,
+        "p95_ms": 1402.5988749999954
+      },
+      "groups": [
+        {
+          "group": "English synthetic",
+          "clips": 11,
+          "normalized_wer": 0.030303030303030304
+        },
+        {
+          "group": "Latvian FLEURS",
+          "clips": 6,
+          "normalized_wer": 0.2550335570469799
+        }
+      ],
+      "fixtures": [
+        {
+          "clip": "accented/aman-1.aiff",
+          "audio_sha256": "d8a19396b7327bb656bdbf1cbfa3f707079f910d3bdf8e86c4d03a66e91f9eac"
+        },
+        {
+          "clip": "accented/rishi-0.aiff",
+          "audio_sha256": "868808c6f5e6660d324ea8731b24e55047e73890cf0d047cc5d7b87aacb081c4"
+        },
+        {
+          "clip": "accented/tessa-2.aiff",
+          "audio_sha256": "a4f66f7d25dc17c7f4617cafe7b8961f4227bc6eb190a4d516f9aa59674865f4"
+        },
+        {
+          "clip": "clean/daniel-1.aiff",
+          "audio_sha256": "9e154a5a0766cc4cf5963bd7c7811072523e5e2458c29435b4d904de52794043"
+        },
+        {
+          "clip": "clean/karen-2.aiff",
+          "audio_sha256": "cdc99960eb3a1a65797f28d2ebd5a2ed02a1a49008bd2dc2c89856cf0aede70a"
+        },
+        {
+          "clip": "clean/samantha-0.aiff",
+          "audio_sha256": "37b85cca9ad0681f5b28b6431d6febcf0bbdcc40570cfa1d228d5c6a4b32ea6a"
+        },
+        {
+          "clip": "latvian/lv_lv_0000.wav",
+          "audio_sha256": "4d9deb48ac1d634d88d28741ca5fbd69d1c0cd76bc05e35cb37c33ee5297f8ba"
+        },
+        {
+          "clip": "latvian/lv_lv_0001.wav",
+          "audio_sha256": "9e640854da6fe85abe13b7cb4acd48b881cbc810eecd2489a35d8edb48887145"
+        },
+        {
+          "clip": "latvian/lv_lv_0002.wav",
+          "audio_sha256": "d2a6a4fcb412c8a05097e119290bf308c9714282911e956b337ce008f8158e9e"
+        },
+        {
+          "clip": "latvian/lv_lv_0003.wav",
+          "audio_sha256": "e2358ea8ff63f18dbdc046f134d576d8a89751817129e4255765c96015ea756b"
+        },
+        {
+          "clip": "latvian/lv_lv_0004.wav",
+          "audio_sha256": "2605722dc10ebe5cddfad03b285596b9f88cfa82fbb13640b5d1cdaca9d4a0f7"
+        },
+        {
+          "clip": "latvian/lv_lv_0005.wav",
+          "audio_sha256": "2275672e139890e54a4590e6c80a6ddd9cf9934c566a3e303463387d230216b1"
+        },
+        {
+          "clip": "names/daniel-1.aiff",
+          "audio_sha256": "8052d7dbae1b3fd6f08a9813935260db7260f9e6f6255f2a8de0a296b4240873"
+        },
+        {
+          "clip": "names/moira-2.aiff",
+          "audio_sha256": "8144c6185782e764fc939d67abd96fe9f534c5837b7a60b76f1c4c88ae3bfa9e"
+        },
+        {
+          "clip": "names/samantha-0.aiff",
+          "audio_sha256": "99d071c6bfbfd5bf88c3fea83909f046861e80985d0cf96a93ee4cb90ee0d553"
+        },
+        {
+          "clip": "numbers/daniel-1.aiff",
+          "audio_sha256": "5c094e7f8a1e669e84ea01dc769c47ce36220efa09b24d5fc9a6c694e964de60"
+        },
+        {
+          "clip": "numbers/samantha-0.aiff",
+          "audio_sha256": "e36af0a194b855c6b2d8450d20e71eac8e4cb3ee1ea291e2627326cc44a65ba2"
+        },
+        {
+          "clip": "silence/quiet.wav",
+          "audio_sha256": "20eaebffe1816e0ffa6f7f854f5ef4ea80d5349faaf0ce1fec1b713e7fde58fa"
+        }
+      ]
+    }
+  ],
+  "gpu_diagnostic": {
+    "complete": false,
+    "error": "helper exited during preparation; cause unconfirmed"
+  }
+}

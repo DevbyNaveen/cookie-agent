@@ -1,0 +1,65 @@
+Explicit voice editing — implementation and verification, 2026-10-31
+
+Model update later in this session: see MODEL-RESEARCH-2026-10-31.txt. The original
+Apple-only model notes below describe the earlier validation run. The current
+explicit editor supports GPT-6.1 Terra via Keychain configuration, with an explicit
+Apple alternative and no automatic fallback. Live cloud validation remains blocked
+without a credential; transport/failure tests are not real-model accuracy tests.
+
+Interaction contract
+- Fn or Control+Command: ordinary dictation, never edit-verb guessing.
+- Option held before recording: explicit editing. Release order does not change mode.
+- Selection takes precedence; no selection uses the whole verified editable field.
+- Bar shows Editing selection / Editing message while listening and processing.
+- Option added after recording starts cancels with a clear retry instruction.
+- Option+Shift at startup is refused; an edit cannot become a memory save.
+- Escape cancels; stale/cancelled model work cannot apply a replacement.
+- Control+Command+C/V: copy/paste last result; repeat keydown is ignored.
+- Recovery Copy/Dismiss stays visible until handled, independent of history settings.
+
+Replacement contract
+Original value, selection, field and application are checked before applying.
+The exact UTF-16 replacement span is selected and verified before writing.
+Terminals require writable AX text/selection and direct replacement; no Backspace
+loop and no automatic append. Unsupported selections can be rewritten for Copy.
+Clipboard selection fallback is copy-only, skipped in terminals, and checked
+against the bound destination after modifier release. It declines ambiguous
+multiple clipboard changes. Apps exposing no readable source cannot be edited.
+The app's own practice field still supports dictation only.
+
+Model and privacy
+All spoken edit instructions use the explicit edit operation, including combined
+requests such as translation plus tone changes. No keyword routing truncates the
+instruction and no writing samples are attached. The existing local Apple model
+remains in use; no cloud provider was added or enabled. Launch warms edit mode.
+Input limits: 6,000 UTF-16 source characters; 2,000 instruction characters.
+An unchanged model response is reported honestly, not recorded as an insertion.
+
+Automated verification
+SDKROOT="$(scripts/sdk.sh app)" swift run --build-system native EnkeonVoiceKitChecks
+SDKROOT="$(scripts/sdk.sh app)" swift build -c release --build-system native --product Enkeon
+(cd Helpers/enkeon-sense && SDKROOT="$(../../scripts/sdk.sh sense)" swift build -c release --build-system native)
+python3 scripts/check-edit.py
+
+Regression coverage includes both chords, modifier release order, stale mode reset,
+Option+Shift conflict, late Option, recovery repeat/synthetic events, empty recovery,
+UTF-16 selection/full-message ranges, empty/malformed/overflow ranges and cancelled
+replacement. Existing destination checks cover changed text, cursor, PID and element.
+The rest of the kit regression suite also runs.
+
+Real-model smoke results on this Mac (two synthetic English inputs)
+1. "We is ready." + "Fix the grammar." -> "We are ready." (about 5.04 seconds)
+2. Shorten a report deadline message -> "The report will be ready by Friday
+   afternoon at the latest." (about 1.29 seconds)
+These are smoke tests, not a latency benchmark or multilingual quality evaluation.
+The script checks model availability, reply IDs/errors, bounded frames and deadlines,
+and cleans up its child process on failure. Exit 2 means unavailable, not a pass.
+
+Still requires live acceptance testing before a production-release claim
+- Notes/TextEdit, browser composers, Electron, and supported terminal input widgets.
+- Text/cursor/focus changes during inference; Escape while waiting; helper failure.
+- Clipboard copy during recovery; image/file clipboard preservation; permission loss.
+- No model installed; long messages; empty fields; Unicode/IME; screen-reader labels.
+- Actual Latvian and other requested languages, noisy speech, and first/warm latency.
+- Signed/notarized packaged application and upgrade behavior.
+No synthetic test establishes that every terminal exposes a safe editable line.

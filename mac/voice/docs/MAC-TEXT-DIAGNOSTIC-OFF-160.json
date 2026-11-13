@@ -1,0 +1,480 @@
+{
+  "model": "/private/tmp/enkeon-model-benchmark/LFM2.5-2.6B-Q4_K_M.gguf",
+  "command": [
+    "/opt/homebrew/bin/llama-server",
+    "-m",
+    "/private/tmp/enkeon-model-benchmark/LFM2.5-2.6B-Q4_K_M.gguf",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "61059",
+    "-c",
+    "2048",
+    "-np",
+    "1",
+    "-t",
+    "4",
+    "-tb",
+    "4",
+    "-b",
+    "256",
+    "-ub",
+    "128",
+    "-ngl",
+    "99",
+    "--cache-ram",
+    "128",
+    "--no-webui",
+    "--reasoning",
+    "off"
+  ],
+  "before": {
+    "time": 1793475135.797378,
+    "disk_free": 14586253312,
+    "memory_free_percent": 59,
+    "server_rss": 0
+  },
+  "runtime": "version: 0.7.0 (build 11669, commit 620d2225c)\nbuilt with AppleClang 21.0.0.21000334 for Darwin arm64",
+  "fixture_sha256": "e02083261770d51ba355ecc0496faa67b711b263abcf180f18d14f3f44608588",
+  "scope": "synthetic text smoke test, not ASR, retrieval, app or AWS benchmark",
+  "samples": [
+    {
+      "repeat": 0,
+      "case": 0,
+      "category": "correction",
+      "prompt": "Fix grammar only: she dont want to cancel the meeting.",
+      "rubric": "Preserve negation; she does not want to cancel.",
+      "output": "she doesn't want to cancel the meeting.",
+      "ttft_seconds": 1.4985255,
+      "total_seconds": 1.6775075419999994,
+      "usage": {
+        "completion_tokens": 75,
+        "prompt_tokens": 82,
+        "total_tokens": 157,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "finish_reason": "stop",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 82,
+        "prompt_ms": 204.316,
+        "prompt_per_token_ms": 2.491658536585366,
+        "prompt_per_second": 401.3391021750622,
+        "predicted_n": 75,
+        "predicted_ms": 1470.338,
+        "predicted_per_token_ms": 19.869432432432433,
+        "predicted_per_second": 50.32856390843466
+      }
+    },
+    {
+      "repeat": 0,
+      "case": 1,
+      "category": "correction",
+      "prompt": "Fix spelling only: Send teh Enkeon invoice for $1,250.50 to Priya by November 14. Do not charge it yet.",
+      "rubric": "Preserve name, amount, date and prohibition.",
+      "output": "Send the Enkeon invoice for $1,250.50",
+      "ttft_seconds": 3.1934912090000003,
+      "total_seconds": 3.4367832090000006,
+      "usage": {
+        "completion_tokens": 160,
+        "prompt_tokens": 101,
+        "total_tokens": 261,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "finish_reason": "length",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 101,
+        "prompt_ms": 255.98,
+        "prompt_per_token_ms": 2.5344554455445545,
+        "prompt_per_second": 394.562075162122,
+        "predicted_n": 160,
+        "predicted_ms": 3176.5,
+        "predicted_per_token_ms": 19.97798742138365,
+        "predicted_per_second": 50.05509208248072
+      }
+    },
+    {
+      "repeat": 0,
+      "case": 2,
+      "category": "correction",
+      "prompt": "Correct grammar only: I can attend on Tuesday, but I cannot attend on Thursday.",
+      "rubric": "Already correct; preserve both constraints.",
+      "output": "",
+      "ttft_seconds": null,
+      "total_seconds": 3.3739598330000007,
+      "usage": {
+        "completion_tokens": 160,
+        "prompt_tokens": 87,
+        "total_tokens": 247,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "finish_reason": "length",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 87,
+        "prompt_ms": 204.217,
+        "prompt_per_token_ms": 2.3473218390804598,
+        "prompt_per_second": 426.0174226435605,
+        "predicted_n": 160,
+        "predicted_ms": 3165.879,
+        "predicted_per_token_ms": 19.91118867924528,
+        "predicted_per_second": 50.223018630844706
+      }
+    },
+    {
+      "repeat": 0,
+      "case": 3,
+      "category": "correction",
+      "prompt": "Fix grammar only: i didnt say deploy it i said dont deploy until tests pass",
+      "rubric": "Do not convert prohibition into deployment instruction.",
+      "output": "",
+      "ttft_seconds": null,
+      "total_seconds": 3.381725249999999,
+      "usage": {
+        "completion_tokens": 160,
+        "prompt_tokens": 87,
+        "total_tokens": 247,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "finish_reason": "length",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 87,
+        "prompt_ms": 206.138,
+        "prompt_per_token_ms": 2.369402298850575,
+        "prompt_per_second": 422.0473663274117,
+        "predicted_n": 160,
+        "predicted_ms": 3169.783,
+        "predicted_per_token_ms": 19.93574213836478,
+        "predicted_per_second": 50.161162451814526
+      }
+    },
+    {
+      "repeat": 0,
+      "case": 4,
+      "category": "rewrite",
+      "prompt": "Make this friendlier without changing facts: Your invoice is 12 days overdue. Please pay $240 by Friday. We cannot extend the deadline.",
+      "rubric": "Keep 12 days, $240, Friday, no extension.",
+      "output": "",
+      "ttft_seconds": null,
+      "total_seconds": 3.3850457910000014,
+      "usage": {
+        "completion_tokens": 160,
+        "prompt_tokens": 100,
+        "total_tokens": 260,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "finish_reason": "length",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 100,
+        "prompt_ms": 206.856,
+        "prompt_per_token_ms": 2.0685599999999997,
+        "prompt_per_second": 483.42808523803996,
+        "predicted_n": 160,
+        "predicted_ms": 3174.604,
+        "predicted_per_token_ms": 19.96606289308176,
+        "predicted_per_second": 50.08498697790339
+      }
+    },
+    {
+      "repeat": 0,
+      "case": 5,
+      "category": "rewrite",
+      "prompt": "Make this natural and concise: I am writing to inform you that we might ship on Monday if the tests pass. We have not committed to a release date.",
+      "rubric": "Preserve uncertainty, condition and no commitment.",
+      "output": "",
+      "ttft_seconds": null,
+      "total_seconds": 3.436252707999998,
+      "usage": {
+        "completion_tokens": 160,
+        "prompt_tokens": 102,
+        "total_tokens": 262,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "finish_reason": "length",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 102,
+        "prompt_ms": 256.663,
+        "prompt_per_token_ms": 2.5163039215686274,
+        "prompt_per_second": 397.40827466366403,
+        "predicted_n": 160,
+        "predicted_ms": 3176.773,
+        "predicted_per_token_ms": 19.979704402515726,
+        "predicted_per_second": 50.05079053492334
+      }
+    },
+    {
+      "repeat": 0,
+      "case": 6,
+      "category": "rewrite",
+      "prompt": "Make this warmer without adding promises: We received your bug report. We are investigating. We do not yet know when it will be fixed.",
+      "rubric": "No invented fix date or guarantee.",
+      "output": "",
+      "ttft_seconds": null,
+      "total_seconds": 3.4040800000000004,
+      "usage": {
+        "completion_tokens": 160,
+        "prompt_tokens": 98,
+        "total_tokens": 258,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "finish_reason": "length",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 98,
+        "prompt_ms": 206.629,
+        "prompt_per_token_ms": 2.108459183673469,
+        "prompt_per_second": 474.2799897400656,
+        "predicted_n": 160,
+        "predicted_ms": 3193.623,
+        "predicted_per_token_ms": 20.085679245283018,
+        "predicted_per_second": 49.78671558916002
+      }
+    },
+    {
+      "repeat": 0,
+      "case": 7,
+      "category": "multilingual",
+      "prompt": "Corrige uniquement la grammaire : Elle ne veux pas annuler la réunion de vendredi.",
+      "rubric": "French: does not want to cancel Friday meeting.",
+      "output": "",
+      "ttft_seconds": null,
+      "total_seconds": 3.388780624999999,
+      "usage": {
+        "completion_tokens": 160,
+        "prompt_tokens": 90,
+        "total_tokens": 250,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "finish_reason": "length",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 90,
+        "prompt_ms": 208.464,
+        "prompt_per_token_ms": 2.3162666666666665,
+        "prompt_per_second": 431.7292194335713,
+        "predicted_n": 160,
+        "predicted_ms": 3176.297,
+        "predicted_per_token_ms": 19.9767106918239,
+        "predicted_per_second": 50.058291148466274
+      }
+    },
+    {
+      "repeat": 0,
+      "case": 8,
+      "category": "multilingual",
+      "prompt": "Corrige solo la gramática: Ella no quieren cancelar la reunión del viernes.",
+      "rubric": "Spanish: preserve negation and Friday.",
+      "output": "",
+      "ttft_seconds": null,
+      "total_seconds": 3.375133416999997,
+      "usage": {
+        "completion_tokens": 160,
+        "prompt_tokens": 87,
+        "total_tokens": 247,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "finish_reason": "length",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 87,
+        "prompt_ms": 206.495,
+        "prompt_per_token_ms": 2.373505747126437,
+        "prompt_per_second": 421.3177074505436,
+        "predicted_n": 160,
+        "predicted_ms": 3164.277,
+        "predicted_per_token_ms": 19.90111320754717,
+        "predicted_per_second": 50.248445379465835
+      }
+    },
+    {
+      "repeat": 0,
+      "case": 9,
+      "category": "multilingual",
+      "prompt": "Korrigiere nur die Grammatik: Er haben die Rechnung noch nicht bezahlt.",
+      "rubric": "German: has not paid yet.",
+      "output": "Er hat die Rechnung noch nicht bezahlt.",
+      "ttft_seconds": 2.514039249999996,
+      "total_seconds": 2.7126307500000024,
+      "usage": {
+        "completion_tokens": 126,
+        "prompt_tokens": 90,
+        "total_tokens": 216,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "finish_reason": "stop",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 90,
+        "prompt_ms": 206.177,
+        "prompt_per_token_ms": 2.2908555555555554,
+        "prompt_per_second": 436.51813732860603,
+        "predicted_n": 126,
+        "predicted_ms": 2502.364,
+        "predicted_per_token_ms": 20.018912,
+        "predicted_per_second": 49.95276466573208
+      }
+    }
+  ],
+  "resources": [
+    {
+      "time": 1793475137.831771,
+      "disk_free": 14585126912,
+      "memory_free_percent": 49,
+      "server_rss": 1876754432
+    },
+    {
+      "time": 1793475139.849607,
+      "disk_free": 14585221120,
+      "memory_free_percent": 48,
+      "server_rss": 1883258880
+    },
+    {
+      "time": 1793475141.8668191,
+      "disk_free": 14585192448,
+      "memory_free_percent": 48,
+      "server_rss": 1883078656
+    },
+    {
+      "time": 1793475143.884191,
+      "disk_free": 14585188352,
+      "memory_free_percent": 50,
+      "server_rss": 1883160576
+    },
+    {
+      "time": 1793475145.9017,
+      "disk_free": 14585241600,
+      "memory_free_percent": 48,
+      "server_rss": 1883160576
+    },
+    {
+      "time": 1793475147.9243531,
+      "disk_free": 14585192448,
+      "memory_free_percent": 48,
+      "server_rss": 1887600640
+    },
+    {
+      "time": 1793475149.9493299,
+      "disk_free": 14585159680,
+      "memory_free_percent": 49,
+      "server_rss": 1887600640
+    },
+    {
+      "time": 1793475151.967268,
+      "disk_free": 14585118720,
+      "memory_free_percent": 49,
+      "server_rss": 1892614144
+    },
+    {
+      "time": 1793475153.984756,
+      "disk_free": 14585212928,
+      "memory_free_percent": 48,
+      "server_rss": 1897349120
+    },
+    {
+      "time": 1793475156.0080209,
+      "disk_free": 14585180160,
+      "memory_free_percent": 50,
+      "server_rss": 1897349120
+    },
+    {
+      "time": 1793475158.0250041,
+      "disk_free": 14585135104,
+      "memory_free_percent": 49,
+      "server_rss": 1902411776
+    },
+    {
+      "time": 1793475160.0403578,
+      "disk_free": 14585131008,
+      "memory_free_percent": 49,
+      "server_rss": 1902411776
+    },
+    {
+      "time": 1793475162.0588632,
+      "disk_free": 14585090048,
+      "memory_free_percent": 50,
+      "server_rss": 1908555776
+    },
+    {
+      "time": 1793475164.075687,
+      "disk_free": 14585061376,
+      "memory_free_percent": 49,
+      "server_rss": 1913044992
+    },
+    {
+      "time": 1793475166.093791,
+      "disk_free": 14585053184,
+      "memory_free_percent": 49,
+      "server_rss": 1913061376
+    },
+    {
+      "time": 1793475168.105758,
+      "disk_free": 14584987648,
+      "memory_free_percent": 49,
+      "server_rss": 1917485056
+    },
+    {
+      "time": 1793475170.125652,
+      "disk_free": 14583889920,
+      "memory_free_percent": 49,
+      "server_rss": 1917894656
+    }
+  ],
+  "abort": "",
+  "load_seconds": 1.0173549160000002,
+  "warmup": {
+    "output": "the meeting is tomorrow.",
+    "ttft_seconds": 1.150991791,
+    "total_seconds": 1.253306916,
+    "usage": {
+      "completion_tokens": 53,
+      "prompt_tokens": 79,
+      "total_tokens": 132,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "finish_reason": "stop",
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 79,
+      "prompt_ms": 214.848,
+      "prompt_per_token_ms": 2.719594936708861,
+      "prompt_per_second": 367.7018170985999,
+      "predicted_n": 53,
+      "predicted_ms": 1035.725,
+      "predicted_per_token_ms": 19.91778846153846,
+      "predicted_per_second": 50.206377175408534
+    }
+  },
+  "after": {
+    "time": 1793475171.3637362,
+    "disk_free": 14583828480,
+    "memory_free_percent": 54,
+    "server_rss": 0
+  },
+  "server_stopped": true
+}
