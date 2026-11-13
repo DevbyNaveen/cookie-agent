@@ -14,6 +14,9 @@ import Foundation
 
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
+    let conversationTogglePublisher = PassthroughSubject<Void, Never>()
+    private var conversationGesture = CookieConversationGesture()
+    private var conversationChordBlocked = false
     let cancellationPublisher = PassthroughSubject<Void, Never>()
     /// ⌃⌘ turned out to be the start of a Mac shortcut (⌃⌘Q, ⌃⌘F, ⌃⌘Space…) after dictation began:
     /// drop what was heard, type nothing.
@@ -115,6 +118,8 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
 
     func stop() {
         if isShortcutCurrentlyPressed { cancellationPublisher.send(()) }
+        conversationGesture.reset()
+        conversationChordBlocked = false
         disarmDictation()
         setPressed(false)
         hoverShortcutPublisher.send(false)
@@ -132,6 +137,8 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     }
 
     func cancelUntilRelease() {
+        if conversationGesture.held { conversationChordBlocked = true }
+        conversationGesture.reset()
         awaitsShortcutRelease = awaitsShortcutRelease || isShortcutCurrentlyPressed || dictationArm != nil
         disarmDictation()
         setPressed(false)
@@ -179,9 +186,10 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         event: CGEvent
     ) -> Unmanaged<CGEvent>? {
         if eventType == .tapDisabledByTimeout || eventType == .tapDisabledByUserInput {
-            // Events were lost, not cancelled: a reply or speech in progress
-            // carries on, and a press in progress ends when the keys do (the watchdog).
+            // Lost input must not leave a hands-free microphone session running.
             print("🎙️ Global push-to-talk: event tap interrupted (\(eventType.rawValue))")
+            cancellationPublisher.send(())
+            conversationGesture.reset()
             if let globalEventTap {
                 CGEvent.tapEnable(tap: globalEventTap, enable: true)
             }
@@ -199,6 +207,24 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
             if isShortcutCurrentlyPressed { print("🎙️ Global push-to-talk: Escape") }
             cancelUntilRelease()
             cancellationPublisher.send(())
+            return Unmanaged.passUnretained(event)
+        }
+        if conversationChordBlocked {
+            if !event.flags.contains(.maskAlternate) && !event.flags.contains(.maskCommand) { conversationChordBlocked = false }
+            return Unmanaged.passUnretained(event)
+        }
+        if event.flags.contains([.maskAlternate, .maskCommand]) && (event.flags.contains(.maskControl) || event.flags.contains(.maskShift)) {
+            conversationChordBlocked = true
+            conversationGesture.reset()
+            return Unmanaged.passUnretained(event)
+        }
+        let conversationHeld = event.flags.contains([.maskAlternate, .maskCommand])
+            && !event.flags.contains(.maskControl) && !event.flags.contains(.maskShift)
+        if conversationHeld || conversationGesture.held {
+            let consumed = eventType == .keyDown || event.flags.contains(.maskControl) || event.flags.contains(.maskShift)
+            let toggle = conversationGesture.update(held: conversationHeld, otherKey: consumed)
+            if consumed { conversationChordBlocked = true; conversationGesture.reset() }
+            if toggle { conversationTogglePublisher.send(()) }
             return Unmanaged.passUnretained(event)
         }
         if awaitsShortcutRelease {

@@ -132,6 +132,12 @@ final class NotchPanelManager {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.mouseMoved(to: NSEvent.mouseLocation) }
             .store(in: &cancellables)
+        companionManager.$isConversationMode
+            .receive(on: RunLoop.main)
+            .sink { [weak self] active in
+                guard let self, active, self.model.state == .notice else { return }
+                self.setState(.closed)
+            }.store(in: &cancellables)
         companionManager.$isSetupPresented
             .receive(on: RunLoop.main)
             .sink { [weak self] presented in
@@ -301,6 +307,8 @@ final class NotchPanelManager {
     }
 
     private func replyFinished(threadID: UUID, message: CompanionChatMessage) {
+        // The spoken answer is already the notification during an active conversation.
+        guard !companionManager.isConversationMode || message.role == .failure else { return }
         let title = companionManager.threads.first { $0.id == threadID }?.title ?? "Cookie"
         CookieNotifications.shared.post(message.role == .failure ? .failure : .reply, threadID: threadID, title: title,
                                         body: message.text, panelOpen: model.state == .home || windowController.isFrontmost)
@@ -813,6 +821,7 @@ private struct PeekView: View {
                                               isWorking: companionManager.isWorking, holding: false),
             audioLevel: companionManager.currentAudioPowerLevel,
             dictating: companionManager.isDictating,
+            conversationMode: companionManager.isConversationMode,
             gaze: companionManager.gazeTowardPointer
         )
         .onAppear {
@@ -858,6 +867,7 @@ private struct ShortcutsCard: View {
             Label("Shortcuts", systemImage: "keyboard")
                 .font(.system(size: 12, weight: .semibold))
             row("Talk", trailing: AnyView(HStack(spacing: 5) { Text("Hold").font(.system(size: 11)).foregroundStyle(CK.tertiary); TalkKeys() }))
+            row("Conversation", trailing: AnyView(Text("Press ⌥⌘").font(.system(size: 11)).foregroundStyle(CK.secondary)))
             row("Open", trailing: AnyView(Text("Click the notch").font(.system(size: 11)).foregroundStyle(CK.secondary)))
             row("Close", trailing: AnyView(KeyCap(label: "esc")))
         }

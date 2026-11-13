@@ -215,6 +215,7 @@ struct CookiePeekContent: View {
     var composerPhase: CookieComposerPhase = .ready
     var audioLevel: CGFloat = 0
     var dictating = false
+    var conversationMode = false
     /// Where the character looks while Cookie points at something on screen.
     var gaze: CGFloat? = nil
     @FocusState private var typing: Bool
@@ -326,7 +327,9 @@ struct CookiePeekContent: View {
             Text(dictating && composerPhase == .listening ? "Dictating" : composerPhase.title)
                 .font(.system(size: 12.5, weight: .medium)).lineLimit(1)
             Spacer(minLength: 4)
-            if composerPhase == .listening {
+            if conversationMode {
+                PeekUtilityButton(symbol: "stop.fill", title: "Stop conversation", size: 26) { perform(.stop) }
+            } else if composerPhase == .listening {
                 Text(dictating ? "Release to insert" : "Release to send")
                     .font(.system(size: 10.5)).foregroundStyle(CK.secondary).lineLimit(1)
             } else if composerPhase.canStop {
@@ -335,7 +338,7 @@ struct CookiePeekContent: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(composerPhase.title). \(composerPhase.subtitle)")
+        .accessibilityLabel(conversationMode ? "Conversation mode. \(composerPhase.title). Escape to stop." : "\(composerPhase.title). \(composerPhase.subtitle)")
     }
 
     private func submit() {

@@ -29,6 +29,8 @@ struct CookieWorkspaceView: View {
     @State private var scrollPosition = ScrollPosition(x: 0, y: 0)
     @State private var scrollOffset = CGPoint.zero
     @State private var selectedChartLabel: String?
+    @State private var lessonValues: [String: Double] = [:]
+    @State private var lessonRevision: String?
 
     private var artifact: CookieArtifact? { store.selected(thread) }
     private var state: CookieWorkspaceSession { store.session(thread) }
@@ -298,26 +300,68 @@ struct CookieWorkspaceView: View {
         }
     }
     private func saveScroll() { store.setSession(thread) { $0.scrollY = max(0, scrollOffset.y); $0.scrollX = max(0, scrollOffset.x) } }
+    private static func connectorEnd(_ origin: CGPoint, toward target: CGPoint) -> CGPoint {
+        let dx = target.x - origin.x, dy = target.y - origin.y
+        let factor = min(0.5, min(72 / max(0.001, abs(dx)), 34 / max(0.001, abs(dy))))
+        return CGPoint(x: origin.x + dx * factor, y: origin.y + dy * factor)
+    }
+    private func lessonContent(_ artifact: CookieArtifact) -> CookieArtifact.Content {
+        var content = artifact.current.content
+        if lessonRevision == artifact.current.id {
+            content.controls = content.controls?.map { control in var value = control; value.value = lessonValues[control.id] ?? control.value; return value }
+        }
+        return content
+    }
     private func diagram(_ artifact: CookieArtifact) -> some View {
+        VStack(spacing: 0) {
+        if let controls = artifact.current.content.controls, !controls.isEmpty {
+            VStack(spacing: 8) {
+                ForEach(controls) { control in
+                    HStack {
+                        Text(control.label).frame(width: 100, alignment: .leading)
+                        Slider(value: Binding(get: { lessonRevision == artifact.current.id ? lessonValues[control.id] ?? control.value : control.value }, set: { value in
+                            if lessonRevision != artifact.current.id { lessonValues = [:]; lessonRevision = artifact.current.id }
+                            lessonValues[control.id] = value
+                        }), in: control.minimum...control.maximum).accessibilityLabel(control.label)
+                        Text((lessonContent(artifact).controls?.first { $0.id == control.id }?.value ?? control.value).formatted(.number.precision(.fractionLength(0...2))) + " " + (control.unit ?? "")).monospacedDigit().frame(width: 85, alignment: .trailing)
+                    }
+                }
+                HStack {
+                    Button("Reset inputs") { lessonValues = [:] }
+                    Spacer()
+                    Button("Save inputs") {
+                        do { _ = try store.put(thread: thread, id: artifact.id, title: artifact.title, kind: artifact.kind, content: lessonContent(artifact), base: artifact.current.id, summary: "Changed lesson inputs"); lessonValues = [:]; lessonRevision = nil }
+                        catch { self.error = error.localizedDescription }
+                    }.disabled(lessonRevision != artifact.current.id || lessonValues.isEmpty)
+                    Button("Explain these values") {
+                        let values = (lessonContent(artifact).controls ?? []).map { "\($0.label): \($0.value) \($0.unit ?? "")" }.joined(separator: ", ")
+                        send("Explain this lesson with my preview inputs: " + values + ". These inputs are not saved yet. Explain the relationship and ask one what-if question.")
+                    }
+                }
+            }.font(.system(size: 12)).padding(12).background(CK.fill)
+        }
         GeometryReader { geometry in
             let nodes = artifact.current.content.nodes
             let width = max(1, geometry.size.width - 150), height = max(1, geometry.size.height - 90)
             ZStack {
                 ForEach(Array(artifact.current.content.edges.enumerated()), id: \.offset) { _, edge in
                     if let from = nodes.first(where: { $0.id == edge.from }), let to = nodes.first(where: { $0.id == edge.to }) {
-                        Path { path in path.move(to: CGPoint(x: 75 + from.x * width, y: 45 + from.y * height)); path.addLine(to: CGPoint(x: 75 + to.x * width, y: 45 + to.y * height)) }.stroke(CK.secondary.opacity(0.6), lineWidth: 1.5)
+                        let a = CGPoint(x: 75 + from.x * width, y: 45 + from.y * height)
+                        let b = CGPoint(x: 75 + to.x * width, y: 45 + to.y * height)
+                        Path { path in path.move(to: Self.connectorEnd(a, toward: b)); path.addLine(to: Self.connectorEnd(b, toward: a)) }.stroke(CK.secondary.opacity(0.6), lineWidth: 1.5)
                     }
                 }
                 ForEach(nodes) { node in
                     Button { select(node.id + " | " + node.label) } label: {
-                        Text(node.label).font(.system(size: 13, weight: .medium, design: .rounded)).multilineTextAlignment(.center)
-                            .padding(12).frame(width: 140).background(CK.fillHover, in: RoundedRectangle(cornerRadius: 14))
+                        Text(store.lessonLabel(node, content: lessonContent(artifact))).font(.system(size: 13, weight: .medium, design: .rounded)).multilineTextAlignment(.center)
+                            .lineLimit(3).padding(12).frame(width: 140, height: 64).background(CK.fillHover, in: RoundedRectangle(cornerRadius: 14))
                             .overlay(RoundedRectangle(cornerRadius: 14).stroke(target == node.id ? CK.accent : CK.hairline))
                             .overlay(alignment: .leading) { cue(artifact, node.id) }
                     }.position(x: 75 + node.x * width, y: 45 + node.y * height)
                 }
             }
         }.padding(12)
+        }
     }
     private func inspection(_ artifact: CookieArtifact) -> some View {
         ScrollView {
@@ -386,6 +430,7 @@ struct CookieWorkspaceView: View {
         for block in after.blocks where before.blocks.first(where: { $0.id == block.id }) != block { changes.append("\(block.id): \(block.text)") }
         for block in before.blocks where !after.blocks.contains(where: { $0.id == block.id }) { changes.append("Removed block: \(block.id)") }
         if before.nodes != after.nodes || before.edges != after.edges { changes.append("Diagram nodes or connectors changed.") }
+        if before.controls != after.controls { changes.append("Lesson inputs changed: " + (after.controls ?? []).map { "\($0.label) = \($0.value)" }.joined(separator: ", ")) }
         if before.sources != after.sources { changes.append("Source metadata changed.") }
         if before.dependencies != after.dependencies { changes.append("Dependency revisions changed.") }
         return changes.isEmpty ? "No content changes." : changes.prefix(100).joined(separator: "\n")

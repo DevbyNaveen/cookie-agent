@@ -5,11 +5,13 @@ struct CookieComposer: View {
     @ObservedObject var companionManager: CompanionManager
     @ObservedObject var draft: CookieChatDraft
     let availableWidth: CGFloat
+    @State private var conversationSettings = false
+    @State private var workTools = false
 
     var body: some View {
         CookieComposerControl(
             draft: draft, availableWidth: availableWidth,
-            voiceState: companionManager.voiceState,
+            voiceState: companionManager.listeningForInterruption ? .listening : companionManager.voiceState,
             isWorking: companionManager.isWorking,
             audioLevel: companionManager.currentAudioPowerLevel,
             startTalking: companionManager.startTalkingFromButton,
@@ -17,8 +19,19 @@ struct CookieComposer: View {
             stopResponse: companionManager.stopResponse,
             sendMessage: { companionManager.sendTypedMessage($0, attachments: $1, withScreen: $2) },
             recordMeeting: { CookieRecorder.shared.start() },
-            dictating: companionManager.isDictating
-        )
+            dictating: companionManager.isDictating,
+            conversationMode: companionManager.isConversationMode,
+            toggleConversation: companionManager.toggleConversationMode,
+            conversationSettings: { conversationSettings = true },
+            workTools: { _ = companionManager.ensureWorkspaceThread(); workTools = true }
+        ).sheet(isPresented: $workTools) {
+            if let thread = companionManager.currentThreadID { CookieProductPanel(store: .shared, manager: companionManager, thread: thread) { workTools = false } }
+        }.popover(isPresented: $conversationSettings) {
+            CookieConversationPreferencesView {
+                conversationSettings = false
+                companionManager.startPracticeConversation()
+            }
+        }
     }
 }
 
@@ -67,6 +80,10 @@ struct CookieComposerControl: View {
     /// Start recording a meeting (nil hides the button).
     var recordMeeting: (() -> Void)? = nil
     var dictating = false
+    var conversationMode = false
+    var toggleConversation: (() -> Void)? = nil
+    var conversationSettings: (() -> Void)? = nil
+    var workTools: (() -> Void)? = nil
 
     @FocusState private var focused: Bool
     @State private var holding = false
@@ -90,7 +107,7 @@ struct CookieComposerControl: View {
                     messageField.padding(.horizontal, 8).frame(minHeight: 46, alignment: .topLeading)
                     HStack(spacing: 4) {
                         CookieVoiceControl(phase: phase, compact: true, holding: holding, audioLevel: audioLevel,
-                                           beginHolding: beginHolding, endHolding: endHolding, dictating: dictating)
+                                           beginHolding: beginHolding, endHolding: endHolding, dictating: dictating, conversationMode: conversationMode)
                             .frame(width: 44, height: 44)
                         Spacer(minLength: 8)
                         composerActions
@@ -98,7 +115,7 @@ struct CookieComposerControl: View {
                 } else {
                 HStack(alignment: .bottom, spacing: 8) {
                     CookieVoiceControl(phase: phase, compact: expanded, holding: holding, audioLevel: audioLevel,
-                                       beginHolding: beginHolding, endHolding: endHolding, dictating: dictating)
+                                       beginHolding: beginHolding, endHolding: endHolding, dictating: dictating, conversationMode: conversationMode)
                         .frame(width: voiceWidth, height: 48)
                     typingField
                 }
@@ -174,7 +191,7 @@ struct CookieComposerControl: View {
                                selected: draft.withScreen) { draft.withScreen.toggle() }
             ComposerIconButton(symbol: "plus", label: "Attach files", action: chooseFiles)
 
-            if phase.canStop {
+            if phase.canStop || conversationMode {
                 ComposerIconButton(symbol: "stop.fill", label: "Stop response", prominent: true, action: stopResponse)
                     .transition(.opacity)
             } else if expanded {
@@ -215,7 +232,9 @@ struct CookieComposerControl: View {
 
     private var footer: some View {
         HStack(spacing: 5) {
-            if phase == .listening {
+            if conversationMode {
+                Text(phase == .listening ? "Conversation · Listening" : "Conversation · Mic paused")
+            } else if phase == .listening {
                 Circle().fill(CK.accent).frame(width: 4, height: 4)
                 Text(dictating ? "Release to insert" : "Release to send")
             } else if phase.canStop {
@@ -231,16 +250,22 @@ struct CookieComposerControl: View {
                 Text("Hold keys + drag to circle")
             }
             Spacer(minLength: 8)
-            if availableWidth >= 380 {
-                Text("Talk anywhere")
+            if let toggleConversation {
+                Button(action: toggleConversation) {
+                    Image(systemName: conversationMode ? "stop.circle.fill" : "bubble.left.and.bubble.right")
+                }.buttonStyle(.plain).cookiePointingCursor()
+                 .help(conversationMode ? "Stop conversation · Escape" : "Conversation mode · Option Command")
+                 .accessibilityLabel(conversationMode ? "Stop conversation" : "Start conversation mode")
             }
-            Text("⌃ ⌥")
+            if let workTools { Button(action: workTools) { Image(systemName: "tray.full") }.help("Context, alternatives & workflows") }
+            if let conversationSettings { Button(action: conversationSettings) { Image(systemName: "slider.horizontal.3") }.help("Conversation & English practice") }
+            Text(conversationMode ? "⌥ ⌘" : "⌃ ⌥")
                 .font(.system(size: 10, weight: .medium))
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)
                 .background(RoundedRectangle(cornerRadius: 4).fill(CK.fill))
                 .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(CK.hairline, lineWidth: 0.5))
-                .accessibilityLabel("Hold Control and Option to talk from anywhere")
+                .accessibilityLabel(conversationMode ? "Press Option and Command to stop conversation" : "Hold Control and Option to talk from anywhere")
         }
         .font(.system(size: 10))
         .foregroundStyle(CK.secondary)
@@ -290,6 +315,7 @@ private struct CookieVoiceControl: View {
     let beginHolding: () -> Void
     let endHolding: () -> Void
     var dictating = false
+    var conversationMode = false
     @State private var hovering = false
     @FocusState private var keyboardFocused: Bool
 
@@ -305,7 +331,7 @@ private struct CookieVoiceControl: View {
                     Text(dictating && phase == .listening ? "Dictating" : phase.title)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(CK.text)
-                    Text(dictating && phase == .listening ? "Release to insert" : phase.subtitle)
+                    Text(conversationMode ? (phase == .listening ? "Pause to send · Esc to stop" : "Microphone paused") : dictating && phase == .listening ? "Release to insert" : phase.subtitle)
                         .font(.system(size: 10.5))
                         .foregroundStyle(CK.secondary)
                 }
@@ -348,7 +374,7 @@ private struct CookieVoiceControl: View {
         .accessibilityAction {
             if holding { endHolding() } else { beginHolding() }
         }
-        .help(phase == .ready ? "Hold to talk · Control Option from anywhere" : phase.subtitle)
+        .help(conversationMode ? "Conversation mode · Escape to stop" : phase == .ready ? "Hold to talk · Control Option from anywhere" : phase.subtitle)
         .animation(CK.quick, value: hovering)
     }
 }
