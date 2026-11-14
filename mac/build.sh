@@ -71,7 +71,8 @@ if [ -x "$RECORDER" ]; then
 else
   echo "note: $RECORDER is missing; meeting recording is left out"
 fi
-# Eyes and ears: cookie-sense (Vision text and faces, SpeechAnalyzer) in its own process, so a
+# Eyes and ears: cookie-sense (Vision text and faces, SpeechAnalyzer, and Enkeon dictation's Parakeet,
+# clean-up and rewrite) in its own process, so a
 # Vision model that fails to load can't take Cookie down. A Swift package built against a macOS 26+
 # SDK (it needs no SwiftUI, so no Xcode). Without it Cookie reads screenshots in its own process and
 # transcribes with SFSpeechRecognizer.
@@ -89,16 +90,15 @@ if [ -x "$SENSE" ]; then
 else
   echo "note: $SENSE is missing; screen reading stays in-process"
 fi
-# Ears for dictation: enkeon-sense (voice/Helpers/enkeon-sense), until it and cookie-sense are one helper.
-if [ -z "$ENKEON_SENSE_BIN" ] && SENSE_SDK=$(scripts/sdk.sh sense); then
-  (cd voice/Helpers/enkeon-sense && SDKROOT="$SENSE_SDK" swift build -c release --build-system native)
-fi
-VOICE_SENSE="${ENKEON_SENSE_BIN:-voice/Helpers/enkeon-sense/.build/release/enkeon-sense}"
-if [ -x "$VOICE_SENSE" ]; then
-  cp "$VOICE_SENSE" "$APP/Contents/Helpers/enkeon-sense"
-  codesign --force --options runtime $TIMESTAMP --identifier com.enkeon.cookie.voice-sense --sign "$SIGN_ID" "$APP/Contents/Helpers/enkeon-sense"
+# Pen: enkeon-complete (llama.cpp's server, MIT) finishes your sentence at the text cursor.
+# voice/scripts/llama.sh builds it once; ENKEON_COMPLETE_BIN uses one built elsewhere.
+COMPLETE="${ENKEON_COMPLETE_BIN:-voice/.build/llama/bin/llama-server}"
+[ -n "$ENKEON_COMPLETE_BIN" ] || [ -x "$COMPLETE" ] || voice/scripts/llama.sh || true
+if [ -x "$COMPLETE" ]; then
+  cp "$COMPLETE" "$APP/Contents/Helpers/enkeon-complete"
+  codesign --force --options runtime $TIMESTAMP --identifier com.enkeon.cookie.complete --sign "$SIGN_ID" "$APP/Contents/Helpers/enkeon-complete"
 else
-  echo "note: $VOICE_SENSE is missing; dictation uses SFSpeechRecognizer"
+  echo "note: enkeon-complete didn't build; Pen is off"
 fi
 # Research and decks: the bundled Python (scripts/bundle-python.sh) running cookie-py,
 # every Mach-O signed inside-out before the app seals it (no entitlements needed, measured).

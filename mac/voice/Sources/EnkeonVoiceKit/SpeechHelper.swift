@@ -37,7 +37,8 @@ public final class SpeechHelper: @unchecked Sendable {
     /// Built without the helper (a development build): dictation falls back to SFSpeechRecognizer.
     public var isBundled: Bool { FileManager.default.isExecutableFile(atPath: helperURL.path) }
 
-    public init(helperURL: URL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/enkeon-sense")) {
+    /// Cookie's one speech helper (Enkeon Voice's enkeon-sense merged into cookie-sense).
+    public init(helperURL: URL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/cookie-sense")) {
         self.helperURL = helperURL
         // A helper that dies mid-write must fail the write, not kill the app.
         signal(SIGPIPE, SIG_IGN)

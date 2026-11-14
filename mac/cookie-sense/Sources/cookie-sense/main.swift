@@ -102,6 +102,10 @@ if CommandLine.arguments.contains("--compile-accurate") {
 
 let vision = VisionWorker()
 let speech = SpeechWorker()
+// Enkeon dictation's on-device work (from Enkeon Voice's enkeon-sense).
+let parakeet = ParakeetWorker()
+let cleanup = CleanupWorker()
+let rewrite = RewriteWorker()
 
 
 Thread.detachNewThread {
@@ -111,7 +115,31 @@ Thread.detachNewThread {
               let op = request["op"] as? String, let id = request["id"] as? String else { continue }
         switch op {
         case "hello":
-            Task { Wire.reply(id, ["ok": true, "version": 1, "speech": await speech.isAvailable(), "accurate": await vision.stateName]) }
+            Task { Wire.reply(id, ["ok": true, "version": 1, "speech": await speech.isAvailable(), "accurate": await vision.stateName,
+                                   "parakeet": parakeet.ready,
+                                   "cleanup": cleanup.isAvailable(), "cleanupNote": cleanup.availabilityNote()]) }
+        case "parakeet.prepare": Task { await parakeet.prepare(id: id, gpu: request["compute"] as? String == "gpu") }
+        case "parakeet.transcribe": Task { await parakeet.transcribe(id: id, data: payload) }
+        case "meeting.transcribe": Task { await parakeet.transcribe(id: id, data: payload, reply: true) }
+        case "parakeet.start": Task { await parakeet.start(id: id) }
+        case "parakeet.audio": parakeet.audio(id: id, data: payload)
+        case "parakeet.finish": Task { await parakeet.finish(id: id) }
+        case "parakeet.cancel": Task { await parakeet.cancel(id: id) }
+        case "cleanup.warm":
+            cleanup.warm(style: request["style"] as? String ?? "neutral")
+        case "cleanup":
+            let text = request["text"] as? String ?? ""
+            let style = request["style"] as? String ?? "neutral"
+            let terms = request["terms"] as? [String] ?? []
+            Task { await cleanup.cleanup(id: id, text: text, style: style, terms: terms) }
+        case "rewrite.warm":
+            rewrite.warm(mode: request["mode"] as? String ?? "fix")
+        case "rewrite":
+            let text = request["text"] as? String ?? ""
+            let mode = request["mode"] as? String ?? "fix"
+            let samples = request["samples"] as? [String] ?? []
+            let instruction = request["instruction"] as? String ?? ""
+            Task { await rewrite.rewrite(id: id, text: text, mode: mode, instruction: instruction, samples: samples) }
         case "warm":
             // Load the accurate text model; answered when it is ready or has failed. Cookie asks
             // only once `--compile-accurate` has succeeded on this OS, so it loads from the cache.

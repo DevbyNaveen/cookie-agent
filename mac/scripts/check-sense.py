@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""End-to-end check of enkeon-sense: a known sentence, spoken by `say`, must come back as text.
+"""End-to-end check of cookie-sense: a known sentence, spoken by `say`, must come back as text.
 
-  scripts/check-sense.py [path/to/enkeon-sense]
+  scripts/check-sense.py [path/to/cookie-sense]
 
 Exits 0 when every expected word is heard, 1 otherwise, 2 when the helper has no speech model here.
 """
@@ -11,7 +11,7 @@ SENTENCE = "Send the Halvorsen pricing to Maria on Friday"
 EXPECTED = ["send", "pricing", "maria", "friday"]  # "Halvorsen" is a name the model may not know; that is the dictionary's job
 
 helper = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-    os.path.dirname(__file__), "..", "Helpers", "enkeon-sense", ".build", "release", "enkeon-sense")
+    os.path.dirname(__file__), "..", "cookie-sense", ".build", "release", "cookie-sense")
 
 with tempfile.TemporaryDirectory() as tmp:
     aiff, wav = os.path.join(tmp, "s.aiff"), os.path.join(tmp, "s.wav")
@@ -38,6 +38,13 @@ def receive():
 send({"op": "hello", "id": "hello-1"})
 hello = receive()
 print("hello:", hello)
+# Enkeon dictation's clean-up lives in this helper now: the op is known. Without Apple Intelligence it
+# may answer that it's unavailable, never "unknown op".
+send({"op": "cleanup", "id": "c1", "text": "um so we ship friday", "style": "neutral"})
+reply = receive()
+print("cleanup:", reply)
+if "unknown op" in str(reply.get("error", "")):
+    sys.exit("cookie-sense doesn't know Enkeon dictation's clean-up")
 if not hello.get("speech"):
     print("no installed speech model for this language here (the helper asked for it to be installed)")
     sys.exit(2)
