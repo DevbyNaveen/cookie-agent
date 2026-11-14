@@ -95,6 +95,10 @@ struct CookieHomeView: View {
                         CookieNewAgentView(store: CookieAgentStore.shared, companionManager: companionManager, navigation: navigation)
                     } else if navigation.showsWorkComposer {
                         CookieNewWorkView(store: WorkStore.shared, navigation: navigation, draft: navigation.workDraft)
+                    } else if navigation.section == .words {
+                        CookieWordsSection(model: CookieDictation.shared.words, tabs: Page.yourWords)
+                    } else if navigation.section == .memory {
+                        CookieWordsSection(model: CookieDictation.shared.words, tabs: Page.memory)
                     } else if navigation.section == .board {
                         BoardView(store: WorkStore.shared, lists: ListStore.shared, companionManager: companionManager, navigation: navigation)
                     } else if showsWorkspace, let thread = companionManager.currentThreadID {

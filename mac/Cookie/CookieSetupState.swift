@@ -2,7 +2,7 @@ import Combine
 import Foundation
 
 enum CookieSetupStep: Int, CaseIterable, Identifiable {
-    case welcome, voice, screen, shortcuts, ready
+    case welcome, voice, shortcuts, practice, screen, ready
     var id: Int { rawValue }
     var label: String {
         switch self {
@@ -10,6 +10,7 @@ enum CookieSetupStep: Int, CaseIterable, Identifiable {
         case .voice: return "Voice"
         case .screen: return "Screen"
         case .shortcuts: return "Shortcuts"
+        case .practice: return "Practice"
         case .ready: return "Ready"
         }
     }

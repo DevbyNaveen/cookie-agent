@@ -1,3 +1,4 @@
+import EnkeonVoiceKit
 import AppKit
 import Carbon.HIToolbox
 
@@ -36,7 +37,8 @@ enum CookieRequestMode: String {
 }
 
 enum CookieDictationText {
-    static let vocabularyKey = "cookie.dictation.vocabulary"
+    /// One vocabulary for the app: Your words → Dictionary, dictation and talk all read it.
+    static let vocabularyKey = DictationText.vocabularyKey
     static var vocabulary: [String] {
         Array((UserDefaults.standard.string(forKey: vocabularyKey) ?? "").split(separator: "\n")
             .map { String($0.prefix(80)).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.prefix(100))

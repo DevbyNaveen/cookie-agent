@@ -13,6 +13,7 @@
 //  glass and never take a click themselves.
 //
 
+import EnkeonVoiceKit
 import AppKit
 import SwiftUI
 

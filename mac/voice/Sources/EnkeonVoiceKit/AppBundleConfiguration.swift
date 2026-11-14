@@ -1,6 +1,6 @@
 //
 //  AppBundleConfiguration.swift
-//  Cookie
+//  EnkeonVoiceKit (from Cookie, cookie-harness 8ffefde)
 //
 //  Shared helper for reading runtime configuration from the built app bundle.
 //

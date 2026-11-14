@@ -15,10 +15,21 @@ executable = output_directory / "cookie-interaction-checks"
 # The same SDK build.sh picks (scripts/sdk.sh says why); empty means Xcode's default.
 sdk = subprocess.run([str(project_directory / "scripts" / "sdk.sh"), "app"], check=True, capture_output=True, text=True).stdout.strip()
 architecture = subprocess.run(["uname", "-m"], check=True, capture_output=True, text=True).stdout.strip()
-subprocess.run([
-    "swiftc", *(["-sdk", sdk] if sdk else []),
+common = [
+    *(["-sdk", sdk] if sdk else []),
     "-target", f"{architecture}-apple-macosx15.0", "-swift-version", "5",
     "-module-cache-path", str(output_directory / "module-cache"),
+]
+# Enkeon dictation (voice/Sources/EnkeonVoiceKit) is its own module, as in the SwiftPM build.
+subprocess.run([
+    "swiftc", *common, "-parse-as-library", "-emit-library", "-static", "-emit-module",
+    "-module-name", "EnkeonVoiceKit", "-emit-module-path", str(output_directory / "EnkeonVoiceKit.swiftmodule"),
+    *map(str, sorted((project_directory / "voice" / "Sources" / "EnkeonVoiceKit").glob("*.swift"))),
+    "-o", str(output_directory / "libEnkeonVoiceKit.a"),
+], check=True)
+subprocess.run([
+    "swiftc", *common,
+    "-I", str(output_directory), "-L", str(output_directory), "-lEnkeonVoiceKit",
     *map(str, source_files),
     *map(str, sorted((project_directory / "Tests" / "CookieInteractionTests").glob("*.swift"))),
     "-o", str(executable),
@@ -27,5 +38,5 @@ result = subprocess.run([str(executable), *sys.argv[1:]], cwd=project_directory,
 sys.stdout.write(result.stdout)
 sys.stderr.write(result.stderr)
 result.check_returncode()
-if any(message not in result.stdout for message in ["31 interaction checks passed.", "7 setup checks passed.", "3 work presentation checks passed.", "4 peek presentation checks passed.", "8 voice flow checks passed.", "5 Cookie creation checks passed.", "10 feature checks passed.", "7 dock presentation checks passed.", "3 permission checks passed.", " speed checks passed.", "helper checks:"]):
+if any(message not in result.stdout for message in ["31 interaction checks passed.", "7 setup checks passed.", "3 work presentation checks passed.", "4 peek presentation checks passed.", "8 voice flow checks passed.", "5 Cookie creation checks passed.", "10 feature checks passed.", "7 dock presentation checks passed.", "3 permission checks passed.", " speed checks passed.", "3 dictation host checks passed.", "4 dictation face checks passed.", "4 words page checks passed.", "4 one-setup checks passed.", "3 meeting checks passed.", "helper checks:"]):
     raise SystemExit("Native checks did not finish. Run with access to the macOS graphical session; an empty exit is not a pass.")

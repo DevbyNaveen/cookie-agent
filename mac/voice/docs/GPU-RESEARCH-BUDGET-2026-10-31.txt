@@ -1,0 +1,117 @@
+GPU research for a full month with at most $5 cash
+Checked: 2026-10-31. Public-source research only; no account enrollment,
+credit grant verification, payment, deployment, or GPU allocation performed.
+
+Finding
+Recurring free quotas and credits can support research sessions throughout a
+month within this cash budget. No suitable guaranteed 24/7 dedicated GPU at
+$5/month was verified. Earlier advice overemphasized paid hourly rentals and
+missed the stronger recurring-credit route. Provider availability and account
+eligibility still need confirmation. Research on another provider does not
+change the user's preference for an eventual AWS production deployment.
+
+1. Modal Starter — first recommendation for configurable benchmark jobs
+Published plan: $0 subscription plus metered usage, $30 compute credits monthly.
+L4 is $0.000222/s; L40S is $0.000542/s. CPU costs $0.0000131/core/s and RAM
+$0.00000222/GiB/s. Load time and a configurable idle tail are billable. Use custom
+Functions, not paid-per-token Shared Endpoints, which are outside included compute.
+Illustrative calculations, not reservations or measured capacity:
+L4 + 2 physical CPU cores + 16 GiB RAM = $1.021392/hour -> about 29.37 hours/$30.
+L40S + 2 physical CPU cores + 32 GiB RAM = $2.301264/hour -> about 13.04 hours/$30.
+Actual requested/used resources and region selection can increase costs. These
+are alternative uses of the same credit pool, not additive allowances. Setup
+time consumes that allowance. Do not assume a large model's loading RAM fits
+the example. Volumes have an included 1 TiB allowance on the published page.
+Sources: https://modal.com/pricing
+https://modal.com/docs/guide/gpu
+
+Modal billing protection
+A payment method is required. Workspace usage budgets are BEFORE credits; the
+separate Workspace spend limit caps net out-of-pocket charges AFTER credits.
+The default net limit may exceed $5. Configure and verify an explicit net limit
+before executing anything; target $0 initially, keeping the user's $5 unused.
+Use bounded jobs, one GPU, no always-warm containers, and verify applicable
+credit balance. Tax/authorization-hold behavior was not verified. Do not claim
+signup alone guarantees no card activity. Environment budgets require paid tiers;
+Workspace controls are the relevant ones for Starter.
+Sources: https://modal.com/docs/guide/billing
+https://modal.com/docs/guide/budgets
+
+2. Kaggle — recurring free notebook research
+Official usage guide lists a weekly quota of 30 hours, potentially higher with
+available resources. Four weekly allowances would be 120 hours arithmetically,
+not guaranteed capacity or a monthly reservation. Notebook documentation gives
+12-hour CPU/GPU sessions and 20 GB auto-saved output storage. Check actual account
+quota and available hardware before planning jobs.
+A newer staff announcement retires P100 on September 15, 2026 and identifies
+T4 x2 as the replacement: two GPUs, each with 16 GB. Older general documentation
+still mentions P100, so that older hardware claim must not guide provisioning.
+Two 16 GB cards are not automatically one 32 GB device: sharding needs compatible
+software. Use for small speech/text quality tests. Large-model fit and modern
+CUDA kernel compatibility need checking. Queuing and interruptions apply.
+Sources: https://www.kaggle.com/docs/efficient-gpu-usage
+https://www.kaggle.com/docs/notebooks
+https://www.kaggle.com/product-announcements/735239
+
+3. Hugging Face ZeroGPU — short free tests on larger GPU slices
+Current docs: shared RTX Pro 6000 Blackwell, 48 GB default or 96 GB at twice quota.
+Free accounts have five GPU minutes daily. That is 2.5 hours across 30 daily
+allowances if used each day, not a bank of continuous time. Queues apply.
+Existing Spaces can be tried free. Hosting up to two requires a verified-email
+personal account older than 30 days and in good standing. Gradio-only with
+PyTorch compatibility limitations; not a general-purpose always-on CUDA VM.
+Source: https://huggingface.co/docs/hub/en/spaces-zerogpu
+
+4. Lightning AI — useful first-month trial, not verified recurring free credits
+Current pricing FAQ offers five credits on registration, 25 more after adding
+a card, expiring after 12 months if unused. The advertised up-to-80 GPU hours
+depend on GPU and interruptible pricing; do not promise that for L40S/A100.
+The free 24/7 Studio is CPU, not GPU. Current pricing lists 10 GB free storage
+and a 200 GB limit, which is not 200 GB of free storage. Phone verification is
+used. Search snippets and an API subdomain showed differing prices; use the
+current account quote instead of treating cached snippets as a purchase offer.
+Source: https://lightning.ai/pricing
+
+5. Google Colab Free — fallback
+Free GPU access is possible, but exact hardware and usage allowance are dynamic
+and not guaranteed. Free notebook runs last at most 12 hours, often less depending
+on usage and availability. Use interactive notebooks, not a production serving
+endpoint; remote SSH and bypassing its UI are restricted for free runtimes.
+Existing eligible paid Google AI plans may include Colab benefits, but no such
+subscription was verified for this user. Do not purchase a plan on assumption.
+Source: https://research.google.com/colaboratory/faq.html
+
+Other options checked
+- AWS SageMaker Studio Lab: free for existing customers but closed to NEW
+  customers. Existing users can use up to four GPU hours per 24 hours. Not a
+  signup recommendation unless the user already has an eligible account.
+  https://docs.aws.amazon.com/sagemaker/latest/dg/studio-lab.html
+  https://docs.aws.amazon.com/sagemaker/latest/dg/studio-lab-overview.html
+- Paperspace: free notebook M4000 is listed, but paid Pro starts at $8/month,
+  over this budget. Free plan includes 5 GB storage; low priority for these models.
+  https://docs.digitalocean.com/products/paperspace/pricing/
+- Vast.ai: $5 minimum to start can fund burst rental. Storage still costs money
+  when stopped; inbound/outbound transfer also costs money at host-specific rates.
+  Zero balance stops, not destroys, instances; negative balances can be charged
+  to the card. Therefore a $5 deposit is NOT an automatic total-spend guarantee.
+  https://vast.ai/products/gpu-cloud
+  https://github.com/vast-ai/docs/blob/main/guides/reference/faq/billing.mdx
+- Runpod: $10 minimum card deposit excludes a fresh account under a strict $5
+  cash budget even when a few GPU hours cost under $5.
+  https://www.runpod.io/blog/manage-runpod-account-funding
+- Lium: advertises $5 signup credit, expires in 14 days, one per person and daily
+  grant availability conditions. Grants for research require individual approval.
+  Useful bonus, not a verified recurring month-long allowance.
+  https://lium.io/grants
+
+Recommended month
+Use Kaggle for repeated small-model/ASR tests and Modal for a few scheduled 48 GB
+or larger GPU comparison jobs. If no payment method is acceptable, begin with
+Kaggle; ZeroGPU is an optional brief-demo route for an eligible existing account.
+Prepare fixtures and environments before allocating GPUs. Record model revisions,
+precision, hardware and runtime separately. Test one model at a time; a 48 GB
+GPU is not proof that every shortlisted model or precision fits. Larger BF16
+models may require 80 GB or quantization, which changes the quality being tested.
+Finish jobs, persist only reports/necessary weights within allowances, and release
+compute. No credit or quota circumvention. Do not treat shared free-tier timings
+as AWS production latency or evidence of a SOTA winner.

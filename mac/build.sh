@@ -71,7 +71,8 @@ if [ -x "$RECORDER" ]; then
 else
   echo "note: $RECORDER is missing; meeting recording is left out"
 fi
-# Eyes and ears: cookie-sense (Vision text and faces, SpeechAnalyzer) in its own process, so a
+# Eyes and ears: cookie-sense (Vision text and faces, SpeechAnalyzer, and Enkeon dictation's Parakeet,
+# clean-up and rewrite) in its own process, so a
 # Vision model that fails to load can't take Cookie down. A Swift package built against a macOS 26+
 # SDK (it needs no SwiftUI, so no Xcode). Without it Cookie reads screenshots in its own process and
 # transcribes with SFSpeechRecognizer.
@@ -88,6 +89,16 @@ if [ -x "$SENSE" ]; then
   codesign --force --options runtime $TIMESTAMP --identifier com.enkeon.cookie.sense --sign "$SIGN_ID" "$APP/Contents/Helpers/cookie-sense"
 else
   echo "note: $SENSE is missing; screen reading stays in-process"
+fi
+# Pen: enkeon-complete (llama.cpp's server, MIT) finishes your sentence at the text cursor.
+# voice/scripts/llama.sh builds it once; ENKEON_COMPLETE_BIN uses one built elsewhere.
+COMPLETE="${ENKEON_COMPLETE_BIN:-voice/.build/llama/bin/llama-server}"
+[ -n "$ENKEON_COMPLETE_BIN" ] || [ -x "$COMPLETE" ] || voice/scripts/llama.sh || true
+if [ -x "$COMPLETE" ]; then
+  cp "$COMPLETE" "$APP/Contents/Helpers/enkeon-complete"
+  codesign --force --options runtime $TIMESTAMP --identifier com.enkeon.cookie.complete --sign "$SIGN_ID" "$APP/Contents/Helpers/enkeon-complete"
+else
+  echo "note: enkeon-complete didn't build; Pen is off"
 fi
 # Research and decks: the bundled Python (scripts/bundle-python.sh) running cookie-py,
 # every Mach-O signed inside-out before the app seals it (no entitlements needed, measured).

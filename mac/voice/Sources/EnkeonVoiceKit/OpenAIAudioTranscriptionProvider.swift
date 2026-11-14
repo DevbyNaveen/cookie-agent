@@ -1,6 +1,6 @@
 //
 //  OpenAIAudioTranscriptionProvider.swift
-//  Cookie
+//  EnkeonVoiceKit (from Cookie, cookie-harness 8ffefde)
 //
 //  AI transcription provider backed by OpenAI's audio transcription API.
 //
@@ -120,8 +120,8 @@ private final class OpenAIAudioTranscriptionSession: BuddyStreamingTranscription
     }
 
     func requestFinalTranscript() {
-        stateQueue.async {
-            guard !self.hasRequestedFinalTranscript, !self.isCancelled else { return }
+        stateQueue.async { [weak self] in
+            guard let self, !self.hasRequestedFinalTranscript, !self.isCancelled else { return }
             self.hasRequestedFinalTranscript = true
 
             let bufferedPCM16AudioData = self.bufferedPCM16AudioData

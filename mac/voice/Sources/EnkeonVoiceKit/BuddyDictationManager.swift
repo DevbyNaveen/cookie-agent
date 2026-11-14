@@ -1,6 +1,6 @@
 //
 //  BuddyDictationManager.swift
-//  Cookie
+//  EnkeonVoiceKit (from Cookie, cookie-harness 8ffefde)
 //
 //  Shared push-to-talk dictation manager for the help chat and brainstorm buddy.
 //  Captures microphone audio with AVAudioEngine, routes it into the active
@@ -13,7 +13,7 @@ import Combine
 import Foundation
 import Speech
 
-enum BuddyPushToTalkShortcut {
+public enum BuddyPushToTalkShortcut {
     enum ShortcutOption {
         case shiftFunction
         case controlOption
@@ -80,7 +80,7 @@ enum BuddyPushToTalkShortcut {
         }
     }
 
-    enum ShortcutTransition {
+    public enum ShortcutTransition {
         case none
         case pressed
         case released
@@ -94,23 +94,30 @@ enum BuddyPushToTalkShortcut {
 
     static let currentShortcutOption: ShortcutOption = .controlOption
     static let pushToTalkKeyCode: UInt16 = 49 // Space
-    static let pushToTalkDisplayText = currentShortcutOption.displayText
+    public static let pushToTalkDisplayText = currentShortcutOption.displayText
     static let pushToTalkTooltipText = "push to talk (\(pushToTalkDisplayText))"
 
-    static func isHeld(modifierFlagsRawValue: UInt64, spacePressed: Bool = false) -> Bool {
+    /// Talk to Cookie: Fn+⌥, or ⌃⌥ (Cookie's chord before Fn joined; kept as an alias). Never with ⌘:
+    /// ⌥⌃⌘ is editing and ⌥⌘ is conversation.
+    public static func talkHeld(_ flags: NSEvent.ModifierFlags) -> Bool {
+        guard !flags.contains(.command) else { return false }
+        return flags.contains([.function, .option]) || flags.contains([.control, .option])
+    }
+    public static func isHeld(modifierFlagsRawValue: UInt64, spacePressed: Bool = false) -> Bool {
         let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlagsRawValue))
+        if currentShortcutOption == .controlOption { return talkHeld(flags) }
         if let required = currentShortcutOption.modifierOnlyFlags { return flags.contains(required) }
         guard let required = currentShortcutOption.spaceShortcutModifierFlags else { return false }
         return flags.contains(required) && spacePressed
     }
 
     /// The keys as they are now, not as the last event said.
-    static var isPhysicallyHeld: Bool {
+    public static var isPhysicallyHeld: Bool {
         isHeld(modifierFlagsRawValue: CGEventSource.flagsState(.combinedSessionState).rawValue,
                spacePressed: CGEventSource.keyState(.combinedSessionState, key: 49))
     }
 
-    static func shortcutTransition(
+    public static func shortcutTransition(
         for event: NSEvent,
         wasShortcutPreviouslyPressed: Bool
     ) -> ShortcutTransition {
@@ -124,7 +131,7 @@ enum BuddyPushToTalkShortcut {
         )
     }
 
-    static func shortcutTransition(
+    public static func shortcutTransition(
         for eventType: CGEventType,
         keyCode: UInt16,
         modifierFlagsRawValue: UInt64,
@@ -176,7 +183,8 @@ enum BuddyPushToTalkShortcut {
         if let modifierOnlyFlags = currentShortcutOption.modifierOnlyFlags {
             guard shortcutEventType == .flagsChanged else { return .none }
 
-            let isShortcutCurrentlyPressed = modifierFlags.contains(modifierOnlyFlags)
+            let isShortcutCurrentlyPressed = currentShortcutOption == .controlOption
+                ? talkHeld(modifierFlags) : modifierFlags.contains(modifierOnlyFlags)
 
             if isShortcutCurrentlyPressed && !wasShortcutPreviouslyPressed {
                 return .pressed
@@ -228,28 +236,29 @@ private struct BuddyDictationDraftCallbacks {
 }
 
 @MainActor
-final class BuddyDictationManager: NSObject, ObservableObject {
+public final class BuddyDictationManager: NSObject, ObservableObject {
     private static let defaultFinalTranscriptFallbackDelaySeconds: TimeInterval = 2.4
     private static let recordedAudioPowerHistoryLength = 44
     private static let recordedAudioPowerHistoryBaselineLevel: CGFloat = 0.02
     private static let recordedAudioPowerHistorySampleIntervalSeconds: TimeInterval = 0.07
 
     @Published private(set) var isRecordingFromMicrophoneButton = false
-    @Published private(set) var isRecordingFromKeyboardShortcut = false
+    @Published public private(set) var isRecordingFromKeyboardShortcut = false
     @Published private(set) var isKeyboardShortcutSessionActiveOrFinalizing = false
-    @Published private(set) var isFinalizingTranscript = false
-    @Published private(set) var isPreparingToRecord = false
-    @Published private(set) var currentAudioPowerLevel: CGFloat = 0
-    @Published private(set) var recordedAudioPowerHistory = Array(
+    @Published public private(set) var isFinalizingTranscript = false
+    @Published public private(set) var isPreparingToRecord = false
+    @Published private(set) var isMicrophoneReady = false
+    @Published public private(set) var currentAudioPowerLevel: CGFloat = 0
+    @Published public private(set) var recordedAudioPowerHistory = Array(
         repeating: BuddyDictationManager.recordedAudioPowerHistoryBaselineLevel,
         count: BuddyDictationManager.recordedAudioPowerHistoryLength
     )
     @Published private(set) var microphoneButtonRecordingStartedAt: Date?
-    @Published private(set) var transcriptionProviderDisplayName = ""
-    @Published var lastErrorMessage: String?
+    @Published public private(set) var transcriptionProviderDisplayName = ""
+    @Published public var lastErrorMessage: String?
     @Published private(set) var currentPermissionProblem: BuddyDictationPermissionProblem?
 
-    var isDictationInProgress: Bool {
+    public var isDictationInProgress: Bool {
         isPreparingToRecord || isRecordingFromMicrophoneButton || isRecordingFromKeyboardShortcut || isFinalizingTranscript
     }
 
@@ -275,10 +284,17 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         return AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined
     }
 
-    var requiresSpeechRecognitionPermission: Bool { transcriptionProvider.requiresSpeechRecognitionPermission }
+    public var requiresSpeechRecognitionPermission: Bool { transcriptionProvider.requiresSpeechRecognitionPermission }
+    /// Live words while the person speaks, for Cookie's conversation turns.
+    public var supportsPartialTranscripts: Bool { transcriptionProvider.supportsPartialTranscripts }
+    public var currentRecognizedText: String { latestRecognizedText }
 
     private let transcriptionProvider: any BuddyTranscriptionProvider
-    private let audioEngine = AVAudioEngine()
+    private let audioInput: any DictationAudioInput
+    private let permissionCheck: (() async -> Bool)?
+    private var microphoneWatchdog: Task<Void, Never>?
+    private var receivedFinalTranscript = false
+    private var pendingAudio: PendingDictationAudio?
     private var activeTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
     private var recognitionSessionID: UUID?
     private var activeStartSource: BuddyDictationStartSource?
@@ -296,17 +312,20 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     /// rapid follow-up requests that arrive before macOS updates its cache.
     private var lastPermissionRequestCompletedAt: Date?
 
-    override init() {
-        let transcriptionProvider = BuddyTranscriptionProviderFactory.makeDefaultProvider()
-        self.transcriptionProvider = transcriptionProvider
-        self.transcriptionProviderDisplayName = transcriptionProvider.displayName
+    public override convenience init() {
+        self.init(provider: BuddyTranscriptionProviderFactory.makeDefaultProvider(), audioInput: MicrophoneAudioInput())
+    }
+
+    init(provider: any BuddyTranscriptionProvider, audioInput: any DictationAudioInput,
+         permissionCheck: (() async -> Bool)? = nil) {
+        self.transcriptionProvider = provider
+        self.transcriptionProviderDisplayName = provider.displayName
+        self.audioInput = audioInput
+        self.permissionCheck = permissionCheck
         super.init()
     }
 
-    var supportsPartialTranscripts: Bool { transcriptionProvider.supportsPartialTranscripts }
-    var currentRecognizedText: String { latestRecognizedText }
-
-    func updateContextualKeyterms(_ contextualKeyterms: [String]) {
+    public func updateContextualKeyterms(_ contextualKeyterms: [String]) {
         self.contextualKeyterms = contextualKeyterms
     }
 
@@ -320,11 +339,11 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             currentDraftText: currentDraftText,
             updateDraftText: updateDraftText,
             submitDraftText: submitDraftText,
-            shouldAutomaticallySubmitFinalDraftOnStop: false
+            shouldAutomaticallySubmitFinalDraftOnStop: currentDraftText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         )
     }
 
-    func startPushToTalkFromKeyboardShortcut(
+    public func startPushToTalkFromKeyboardShortcut(
         currentDraftText: String,
         updateDraftText: @escaping (String) -> Void,
         submitDraftText: @escaping (String) -> Void
@@ -344,11 +363,11 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         stopPushToTalk(expectedStartSource: .microphoneButton)
     }
 
-    func stopPushToTalkFromKeyboardShortcut() {
+    public func stopPushToTalkFromKeyboardShortcut() {
         stopPushToTalk(expectedStartSource: .keyboardShortcut)
     }
 
-    func cancelCurrentDictation(preserveDraftText: Bool = true) {
+    public func cancelCurrentDictation(preserveDraftText: Bool = true) {
         pendingStartRequestIdentifier = UUID()
 
         guard isDictationInProgress else { return }
@@ -361,8 +380,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             draftCallbacks?.updateDraftText(currentDraftText)
         }
 
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
+        audioInput.stop()
         activeTranscriptionSession?.cancel()
 
         resetSessionState()
@@ -404,7 +422,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         print("🎙️ BuddyDictationManager: start requested (\(startSource))")
 
-        if needsInitialPermissionPrompt {
+        if permissionCheck == nil && needsInitialPermissionPrompt {
             print("🎙️ BuddyDictationManager: requesting initial permissions")
             NSApplication.shared.activate(ignoringOtherApps: true)
 
@@ -423,7 +441,11 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         currentPermissionProblem = nil
         isPreparingToRecord = true
 
-        guard await requestMicrophoneAndSpeechPermissionsWithoutDuplicatePrompts() else {
+        let permitted: Bool
+        if let permissionCheck { permitted = await permissionCheck() }
+        else { permitted = await requestMicrophoneAndSpeechPermissionsWithoutDuplicatePrompts() }
+        guard pendingStartRequestIdentifier == startRequestIdentifier else { return }
+        guard permitted else {
             print("🎙️ BuddyDictationManager: permissions missing or denied")
             isPreparingToRecord = false
             return
@@ -433,11 +455,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             isPreparingToRecord = false
             return
         }
-        guard pendingStartRequestIdentifier == startRequestIdentifier else {
-            print("🎙️ BuddyDictationManager: start request superseded")
-            isPreparingToRecord = false
-            return
-        }
+        guard pendingStartRequestIdentifier == startRequestIdentifier else { return }
 
         draftTextBeforeCurrentDictation = currentDraftText
         latestRecognizedText = ""
@@ -468,10 +486,10 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         do {
             try await startRecognitionSession()
+            guard pendingStartRequestIdentifier == startRequestIdentifier else { return }
             guard !Task.isCancelled else {
                 print("🎙️ BuddyDictationManager: start cancelled (shortcut released during session start)")
-                audioEngine.stop()
-                audioEngine.inputNode.removeTap(onBus: 0)
+                audioInput.stop()
                 activeTranscriptionSession?.cancel()
                 resetSessionState()
                 return
@@ -483,6 +501,8 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             print("🎙️ BuddyDictationManager: recognition session started")
         } catch {
             guard pendingStartRequestIdentifier == startRequestIdentifier else { return }
+            audioInput.stop()
+            activeTranscriptionSession?.cancel()
             isPreparingToRecord = false
             lastErrorMessage = userFacingErrorMessage(
                 from: error,
@@ -494,13 +514,20 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     }
 
     private func stopPushToTalk(expectedStartSource: BuddyDictationStartSource) {
-        pendingStartRequestIdentifier = UUID()
-
         guard activeStartSource == expectedStartSource else {
+            pendingStartRequestIdentifier = UUID()
+            if isPreparingToRecord {
+                lastErrorMessage = "The microphone wasn't ready before recording stopped. Try again."
+            }
             isPreparingToRecord = false
             return
         }
         guard !isFinalizingTranscript else { return }
+        if isPreparingToRecord && !isMicrophoneReady {
+            cancelCurrentDictation(preserveDraftText: false)
+            lastErrorMessage = "The microphone wasn't ready before recording stopped. Try again."
+            return
+        }
 
         print("🎙️ BuddyDictationManager: stop requested (\(expectedStartSource))")
 
@@ -509,17 +536,27 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         isFinalizingTranscript = true
 
         let finalTranscriptFallbackDelaySeconds = activeTranscriptionSession?.finalTranscriptFallbackDelaySeconds
-            ?? Self.defaultFinalTranscriptFallbackDelaySeconds
+            ?? 12 // The recognizer may still be opening while early audio is buffered.
 
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
-        activeTranscriptionSession?.requestFinalTranscript()
+        audioInput.stop()
+        microphoneWatchdog?.cancel()
+        if receivedFinalTranscript {
+            finishCurrentDictationSessionIfNeeded(shouldSubmitFinalDraft: shouldAutomaticallySubmitFinalDraft)
+            return
+        }
+        pendingAudio?.finish()
 
         finalizeFallbackWorkItem?.cancel()
+        let finalizingSessionID = recognitionSessionID
         let shouldSubmitFinalDraftWhenFallbackTriggers = shouldAutomaticallySubmitFinalDraft
         let fallbackWorkItem = DispatchWorkItem { [weak self] in
             Task { @MainActor in
-                self?.finishCurrentDictationSessionIfNeeded(
+                guard let self, self.recognitionSessionID == finalizingSessionID, self.isFinalizingTranscript else { return }
+                if self.activeTranscriptionSession?.requiresConfirmedFinal != false {
+                    self.handleRecognitionError(AppleSpeechTranscriptionProviderError(message: "Speech processing timed out. Nothing was pasted."))
+                    return
+                }
+                self.finishCurrentDictationSessionIfNeeded(
                     shouldSubmitFinalDraft: shouldSubmitFinalDraftWhenFallbackTriggers
                 )
             }
@@ -536,6 +573,32 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         activeTranscriptionSession = nil
         let sessionID = UUID()
         recognitionSessionID = sessionID
+        receivedFinalTranscript = false
+
+        let startup = ContinuousClock.now
+        let pending = PendingDictationAudio()
+        pendingAudio = pending
+        try await audioInput.start { [weak self] buffer in
+            pending.append(buffer)
+            let power = Self.audioPowerLevel(from: buffer)
+            Task { @MainActor [weak self] in
+                guard let self, self.recognitionSessionID == sessionID, self.isActivelyRecordingAudio else { return }
+                if !self.isMicrophoneReady {
+                    self.isMicrophoneReady = true
+                    print("🎙️ Dictation startup: first audio after \(startup.duration(to: .now))")
+                }
+                self.updateAudioPowerLevel(power)
+            }
+        }
+        guard !Task.isCancelled, recognitionSessionID == sessionID else { throw CancellationError() }
+        if audioInput.snapshot.frames > 0 { isMicrophoneReady = true }
+        microphoneWatchdog?.cancel()
+        microphoneWatchdog = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            guard let self, self.recognitionSessionID == sessionID, self.isActivelyRecordingAudio,
+                  self.audioInput.snapshot.frames == 0 else { return }
+            self.handleRecognitionError(AppleSpeechTranscriptionProviderError(message: self.audioInput.snapshot.emptyTranscriptMessage))
+        }
 
         print("🎙️ BuddyDictationManager: opening transcription provider \(transcriptionProvider.displayName)")
 
@@ -543,13 +606,16 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             keyterms: buildTranscriptionKeyterms(),
             onTranscriptUpdate: { [weak self] transcriptText in
                 Task { @MainActor in
-                    guard self?.recognitionSessionID == sessionID else { return }
-                    self?.latestRecognizedText = transcriptText
+                    guard let self, self.recognitionSessionID == sessionID, !self.receivedFinalTranscript else { return }
+                    self.latestRecognizedText = transcriptText
+                    // The words so far, live, for whoever shows them while the person talks.
+                    self.draftCallbacks?.updateDraftText(self.composeDraftText(withTranscribedText: transcriptText))
                 }
             },
             onFinalTranscriptReady: { [weak self] transcriptText in
                 Task { @MainActor in
-                    guard let self, self.recognitionSessionID == sessionID else { return }
+                    guard let self, self.recognitionSessionID == sessionID, !self.receivedFinalTranscript else { return }
+                    self.receivedFinalTranscript = true
                     self.latestRecognizedText = transcriptText
 
                     if self.isFinalizingTranscript {
@@ -567,24 +633,15 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             }
         )
 
-        guard !Task.isCancelled, recognitionSessionID == sessionID, !isFinalizingTranscript else {
+        guard !Task.isCancelled, recognitionSessionID == sessionID else {
             activeTranscriptionSession.cancel()
             throw CancellationError()
         }
         self.activeTranscriptionSession = activeTranscriptionSession
-        print("🎙️ BuddyDictationManager: provider ready, starting audio engine")
+        print("🎙️ BuddyDictationManager: provider ready, delivering buffered audio")
 
-        let inputNode = audioEngine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
-
-        inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
-            self?.activeTranscriptionSession?.appendAudioBuffer(buffer)
-            self?.updateAudioPowerLevel(from: buffer)
-        }
-
-        audioEngine.prepare()
-        try audioEngine.start()
+        try pending.attach(activeTranscriptionSession)
+        print("🎙️ Dictation startup: recognizer attached after \(startup.duration(to: .now))")
     }
 
     private func handleRecognitionError(_ error: Error) {
@@ -592,7 +649,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             return
         }
 
-        if isFinalizingTranscript && !latestRecognizedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if activeTranscriptionSession?.requiresConfirmedFinal != true && isFinalizingTranscript && !latestRecognizedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             finishCurrentDictationSessionIfNeeded(
                 shouldSubmitFinalDraft: shouldAutomaticallySubmitFinalDraft
             )
@@ -621,14 +678,17 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             currentDraftCallbacks?.updateDraftText(finalDraftText)
         }
 
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
+        audioInput.stop()
         activeTranscriptionSession?.cancel()
 
+        let emptyMessage = audioInput.snapshot.emptyTranscriptMessage
         resetSessionState()
 
+        guard !finalTranscriptText.isEmpty else {
+            lastErrorMessage = emptyMessage
+            return
+        }
         guard shouldSubmitFinalDraft else { return }
-        guard !finalTranscriptText.isEmpty else { return }
 
         currentDraftCallbacks?.submitDraftText(finalDraftText)
     }
@@ -655,6 +715,12 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     }
 
     private func resetSessionState() {
+        microphoneWatchdog?.cancel()
+        microphoneWatchdog = nil
+        receivedFinalTranscript = false
+        isMicrophoneReady = false
+        pendingAudio?.cancel()
+        pendingAudio = nil
         recognitionSessionID = nil
         pendingStartRequestIdentifier = UUID()
         activeTranscriptionSession = nil
@@ -680,8 +746,8 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     private func buildTranscriptionKeyterms() -> [String] {
         let baseKeyterms = [
-            "Cookie",
             "Enkeon",
+            "Cookie",
             "Codex",
             "Claude",
             "Anthropic",
@@ -713,39 +779,26 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         return orderedKeyterms
     }
 
-    private func updateAudioPowerLevel(from audioBuffer: AVAudioPCMBuffer) {
-        guard let channelData = audioBuffer.floatChannelData else { return }
-
-        let channelSamples = channelData[0]
+    nonisolated private static func audioPowerLevel(from audioBuffer: AVAudioPCMBuffer) -> CGFloat {
+        guard let channelSamples = audioBuffer.floatChannelData?[0] else { return 0 }
         let frameCount = Int(audioBuffer.frameLength)
-        guard frameCount > 0 else { return }
-
+        guard frameCount > 0 else { return 0 }
         var summedSquares: Float = 0
         for sampleIndex in 0..<frameCount {
-            let sample = channelSamples[sampleIndex]
+            let sample = channelSamples[sampleIndex * audioBuffer.stride]
             summedSquares += sample * sample
         }
+        let rms = sqrt(summedSquares / Float(frameCount))
+        // Display only. No threshold, gain or voice gate is applied to recognition audio.
+        return CGFloat(min(max(rms * 10.2, 0), 1))
+    }
 
-        let rootMeanSquare = sqrt(summedSquares / Float(frameCount))
-        let boostedLevel = min(max(rootMeanSquare * 10.2, 0), 1)
-
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-
-            let smoothedAudioPowerLevel = max(
-                CGFloat(boostedLevel),
-                self.currentAudioPowerLevel * 0.72
-            )
-            self.currentAudioPowerLevel = smoothedAudioPowerLevel
-
-            let now = Date()
-            if now.timeIntervalSince(self.lastRecordedAudioPowerSampleDate)
-                >= Self.recordedAudioPowerHistorySampleIntervalSeconds {
-                self.lastRecordedAudioPowerSampleDate = now
-                self.appendRecordedAudioPowerSample(
-                    max(CGFloat(boostedLevel), Self.recordedAudioPowerHistoryBaselineLevel)
-                )
-            }
+    private func updateAudioPowerLevel(_ boostedLevel: CGFloat) {
+        currentAudioPowerLevel = max(boostedLevel, currentAudioPowerLevel * 0.72)
+        let now = Date()
+        if now.timeIntervalSince(lastRecordedAudioPowerSampleDate) >= Self.recordedAudioPowerHistorySampleIntervalSeconds {
+            lastRecordedAudioPowerSampleDate = now
+            appendRecordedAudioPowerSample(max(boostedLevel, Self.recordedAudioPowerHistoryBaselineLevel))
         }
     }
 

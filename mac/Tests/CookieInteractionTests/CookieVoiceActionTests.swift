@@ -1,3 +1,4 @@
+import EnkeonVoiceKit
 import AppKit
 import Combine
 
@@ -55,7 +56,7 @@ enum CookieVoiceActionTests {
         let flags: CGEventFlags = [.maskControl, .maskCommand]
         precondition(GlobalPushToTalkShortcutMonitor.dictationHeld(flags.rawValue))
         precondition(!GlobalPushToTalkShortcutMonitor.dictationHeld(CGEventFlags([.maskControl, .maskAlternate]).rawValue))
-        precondition(!GlobalPushToTalkShortcutMonitor.dictationHeld(CGEventFlags([.maskControl, .maskCommand, .maskAlternate]).rawValue))
+        precondition(GlobalPushToTalkShortcutMonitor.voiceChord(CGEventFlags([.maskControl, .maskCommand, .maskAlternate]).rawValue) == .edit, "⌥⌃⌘ edits by voice")
 
         let monitor = GlobalPushToTalkShortcutMonitor()
         var transitions: [String] = []

@@ -1,0 +1,118 @@
+Enkeon Voice: implementation audit and current model research
+As of 2026-10-31. Research only; no model routing or deployment changed.
+
+CONCLUSION
+There is no verified production SOTA stack in this repository. Existing code,
+previous experiments, and prospective replacements are three different things.
+Latest release dates and vendor benchmark wins do not establish our latency,
+faithfulness, memory retrieval quality, or multilingual user experience.
+
+SOURCE CONFIGURATION VERIFIED
+- App/Info.plist: VoiceTranscriptionProvider=apple. Optional Parakeet code exists.
+- SentenceCompleter.swift: gemma-3-1b-pt-Q4_K_M.gguf for continuation.
+- AppModel.swift: sentence proofreading invokes Apple's speech helper.
+- Explicit voice edits route to CloudVoiceEditor unless editor provider is apple.
+  CloudVoiceEditor.swift hardcodes gpt-6.1-terra and requires an API credential.
+  This is not self-hosting and does not prove an authenticated call succeeds.
+- Separate thinkingroot backend source configures gte-modernbert-base embeddings
+  (768 dimensions) and gte-reranker-modernbert-base reranking.
+- Installed app binary, runtime preferences and loaded weights were not audited.
+  These findings concern source configuration, not a claim all paths are active.
+
+PREVIOUS LOCAL EVIDENCE
+LFM2.5-2.6B Q4_K_M was tested, not integrated. In 18 synthetic text cases,
+median complete response was 5.514 seconds; visible-answer latency was 5.089
+seconds. One missing-memory case exhausted its budget, one rewrite invented a
+promise, and one French correction remained wrong. These are sufficient reasons
+not to approve that configuration, not a comprehensive ranking of the family.
+See MAC-TEXT-BENCHMARK-2026-10-31.txt and its raw JSON for reproducibility.
+
+SELF-HOSTED SPEECH CANDIDATES
+1. Qwen3-ASR-1.7B: 1.7B parameters, 30 languages plus 22 Chinese dialects.
+   Strong multilingual accuracy candidate; do not call this 52 languages.
+   https://huggingface.co/Qwen/Qwen3-ASR-1.7B
+   https://arxiv.org/abs/2601.21337
+2. Nemotron-3.5-ASR-Streaming-0.6B: native cache-aware streaming, 0.6B.
+   Its 40 language-locales have tiers: 19 transcription-ready, 13 broad coverage,
+   eight requiring adaptation. Only 32 are described as transcribing out of box.
+   Chunk latency is not end-to-end user latency. This is a particularly relevant
+   contender for fast live dictation, conditional on target-language testing.
+   https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b
+3. Nemotron-3.5-Transcribe-30B-A4B: released October 28. 30B total, 4B active;
+   active parameter count does not make its weight storage equivalent to 4B.
+   Worth a quality reference, not the assumed low-cost live dictation default.
+   https://research.nvidia.com/labs/nemotron/NVIDIA-Nemotron-3.5-Transcribe/
+4. Qwen-Audio-3.1-ASR: October 20 technical report, with streaming, hotwords,
+   contextual recognition and native polishing. Official integration links lead
+   to APIs; public downloadable weights were not verified in this research.
+   Do not conflate it with the downloadable older Qwen3-ASR checkpoints or
+   select it for self-hosting until weights and licensing are established.
+   https://arxiv.org/abs/2610.28711
+   https://qwenaudio.github.io/qwen-audio-3.1-asr/
+
+TEXT CANDIDATES
+First small-model challenger: NVIDIA Nemotron-3.5-Bolt-E4B, released October 23,
+8B total / 4B effective, derived from Gemma 4 E4B. Explicit thinking-disabled
+mode makes it worth testing after the LFM reasoning-delay failure. This is a
+benchmark nomination, not an accuracy or speed result on our hardware.
+https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16
+https://research.nvidia.com/labs/nemotron/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB/
+Compare with instruction-tuned Gemma 4 12B for rewrite quality versus memory
+and latency. Larger Qwen3.8-27B can be a quality reference if GPU time permits,
+not the presumed economical launch default. Vendor general-purpose scores
+do not measure faithful sentence correction or grounded autocomplete.
+https://blog.google/innovation-and-ai/technology/developers-tools/introducing-gemma-4-12b/
+https://huggingface.co/Qwen/Qwen3.8-27B
+
+INDEPENDENT AND COMMUNITY EVIDENCE
+Whisper Notes published its own approximately 150 clips/language FLEURS run
+on an M5 MacBook Air, updated October 17. Qwen3-ASR beat Whisper Turbo in some
+languages and lost substantially in others. English WER was 4.49 vs 5.49;
+Polish was 12.59 vs 5.45. These are read-speech results in that implementation,
+not Enkeon's accent, noisy dictation, silence or final-paste benchmarks.
+https://whispernotes.app/blog/qwen3-asr-vs-whisper
+The author's Reddit announcement was a discovery lead; the original report
+is the evidence and exposes more nuance than its social headline.
+https://www.reddit.com/r/WhisperNotes/comments/1wc8itp/
+
+Reddit reports about Qwen writing quality conflict; personal taste and prompts
+matter. Reports of high Nemotron Bolt throughput often concern the separate
+74B-A9B variant, not E4B. Do not transfer these numbers to our candidate.
+https://www.reddit.com/r/LocalLLaMA/comments/1x8i1h2/
+https://www.reddit.com/r/LocalLLaMA/comments/1vwumiu/
+https://www.reddit.com/r/LocalLLaMA/comments/1x7mig3/
+https://arxiv.org/abs/2610.33039
+Direct X searches did not yield verifiable posts useful for model qualification.
+Mirrored posts, reposts and marketing claims were not treated as benchmark proof.
+
+LEADERBOARD LIMITS
+HF Open ASR's live page did not expose readable current scores to this tool;
+no current number-one ranking is claimed. Artificial Analysis separates streaming
+and non-streaming speech: its non-streaming speed measurement on ten-minute
+audio does not establish latency for a short dictation command. ErrataBench
+measures seeded English proofreading errors; it does not qualify multilingual
+memory-grounded completions or preservation of names, dates and commitments.
+https://hf-audio-open-asr-leaderboard.hf.space/
+https://artificialanalysis.ai/speech-to-text/non-streaming
+https://revise.io/blog/best-ai-model-for-proofreading
+
+RECOMMENDED DECISION
+Keep two generation roles: speech recognition and a shared text model for
+correction, explicit rewriting and grounded sentence suggestions. Retain the
+existing embedding/reranker baseline pending retrieval evaluation. No separate
+humanizer model is justified yet. Keep fact-preserving correction distinct from
+optional style changes. A memory suggestion must be grounded in retrieved facts;
+missing or conflicting facts should result in no factual completion.
+
+Next benchmark: compare Qwen3-ASR-1.7B against Nemotron streaming 0.6B, and
+Bolt E4B thinking-disabled against Gemma 4 12B. Use pinned checkpoints and the
+same hardware/fixtures. Include accents, noise, silence, numbers, names,
+code-switching, commands, cancellations, wrong-person memory, stale/conflicting
+memory, prompt injection and meaning preservation. Measure first partial text,
+release-to-final text, complete rewrite latency, memory suggestion latency,
+peak memory, cold start, concurrency and cost. Judge writing blind where possible.
+
+The user's USD5 total monthly GPU research budget remains a constraint, not a
+claim these models can run continuously for USD5. No paid service, model download
+or deployment was initiated during this research. No zero-hallucination guarantee
+or production-ready claim is supported by the evidence so far.

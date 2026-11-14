@@ -1,3 +1,4 @@
+import EnkeonVoiceKit
 import Foundation
 import AppKit
 import SwiftUI
@@ -718,6 +719,10 @@ struct CookieInteractionCheckRunner {
         CookieSpeedTests.run()
         CookieTeachingTests.run()
         CookieVoiceActionTests.run()
+        CookieDictationFaceTests.run()
+        CookieWordsPagesTests.run()
+        CookieOneSetupTests.run()
+        CookieMeetingTests.run()
         CookieWorkspaceTests.run()
         var setupChecksFinished = false
         Task { @MainActor in
@@ -728,6 +733,7 @@ struct CookieInteractionCheckRunner {
             await CookieVoiceFlowTests.run()
             await CookieCreationTests.run()
             await CookieSenseTests.run()
+            await CookieDictationHostTests.run()
             setupChecksFinished = true
         }
         let deadline = Date().addingTimeInterval(60)

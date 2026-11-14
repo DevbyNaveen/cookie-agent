@@ -1,12 +1,28 @@
 //
 //  BuddyAudioConversionSupport.swift
-//  Cookie
+//  EnkeonVoiceKit (from Cookie, cookie-harness 8ffefde)
 //
 //  Shared audio conversion helpers for voice transcription providers.
 //
 
 import AVFoundation
 import Foundation
+
+extension AVAudioPCMBuffer {
+    func dictationCopy() -> AVAudioPCMBuffer? {
+        guard let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameLength) else { return nil }
+        copy.frameLength = frameLength
+        let source = UnsafeMutableAudioBufferListPointer(mutableAudioBufferList)
+        let destination = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
+        guard source.count == destination.count else { return nil }
+        for index in source.indices {
+            guard let src = source[index].mData, let dst = destination[index].mData,
+                  destination[index].mDataByteSize >= source[index].mDataByteSize else { return nil }
+            memcpy(dst, src, Int(source[index].mDataByteSize))
+        }
+        return copy
+    }
+}
 
 final class BuddyPCM16AudioConverter {
     private let targetAudioFormat: AVAudioFormat
@@ -59,6 +75,8 @@ final class BuddyPCM16AudioConverter {
         }
 
         guard conversionStatus != .error else { return nil }
+        // A resampler may buffer a small input while priming. This is not a conversion error.
+        guard outputBuffer.frameLength > 0 else { return Data() }
         guard let pcmDataPointer = outputBuffer.audioBufferList.pointee.mBuffers.mData else { return nil }
 
         let bytesPerFrame = Int(targetAudioFormat.streamDescription.pointee.mBytesPerFrame)

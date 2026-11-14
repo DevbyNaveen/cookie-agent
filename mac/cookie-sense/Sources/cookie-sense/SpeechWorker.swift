@@ -5,10 +5,10 @@
 //  Push-to-talk transcription with SpeechAnalyzer and SpeechTranscriber
 //  (macOS 26+), on this Mac: volatile results while the person talks, then
 //  `finalizeAndFinishThroughEndOfInput` when the key comes up, which
-//  finalizes what is still volatile. Audio arrives from Cookie as 16 kHz mono
-//  16-bit samples (Cookie holds the microphone) and is converted to the
+//  finalizes what is still volatile. Audio arrives from the app as 16 kHz mono
+//  16-bit samples (the app holds the microphone) and is converted to the
 //  analyzer's own best format here. On macOS 15, or a language without an
-//  installed model, it says it isn't available and Cookie uses its own
+//  installed model, it says it isn't available and the app uses its own
 //  recognizer.
 //
 
@@ -17,11 +17,11 @@ import Foundation
 import Speech
 
 final class SpeechWorker: @unchecked Sendable {
-    /// What Cookie sends: 16 kHz mono 16-bit little-endian PCM.
+    /// What the app sends: 16 kHz mono 16-bit little-endian PCM.
     static let inputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true)!
 
     private let lock = NSLock()
-    /// Sessions by the id Cookie gave `speech.start`; `Any` keeps the macOS 26 type out of the signature.
+    /// Sessions by the id the app gave `speech.start`; `Any` keeps the macOS 26 type out of the signature.
     private var sessions: [String: Any] = [:]
 
     func isAvailable() async -> Bool {
@@ -75,6 +75,7 @@ final class SpeechSession: @unchecked Sendable {
     /// Finalized text so far, and the volatile guess after it.
     private var finalized = ""
     private var volatile = ""
+    private var recognitionFailed = false
 
     /// The locale's transcriber when its model is installed; nil otherwise (installing it is asked
     /// for, so a later session can use it).
@@ -120,6 +121,7 @@ final class SpeechSession: @unchecked Sendable {
                     self?.take(String(result.text.characters), final: result.isFinal)
                 }
             } catch {
+                self?.lock.withLock { self?.recognitionFailed = true }
                 log("speech results ended: \(error)")
             }
         }
@@ -169,8 +171,15 @@ final class SpeechSession: @unchecked Sendable {
             try await analyzer.finalizeAndFinishThroughEndOfInput()
         } catch {
             log("speech finish: \(error)")
+            await cancel()
+            Wire.send(["id": id, "event": "error", "message": "Speech could not finish. Nothing was pasted."])
+            return
         }
         await results?.value
+        guard !lock.withLock({ recognitionFailed }) else {
+            Wire.send(["id": id, "event": "error", "message": "Speech was interrupted. Nothing was pasted."])
+            return
+        }
         let text = lock.withLock { finalized + volatile }
         Wire.send(["id": id, "event": "final", "text": text])
     }

@@ -72,6 +72,8 @@ final class CookieRecorder: ObservableObject {
 
     enum Phase: Equatable {
         case idle
+        /// On this Mac: the meeting model gets ready (about 630 MB, the first time only).
+        case preparing
         case recording(secs: Int, level: Double, micOnly: Bool)
         case stopping
         case transcribing
@@ -89,6 +91,9 @@ final class CookieRecorder: ObservableObject {
     private var micOnly = false
     private var refresher: Task<Void, Never>?
     private var poller: Task<Void, Never>?
+    /// On this Mac: Enkeon Voice's meeting engine (capture, Parakeet in cookie-sense, saved locally).
+    private var local: MeetingModel?
+    private var localTicker: Task<Void, Never>?
 
     private var helper: URL { Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/cookie-recorder") }
 
@@ -100,6 +105,7 @@ final class CookieRecorder: ObservableObject {
     }
 
     func start(title: String = "Meeting " + Date().formatted(date: .abbreviated, time: .shortened)) {
+        if MeetingTranscription.current() == .onDevice { return startOnDevice(title: title) }
         guard !isBusy else { return }
         Task {
             guard FileManager.default.isExecutableFile(atPath: helper.path) else { return fail("The recorder is missing from this build of Cookie.") }
@@ -152,14 +158,66 @@ final class CookieRecorder: ObservableObject {
     func stop() {
         guard case .recording = phase else { return }
         phase = .stopping
+        if let local, local.isActive { return stopOnDevice(local) }
         send("stop")
+    }
+
+    private func startOnDevice(title: String) {
+        guard !isBusy else { return }
+        let model = local ?? MeetingModel()
+        local = model
+        model.title = title
+        phase = .preparing
+        Task {
+            await model.start()
+            guard model.phase == .recording else {
+                phase = .failed(model.error ?? "The meeting couldn't start on this Mac.")
+                return
+            }
+            let started = Date()
+            localTicker?.cancel()
+            localTicker = Task { [weak self] in
+                while !Task.isCancelled, model.isActive {
+                    if case .recording = self?.phase {
+                        self?.phase = .recording(secs: Int(Date().timeIntervalSince(started)), level: 0, micOnly: !model.includeSystem)
+                    }
+                    try? await Task.sleep(for: .seconds(1))
+                }
+            }
+        }
+    }
+
+    /// Stops capture, waits for the last chunks to be transcribed on this Mac, then offers Keep.
+    private func stopOnDevice(_ model: MeetingModel) {
+        let id = model.activeID
+        Task {
+            await model.stop()
+            localTicker?.cancel()
+            phase = .transcribing
+            for _ in 0..<600 {
+                guard let record = model.records.first(where: { $0.id == id }), record.status == "processing" else { break }
+                try? await Task.sleep(for: .seconds(1))
+            }
+            guard let id, let record = model.records.first(where: { $0.id == id }) else {
+                phase = .failed(model.error ?? "The meeting's transcript wasn't saved.")
+                return
+            }
+            let transcript = record.transcript
+            readyPromises = MeetingPromises.extract(transcript)
+            readySummary = String(transcript.prefix(280))
+            let minutes = Int(((record.ended ?? Date()).timeIntervalSince(record.started)) / 60)
+            phase = .ready(meeting: "local:" + id.uuidString, summary: readySummary, promises: readyPromises.count, minutes: max(1, minutes))
+            CookieNotifications.shared.post(.reply, threadID: nil, title: "Meeting ready", body: "Transcribed on this Mac.", panelOpen: false)
+        }
     }
 
     /// Keep it in Enkeon (the summary and promises become context), or throw it away.
     func decide(keep: Bool) {
         guard case .ready(let meeting, _, _, _) = phase else { return }
         phase = .idle
-        Task { _ = await runHelper(["decide", "--meeting", meeting, keep ? "--keep" : "--discard"]) }
+        if !meeting.hasPrefix("local:") {
+            Task { _ = await runHelper(["decide", "--meeting", meeting, keep ? "--keep" : "--discard"]) }
+        }
         if keep { Self.rememberMeeting(summary: readySummary, promises: readyPromises) }
         readyPromises = []
         readySummary = ""
@@ -253,5 +311,39 @@ final class CookieRecorder: ObservableObject {
 
     private func fail(_ message: String) {
         phase = .failed(message)
+    }
+}
+
+/// Where meetings are transcribed: on this Mac (Parakeet, the default) or by Enkeon in the cloud
+/// (Amazon Transcribe, eu-central-1), when Settings → Privacy says so.
+enum MeetingTranscription: Equatable {
+    case onDevice, cloud
+    static let cloudKey = "cookie.meetings.cloud"
+    static func current(defaults: UserDefaults = .standard) -> MeetingTranscription {
+        defaults.bool(forKey: cloudKey) ? .cloud : .onDevice
+    }
+}
+
+/// Promises heard in a meeting transcribed on this Mac: sentences where someone commits to something.
+// ponytail: a phrase match on first-person commitments ("I'll", "we will", "let me"); the cloud path gets
+// Enkeon's model-made promises. Upgrade: ask Cookie's model for promises when one is configured.
+enum MeetingPromises {
+    private static let commitment = try! NSRegularExpression(
+        pattern: #"\b(I'll|I will|we'll|we will|I'm going to|I am going to|we're going to|let me)\b"#, options: [.caseInsensitive])
+
+    static func extract(_ transcript: String) -> [String] {
+        let sentences = transcript.split(whereSeparator: \.isNewline).flatMap { line -> [String] in
+            var out: [String] = [], current = ""
+            for character in line {
+                current.append(character)
+                if ".!?".contains(character) { out.append(current); current = "" }
+            }
+            if !current.isEmpty { out.append(current) }
+            return out
+        }
+        return sentences.map { $0.trimmingCharacters(in: .whitespaces) }.filter { sentence in
+            !sentence.hasSuffix("?") &&
+            commitment.firstMatch(in: sentence, range: NSRange(sentence.startIndex..., in: sentence)) != nil
+        }
     }
 }

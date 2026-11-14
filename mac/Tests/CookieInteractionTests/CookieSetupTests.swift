@@ -1,3 +1,4 @@
+import EnkeonVoiceKit
 import AppKit
 import SwiftUI
 
@@ -37,10 +38,10 @@ enum CookieSetupTests {
         progress.advance()
         progress.advance()
         let resumed = CookieSetupProgress(defaults: defaults)
-        precondition(resumed.step == .screen, "A restart must return to the permission step")
+        precondition(resumed.step == .shortcuts, "A restart must return to the permission step")
         resumed.back()
         precondition(CookieSetupProgress(defaults: defaults).step == .voice)
-        resumed.advance(); resumed.advance(); resumed.advance()
+        resumed.advance(); resumed.advance(); resumed.advance(); resumed.advance()
         precondition(!defaults.bool(forKey: CookieSetupProgress.completedKey), "Merely viewing Ready isn't completion")
         resumed.complete()
         precondition(defaults.bool(forKey: CookieSetupProgress.completedKey))
