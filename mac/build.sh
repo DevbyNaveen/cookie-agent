@@ -89,6 +89,17 @@ if [ -x "$SENSE" ]; then
 else
   echo "note: $SENSE is missing; screen reading stays in-process"
 fi
+# Ears for dictation: enkeon-sense (voice/Helpers/enkeon-sense), until it and cookie-sense are one helper.
+if [ -z "$ENKEON_SENSE_BIN" ] && SENSE_SDK=$(scripts/sdk.sh sense); then
+  (cd voice/Helpers/enkeon-sense && SDKROOT="$SENSE_SDK" swift build -c release --build-system native)
+fi
+VOICE_SENSE="${ENKEON_SENSE_BIN:-voice/Helpers/enkeon-sense/.build/release/enkeon-sense}"
+if [ -x "$VOICE_SENSE" ]; then
+  cp "$VOICE_SENSE" "$APP/Contents/Helpers/enkeon-sense"
+  codesign --force --options runtime $TIMESTAMP --identifier com.enkeon.cookie.voice-sense --sign "$SIGN_ID" "$APP/Contents/Helpers/enkeon-sense"
+else
+  echo "note: $VOICE_SENSE is missing; dictation uses SFSpeechRecognizer"
+fi
 # Research and decks: the bundled Python (scripts/bundle-python.sh) running cookie-py,
 # every Mach-O signed inside-out before the app seals it (no entitlements needed, measured).
 if [ -d vendor/python ]; then

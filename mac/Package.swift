@@ -10,6 +10,7 @@ let package = Package(
         .target(name: "EnkeonVoiceKit", path: "voice/Sources/EnkeonVoiceKit"),
         .executableTarget(
             name: "Cookie",
+            dependencies: ["EnkeonVoiceKit"],
             path: "Cookie",
             exclude: [
                 "Info.plist", "Cookie.entitlements", "Assets.xcassets",

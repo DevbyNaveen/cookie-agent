@@ -15,10 +15,21 @@ executable = output_directory / "cookie-interaction-checks"
 # The same SDK build.sh picks (scripts/sdk.sh says why); empty means Xcode's default.
 sdk = subprocess.run([str(project_directory / "scripts" / "sdk.sh"), "app"], check=True, capture_output=True, text=True).stdout.strip()
 architecture = subprocess.run(["uname", "-m"], check=True, capture_output=True, text=True).stdout.strip()
-subprocess.run([
-    "swiftc", *(["-sdk", sdk] if sdk else []),
+common = [
+    *(["-sdk", sdk] if sdk else []),
     "-target", f"{architecture}-apple-macosx15.0", "-swift-version", "5",
     "-module-cache-path", str(output_directory / "module-cache"),
+]
+# Enkeon dictation (voice/Sources/EnkeonVoiceKit) is its own module, as in the SwiftPM build.
+subprocess.run([
+    "swiftc", *common, "-parse-as-library", "-emit-library", "-static", "-emit-module",
+    "-module-name", "EnkeonVoiceKit", "-emit-module-path", str(output_directory / "EnkeonVoiceKit.swiftmodule"),
+    *map(str, sorted((project_directory / "voice" / "Sources" / "EnkeonVoiceKit").glob("*.swift"))),
+    "-o", str(output_directory / "libEnkeonVoiceKit.a"),
+], check=True)
+subprocess.run([
+    "swiftc", *common,
+    "-I", str(output_directory), "-L", str(output_directory), "-lEnkeonVoiceKit",
     *map(str, source_files),
     *map(str, sorted((project_directory / "Tests" / "CookieInteractionTests").glob("*.swift"))),
     "-o", str(executable),

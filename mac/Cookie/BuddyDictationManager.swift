@@ -7,6 +7,7 @@
 //  transcription provider, and hands the final draft back to the active input bar.
 //
 
+import EnkeonVoiceKit
 import AppKit
 import AVFoundation
 import Combine

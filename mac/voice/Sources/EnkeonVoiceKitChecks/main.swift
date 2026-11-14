@@ -6,6 +6,17 @@ import Combine
 @testable import EnkeonVoiceKit
 
 @MainActor
+func checkPartialTranscripts() {
+    // Cookie's conversation mode ends a turn on live words; only Apple Speech streams them.
+    let apple: any BuddyTranscriptionProvider = AppleSpeechTranscriptionProvider()
+    let openAI: any BuddyTranscriptionProvider = OpenAIAudioTranscriptionProvider()
+    let parakeet: any BuddyTranscriptionProvider = ParakeetTranscriptionProvider()
+    precondition(apple.supportsPartialTranscripts)
+    precondition(!openAI.supportsPartialTranscripts, "OpenAI uploads on release: no live words")
+    precondition(!parakeet.supportsPartialTranscripts)
+}
+
+@MainActor
 func checkDictationText() {
     precondition(DictationText.isUndo("Scratch that."))
     precondition(!DictationText.isUndo("Please write scratch that on the page"))
@@ -664,6 +675,7 @@ await MainActor.run {
     checkCleanupGuard()
     checkEnkeonParsing()
     checkDictationText()
+    checkPartialTranscripts()
     checkTextDestination()
     checkDictationChord()
     checkFnChord()

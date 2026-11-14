@@ -8,7 +8,7 @@
 import AVFoundation
 import Foundation
 
-protocol BuddyStreamingTranscriptionSession: AnyObject {
+public protocol BuddyStreamingTranscriptionSession: AnyObject {
     var finalTranscriptFallbackDelaySeconds: TimeInterval { get }
     var requiresConfirmedFinal: Bool { get }
     func appendAudioBuffer(_ audioBuffer: AVAudioPCMBuffer)
@@ -17,11 +17,13 @@ protocol BuddyStreamingTranscriptionSession: AnyObject {
 }
 
 extension BuddyStreamingTranscriptionSession {
-    var requiresConfirmedFinal: Bool { true }
+    public var requiresConfirmedFinal: Bool { true }
 }
 
-protocol BuddyTranscriptionProvider {
+public protocol BuddyTranscriptionProvider {
     var displayName: String { get }
+    /// Live words while the person speaks (Cookie's conversation mode ends turns on them).
+    var supportsPartialTranscripts: Bool { get }
     var requiresSpeechRecognitionPermission: Bool { get }
     var isConfigured: Bool { get }
     var unavailableExplanation: String? { get }
@@ -34,14 +36,18 @@ protocol BuddyTranscriptionProvider {
     ) async throws -> any BuddyStreamingTranscriptionSession
 }
 
-enum BuddyTranscriptionProviderFactory {
+extension BuddyTranscriptionProvider {
+    public var supportsPartialTranscripts: Bool { false }
+}
+
+public enum BuddyTranscriptionProviderFactory {
     private enum PreferredProvider: String {
         case openAI = "openai"
         case appleSpeech = "apple"
         case parakeet = "parakeet"
     }
 
-    static func makeDefaultProvider() -> any BuddyTranscriptionProvider {
+    public static func makeDefaultProvider() -> any BuddyTranscriptionProvider {
         let provider = resolveProvider()
         print("🎙️ Transcription: using \(provider.displayName)")
         return provider
