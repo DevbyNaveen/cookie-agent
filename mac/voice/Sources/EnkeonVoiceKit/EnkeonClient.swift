@@ -12,6 +12,8 @@ import Foundation
 @MainActor
 public final class EnkeonClient {
     public static let shared = EnkeonClient()
+    /// Whose sign-in the requests carry. Unset: Enkeon's own account (the standalone app); Cookie sets its own.
+    public var tokenSource: (() async -> String?)?
     public static let memoryDidChange = Notification.Name("EnkeonMemoryDidChange")
     private var session: String?
     private var next = 1
@@ -259,7 +261,9 @@ public final class EnkeonClient {
     }
 
     private func post(_ message: [String: Any]) async throws -> (Int, [String: Any]) {
-        guard let token = await EnkeonAccount.shared.accessToken() else { throw Failure(message: "Not signed in to Enkeon") }
+        let signedIn: String?
+        if let tokenSource { signedIn = await tokenSource() } else { signedIn = await EnkeonAccount.shared.accessToken() }
+        guard let token = signedIn else { throw Failure(message: "Not signed in to Enkeon") }
         var request = URLRequest(url: EnkeonAccount.issuer.appendingPathComponent("mcp"))
         request.httpMethod = "POST"
         request.timeoutInterval = 30
