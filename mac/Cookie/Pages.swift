@@ -217,7 +217,8 @@ struct StylesView: View {
     @State private var group: AppModel.StyleGroup = .messages
 
     var body: some View {
-        PageColumn {
+        // Cookie's console is shorter than Voice's window: the style cards scroll.
+        ScrollView { PageColumn {
             PageTitle(title: "Styles") {
                 HStack(spacing: 10) {
                     Text("Clean-up").font(.system(size: 13)).foregroundStyle(Theme.secondary)
@@ -243,7 +244,7 @@ struct StylesView: View {
             .disabled(!cleanupOn)
             .opacity(cleanupOn ? 1 : 0.5)
             Spacer(minLength: 0)
-        }
+        } }
     }
 
     private var groupIcon: String {
