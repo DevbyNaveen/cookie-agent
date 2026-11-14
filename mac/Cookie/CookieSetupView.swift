@@ -1,3 +1,4 @@
+import EnkeonVoiceKit
 import SwiftUI
 
 struct CookieSetupView: View {
@@ -126,7 +127,8 @@ struct CookieSetupContent: View {
         case .welcome: return "Welcome to Cookie"
         case .voice: return "Your voice, when you choose."
         case .screen: return "Less explaining. More context."
-        case .shortcuts: return "One small shortcut."
+        case .shortcuts: return "One key for your voice."
+        case .practice: return "Say a sentence."
         case .ready: return "Make room for your next idea."
         }
     }
@@ -136,7 +138,8 @@ struct CookieSetupContent: View {
         case .welcome: return ""
         case .voice: return "Hold to talk. Release to send. You can always type instead."
         case .screen: return "Let Cookie see what you’re asking about. Screen access is optional."
-        case .shortcuts: return "Reach Cookie from any app, without breaking your flow."
+        case .shortcuts: return "Hold fn to write where you are. Add Option to talk to Cookie."
+        case .practice: return "Click the field, hold fn, speak, let go. Your words appear here, typed on this Mac."
         case .ready: return "Your choices are saved. You can change them anytime in Settings."
         }
     }
@@ -196,17 +199,22 @@ struct CookieSetupContent: View {
         case .shortcuts:
             HStack(spacing: 14) {
                 HStack(spacing: 6) {
-                    shortcutKey("⌃", name: "Control")
-                    shortcutKey("⌥", name: "Option")
+                    shortcutKey("fn", name: "Write")
+                    shortcutKey("⌥", name: "Talk")
                 }
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Hold both to talk").font(.system(size: 13, weight: .semibold))
-                    Text("Drag while holding to circle something.").font(.system(size: 11)).foregroundStyle(CK.secondary)
+                    Text("Hold fn to dictate; fn and Option to talk").font(.system(size: 13, weight: .semibold))
+                    Text("Add Control to edit by voice, Shift to keep it in memory.").font(.system(size: 11)).foregroundStyle(CK.secondary)
                 }
                 Spacer(minLength: 0)
             }
             permissionGroup(permissions.shortcutPermissions)
             note("cursorarrow", "Prefer clicking? The talk button and typing work without a global shortcut.")
+        case .practice:
+            PracticeField(words: CookieDictation.shared.words)
+            if let conflict = GlobalPushToTalkShortcutMonitor.globeKeyConflict() {
+                note("globe", conflict)
+            }
         case .ready:
             VStack(spacing: 0) {
                 readinessRow("mic", title: "Talk to Cookie", ready: permissions.voiceReady)
@@ -342,5 +350,16 @@ private struct CookieSetupButtonStyle: ButtonStyle {
             .overlay(Capsule().strokeBorder(CK.hairline))
             .opacity(!enabled ? 0.45 : configuration.isPressed ? 0.75 : 1)
             .onHover { hovering = $0 }
+    }
+}
+
+/// Setup's practice: dictation into Cookie's own window lands here (AppModel.practiceText).
+private struct PracticeField: View {
+    @ObservedObject var words: AppModel
+    var body: some View {
+        TextEditor(text: $words.practiceText)
+            .font(.system(size: 13)).scrollContentBackground(.hidden)
+            .frame(height: 96).padding(10).cookieCard()
+            .accessibilityLabel("Practice field")
     }
 }

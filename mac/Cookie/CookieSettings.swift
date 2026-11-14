@@ -7,6 +7,7 @@
 //  what it says today; nothing is a placeholder that pretends to work.
 //
 
+import EnkeonVoiceKit
 import AVFoundation
 import ServiceManagement
 import SwiftUI
@@ -335,8 +336,10 @@ private struct PermissionsPage: View {
 }
 
 private struct VoicePage: View {
-    @AppStorage(CookieDictationText.vocabularyKey) private var vocabulary = ""
     @ObservedObject var companionManager: CompanionManager
+    @AppStorage(BuddyTranscriptionProviderFactory.speechProviderKey) private var speechEngine = "apple"
+    @AppStorage(CookieDictation.editorProviderKey) private var editor = "anthropic"
+    @AppStorage(AppModel.completeKey) private var pen = true
 
     var body: some View {
         ModelSettings()
@@ -348,13 +351,26 @@ private struct VoicePage: View {
             }
         }
         SettingsGroup(label: "Dictation") {
-            SettingsRow(title: "Write where you are", caption: "Hold Control–Command, speak, then release. Say “scratch that” to undo the last verified insertion. Password fields are excluded.") { EmptyView() }
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Personal vocabulary").font(.system(size: 12, weight: .medium))
-                Text("One name or term per line, up to 100. Passed as recognition hints when supported by your speech provider.").font(.system(size: 11)).foregroundStyle(CK.secondary)
-                TextEditor(text: $vocabulary).frame(height: 90).font(.system(size: 12))
-                    .onChange(of: vocabulary) { _, value in if value.count > 8_000 { vocabulary = String(value.prefix(8_000)) } }
-            }.padding(12)
+            SettingsRow(title: "Write where you are", caption: "Hold fn, speak, let go. Say “scratch that” to undo the last verified insertion. Names and terms live in Your words → Dictionary.") { EmptyView() }
+            SettingsRow(title: "Speech engine", caption: speechEngine == "parakeet"
+                        ? "Parakeet downloads about 630 MB the first time, then runs on this Mac. Applies the next time Cookie opens."
+                        : "Apple's on-device speech. Your voice stays on this Mac. Applies the next time Cookie opens.") {
+                Picker("Speech engine", selection: $speechEngine) {
+                    Text("Apple").tag("apple")
+                    Text("Parakeet").tag("parakeet")
+                }.labelsHidden().fixedSize()
+            }
+            SettingsRow(title: "Edit by voice with", caption: editor == "apple"
+                        ? "Apple Intelligence, on this Mac."
+                        : "Claude Haiku 4.5, with your Anthropic key from Account. Only the text and your instruction are sent.") {
+                Picker("Editor", selection: $editor) {
+                    Text("Claude Haiku 4.5 · cloud").tag("anthropic")
+                    Text("Apple · on device").tag("apple")
+                }.labelsHidden().fixedSize()
+            }
+            SettingsRow(title: "Pen", caption: "Offers the rest of your sentence, faded at the text cursor. Tab types it.", divider: false) {
+                SettingsSwitch(title: "Pen", isOn: $pen)
+            }
         }
         SettingsGroup(label: "Speaking") {
             CredentialRow(field: CookieModelSettings.elevenLabsField, title: "ElevenLabs key",
@@ -578,13 +594,31 @@ private struct ShortcutsPage: View {
 
     var body: some View {
         SettingsGroup {
-            SettingsRow(title: "Talk", caption: "Hold, speak, let go. Cookie chooses text, screen help, a visual lesson, or connected work.") {
+            if let conflict = GlobalPushToTalkShortcutMonitor.globeKeyConflict() {
+                SettingsRow(title: "Your 🌐 key", caption: conflict) {
+                    PillButton(title: "Keyboard settings", symbol: "arrow.up.forward") {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!)
+                    }
+                }
+            }
+            SettingsRow(title: "Talk to Cookie", caption: "Hold fn and Option, speak, let go. Cookie chooses text, screen help, a visual lesson, or connected work. Control–Option still works.") {
                 HStack(spacing: 6) { Text("Hold").font(.system(size: 11)).foregroundStyle(CK.tertiary); TalkKeys() }
             }
-            SettingsRow(title: "Dictate", caption: "Hold, speak, release to write in the focused text field. No model round trip.") {
-                HStack(spacing: 3) { KeyCap(label: "ctrl"); KeyCap(label: "cmd") }
+            SettingsRow(title: "Dictate", caption: "Hold, speak, let go: your words are typed where you are, on this Mac. Fn+Space keeps listening hands-free. Keyboards without fn: hold Control–Command.") {
+                HStack(spacing: 3) { KeyCap(label: "fn") }
             }
-            SettingsRow(title: "Rewrite selection", caption: "Select text in an app, hold Control–Option and say shorter, friendlier, translate, or turn into an email.") { EmptyView() }
+            SettingsRow(title: "Edit by voice", caption: "Select text (or none, for the whole message), hold Control then fn and say shorter, friendlier, translate. Without fn: Option–Control–Command.") {
+                HStack(spacing: 3) { KeyCap(label: "⌃"); KeyCap(label: "fn") }
+            }
+            SettingsRow(title: "Keep in memory", caption: "Hold Shift with fn: what you say goes to your Enkeon memory, not into the field.") {
+                HStack(spacing: 3) { KeyCap(label: "⇧"); KeyCap(label: "fn") }
+            }
+            SettingsRow(title: "Conversation", caption: "Tap Option–Command on their own: Cookie listens, answers and listens again until you tap them again or say “stop conversation”.") {
+                HStack(spacing: 3) { KeyCap(label: "⌥"); KeyCap(label: "⌘") }
+            }
+            SettingsRow(title: "Copy or paste the last result", caption: "When a dictation couldn't be typed, it waits in the notch too.") {
+                HStack(spacing: 3) { KeyCap(label: "⌃"); KeyCap(label: "⌘"); KeyCap(label: "C / V") }
+            }
             SettingsRow(title: "Open Cookie", caption: "Click the notch.") {
                 Image(systemName: "rectangle.topthird.inset.filled").foregroundStyle(CK.secondary)
             }

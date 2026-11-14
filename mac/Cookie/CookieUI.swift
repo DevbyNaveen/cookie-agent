@@ -154,7 +154,7 @@ struct KeyCap: View {
 
 struct TalkKeys: View {
     var body: some View {
-        HStack(spacing: 3) { KeyCap(label: "⌃"); KeyCap(label: "⌥") }
+        HStack(spacing: 3) { KeyCap(label: "fn"); KeyCap(label: "⌥") }
     }
 }
 

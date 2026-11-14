@@ -53,13 +53,22 @@ public enum BuddyTranscriptionProviderFactory {
         return provider
     }
 
+    /// Settings → Voice → Speech engine ("apple", "parakeet", "openai"). Read at launch.
+    public static let speechProviderKey = "enkeon.speech.provider"
+
+    /// Settings' choice, else the bundle's `VoiceTranscriptionProvider`, else Apple. Unknown means Apple.
+    static func preferredName() -> String {
+        preferredName(defaults: .standard, bundleValue: AppBundleConfiguration.stringValue(forKey: "VoiceTranscriptionProvider"))
+    }
+    public static func preferredName(defaults: UserDefaults, bundleValue: String?) -> String {
+        let chosen = (defaults.string(forKey: speechProviderKey) ?? bundleValue)?.lowercased()
+        return chosen.flatMap(PreferredProvider.init(rawValue:))?.rawValue ?? PreferredProvider.appleSpeech.rawValue
+    }
+
     /// Apple Speech, on this Mac, unless OpenAI was explicitly chosen and has a key. Unlike Cookie,
     /// a key being present is not consent: voice leaves the Mac only when the person picked it.
     private static func resolveProvider() -> any BuddyTranscriptionProvider {
-        let preferredProviderRawValue = AppBundleConfiguration
-            .stringValue(forKey: "VoiceTranscriptionProvider")?
-            .lowercased()
-        let preferredProvider = preferredProviderRawValue.flatMap(PreferredProvider.init(rawValue:))
+        let preferredProvider = PreferredProvider(rawValue: preferredName())
         if preferredProvider == .parakeet { return ParakeetTranscriptionProvider() }
         if preferredProvider == .openAI {
             return OpenAIAudioTranscriptionProvider()
