@@ -1,3 +1,4 @@
+import EnkeonVoiceKit
 import Foundation
 import AppKit
 import SwiftUI

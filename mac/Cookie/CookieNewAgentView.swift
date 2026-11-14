@@ -59,7 +59,7 @@ struct CookieNewAgentView: View {
         }
         .onReceive(companionManager.globalPushToTalkShortcutMonitor.cancellationPublisher) { _ in stop() }
         .onReceive(companionManager.globalPushToTalkShortcutMonitor.shortcutTransitionPublisher) { transition in
-            if transition == .pressed { session.stop() }
+            if transition == .pressed && !companionManager.globalPushToTalkShortcutMonitor.isDictationShortcut { session.stop() }
         }
     }
 

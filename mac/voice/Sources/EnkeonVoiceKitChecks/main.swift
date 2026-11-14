@@ -112,28 +112,73 @@ func checkFnChord() {
     precondition(GlobalPushToTalkShortcutMonitor.chord(CGEventFlags([.maskSecondaryFn, .maskCommand]).rawValue) == nil, "Fn⌘ is not dictation")
     precondition(GlobalPushToTalkShortcutMonitor.chord(CGEventFlags([.maskControl, .maskCommand]).rawValue) == .controlCommand)
 
-    // Ask is explicit, stays latched through either release order, and resets next time.
-    for remaining: CGEventFlags in [[.maskSecondaryFn], [.maskAlternate]] {
-        let askMonitor = GlobalPushToTalkShortcutMonitor()
-        let askEvent = CGEvent(source: nil)!
-        askEvent.flags = [.maskSecondaryFn, .maskAlternate]
-        _ = askMonitor.handleGlobalEventTap(eventType: .flagsChanged, event: askEvent)
-        askMonitor.confirmDictation(held: true)
-        precondition(askMonitor.askRequested && !askMonitor.editRequested && !askMonitor.memoryRequested)
-        askEvent.flags = remaining
-        _ = askMonitor.handleGlobalEventTap(eventType: .flagsChanged, event: askEvent)
-        precondition(askMonitor.askRequested, "release order must not turn Ask into dictation")
-        askEvent.flags = []
-        _ = askMonitor.handleGlobalEventTap(eventType: .flagsChanged, event: askEvent)
-        askEvent.flags = [.maskSecondaryFn]
-        _ = askMonitor.handleGlobalEventTap(eventType: .flagsChanged, event: askEvent)
-        askMonitor.confirmDictation(held: true)
-        precondition(!askMonitor.askRequested)
-        askEvent.flags = [.maskSecondaryFn, .maskAlternate]
-        _ = askMonitor.handleGlobalEventTap(eventType: .flagsChanged, event: askEvent)
-        precondition(!askMonitor.isShortcutCurrentlyPressed, "late Option cancels instead of typing a question")
-        askMonitor.stop()
+    // The one keyboard: what each chord does (Settings shows this table).
+    typealias M = GlobalPushToTalkShortcutMonitor
+    precondition(M.voiceChord(fn.rawValue) == .dictate)
+    precondition(M.voiceChord(CGEventFlags([.maskSecondaryFn, .maskControl]).rawValue) == .edit)
+    precondition(M.voiceChord(CGEventFlags([.maskSecondaryFn, .maskShift]).rawValue) == .memory)
+    precondition(M.voiceChord(CGEventFlags([.maskSecondaryFn, .maskAlternate]).rawValue) == .talk)
+    precondition(M.voiceChord(CGEventFlags([.maskControl, .maskAlternate]).rawValue) == .talk, "⌃⌥: Cookie's old chord, kept")
+    precondition(M.voiceChord(CGEventFlags([.maskControl, .maskCommand]).rawValue) == .dictate, "⌃⌘: dictation without Fn")
+    precondition(M.voiceChord(CGEventFlags([.maskControl, .maskCommand, .maskAlternate]).rawValue) == .edit, "⌥⌃⌘ edits, never talks")
+    precondition(M.voiceChord(CGEventFlags([.maskAlternate, .maskCommand]).rawValue) == nil, "⌥⌘ is conversation, not a voice chord")
+    precondition(M.chord(CGEventFlags([.maskSecondaryFn, .maskAlternate]).rawValue) == nil, "Fn+⌥ is never dictation")
+    precondition(M.hoverHeld(CGEventFlags([.maskAlternate, .maskShift]).rawValue))
+    precondition(!M.hoverHeld(CGEventFlags([.maskAlternate, .maskShift, .maskControl]).rawValue))
+    precondition(!M.hoverHeld(CGEventFlags([.maskAlternate, .maskShift, .maskSecondaryFn]).rawValue), "Fn+⌥⇧ is talk, not hover")
+    // macOS's 🌐 setting fights holding Fn unless it is Do Nothing.
+    precondition(M.globeKeyConflict(usage: 0) == nil)
+    precondition(M.globeKeyConflict(usage: 3)?.contains("Apple's dictation") == true)
+    precondition(M.globeKeyConflict(usage: 2)?.contains("Do Nothing") == true)
+    precondition(M.globeKeyConflict(usage: nil) != nil, "the factory setting is not Do Nothing")
+
+    // Fn+⌥ is Talk to Cookie: a talk press, not a dictation; ⌥ arriving after Fn turns it into talk too.
+    for order: [CGEventFlags] in [[[.maskSecondaryFn, .maskAlternate]], [[.maskSecondaryFn], [.maskSecondaryFn, .maskAlternate]]] {
+        let talk = GlobalPushToTalkShortcutMonitor()
+        var seen: [String] = []
+        let sink = talk.shortcutTransitionPublisher.sink { if $0 == .pressed { seen.append("down") } else if $0 == .released { seen.append("up") } }
+        let e = CGEvent(source: nil)!
+        for step in order { e.flags = step; _ = talk.handleGlobalEventTap(eventType: .flagsChanged, event: e) }
+        talk.confirmDictation(held: true)
+        precondition(seen == ["down"] && !talk.isDictationShortcut, "Fn+⌥ talks to Cookie")
+        e.flags = []
+        _ = talk.handleGlobalEventTap(eventType: .flagsChanged, event: e)
+        precondition(seen == ["down", "up"])
+        sink.cancel(); talk.stop()
     }
+    // ⌥ added after a dictation started: nothing is typed (the words were meant for Cookie).
+    let late = GlobalPushToTalkShortcutMonitor()
+    var lateCancelled = 0
+    let lateSink = late.lateEditModifierPublisher.sink { lateCancelled += 1 }
+    let lateEvent = CGEvent(source: nil)!
+    lateEvent.flags = fn
+    _ = late.handleGlobalEventTap(eventType: .flagsChanged, event: lateEvent)
+    late.confirmDictation(held: true)
+    lateEvent.flags = [.maskSecondaryFn, .maskAlternate]
+    _ = late.handleGlobalEventTap(eventType: .flagsChanged, event: lateEvent)
+    precondition(lateCancelled == 1 && !late.isShortcutCurrentlyPressed, "late Option cancels instead of typing")
+    lateSink.cancel(); late.stop()
+
+    // ⌥⌘ tapped alone toggles conversation; ⌥⌘ with a key, or ⌥⌃⌘, does not.
+    let convo = GlobalPushToTalkShortcutMonitor()
+    var toggles = 0
+    let convoSink = convo.conversationTogglePublisher.sink { toggles += 1 }
+    let c = CGEvent(source: nil)!
+    c.flags = [.maskAlternate, .maskCommand]; _ = convo.handleGlobalEventTap(eventType: .flagsChanged, event: c)
+    c.flags = []; _ = convo.handleGlobalEventTap(eventType: .flagsChanged, event: c)
+    precondition(toggles == 1, "a ⌥⌘ tap toggles conversation")
+    c.flags = [.maskAlternate, .maskCommand]; _ = convo.handleGlobalEventTap(eventType: .flagsChanged, event: c)
+    let letterA = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)!
+    letterA.flags = [.maskAlternate, .maskCommand]; _ = convo.handleGlobalEventTap(eventType: .keyDown, event: letterA)
+    c.flags = []; _ = convo.handleGlobalEventTap(eventType: .flagsChanged, event: c)
+    precondition(toggles == 1, "⌥⌘A is a Mac shortcut")
+    c.flags = [.maskControl, .maskCommand]; _ = convo.handleGlobalEventTap(eventType: .flagsChanged, event: c)
+    c.flags = [.maskControl, .maskCommand, .maskAlternate]; _ = convo.handleGlobalEventTap(eventType: .flagsChanged, event: c)
+    convo.confirmDictation(held: true)
+    precondition(convo.isDictationShortcut && convo.editRequested && toggles == 1, "⌥⌃⌘ edits and never toggles")
+    c.flags = []; _ = convo.handleGlobalEventTap(eventType: .flagsChanged, event: c)
+    precondition(toggles == 1)
+    convoSink.cancel(); convo.stop()
     let monitor = GlobalPushToTalkShortcutMonitor()
     var transitions: [String] = []
     let listener = monitor.shortcutTransitionPublisher.sink { transition in

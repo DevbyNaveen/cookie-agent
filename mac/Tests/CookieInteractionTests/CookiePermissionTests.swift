@@ -1,3 +1,4 @@
+import EnkeonVoiceKit
 import Foundation
 
 /// The screen-recording permission prompt: macOS shows its own prompt once,

@@ -259,7 +259,8 @@ final class CompanionManager: ObservableObject {
     @Published var isSetupPresented = false
     let buddyDictationManager = BuddyDictationManager()
     lazy var permissionCenter = CookiePermissionCenter(requiresSpeechRecognition: buddyDictationManager.requiresSpeechRecognitionPermission)
-    let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
+    /// The one keyboard tap, owned by Enkeon dictation.
+    var globalPushToTalkShortcutMonitor: GlobalPushToTalkShortcutMonitor { CookieDictation.shared.controller.shortcuts }
     let overlayWindowManager = OverlayWindowManager()
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
@@ -549,7 +550,7 @@ final class CompanionManager: ObservableObject {
     func stop() {
         cancelCurrentInteraction()
         circleSelect.tearDown()
-        globalPushToTalkShortcutMonitor.stop()
+        CookieDictation.shared.stop()
         buddyDictationManager.cancelCurrentDictation()
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
@@ -578,10 +579,10 @@ final class CompanionManager: ObservableObject {
         hasAccessibilityPermission = currentlyHasAccessibility
 
         if permissionCenter.shortcutsReady && hasCompletedOnboarding && !isSetupPresented {
-            globalPushToTalkShortcutMonitor.start()
+            CookieDictation.shared.start()
         } else {
             if isConversationMode { cancelCurrentInteraction() }
-            globalPushToTalkShortcutMonitor.stop()
+            CookieDictation.shared.stop()
             // A live tap after Accessibility is revoked can freeze input; drop it.
             if previouslyHadAccessibility { circleSelect.tearDown() }
         }
@@ -705,10 +706,12 @@ final class CompanionManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] transition in
                 guard let self else { return }
-                if self.isConversationMode {
-                    if self.globalPushToTalkShortcutMonitor.isDictationShortcut { self.cancelCurrentInteraction() }
-                    else { return }
+                // Dictation chords (Fn, ⌃⌘) are Enkeon dictation's: it types; Cookie only steps aside.
+                if self.globalPushToTalkShortcutMonitor.isDictationShortcut {
+                    if self.isConversationMode { self.cancelCurrentInteraction() }
+                    return
                 }
+                if self.isConversationMode { return }
                 self.handleShortcutTransition(transition)
             }
         hoverShortcutCancellable = globalPushToTalkShortcutMonitor.hoverShortcutPublisher

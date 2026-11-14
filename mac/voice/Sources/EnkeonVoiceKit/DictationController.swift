@@ -118,7 +118,8 @@ public final class DictationController: ObservableObject {
     public var shortcutIsLive: Bool { shortcuts.isRunning }
 
     private let dictation = BuddyDictationManager()
-    private let shortcuts = GlobalPushToTalkShortcutMonitor()
+    /// The one keyboard tap in the process. Cookie listens here for Talk, hover and conversation.
+    public let shortcuts = GlobalPushToTalkShortcutMonitor()
     private var cancellables: Set<AnyCancellable> = []
     private var interaction = UUID()
     private var startTask: Task<Void, Never>?
@@ -186,7 +187,7 @@ public final class DictationController: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in
                 self?.cancel()
-                self?.show("Hold Option before Fn to ask, or Control before Fn to edit. Nothing was typed.", success: false)
+                self?.show("Fn with Option talks to Cookie; hold Control before Fn to edit. Nothing was typed.", success: false)
             }
             .store(in: &cancellables)
         shortcuts.recoveryPublisher
@@ -286,7 +287,7 @@ public final class DictationController: ObservableObject {
             show("Dictation is off in password fields and private apps.", success: false)
             return
         }
-        isAskingMemory = askingMemory || (!handsFree && shortcuts.askRequested)
+        isAskingMemory = askingMemory
         isEditing = !handsFree && shortcuts.editRequested
         editScope = nil
         editPlan = nil

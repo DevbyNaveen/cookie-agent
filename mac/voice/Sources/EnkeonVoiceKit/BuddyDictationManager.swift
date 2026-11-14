@@ -97,8 +97,15 @@ public enum BuddyPushToTalkShortcut {
     public static let pushToTalkDisplayText = currentShortcutOption.displayText
     static let pushToTalkTooltipText = "push to talk (\(pushToTalkDisplayText))"
 
+    /// Talk to Cookie: Fn+⌥, or ⌃⌥ (Cookie's chord before Fn joined; kept as an alias). Never with ⌘:
+    /// ⌥⌃⌘ is editing and ⌥⌘ is conversation.
+    public static func talkHeld(_ flags: NSEvent.ModifierFlags) -> Bool {
+        guard !flags.contains(.command) else { return false }
+        return flags.contains([.function, .option]) || flags.contains([.control, .option])
+    }
     public static func isHeld(modifierFlagsRawValue: UInt64, spacePressed: Bool = false) -> Bool {
         let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlagsRawValue))
+        if currentShortcutOption == .controlOption { return talkHeld(flags) }
         if let required = currentShortcutOption.modifierOnlyFlags { return flags.contains(required) }
         guard let required = currentShortcutOption.spaceShortcutModifierFlags else { return false }
         return flags.contains(required) && spacePressed
@@ -176,7 +183,8 @@ public enum BuddyPushToTalkShortcut {
         if let modifierOnlyFlags = currentShortcutOption.modifierOnlyFlags {
             guard shortcutEventType == .flagsChanged else { return .none }
 
-            let isShortcutCurrentlyPressed = modifierFlags.contains(modifierOnlyFlags)
+            let isShortcutCurrentlyPressed = currentShortcutOption == .controlOption
+                ? talkHeld(modifierFlags) : modifierFlags.contains(modifierOnlyFlags)
 
             if isShortcutCurrentlyPressed && !wasShortcutPreviouslyPressed {
                 return .pressed
