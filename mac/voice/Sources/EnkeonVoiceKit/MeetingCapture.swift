@@ -126,7 +126,7 @@ struct MeetingAudioAccumulator {
 /// A dedicated helper prevents a stalled meeting batch from killing an active dictation session.
 public actor MeetingTranscriber {
     private let helper: SpeechHelper
-    public init(helperURL: URL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/enkeon-sense")) {
+    public init(helperURL: URL = SpeechHelper.defaultHelperURL) {
         helper = SpeechHelper(helperURL: helperURL)
     }
     public func prepare() async throws { _ = try await helper.request(["op": "parakeet.prepare"], timeout: 600) }

@@ -843,9 +843,14 @@ struct MeetingBar: View {
             }
             Spacer(minLength: 8)
             PillButton(title: "Stop", symbol: "stop.fill", primary: true) { recorder.stop() }
+        case .preparing:
+            ProgressView().controlSize(.small)
+            Text("Getting the meeting model ready on this Mac (about 630 MB, the first time only)…")
+                .font(.system(size: 12.5)).foregroundStyle(CK.secondary)
+            Spacer()
         case .stopping, .transcribing:
             ProgressView().controlSize(.small)
-            Text("Transcribing on Enkeon… you can keep working.")
+            Text(MeetingTranscription.current() == .onDevice ? "Transcribing on this Mac… you can keep working." : "Transcribing on Enkeon… you can keep working.")
                 .font(.system(size: 12.5)).foregroundStyle(CK.secondary)
             Spacer()
         case .ready(_, let summary, let promises, let minutes):

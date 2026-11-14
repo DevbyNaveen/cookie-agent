@@ -38,7 +38,8 @@ public final class SpeechHelper: @unchecked Sendable {
     public var isBundled: Bool { FileManager.default.isExecutableFile(atPath: helperURL.path) }
 
     /// Cookie's one speech helper (Enkeon Voice's enkeon-sense merged into cookie-sense).
-    public init(helperURL: URL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/cookie-sense")) {
+    public static let defaultHelperURL = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/cookie-sense")
+    public init(helperURL: URL = SpeechHelper.defaultHelperURL) {
         self.helperURL = helperURL
         // A helper that dies mid-write must fail the write, not kill the app.
         signal(SIGPIPE, SIG_IGN)

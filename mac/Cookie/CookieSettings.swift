@@ -706,11 +706,19 @@ private struct PrivacyPage: View {
     @AppStorage(ChatLock.enabledKey) private var requireTouchID = false
     @AppStorage(CaptureGuard.userBlockedKey) private var userBlockedRaw = ""
     @AppStorage(CookieScreenMemory.enabledKey) private var screenMemory = true
+    @AppStorage(MeetingTranscription.cloudKey) private var meetingsInCloud = false
     @State private var confirmDelete = false
 
     private var userBlocked: [String] { UserDefaults.standard.stringArray(forKey: CaptureGuard.userBlockedKey) ?? [] }
 
     var body: some View {
+        SettingsGroup(label: "Meetings") {
+            SettingsRow(title: "Transcribe meetings in the cloud", caption: meetingsInCloud
+                        ? "Your meeting audio goes to Enkeon a minute at a time and is transcribed in the EU (Amazon Transcribe, Frankfurt). Nothing is kept until you say Keep."
+                        : "Off: meetings are transcribed on this Mac. The audio never leaves it.", divider: false) {
+                SettingsSwitch(title: "Transcribe meetings in the cloud", isOn: $meetingsInCloud)
+            }
+        }
         SettingsGroup(label: "Never looks") {
             SettingsRow(title: "Password fields", caption: "While a password is being typed anywhere, or a password field is selected, Cookie doesn't take a picture.",
                         symbol: "key.fill", tint: .gray) {
