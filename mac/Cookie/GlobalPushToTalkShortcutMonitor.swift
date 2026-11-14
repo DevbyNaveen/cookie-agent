@@ -7,6 +7,7 @@
 //  ctrl + option behave more like a real system-wide voice tool.
 //
 
+import EnkeonVoiceKit
 import AppKit
 import Combine
 import CoreGraphics

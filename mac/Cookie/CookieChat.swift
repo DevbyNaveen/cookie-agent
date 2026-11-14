@@ -7,6 +7,7 @@
 //  composer (dictate, attach, type, send or stop).
 //
 
+import EnkeonVoiceKit
 import AppKit
 import Quartz
 import SwiftUI

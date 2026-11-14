@@ -13,7 +13,7 @@ import Combine
 import Foundation
 import Speech
 
-enum BuddyPushToTalkShortcut {
+public enum BuddyPushToTalkShortcut {
     enum ShortcutOption {
         case shiftFunction
         case controlOption
@@ -80,7 +80,7 @@ enum BuddyPushToTalkShortcut {
         }
     }
 
-    enum ShortcutTransition {
+    public enum ShortcutTransition {
         case none
         case pressed
         case released
@@ -94,10 +94,10 @@ enum BuddyPushToTalkShortcut {
 
     static let currentShortcutOption: ShortcutOption = .controlOption
     static let pushToTalkKeyCode: UInt16 = 49 // Space
-    static let pushToTalkDisplayText = currentShortcutOption.displayText
+    public static let pushToTalkDisplayText = currentShortcutOption.displayText
     static let pushToTalkTooltipText = "push to talk (\(pushToTalkDisplayText))"
 
-    static func isHeld(modifierFlagsRawValue: UInt64, spacePressed: Bool = false) -> Bool {
+    public static func isHeld(modifierFlagsRawValue: UInt64, spacePressed: Bool = false) -> Bool {
         let flags = NSEvent.ModifierFlags(rawValue: UInt(modifierFlagsRawValue))
         if let required = currentShortcutOption.modifierOnlyFlags { return flags.contains(required) }
         guard let required = currentShortcutOption.spaceShortcutModifierFlags else { return false }
@@ -105,12 +105,12 @@ enum BuddyPushToTalkShortcut {
     }
 
     /// The keys as they are now, not as the last event said.
-    static var isPhysicallyHeld: Bool {
+    public static var isPhysicallyHeld: Bool {
         isHeld(modifierFlagsRawValue: CGEventSource.flagsState(.combinedSessionState).rawValue,
                spacePressed: CGEventSource.keyState(.combinedSessionState, key: 49))
     }
 
-    static func shortcutTransition(
+    public static func shortcutTransition(
         for event: NSEvent,
         wasShortcutPreviouslyPressed: Bool
     ) -> ShortcutTransition {
@@ -124,7 +124,7 @@ enum BuddyPushToTalkShortcut {
         )
     }
 
-    static func shortcutTransition(
+    public static func shortcutTransition(
         for eventType: CGEventType,
         keyCode: UInt16,
         modifierFlagsRawValue: UInt64,
@@ -228,29 +228,29 @@ private struct BuddyDictationDraftCallbacks {
 }
 
 @MainActor
-final class BuddyDictationManager: NSObject, ObservableObject {
+public final class BuddyDictationManager: NSObject, ObservableObject {
     private static let defaultFinalTranscriptFallbackDelaySeconds: TimeInterval = 2.4
     private static let recordedAudioPowerHistoryLength = 44
     private static let recordedAudioPowerHistoryBaselineLevel: CGFloat = 0.02
     private static let recordedAudioPowerHistorySampleIntervalSeconds: TimeInterval = 0.07
 
     @Published private(set) var isRecordingFromMicrophoneButton = false
-    @Published private(set) var isRecordingFromKeyboardShortcut = false
+    @Published public private(set) var isRecordingFromKeyboardShortcut = false
     @Published private(set) var isKeyboardShortcutSessionActiveOrFinalizing = false
-    @Published private(set) var isFinalizingTranscript = false
-    @Published private(set) var isPreparingToRecord = false
+    @Published public private(set) var isFinalizingTranscript = false
+    @Published public private(set) var isPreparingToRecord = false
     @Published private(set) var isMicrophoneReady = false
-    @Published private(set) var currentAudioPowerLevel: CGFloat = 0
-    @Published private(set) var recordedAudioPowerHistory = Array(
+    @Published public private(set) var currentAudioPowerLevel: CGFloat = 0
+    @Published public private(set) var recordedAudioPowerHistory = Array(
         repeating: BuddyDictationManager.recordedAudioPowerHistoryBaselineLevel,
         count: BuddyDictationManager.recordedAudioPowerHistoryLength
     )
     @Published private(set) var microphoneButtonRecordingStartedAt: Date?
-    @Published private(set) var transcriptionProviderDisplayName = ""
-    @Published var lastErrorMessage: String?
+    @Published public private(set) var transcriptionProviderDisplayName = ""
+    @Published public var lastErrorMessage: String?
     @Published private(set) var currentPermissionProblem: BuddyDictationPermissionProblem?
 
-    var isDictationInProgress: Bool {
+    public var isDictationInProgress: Bool {
         isPreparingToRecord || isRecordingFromMicrophoneButton || isRecordingFromKeyboardShortcut || isFinalizingTranscript
     }
 
@@ -276,7 +276,10 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         return AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined
     }
 
-    var requiresSpeechRecognitionPermission: Bool { transcriptionProvider.requiresSpeechRecognitionPermission }
+    public var requiresSpeechRecognitionPermission: Bool { transcriptionProvider.requiresSpeechRecognitionPermission }
+    /// Live words while the person speaks, for Cookie's conversation turns.
+    public var supportsPartialTranscripts: Bool { transcriptionProvider.supportsPartialTranscripts }
+    public var currentRecognizedText: String { latestRecognizedText }
 
     private let transcriptionProvider: any BuddyTranscriptionProvider
     private let audioInput: any DictationAudioInput
@@ -301,7 +304,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     /// rapid follow-up requests that arrive before macOS updates its cache.
     private var lastPermissionRequestCompletedAt: Date?
 
-    override convenience init() {
+    public override convenience init() {
         self.init(provider: BuddyTranscriptionProviderFactory.makeDefaultProvider(), audioInput: MicrophoneAudioInput())
     }
 
@@ -314,7 +317,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         super.init()
     }
 
-    func updateContextualKeyterms(_ contextualKeyterms: [String]) {
+    public func updateContextualKeyterms(_ contextualKeyterms: [String]) {
         self.contextualKeyterms = contextualKeyterms
     }
 
@@ -332,7 +335,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         )
     }
 
-    func startPushToTalkFromKeyboardShortcut(
+    public func startPushToTalkFromKeyboardShortcut(
         currentDraftText: String,
         updateDraftText: @escaping (String) -> Void,
         submitDraftText: @escaping (String) -> Void
@@ -352,11 +355,11 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         stopPushToTalk(expectedStartSource: .microphoneButton)
     }
 
-    func stopPushToTalkFromKeyboardShortcut() {
+    public func stopPushToTalkFromKeyboardShortcut() {
         stopPushToTalk(expectedStartSource: .keyboardShortcut)
     }
 
-    func cancelCurrentDictation(preserveDraftText: Bool = true) {
+    public func cancelCurrentDictation(preserveDraftText: Bool = true) {
         pendingStartRequestIdentifier = UUID()
 
         guard isDictationInProgress else { return }
@@ -736,6 +739,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     private func buildTranscriptionKeyterms() -> [String] {
         let baseKeyterms = [
             "Enkeon",
+            "Cookie",
             "Codex",
             "Claude",
             "Anthropic",

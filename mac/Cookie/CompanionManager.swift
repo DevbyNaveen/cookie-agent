@@ -7,6 +7,7 @@
 //  exposes observable voice state for the panel UI.
 //
 
+import EnkeonVoiceKit
 import AVFoundation
 import Combine
 import Foundation
