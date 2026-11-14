@@ -18,6 +18,8 @@ import Foundation
 final class CookieDictation {
     static let shared = CookieDictation()
     let controller = DictationController()
+    /// Your words: Enkeon Voice's model (history, vocabulary, snippets, styles, Pen) on the same controller.
+    let words: AppModel
 
     static let secureRefusal = "Cookie doesn't listen into password fields. Choose another field."
     /// `kAXSecureTextFieldSubrole`: every native password field reports it.
@@ -28,10 +30,14 @@ final class CookieDictation {
     var remember: (_ text: String, _ app: String) async -> (message: String, success: Bool) = CookieDictation.rememberInEnkeon
     var edit: (_ selected: String, _ instruction: String) async throws -> String? = CookieDictation.editWithCookiesEditor
 
-    private var termsRefresh: Task<Void, Never>?
+    private var launched = false
+    /// Pen: the rest of your sentence, faded at the text cursor.
+    private var penPreview: CursorPreviewPanel?
 
     private init() {
         EnkeonClient.shared.tokenSource = { await CookieAccount.shared.accessToken() }
+        // Voice's model wires history, snippets, styles and Pen; Cookie's memory and editing win below.
+        words = AppModel(dictation: controller)
         controller.saveToMemory = { [weak self] text, app in
             guard let self else { return ("", false) }
             if self.focusedIsSecure() { return (Self.secureRefusal, false) }
@@ -47,23 +53,14 @@ final class CookieDictation {
     /// Needs Accessibility and Input Monitoring; called again by the permission poller once granted.
     func start() {
         controller.start()
-        guard termsRefresh == nil else { return }
-        // Enkeon's project names, so dictation spells them right; every half hour, as Voice did.
-        termsRefresh = Task { [weak self] in
-            while !Task.isCancelled {
-                if CookieAccount.shared.isSignedIn, let names = try? await EnkeonClient.shared.branchNames() {
-                    self?.controller.enkeonTerms = names.map { $0.replacingOccurrences(of: "[-_.]+", with: " ", options: .regularExpression) }
-                }
-                try? await Task.sleep(for: .seconds(1800))
-            }
-        }
+        guard !launched else { return }
+        launched = true
+        penPreview = CursorPreviewPanel(model: words)
+        // Speech model, Enkeon's project names (every half hour) and Pen, as Voice did.
+        words.launch()
     }
 
-    func stop() {
-        controller.stop()
-        termsRefresh?.cancel()
-        termsRefresh = nil
-    }
+    func stop() { controller.stop() }
 
     private static func rememberInEnkeon(_ text: String, _ app: String) async -> (message: String, success: Bool) {
         guard CookieAccount.shared.isSignedIn else {

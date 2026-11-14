@@ -720,6 +720,7 @@ struct CookieInteractionCheckRunner {
         CookieTeachingTests.run()
         CookieVoiceActionTests.run()
         CookieDictationFaceTests.run()
+        CookieWordsPagesTests.run()
         CookieWorkspaceTests.run()
         var setupChecksFinished = false
         Task { @MainActor in

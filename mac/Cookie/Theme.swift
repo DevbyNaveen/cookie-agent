@@ -6,29 +6,24 @@ import SwiftUI
 /// #4A8FAE) — for selection, charts and actions. The layout stays the Console's: the rail on a
 /// translucent sidebar, the workspace floating beside it, borderless cards inside.
 enum Theme {
-    /// Behind the rail: the sidebar material itself (see `SidebarMaterial`), so nothing is painted here.
+    // Enkeon Voice's pages inside Cookie: every token is Cookie's (CK), so they read as one app.
     static let underlay = Color.clear
-    /// The floating workspace: the system's content background (white in Light, near-black in Dark).
-    static let background = Color(nsColor: .controlBackgroundColor)
-    /// Cards: Apple's grouped-row gray.
-    static let card = Color.dynamic(light: 0xF5F5F7, dark: 0x2B2B2F)
-    static let surface = Color.primary.opacity(0.07)
-    static let raised = Color.primary.opacity(0.08)
-    static let border = Color(nsColor: .separatorColor)
-    static let stroke = Color(nsColor: .separatorColor)
-    static let hairline = Color(nsColor: .separatorColor)
-    static let text = Color.primary
-    static let secondary = Color.secondary
-    static let tertiary = Color(nsColor: .tertiaryLabelColor)
-    /// Enkeon teal: deeper on white for contrast, brighter on black.
-    static let accent = Color.dynamic(light: 0x2F7A9C, dark: 0x5AA9CC)
+    static let background = CK.island
+    static let card = CK.fill
+    static let surface = CK.fill
+    static let raised = CK.fillHover
+    static let border = CK.hairline
+    static let stroke = CK.hairline
+    static let hairline = CK.hairline
+    static let text = CK.text
+    static let secondary = CK.secondary
+    static let tertiary = CK.tertiary
+    static let accent = CK.accent
     static let brand = accent
     static let live = Color(nsColor: .systemGreen)
     static let warning = Color(nsColor: .systemOrange)
-    /// The dictation bar stays dark on any wallpaper, as Wispr's does.
     static let bar = Color(red: 0.04, green: 0.04, blue: 0.05)
-    /// The Console's settle curve (cubic-bezier(0.16, 1, 0.3, 1), 0.52 s).
-    static let settle = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.52)
+    static let settle = CK.spring
 
     static let consoleURL = URL(string: "https://www.enkeon.com")!
 }
@@ -133,19 +128,7 @@ struct LiveBadge: View {
 }
 
 /// A key as it appears on the keyboard.
-struct KeyCap: View {
-    let label: String
-    var body: some View {
-        Text(label)
-            .font(.system(size: 12, weight: .semibold, design: .rounded))
-            .foregroundStyle(Theme.text)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(Theme.raised, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-    }
-}
-
-/// A sparkline that draws itself in when it appears or its values change.
+// KeyCap: Cookie's (CookieUI.swift), one look for keys in the app.
 struct Sparkline: View {
     let values: [Double]
     var color: Color = Theme.brand

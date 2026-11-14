@@ -14,7 +14,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "EnkeonVoiceKit"),
-        .executableTarget(name: "Enkeon", dependencies: ["EnkeonVoiceKit"]),
+        // The standalone Enkeon app lives on at git tag enkeon-voice-app-v0; its views are in Cookie now.
         // No XCTest with the Command Line Tools alone: checks are preconditions, as in Cookie.
         .executableTarget(name: "EnkeonVoiceKitChecks", dependencies: ["EnkeonVoiceKit"]),
     ]

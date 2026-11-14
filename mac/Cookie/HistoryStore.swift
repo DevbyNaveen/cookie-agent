@@ -11,7 +11,7 @@ final class HistoryStore: ObservableObject {
 
     @Published private(set) var records: [DictationRecord] = []
 
-    private let file: URL
+    let file: URL
 
     init(directory: URL? = nil) {
         let base = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

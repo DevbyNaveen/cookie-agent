@@ -36,6 +36,12 @@ public struct DictationRecord: Codable, Identifiable, Equatable, Sendable {
     public var cleanup: String? = nil
 
     public var wordCount: Int { text.split { $0.isWhitespace || $0.isNewline }.count }
+
+    public init(id: UUID = UUID(), date: Date = Date(), app: String, text: String, outcome: Outcome, note: String? = nil,
+                durationSeconds: Double, bundleID: String? = nil, heard: String? = nil, cleanup: String? = nil) {
+        self.id = id; self.date = date; self.app = app; self.text = text; self.outcome = outcome; self.note = note
+        self.durationSeconds = durationSeconds; self.bundleID = bundleID; self.heard = heard; self.cleanup = cleanup
+    }
 }
 
 @MainActor

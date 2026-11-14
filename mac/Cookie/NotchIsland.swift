@@ -150,6 +150,13 @@ final class NotchPanelManager {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.mouseMoved(to: NSEvent.mouseLocation) }
             .store(in: &cancellables)
+        // Your words' pages (Home's "open Dictionary", Quick memory's links) open in the console.
+        CookieDictation.shared.words.showPage = { [weak self] page in
+            guard let self else { return }
+            self.navigation.settingsPage = nil
+            self.navigation.section = Page.memory.contains(page) ? .memory : .words
+            self.windowController.show()
+        }
         // Enkeon dictation's outcomes: words it couldn't confirm typing wait here with Copy;
         // a dictation that failed says why, briefly.
         let dictation = CookieDictation.shared.controller

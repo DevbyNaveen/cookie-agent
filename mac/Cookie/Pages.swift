@@ -454,61 +454,6 @@ struct ContextView: View {
 
 // MARK: - Connections
 
-struct ConnectionsView: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        PageColumn {
-            PageTitle(title: "Connections") {
-                if model.account.isSignedIn {
-                    Button("Sign out") { model.account.signOut() }.buttonStyle(SecondaryButton())
-                }
-            }
-            HeroBanner(headline: Text("One memory for ") + Text("every").italic() + Text(" AI you use."),
-                       message: "Sign in and dictation spells your projects and people right, ⇧ saves what you say, and Claude, ChatGPT and Cursor read the same memory once you connect them in the Console.") {
-                accountAction
-            }
-            ScrollView {
-                VStack(spacing: 14) {
-                    RowsBox(title: "Enkeon account") {
-                        InfoRow(icon: "Plugs", title: "Status", value: statusText, tint: model.account.isSignedIn ? Theme.live : Theme.secondary)
-                        if model.account.isSignedIn {
-                            InfoRow(icon: "Brain", title: "Project", value: model.account.projectName ?? model.account.projectID ?? "Chosen at sign-in")
-                                .help(model.account.projectID ?? "")
-                            InfoRow(icon: "CheckCircle", title: "This app can", value: "Read your context · save notes")
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder private var accountAction: some View {
-        switch model.account.phase {
-        case .signedOut, .failed:
-            Button("Sign in to Enkeon") { model.account.signIn() }.buttonStyle(HeroButton())
-        case .waitingForBrowser:
-            HStack(spacing: 10) {
-                ProgressView().controlSize(.small).tint(.white)
-                Text("Finish signing in in your browser").font(.system(size: 13)).foregroundStyle(.white.opacity(0.9))
-                Button("Cancel") { model.account.cancelSignIn() }.buttonStyle(HeroButton())
-            }
-        case .signedIn:
-            Button("Connect your AI apps") { model.openConsole() }.buttonStyle(HeroButton())
-        }
-    }
-
-    private var statusText: String {
-        switch model.account.phase {
-        case .signedOut: return "Signed out"
-        case .waitingForBrowser: return "Waiting for your browser"
-        case .signedIn: return "Signed in"
-        case .failed(let message): return message
-        }
-    }
-}
-
-/// A titled group of rows in one rounded container, no lines.
 struct RowsBox<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content

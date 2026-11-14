@@ -3,7 +3,9 @@ import Combine
 import EnkeonVoiceKit
 import SwiftUI
 
-/// The app's state: the dictation engine, its history, and whether the Mac is set up for it.
+/// Your words, from Enkeon Voice: the dictation engine Cookie hosts, its history, vocabulary, snippets,
+/// styles and Pen (sentence completion). Cookie owns the one DictationController and hands it in;
+/// the sign-in is Cookie's.
 @MainActor
 final class AppModel: ObservableObject {
     static let onboardedKey = "enkeon.onboarding.done"
@@ -17,13 +19,12 @@ final class AppModel: ObservableObject {
     static let phrasesKey = "enkeon.phrases.enabled"
     static let proofreadKey = "enkeon.proofread.enabled"
 
-    let dictation = DictationController()
+    let dictation: DictationController
     /// Finishes the sentence you're typing, in any app.
     let completer = SentenceCompleter()
     let history = HistoryStore()
-    var meetings = MeetingModel()
     let permissions: DictationPermissionCenter
-    let account = EnkeonAccount.shared
+    let account = CookieAccount.shared
     let snippets = SnippetStore()
     /// Sentences you've typed, on this Mac only, so your own phrases come back.
     let phrases = PhraseMemory(file: PhraseMemory.defaultFile)
@@ -61,9 +62,11 @@ final class AppModel: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var poll: Timer?
     private var completionEvidence: [String: String] = [:]
-    private var reopenedWindow: NSWindow?
+    /// Cookie's console shows a page when asked (Your words · Memory).
+    var showPage: ((Page) -> Void)?
 
-    init() {
+    init(dictation: DictationController) {
+        self.dictation = dictation
         permissions = DictationPermissionCenter(requiresSpeechRecognition: dictation.requiresSpeechRecognitionPermission)
         UserDefaults.standard.register(defaults: [Self.barWhenIdleKey: true])
         if !UserDefaults.standard.bool(forKey: "enkeon.bar.clickLauncherV1") {
@@ -101,9 +104,6 @@ final class AppModel: ObservableObject {
                 MemorySentenceCompletion.continuation(after: typed, memories: [$0.key]) == continuation
             }
             guard matches.count == 1, let id = matches.first?.value else { return nil }
-            for meeting in self.meetings.records {
-                if let label = meeting.memorySourceLabel(for: id) { return label }
-            }
             return "Enkeon · \(id.suffix(6))"
         }
         completer.usesMemory = { [weak self] in
@@ -215,7 +215,7 @@ final class AppModel: ObservableObject {
         // Nested objects don't republish on their own: Home and Settings read through this model.
         for publisher in [history.objectWillChange.eraseToAnyPublisher(), permissions.objectWillChange.eraseToAnyPublisher(),
                           dictation.objectWillChange.eraseToAnyPublisher(), account.objectWillChange.eraseToAnyPublisher(),
-                          snippets.objectWillChange.eraseToAnyPublisher(), meetings.objectWillChange.eraseToAnyPublisher()] {
+                          snippets.objectWillChange.eraseToAnyPublisher()] {
             publisher.receive(on: DispatchQueue.main).sink { [weak self] in self?.objectWillChange.send() }.store(in: &cancellables)
         }
     }
@@ -224,36 +224,14 @@ final class AppModel: ObservableObject {
 
     func openPage(_ destination: Page) {
         page = destination
-        if let window = NSApp.windows.first(where: { $0.title == "Enkeon" && !($0 is NSPanel) }) {
-            window.makeKeyAndOrderFront(nil)
-        } else {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 740),
-                                  styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-                                  backing: .buffered, defer: false)
-            window.title = "Enkeon"; window.titleVisibility = .hidden; window.titlebarAppearsTransparent = true
-            window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: MainView().environmentObject(self))
-            window.center(); window.makeKeyAndOrderFront(nil); reopenedWindow = window
-        }
-        NSApp.activate(ignoringOtherApps: true)
-    }
-    func openMeetings(setup: Bool = false) {
-        openPage(.meetings)
-        if setup && !meetings.isActive { meetings.showSetup = true }
-    }
-    func openMeetingURL(_ url: URL) {
-        guard url.scheme == "enkeon-voice", url.host == "meeting" else { return }
-        if let id = UUID(uuidString: url.lastPathComponent), meetings.records.contains(where: { $0.id == id }) { meetings.selected = id }
-        openMeetings(setup: url.lastPathComponent == "new")
+        showPage?(destination)
     }
 
+    /// Cookie's permission poller starts the keyboard; this prepares speech and Enkeon's names.
     func launch() {
         refresh()
-        // macOS doesn't announce grants made in System Settings: look every two seconds.
-        poll = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
-        }
         Task { await checkSpeechModel() }
+        Task { await refreshEnkeonTerms() }
         Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refreshEnkeonTerms() }
         }

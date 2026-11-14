@@ -62,6 +62,10 @@ struct CookieSidebarContent: View {
                     VStack(spacing: 2) {
                         SectionRow(title: "Board", symbol: "rectangle.grid.1x2", count: work.items(in: .needsYou).count,
                                    selected: section == .board) { section = .board }
+                        SectionRow(title: "Your words", symbol: "waveform", count: 0,
+                                   selected: section == .words) { section = .words }
+                        SectionRow(title: "Memory", symbol: "brain", count: 0,
+                                   selected: section == .memory) { section = .memory }
                     }
                     .padding(.horizontal, 8)
                     .padding(.top, 10)

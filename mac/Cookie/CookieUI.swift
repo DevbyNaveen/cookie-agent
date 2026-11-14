@@ -71,7 +71,7 @@ final class CookieNavigation: ObservableObject {
         }
     }
 
-    enum Section: String { case board, chats }
+    enum Section: String { case board, chats, words, memory }
     /// Making a new Cookie, or one Cookie's profile. Sits on top of the section like the work composer.
     enum AgentPage: Equatable { case new, profile(UUID) }
 
