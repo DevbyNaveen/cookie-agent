@@ -12,6 +12,7 @@
 //  rectangle takes the mouse; everything else passes through.
 //
 
+import EnkeonVoiceKit
 import AppKit
 import Combine
 import SwiftUI
@@ -21,6 +22,18 @@ struct NotchNotice: Equatable {
     let title: String
     let message: String
     let failed: Bool
+    /// Words Enkeon couldn't confirm typing: the notice offers Copy and stays until acted on.
+    var copyText: String? = nil
+
+    var keepsUntilActed: Bool { copyText != nil }
+    static func recovery(_ text: String) -> NotchNotice {
+        NotchNotice(threadID: UUID(), title: "Dictation", message: "Not typed: the field changed or couldn't confirm it. Copy your words.",
+                    failed: true, copyText: text)
+    }
+    static let readFor: TimeInterval = 7
+    static func closesOnItsOwn(_ notice: NotchNotice, shownFor: TimeInterval) -> Bool {
+        !notice.keepsUntilActed && shownFor >= readFor
+    }
 }
 
 @MainActor
@@ -132,6 +145,26 @@ final class NotchPanelManager {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.mouseMoved(to: NSEvent.mouseLocation) }
             .store(in: &cancellables)
+        companionManager.$dictationFace
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.mouseMoved(to: NSEvent.mouseLocation) }
+            .store(in: &cancellables)
+        // Enkeon dictation's outcomes: words it couldn't confirm typing wait here with Copy;
+        // a dictation that failed says why, briefly.
+        let dictation = CookieDictation.shared.controller
+        dictation.$recoveryText
+            .compactMap { $0 }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] text in self?.show(.recovery(text)) }
+            .store(in: &cancellables)
+        dictation.$phase
+            .receive(on: RunLoop.main)
+            .sink { [weak self] phase in
+                guard case .done(let message, false) = phase, dictation.recoveryText == nil else { return }
+                self?.show(NotchNotice(threadID: UUID(), title: "Dictation", message: message, failed: true))
+            }
+            .store(in: &cancellables)
         companionManager.$isConversationMode
             .receive(on: RunLoop.main)
             .sink { [weak self] active in
@@ -228,7 +261,7 @@ final class NotchPanelManager {
     }
 
     private func islandRect(_ state: NotchState) -> NSRect {
-        let size = model.size(state, voiceActive: companionManager.voiceState != .idle)
+        let size = model.size(state, voiceActive: companionManager.voiceState != .idle || companionManager.dictationFace != .none)
         return NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - model.layout.topInset(for: state) - size.height,
                       width: size.width, height: size.height)
     }
@@ -316,11 +349,18 @@ final class NotchPanelManager {
         CookieNotifications.shared.prepare()
         // Only interrupt when you can't already see the reply.
         guard model.state == .closed || model.state == .peek, !windowController.isFrontmost else { return }
-        model.notice = NotchNotice(threadID: threadID, title: title, message: message.text, failed: message.role == .failure)
+        show(NotchNotice(threadID: threadID, title: title, message: message.text, failed: message.role == .failure))
+    }
+
+    private func show(_ notice: NotchNotice) {
+        model.notice = notice
         setState(.notice)
         noticeTimer?.invalidate()
-        noticeDeadline = Date().addingTimeInterval(7)
-        noticeTimer = Timer.scheduledTimer(withTimeInterval: 7, repeats: false) { [weak self] _ in
+        noticeTimer = nil
+        noticeDeadline = nil
+        guard !notice.keepsUntilActed else { return }
+        noticeDeadline = Date().addingTimeInterval(NotchNotice.readFor)
+        noticeTimer = Timer.scheduledTimer(withTimeInterval: NotchNotice.readFor, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.model.state == .notice else { return }
                 if self.islandRect(.notice).contains(NSEvent.mouseLocation) { return } // reading it: keep
@@ -401,7 +441,7 @@ final class NotchPanelManager {
                 }
             }
         }
-        if model.state == .notice, let noticeDeadline, Date() >= noticeDeadline,
+        if model.state == .notice, model.notice?.keepsUntilActed != true, let noticeDeadline, Date() >= noticeDeadline,
            !islandRect(.notice).insetBy(dx: -12, dy: -12).contains(location) {
             setState(.closed)
         }
@@ -556,7 +596,7 @@ struct NotchIslandView: View {
     let openThread: (UUID?) -> Void
     let popOut: () -> Void
 
-    private var voiceActive: Bool { companionManager.voiceState != .idle }
+    private var voiceActive: Bool { companionManager.voiceState != .idle || companionManager.dictationFace != .none }
 
     var body: some View {
         let state = model.state
@@ -602,7 +642,10 @@ struct NotchIslandView: View {
                 Color.black.opacity(0.001)
                     .contentShape(Rectangle())
                     .onTapGesture { setState(.home) }
-                if voiceActive {
+                if case .words(let label) = companionManager.dictationFace {
+                    DictationLiveActivity(dictation: CookieDictation.shared.controller, label: label, notchWidth: model.notchSize.width)
+                        .transition(.opacity)
+                } else if voiceActive {
                     LiveActivity(companionManager: companionManager, notchWidth: model.notchSize.width)
                         .transition(.opacity)
                 }
@@ -907,7 +950,7 @@ private struct NoticeView: View {
                     HStack(spacing: 6) {
                         Text(notice.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                         Circle().fill(notice.failed ? Color.orange : CK.accent).frame(width: 5, height: 5)
-                        Text(voiceState == .responding ? "Speaking" : notice.failed ? "Couldn't reply" : "Replied")
+                        Text(notice.copyText != nil ? "Not typed" : voiceState == .responding ? "Speaking" : notice.failed ? "Couldn't reply" : "Replied")
                             .font(.system(size: 11))
                             .foregroundStyle(notice.failed ? Color.orange : CK.secondary)
                     }
@@ -918,8 +961,13 @@ private struct NoticeView: View {
                     HStack(spacing: 8) {
                         Spacer()
                         if voiceState != .idle { PillButton(title: "Stop", symbol: "stop.fill", action: stop) }
-                        PillButton(title: "Dismiss", action: dismiss)
-                        PillButton(title: "Open", primary: true, action: open)
+                        if notice.copyText != nil {
+                            PillButton(title: "Dismiss") { CookieDictation.shared.controller.dismissRecovery(); dismiss() }
+                            PillButton(title: "Copy", primary: true) { CookieDictation.shared.controller.copyLast(); dismiss() }
+                        } else {
+                            PillButton(title: "Dismiss", action: dismiss)
+                            PillButton(title: "Open", primary: true, action: open)
+                        }
                     }
                     .padding(.top, 4)
                 }

@@ -34,6 +34,9 @@ final class CompanionManager: ObservableObject {
     private var conversationToggleCancellable: AnyCancellable?
     private var conversationSessionCancellable: AnyCancellable?
     @Published private(set) var isDictating = false
+    /// Who the notch shows: your words (Enkeon dictation) or Cookie.
+    @Published private(set) var dictationFace: NotchVoiceFace = .none
+    private var dictationFaceCancellable: AnyCancellable?
     @Published private(set) var voiceState: CompanionVoiceState = .idle
     @Published private(set) var lastTranscript: String?
     /// Every chat, newest first. Saved to Application Support/Cookie.
@@ -698,6 +701,13 @@ final class CompanionManager: ObservableObject {
         cancellationCancellable = globalPushToTalkShortcutMonitor.cancellationPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.cancelCurrentInteraction() }
+        let dictation = CookieDictation.shared.controller
+        dictationFaceCancellable = dictation.$phase
+            .combineLatest(dictation.$editScope, dictation.$toMemory, $voiceState)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] phase, scope, toMemory, voice in
+                self?.dictationFace = NotchVoiceFace.face(phase: phase, editScope: scope, toMemory: toMemory, cookieActive: voice != .idle)
+            }
         // "Dictating" in Cookie's own views mirrors Enkeon dictation.
         dictationAbortCancellable = CookieDictation.shared.controller.$phase
             .receive(on: DispatchQueue.main)
