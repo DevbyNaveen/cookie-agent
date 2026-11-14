@@ -23,14 +23,7 @@ struct DictionaryView: View {
             TabStrip(tabs: [(.all, "All"), (.yours, "Yours"), (.enkeon, "From Enkeon"), (.learned, "Learned")], selection: $tab) {
                 SearchToggle(query: $query)
             }
-            HeroBanner(headline: Text("Enkeon spells the way ") + Text("you").italic() + Text(" do."),
-                       message: "Add a name, a product or your team's jargon once, or fix a word after dictating, and every dictation spells it right. Signed in, your Enkeon projects are added on their own.",
-                       dismissKey: "enkeon.hero.dictionary") {
-                HStack(spacing: 8) {
-                    Button("Add new word") { withAnimation(Theme.settle) { adding = true } }.buttonStyle(HeroButton())
-                    ForEach(heroWords, id: \.self) { HeroChip(text: $0) }
-                }
-            }
+            Text("Names and terms you add are always spelled right.").font(.system(size: 12.5)).foregroundStyle(Theme.secondary)
             if adding { addRow }
             if words.isEmpty {
                 EmptyState(icon: "BookOpenText", title: query.isEmpty ? "No words yet" : "Nothing matches “\(query)”",
@@ -60,11 +53,6 @@ struct DictionaryView: View {
         model.addTerm(newWord)
         newWord = ""
         withAnimation(Theme.settle) { adding = false }
-    }
-
-    private var heroWords: [String] {
-        let mine = model.vocabularyTerms
-        return Array((mine.isEmpty ? ["Halvorsen", "Enkeon", "Priya", "Brightline"] : mine).prefix(4))
     }
 
     private var words: [Word] {
@@ -130,17 +118,7 @@ struct SnippetsView: View {
                 Button("Add new") { editing = Snippet(cue: "", kind: .text, body: "") }.buttonStyle(PrimaryButton())
             }
             TabStrip(tabs: [(.all, "All"), (.text, "Text"), (.memory, "From memory")], selection: $tab) { SearchToggle(query: $query) }
-            HeroBanner(headline: Text("The stuff ") + Text("you").italic() + Text(" shouldn't have to re-type."),
-                       message: "Save text you type often, then say its cue to drop it in. A memory snippet types what Enkeon holds right now, and “from memory …” fills in anything else you saved.",
-                       dismissKey: "enkeon.hero.snippets") {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach([("my calendar link", "https://cal.com/you"), ("intro email", "Hi — great to meet you. Here's a quick…"),
-                             ("Halvorsen pricing", "From memory: what you agreed")], id: \.0) { cue, text in
-                        HStack(spacing: 8) { HeroChip(text: "“\(cue)”", italic: true); HeroChip(text: text) }
-                    }
-                    Button("Add new snippet") { editing = Snippet(cue: "", kind: .text, body: "") }.buttonStyle(HeroButton()).padding(.top, 4)
-                }
-            }
+            Text("Say a snippet's cue while dictating and its text drops in.").font(.system(size: 12.5)).foregroundStyle(Theme.secondary)
             if !offers.isEmpty && query.isEmpty {
                 RowsBox(title: "You type these often") {
                     ForEach(offers, id: \.self) { sentence in
@@ -226,11 +204,7 @@ struct StylesView: View {
                 .help(model.cleanupStatus)
             }
             TabStrip(tabs: AppModel.StyleGroup.allCases.map { ($0, $0.title) }, selection: $group) { EmptyView() }
-            HeroBanner(headline: Text("This style applies in ") + Text(group.title.lowercased()).italic(),
-                       message: heroMessage) {
-                PhosphorIcon(name: groupIcon, size: 22).foregroundStyle(.white.opacity(0.9))
-                    .frame(width: 48, height: 48).background(.white.opacity(0.13), in: Circle())
-            }
+            Text(heroMessage).font(.system(size: 12.5)).foregroundStyle(Theme.secondary)
             if !cleanupOn || model.cleanupModel?.available == false {
                 Text(cleanupOn ? "The on-device clean-up isn't available on this Mac, so styles don't apply yet." : "Clean-up is off: every app gets your words as heard.")
                     .font(.system(size: 12)).foregroundStyle(Theme.warning)
@@ -243,16 +217,6 @@ struct StylesView: View {
             .disabled(!cleanupOn)
             .opacity(cleanupOn ? 1 : 0.5)
             Spacer(minLength: 0)
-        }
-    }
-
-    private var groupIcon: String {
-        switch group {
-        case .messages: return "ChatCircleText"
-        case .work: return "Briefcase"
-        case .email: return "EnvelopeSimple"
-        case .code: return "Code"
-        case .other: return "TextAa"
         }
     }
 
@@ -275,7 +239,7 @@ private struct StyleCard: View {
 
     var body: some View {
         Button(action: choose) {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.text)
                     Text(rule).font(.system(size: 12)).foregroundStyle(Theme.secondary)
@@ -290,7 +254,7 @@ private struct StyleCard: View {
                                 in: UnevenRoundedRectangle(topLeadingRadius: 12, bottomLeadingRadius: 12, bottomTrailingRadius: 3, topTrailingRadius: 12, style: .continuous))
             }
             .padding(16)
-            .frame(maxWidth: .infinity, minHeight: 210, alignment: .topLeading)
+            .frame(maxWidth: .infinity, minHeight: 128, alignment: .topLeading)
             .background(Theme.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(selected ? Theme.accent : .clear, lineWidth: selected ? 2 : 1))
@@ -342,21 +306,11 @@ struct NotesView: View {
 
     var body: some View {
         PageColumn {
-            PageTitle(title: "Notes") {
-                Button("Open Console") { model.openConsole() }.buttonStyle(SecondaryButton())
-            }
+            PageTitle(title: "Notes") { EmptyView() }
             TabStrip(tabs: [(0, "All"), (1, "Saved"), (2, "Not saved")], selection: $tab) { SearchToggle(query: $query) }
-            HeroBanner(headline: Text("Say it once. ") + Text("Every").italic() + Text(" AI remembers it."),
-                       message: "Hold Fn with ⇧ and speak: the thought goes to your Enkeon memory instead of the field, and Claude, ChatGPT and Cursor find it there.",
-                       dismissKey: "enkeon.hero.notes") {
-                HStack(spacing: 8) {
-                    if model.account.isSignedIn {
-                        HeroChip(text: "fn + ⇧  hold and speak")
-                    } else {
-                        Button("Sign in to Enkeon") { model.page = .connections }.buttonStyle(HeroButton())
-                    }
-                    HeroChip(text: "“Halvorsen renews every March”", italic: true)
-                }
+            if !model.account.isSignedIn {
+                Text("Sign in (your name, bottom left) and Fn + ⇧ sends what you say to your Enkeon memory.")
+                    .font(.system(size: 12.5)).foregroundStyle(Theme.secondary)
             }
             if notes.isEmpty {
                 EmptyState(icon: "MemoryCards", title: query.isEmpty ? "No notes yet" : "Nothing matches “\(query)”",
@@ -416,15 +370,7 @@ struct ContextView: View {
             TabStrip(tabs: [(.all, "All"), (.cleaned, "Cleaned"), (.filled, "Filled in"), (.kept, "Kept as heard")], selection: $tab) {
                 SearchToggle(query: $query)
             }
-            HeroBanner(headline: Text("See exactly what Enkeon ") + Text("changed").italic() + Text("."),
-                       message: "Every clean-up and every fill-in, with what you said and what was typed. When the clean-up would add or drop words, your words go in as heard.",
-                       dismissKey: "enkeon.hero.context") {
-                HStack(spacing: 8) {
-                    HeroChip(text: "\(count(.cleaned)) cleaned")
-                    HeroChip(text: "\(count(.filled)) filled in")
-                    HeroChip(text: "\(count(.kept)) kept as heard")
-                }
-            }
+            Text("\(count(.cleaned)) cleaned · \(count(.filled)) filled in · \(count(.kept)) kept as heard").font(.system(size: 12.5)).foregroundStyle(Theme.secondary)
             if rows.isEmpty {
                 EmptyState(icon: "GitDiff", title: query.isEmpty ? "No changes yet" : "Nothing matches “\(query)”",
                            message: "When the clean-up or a fill-in changes your words, the before and after show up here.")

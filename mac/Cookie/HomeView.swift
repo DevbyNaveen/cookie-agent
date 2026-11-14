@@ -2,51 +2,23 @@ import AppKit
 import EnkeonVoiceKit
 import SwiftUI
 
-/// Home: a living hero (the voice orb answers the microphone; setup is three steps on a ring), the
-/// numbers with motion, then the words themselves — live while you talk, a practice field before the
-/// first dictation, a timeline after — beside the chart, the apps and your memory. All real data.
+/// Home, sized for Cookie's console: setup while it isn't done, four numbers, then your words —
+/// a practice field before the first dictation, the timeline after. All real data.
 struct HomeView: View {
     @EnvironmentObject private var model: AppModel
-    var openDictionary: () -> Void = {}
 
     private let gap: CGFloat = 6
 
     var body: some View {
-        VStack(spacing: gap) {
-            HomeHero().rise(0).brandLift(delay: 0.04)
-            metrics.rise(0.05).brandLift(delay: 0.10)
-            GeometryReader { space in
-                let wide = space.size.width >= 940
-                HStack(alignment: .top, spacing: gap) {
-                    words.frame(maxWidth: .infinity, maxHeight: .infinity).rise(0.1).brandLift(delay: 0.14)
-                    VStack(spacing: gap) {
-                        LiveCard()
-                        DayChart(values: model.history.wordsPerDay())
-                        AppRing(apps: model.history.topApps(limit: 6)).frame(maxHeight: .infinity)
-                        if !wide { MemoryCard() }
-                    }
-                    .frame(width: 300)
-                    .rise(0.15)
-                    .brandLift(delay: 0.20)
-                    if wide {
-                        VStack(spacing: gap) {
-                            MemoryCard()
-                            commands
-                            vocabulary.frame(maxHeight: .infinity)
-                        }
-                        .frame(width: 260)
-                        .rise(0.2)
-                        .brandLift(delay: 0.25)
-                    }
-                }
-                .frame(width: space.size.width, height: space.size.height, alignment: .top)
-            }
+        VStack(spacing: 10) {
+            if !model.isSetUp { SetupSteps().frame(maxWidth: .infinity, alignment: .leading).card() }
+            metrics.rise(0.05)
+            words.frame(maxWidth: .infinity, maxHeight: .infinity).rise(0.1)
         }
-        .frame(maxWidth: 1240, maxHeight: .infinity, alignment: .top)
         .padding(.horizontal, 22)
-        .padding(.top, 22)
+        .padding(.top, 14)
         .padding(.bottom, 18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     // MARK: Numbers
@@ -72,127 +44,6 @@ struct HomeView: View {
 
     @ViewBuilder private var words: some View {
         if model.history.records.isEmpty { PracticeCard() } else { Timeline() }
-    }
-
-    // MARK: Spoken commands and vocabulary
-
-    private var commands: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            CardHead("Say it while dictating")
-            ForEach([("new line", "new line"), ("new paragraph", "blank line"),
-                     ("scratch that", "undo"), ("literal …", "as said")], id: \.0) { phrase, effect in
-                HStack(spacing: 8) {
-                    Text("“\(phrase)”").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.text)
-                    Spacer(minLength: 8)
-                    Text(effect).font(.system(size: 12)).foregroundStyle(Theme.tertiary).lineLimit(1)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-        .hoverLift()
-    }
-
-    private var vocabulary: some View {
-        PanelCard(title: "Your vocabulary") {
-            Button("Edit", action: openDictionary)
-                .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.accent)
-        } content: {
-            if model.vocabularyTerms.isEmpty {
-                Text("Names and terms you add are always spelled right.").font(.system(size: 12)).foregroundStyle(Theme.secondary)
-            } else {
-                Chips(tags: model.vocabularyTerms)
-            }
-        }
-    }
-}
-
-// MARK: - Hero
-
-/// The greeting on Enkeon's atmosphere, the voice orb, and setup as three steps on a ring.
-private struct HomeHero: View {
-    @EnvironmentObject private var model: AppModel
-    @Environment(\.brandPulse) private var brandPulse
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        HStack(spacing: 28) {
-            VStack(alignment: .leading, spacing: 10) {
-                Eyebrow(partOfDay).foregroundStyle(.white.opacity(0.7))
-                (Text("\(firstName), say it ") + Text("once").italic() + Text("."))
-                    .font(.system(size: 34, weight: .regular, design: .serif))
-                    .tracking(-0.7)
-                    .foregroundStyle(.white)
-                Text(subtitle).font(.system(size: 13.5)).foregroundStyle(.white.opacity(0.82))
-                if model.isSetUp {
-                    HStack(spacing: 6) {
-                        Text("Hold").foregroundStyle(.white.opacity(0.8))
-                        HeroKey(model.fnKeyIsFree ? "fn" : "⌃ ⌘")
-                        Text("anywhere, or add").foregroundStyle(.white.opacity(0.8))
-                        HeroKey("⇧")
-                        Text("to save it to memory.").foregroundStyle(.white.opacity(0.8))
-                    }
-                    .font(.system(size: 13))
-                    .padding(.top, 2)
-                } else {
-                    SetupSteps().padding(.top, 2)
-                }
-            }
-            Spacer(minLength: 0)
-            FluidOrb(energy: isListening ? model.dictation.level : 0)
-                .frame(width: 132, height: 132)
-                .keyframeAnimator(initialValue: 0.0, trigger: brandPulse) { orb, response in
-                    orb.rotationEffect(.degrees(reduceMotion ? 0 : response * 5))
-                        .scaleEffect(reduceMotion ? 1 : 1 + response * 0.025)
-                } keyframes: { _ in
-                    LinearKeyframe(0, duration: 0.18)
-                    CubicKeyframe(1, duration: 0.2)
-                    SpringKeyframe(0, duration: 0.4, spring: .smooth)
-                }
-                .scaleEffect(isListening ? 1 + min(0.08, model.dictation.level * 0.12) : 1)
-                .shadow(color: .black.opacity(0.35), radius: 18, y: 10)
-                .animation(.easeOut(duration: 0.12), value: model.dictation.level)
-                .padding(.trailing, 12)
-        }
-        .padding(.horizontal, 30)
-        .padding(.vertical, 22)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background { Atmosphere() }
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-
-    private var isListening: Bool {
-        if case .listening = model.dictation.phase { return true }
-        return false
-    }
-
-    private var subtitle: String {
-        switch model.dictation.phase {
-        case .listening: return model.dictation.isMicrophoneReady ? "Listening…" : "Starting microphone…"
-        case .finishing: return "Writing it out…"
-        default: return model.isSetUp ? "Your words, spelled your way, in any app — and remembered by every AI you use."
-                                      : "Three steps and your voice works in every app on this Mac."
-        }
-    }
-
-    private var partOfDay: String {
-        switch Calendar.current.component(.hour, from: Date()) {
-        case 5..<12: return "Good morning"
-        case 12..<18: return "Good afternoon"
-        default: return "Good evening"
-        }
-    }
-
-    private var firstName: String { NSFullUserName().split(separator: " ").first.map(String.init) ?? "Hi" }
-}
-
-private struct HeroKey: View {
-    let label: String
-    init(_ label: String) { self.label = label }
-    var body: some View {
-        Text(label).font(.system(size: 12, weight: .semibold, design: .rounded)).foregroundStyle(.white)
-            .padding(.horizontal, 7).frame(height: 22)
-            .background(.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
 
@@ -298,82 +149,6 @@ private struct StreakDots: View {
     }
 }
 
-// MARK: - Live words
-
-/// What you're saying right now, word by word, over the microphone's waveform.
-private struct LiveCard: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            CardHead(title: "Right now") { LiveBadge(label: label, live: model.isSetUp) }
-            Text(text)
-                .font(.system(size: 14, weight: isLive ? .medium : .regular))
-                .foregroundStyle(isLive ? Theme.text : Theme.secondary)
-                .lineLimit(3)
-                .frame(maxWidth: .infinity, minHeight: 40, alignment: .topLeading)
-                .contentTransition(.interpolate)
-                .animation(.easeOut(duration: 0.12), value: model.dictation.liveText)
-            ListeningWave(active: isLive, levels: model.dictation.levels).frame(height: 22)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-        .hoverLift()
-    }
-
-    private var isLive: Bool {
-        if case .listening = model.dictation.phase { return true }
-        return false
-    }
-
-    private var label: String {
-        switch model.dictation.phase {
-        case .listening: return model.dictation.isMicrophoneReady ? "listening" : "starting"
-        case .finishing: return "writing"
-        default: return model.isSetUp ? "ready" : "setup"
-        }
-    }
-
-    private var text: String {
-        switch model.dictation.phase {
-        case .listening: return model.dictation.isMicrophoneReady ? (model.dictation.liveText.isEmpty ? "Listening…" : model.dictation.liveText) : "Starting microphone…"
-        case .finishing: return model.dictation.liveText.isEmpty ? "Writing it out…" : model.dictation.liveText
-        case .done(let message, _): return message
-        case .idle: return "Hold \(model.fnKeyIsFree ? "fn" : "⌃⌘") in any app and your words appear here as you say them."
-        }
-    }
-}
-
-private struct ListeningWave: View {
-    let active: Bool
-    let levels: [CGFloat]
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30, paused: false)) { context in
-            let time = context.date.timeIntervalSinceReferenceDate
-            Canvas { canvas, size in
-                let count = 48
-                let recent = Array(levels.suffix(count))
-                let step = size.width / CGFloat(count - 1)
-                var path = Path()
-                for index in 0..<count {
-                    let x = CGFloat(index) * step
-                    let idle = sin(time * 1.4 + Double(index) * 0.28) * 0.12
-                    let level = active && index < recent.count ? Double(recent[index]) : 0
-                    let amplitude = active ? max(0.08, level * 1.4) : 0.6
-                    let y = size.height / 2 + CGFloat((active ? sin(Double(index) * 0.9 + time * 9) * amplitude : idle * amplitude)) * size.height / 2
-                    index == 0 ? path.move(to: CGPoint(x: x, y: y)) : path.addLine(to: CGPoint(x: x, y: y))
-                }
-                canvas.stroke(path, with: .linearGradient(
-                    Gradient(colors: [Theme.brand.opacity(0.15), active ? Theme.live : Theme.brand, Theme.brand.opacity(0.15)]),
-                    startPoint: .zero, endPoint: CGPoint(x: size.width, y: 0)), lineWidth: 1.5)
-            }
-        }
-        .accessibilityHidden(true)
-    }
-}
-
-/// Before the first dictation: a field on Home to try it, right here.
 private struct PracticeCard: View {
     @EnvironmentObject private var model: AppModel
     @FocusState private var focused: Bool
@@ -495,137 +270,6 @@ private struct TimelineRow: View {
         case .kept: return Theme.warning
         case .undone: return Theme.tertiary
         default: return Theme.accent
-        }
-    }
-}
-
-// MARK: - Chart
-
-/// Words per day: bars rise one after another, today glows, a hover shows the count.
-private struct DayChart: View {
-    let values: [Double]
-    @State private var risen = false
-    @State private var hovered: Int?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            CardHead(title: "Last 14 days") {
-                Text(hovered.map { "\(Int(values[$0])) words" } ?? "\(Int(values.reduce(0, +)).formatted()) words")
-                    .font(.system(size: 12, weight: .medium)).monospacedDigit().foregroundStyle(Theme.tertiary)
-                    .contentTransition(.numericText())
-            }
-            let top = max(values.max() ?? 0, 1)
-            HStack(alignment: .bottom, spacing: 5) {
-                ForEach(values.indices, id: \.self) { index in
-                    let today = index == values.count - 1
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(values[index] > 0
-                              ? AnyShapeStyle(LinearGradient(colors: today ? [Theme.live, Theme.live.opacity(0.6)] : [Theme.accent, Theme.accent.opacity(0.45)],
-                                                             startPoint: .top, endPoint: .bottom))
-                              : AnyShapeStyle(Theme.text.opacity(0.07)))
-                        .frame(height: max(4, (risen ? values[index] / top : 0) * 54))
-                        .frame(maxWidth: .infinity, maxHeight: 54, alignment: .bottom)
-                        .shadow(color: today && values[index] > 0 ? Theme.live.opacity(0.5) : .clear, radius: 6)
-                        .opacity(hovered == nil || hovered == index ? 1 : 0.45)
-                        .animation(Theme.settle.delay(Double(index) * 0.03), value: risen)
-                        .onHover { hovered = $0 ? index : (hovered == index ? nil : hovered) }
-                }
-            }
-            .frame(height: 54)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-        .hoverLift()
-        .onAppear { risen = true }
-    }
-}
-
-// MARK: - Apps ring
-
-/// Where you dictate: a ring that draws in, a segment per app, its color in the legend.
-private struct AppRing: View {
-    let apps: [(app: String, count: Int, bundleID: String?)]
-    @State private var drawn: CGFloat = 0
-    private let palette = [Theme.accent, Theme.live, Color(hex: 0xE0A458), Color(hex: 0xB48EE0), Color(hex: 0xE07A7A), Color(hex: 0x8AA0B4)]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            CardHead("Where you dictate")
-            if apps.isEmpty {
-                Text("The apps you dictate into, and how much, show up here.").font(.system(size: 12)).foregroundStyle(Theme.secondary)
-                Spacer(minLength: 0)
-            } else {
-                let total = Double(apps.reduce(0) { $0 + $1.count })
-                HStack(alignment: .center, spacing: 14) {
-                    ZStack {
-                        ForEach(apps.indices, id: \.self) { index in
-                            let start = apps.prefix(index).reduce(0.0) { $0 + Double($1.count) } / total
-                            let end = start + Double(apps[index].count) / total
-                            Circle().trim(from: start * drawn, to: end * drawn)
-                                .stroke(palette[index % palette.count], style: StrokeStyle(lineWidth: 10, lineCap: .butt))
-                                .rotationEffect(.degrees(-90))
-                        }
-                        Text("\(Int(total))").font(.system(size: 15, weight: .semibold)).monospacedDigit().foregroundStyle(Theme.text)
-                    }
-                    .frame(width: 74, height: 74)
-                    // A long app list scrolls inside the card instead of stretching it.
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(apps.indices, id: \.self) { index in
-                                HStack(spacing: 7) {
-                                    Circle().fill(palette[index % palette.count]).frame(width: 8, height: 8)
-                                    Text(apps[index].app).font(.system(size: 12)).foregroundStyle(Theme.text).lineLimit(1)
-                                    Spacer(minLength: 4)
-                                    Text("\(apps[index].count)").font(.system(size: 12)).monospacedDigit().foregroundStyle(Theme.tertiary)
-                                }
-                            }
-                        }
-                    }
-                    .scrollIndicators(.automatic)
-                    .frame(minHeight: 74)
-                }
-                .frame(maxHeight: .infinity, alignment: .top)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .card()
-        .hoverLift()
-        .onAppear { withAnimation(.easeOut(duration: 1.0).delay(0.2)) { drawn = 1 } }
-    }
-}
-
-// MARK: - Memory
-
-/// What Enkeon knows for you — the part no other dictation app has.
-private struct MemoryCard: View {
-    @EnvironmentObject private var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            CardHead(title: "Your memory") {
-                LiveBadge(label: model.account.isSignedIn ? "connected" : "not connected", live: model.account.isSignedIn)
-            }
-            if model.account.isSignedIn {
-                fact("Brain", "\(model.enkeonTerms.count)", "projects spelled right")
-                fact("BookOpenText", "\(model.vocabularyTerms.count + model.learned.count)", "words you taught it")
-                fact("NotePencil", "\(model.history.notesThisWeek)", "notes saved this week")
-            } else {
-                Text("Connect Enkeon and dictation knows your projects and people, and ⇧ saves what you say for every AI you use.")
-                    .font(.system(size: 12)).foregroundStyle(Theme.secondary)
-                Button("Connect") { model.page = .connections }.buttonStyle(PrimaryButton())
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-        .hoverLift()
-    }
-
-    private func fact(_ icon: String, _ value: String, _ label: String) -> some View {
-        HStack(spacing: 8) {
-            PhosphorIcon(name: icon, size: 15).foregroundStyle(Theme.accent).frame(width: 18)
-            Text(value).font(.system(size: 15, weight: .semibold)).monospacedDigit().foregroundStyle(Theme.text)
-                .contentTransition(.numericText())
-            Text(label).font(.system(size: 12)).foregroundStyle(Theme.secondary).lineLimit(1)
         }
     }
 }

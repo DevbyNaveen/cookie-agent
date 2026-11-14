@@ -12,9 +12,9 @@ struct PageColumn<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) { content }
             .frame(maxWidth: 940, maxHeight: .infinity, alignment: .topLeading)
-            .padding(.horizontal, 30)
-            .padding(.top, 30)
-            .padding(.bottom, 20)
+            .padding(.horizontal, 22)
+            .padding(.top, 14)
+            .padding(.bottom, 18)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
@@ -86,90 +86,7 @@ struct TabStrip<Tab: Hashable, Tools: View>: View {
     }
 }
 
-/// The hero: an atmosphere in Enkeon's colors, a serif headline, what the page is for, examples and one action.
-struct HeroBanner<Content: View>: View {
-    let headline: Text
-    let message: String
-    var dismissKey: String? = nil
-    @ViewBuilder var content: Content
-    @State private var dismissed = false
-
-    var body: some View {
-        if !dismissed {
-            VStack(alignment: .leading, spacing: 14) {
-                headline
-                    .font(.system(size: 30, weight: .regular, design: .serif))
-                    .tracking(-0.6)
-                    .foregroundStyle(.white)
-                Text(message)
-                    .font(.system(size: 13.5))
-                    .foregroundStyle(.white.opacity(0.86))
-                    .fixedSize(horizontal: false, vertical: true)
-                content
-            }
-            .padding(.horizontal, 34)
-            .padding(.vertical, 30)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background { Atmosphere() }
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(alignment: .topTrailing) {
-                if let dismissKey {
-                    Button {
-                        withAnimation(Theme.settle) { dismissed = true }
-                        UserDefaults.standard.set(true, forKey: dismissKey)
-                    } label: {
-                        PhosphorIcon(name: "X", size: 13).foregroundStyle(.white.opacity(0.85))
-                            .frame(width: 26, height: 26).background(.white.opacity(0.14), in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(14)
-                    .help("Hide")
-                }
-            }
-            .onAppear { dismissed = dismissKey.map { UserDefaults.standard.bool(forKey: $0) } ?? false }
-            .transition(.opacity.combined(with: .scale(scale: 0.98)))
-        }
-    }
-}
-
-/// A slow mesh of Enkeon teal, deep ink and a warm amber glow — light through frosted glass.
-struct Atmosphere: View {
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 20)) { context in
-            let t = Float(context.date.timeIntervalSinceReferenceDate)
-            let drift = (sin(t * 0.18) * 0.08, cos(t * 0.14) * 0.07)
-            MeshGradient(width: 3, height: 3, points: [
-                [0, 0], [0.5, 0], [1, 0],
-                [0, 0.5], [0.45 + drift.0, 0.5 + drift.1], [1, 0.5],
-                [0, 1], [0.5, 1], [1, 1],
-            ], colors: [
-                Color(hex: 0x0F2A35), Color(hex: 0x1F5468), Color(hex: 0x3B2A1E),
-                Color(hex: 0x173C4A), Color(hex: 0x2F7A9C), Color(hex: 0x8A5A32),
-                Color(hex: 0x0B1B22), Color(hex: 0x24485A), Color(hex: 0x5A3B24),
-            ])
-        }
-        .overlay(LinearGradient(colors: [.black.opacity(0.25), .clear], startPoint: .leading, endPoint: .trailing))
-    }
-}
-
-/// A chip on a hero: frosted, white text.
-struct HeroChip: View {
-    let text: String
-    var italic = false
-
-    var body: some View {
-        Text(text)
-            .font(.system(size: 13, weight: .medium))
-            .italic(italic)
-            .foregroundStyle(.white.opacity(0.92))
-            .lineLimit(1)
-            .padding(.horizontal, 12)
-            .frame(height: 30)
-            .background(.white.opacity(0.13), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-}
-
-/// The hero's action: a dark, solid button over the atmosphere.
+/// A dark, solid action button.
 struct HeroButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label

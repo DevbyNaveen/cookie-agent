@@ -57,26 +57,20 @@ struct CookieWordsSection: View {
                 ForEach(tabs) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented).labelsHidden().fixedSize()
-            .padding(.top, 14).padding(.bottom, 6)
-            GeometryReader { space in
-                ScrollView {
-                    Group {
-                        switch page {
-                        case .home: HomeView(openDictionary: { model.page = .dictionary })
-                        case .dictionary: DictionaryView()
-                        case .snippets: SnippetsView()
-                        case .styles: StylesView()
-                        case .notes: NotesView()
-                        case .context: ContextView()
-                        default: EmptyView()
-                        }
-                    }
-                    // Voice's pages were laid out for its 560pt-tall window; Cookie's console is shorter,
-                    // so each page keeps that height and the section scrolls.
-                    .frame(maxWidth: .infinity)
-                    .frame(height: max(space.size.height, 600))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 22).padding(.top, 14)
+            Group {
+                switch page {
+                case .home: HomeView()
+                case .dictionary: DictionaryView()
+                case .snippets: SnippetsView()
+                case .styles: StylesView()
+                case .notes: NotesView()
+                case .context: ContextView()
+                default: EmptyView()
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .environmentObject(model)
     }
