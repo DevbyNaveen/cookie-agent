@@ -21,7 +21,9 @@ fi
 # Your Developer ID (security find-identity -v -p codesigning) keeps the signature
 # stable across rebuilds; without one the app is signed ad hoc (macOS then asks for
 # its permissions again after each rebuild).
-SIGN_ID="${COOKIE_SIGN_ID:--}"
+# With none set, the first Apple Development or Developer ID identity in the keychain is used.
+SIGN_ID="${COOKIE_SIGN_ID:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development|Developer ID Application/ {print $2; exit}')}"
+SIGN_ID="${SIGN_ID:--}"
 TIMESTAMP=""; [ "$1" = "--release" ] && TIMESTAMP="--timestamp"
 # scripts/sdk.sh says why the SDK matters (empty: Xcode's own default).
 if [ -n "$APP_SDK" ]; then SDKROOT="$APP_SDK" swift build -c release --build-system native
