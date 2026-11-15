@@ -24,8 +24,9 @@ struct NotchNotice: Equatable {
     let failed: Bool
     /// Words Enkeon couldn't confirm typing: the notice offers Copy and stays until acted on.
     var copyText: String? = nil
+    var apprenticePatternID: String? = nil
 
-    var keepsUntilActed: Bool { copyText != nil }
+    var keepsUntilActed: Bool { copyText != nil || apprenticePatternID != nil }
     static func recovery(_ text: String) -> NotchNotice {
         NotchNotice(threadID: UUID(), title: "Dictation", message: "Not typed: the field changed or couldn't confirm it. Copy your words.",
                     failed: true, copyText: text)
@@ -90,6 +91,7 @@ final class NotchPanelManager {
     private var transitionGeneration = 0
     private var agentDock: CookieAgentDock?
     private var proofMeter: CookieProofMeter?
+    private lazy var apprenticeIndicator = CookieApprenticeIndicator()
     private lazy var windowController = CookieWindowController(companionManager: companionManager, navigation: navigation)
 
     init(companionManager: CompanionManager) {
@@ -119,6 +121,21 @@ final class NotchPanelManager {
         agentDock = CookieAgentDock()
         // The "Sent 1 screen" pill under the notch; it opens Settings → Privacy → Proof.
         proofMeter = CookieProofMeter { [weak self] in self?.showHome(settingsPage: .privacy) }
+        _ = apprenticeIndicator
+        CookieApprentice.shared.onOffer = { [weak self] offer in
+            self?.show(NotchNotice(threadID: UUID(), title: "Cookie noticed a pattern", message: offer.pattern.offerText,
+                                   failed: false, apprenticePatternID: offer.id))
+        }
+        CookieApprentice.shared.onSchedule = { [weak self] skillName in
+            guard let self else { return }
+            self.navigation.settingsPage = nil
+            self.navigation.agentPage = nil
+            self.navigation.showsWorkComposer = false
+            self.navigation.section = .chats
+            self.companionManager.newThread()
+            self.companionManager.sendTypedMessage("Help me schedule my taught task ‘\(skillName)’. Ask me what days and time, then use the existing routine approval. Do not run the task until I approve the normal start_task plan.")
+            self.setState(.home)
+        }
         NotificationCenter.default.publisher(for: CookieAgentDock.openThread)
             .receive(on: RunLoop.main)
             .sink { [weak self] note in self?.openThread(note.object as? UUID) }
@@ -684,7 +701,14 @@ struct NotchIslandView: View {
                            voiceState: companionManager.voiceState,
                            stop: companionManager.stopResponse,
                            open: { openThread(notice.threadID) },
-                           dismiss: { setState(.closed) })
+                           acceptApprentice: {
+                               if let id = notice.apprenticePatternID { CookieApprentice.shared.acceptOffer(id) }
+                               setState(.closed)
+                           },
+                           dismiss: {
+                               if let id = notice.apprenticePatternID { CookieApprentice.shared.dismissOffer(id) }
+                               setState(.closed)
+                           })
                     .transition(contentTransition)
             }
         }
@@ -949,6 +973,7 @@ private struct NoticeView: View {
     let voiceState: CompanionVoiceState
     let stop: () -> Void
     let open: () -> Void
+    let acceptApprentice: () -> Void
     let dismiss: () -> Void
 
     var body: some View {
@@ -975,6 +1000,9 @@ private struct NoticeView: View {
                         if notice.copyText != nil {
                             PillButton(title: "Dismiss") { CookieDictation.shared.controller.dismissRecovery(); dismiss() }
                             PillButton(title: "Copy", primary: true) { CookieDictation.shared.controller.copyLast(); dismiss() }
+                        } else if notice.apprenticePatternID != nil {
+                            PillButton(title: "Later", action: dismiss)
+                            PillButton(title: "Yes, teach it", primary: true, action: acceptApprentice)
                         } else {
                             PillButton(title: "Dismiss", action: dismiss)
                             PillButton(title: "Open", primary: true, action: open)

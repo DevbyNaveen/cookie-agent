@@ -708,6 +708,7 @@ private struct AboutPage: View {
 
 private struct PrivacyPage: View {
     @ObservedObject var companionManager: CompanionManager
+    @ObservedObject private var apprentice = CookieApprentice.shared
     @AppStorage(Redactor.hideSecretsKey) private var hideSecrets = true
     @AppStorage(Redactor.blurFacesKey) private var blurFaces = true
     @AppStorage(ChatLock.enabledKey) private var requireTouchID = false
@@ -762,6 +763,22 @@ private struct PrivacyPage: View {
             }
             SettingsRow(title: "Faces", caption: "Faces on screen are blurred. Cookie never tries to recognise who someone is.", divider: false) {
                 SettingsSwitch(title: "Blur faces", isOn: $blurFaces)
+            }
+        }
+
+        SettingsGroup(label: "Shadow apprentice") {
+            SettingsRow(title: "Notice repeated tasks", caption: apprentice.problem ?? (apprentice.isRecording
+                        ? "Noticing control labels and shortcuts. Typed content stays a placeholder; history stays on this Mac for 7 days and is never uploaded. Press Esc to stop."
+                        : "Off by default. When enabled, Cookie notices control labels, app names and shortcuts; typed content is a placeholder. History stays on this Mac for 7 days and is never uploaded."),
+                        symbol: "eye.badge.checkmark", tint: CK.accent) {
+                HStack(spacing: 8) {
+                    if apprentice.problem != nil {
+                        PillButton(title: "Permissions…") { apprentice.openPermissionSettings() }
+                        PillButton(title: "Retry") { apprentice.retryPermissions() }
+                    }
+                    SettingsSwitch(title: "Notice repeated tasks", isOn: Binding(
+                        get: { apprentice.isEnabled }, set: { apprentice.setEnabled($0) }))
+                }
             }
         }
 

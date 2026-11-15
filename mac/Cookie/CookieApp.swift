@@ -58,11 +58,13 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
             openSettings: { [weak self] in self?.openCookie(settingsPage: .general) },
             openShortcuts: { [weak self] in self?.openCookie(settingsPage: .shortcuts) },
             openSetup: { [weak self] in self?.setupController?.show() })
+        CookieApprentice.shared.startIfEnabled()
         if !companionManager.hasCompletedOnboarding { setupController?.show() }
         // ponytail: no auto login item — the user opts in later from settings
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        CookieApprentice.shared.stopForTermination()
         companionManager.stop()
     }
 
