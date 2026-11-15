@@ -50,6 +50,14 @@ public final class EnkeonClient {
         ])
     }
 
+    public func recallDecisions(query: String, topK: Int = 8) async throws -> String {
+        try await call("recall", [
+            "query": query, "top_k": min(20, max(1, topK)), "since": NSNull(), "until": NSNull(),
+            "type": "decision", "state": NSNull(), "workspace": NSNull(), "branch": NSNull(),
+            "budget_tokens": NSNull(), "as_of": NSNull(), "check": NSNull(), "folder": NSNull(),
+        ])
+    }
+
     public func recallMeeting(query: String, branch: String?) async throws -> String {
         try await call("recall", ["query": query, "top_k": 3, "branch": branch.map { $0 as Any } ?? NSNull(), "workspace": NSNull(),
             "since": NSNull(), "until": NSNull(), "type": NSNull(), "state": NSNull(), "budget_tokens": 1200,

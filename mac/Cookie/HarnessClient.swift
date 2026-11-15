@@ -244,7 +244,7 @@ final class HarnessClient {
         let request = HarnessRequest.Run(
             id: "cookie-\(runCounter)", model: model, input: text, instructions: instructions,
             // open, and the Mac tools: acting needs a task the person approved.
-            tools: (backgroundProject ? [] : [CookieOpen.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieHistorySearch.tool, CookieRoutineWords.tool] + MacOperator.tools) + (workspaceThreadID == nil ? [] : [CookieWorkspaceTool.tool]),
+            tools: (backgroundProject ? [] : [CookieOpen.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieHistorySearch.tool, CookieDecisionRecall.tool, CookieRoutineWords.tool] + MacOperator.tools) + (workspaceThreadID == nil ? [] : [CookieWorkspaceTool.tool]),
             images: images,
             history: history,
             // On: left out, so the helper uses ENKEON_API_KEY from its environment.
@@ -510,6 +510,14 @@ final class HarnessClient {
                 Task { @MainActor in
                     let answer = CookieHistorySearch.answer(args["query"] as? String ?? "")
                     run.onStep("Searching local Cookie history")
+                    self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: answer, is_error: false)))
+                }
+                return
+            }
+            if name == CookieDecisionRecall.tool.name {
+                Task { @MainActor in
+                    let answer = await CookieDecisionRecall.answer(args["query"] as? String ?? "")
+                    run.onStep("Checking past decisions")
                     self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: answer, is_error: false)))
                 }
                 return
