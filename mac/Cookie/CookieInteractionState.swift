@@ -64,7 +64,7 @@ struct NotchLayout {
         let preferredSize: CGSize
         switch state {
         case .closed:
-            preferredSize = CGSize(width: notchSize.width + 12 + (voiceActive ? 196 : 0), height: notchSize.height)
+            preferredSize = CGSize(width: notchSize.width + 12 + (voiceActive ? 236 : 0), height: notchSize.height)
         case .peek:
             preferredSize = CGSize(width: 488, height: CookiePeekMetrics.height(header: max(notchSize.height, 32)))
         case .home:

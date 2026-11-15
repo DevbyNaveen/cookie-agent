@@ -8,7 +8,7 @@ enum CookieDictationFaceTests {
     static func run() {
         typealias F = NotchVoiceFace
         precondition(F.face(phase: .listening(handsFree: false), editScope: nil, toMemory: false, cookieActive: false) == .words(label: "Listening"))
-        precondition(F.face(phase: .listening(handsFree: false), editScope: nil, toMemory: true, cookieActive: false) == .words(label: "Listening, saving to memory"))
+        precondition(F.face(phase: .listening(handsFree: false), editScope: nil, toMemory: true, cookieActive: false) == .words(label: "To memory"))
         precondition(F.face(phase: .listening(handsFree: false), editScope: "Editing selection", toMemory: false, cookieActive: false) == .words(label: "Editing selection"))
         precondition(F.face(phase: .finishing, editScope: nil, toMemory: false, cookieActive: false) == .words(label: "Writing"))
         precondition(F.face(phase: .idle, editScope: nil, toMemory: false, cookieActive: true) == .cookie)

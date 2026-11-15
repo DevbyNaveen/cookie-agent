@@ -157,6 +157,17 @@ final class NotchPanelManager {
             self?.show(NotchNotice(threadID: UUID(), title: "Cookie \(release.version) is ready", message: notes.isEmpty ? "Restart to update." : notes,
                                    failed: false, updateVersion: release.version))
         }
+        // A meeting is about to start: one subscription for the app's life.
+        CookieCalendar.shared.$pendingBrief.receive(on: DispatchQueue.main).sink { [weak self] brief in
+            guard let self, let brief else { return }
+            if let current = self.model.notice, current.meetingBrief?.meeting.id == brief.meeting.id {
+                self.model.notice = NotchNotice(threadID: current.threadID, title: current.title,
+                                                message: brief.noticeMessage, failed: false, meetingBrief: brief)
+                return
+            }
+            self.show(NotchNotice(threadID: UUID(), title: "Meeting in 2 min · " + brief.meeting.title,
+                                  message: brief.noticeMessage, failed: false, meetingBrief: brief))
+        }.store(in: &cancellables)
         CookieApprentice.shared.onSchedule = { [weak self] skillName in
             guard let self else { return }
             self.navigation.settingsPage = nil
@@ -326,7 +337,7 @@ final class NotchPanelManager {
     }
 
     private func islandRect(_ state: NotchState) -> NSRect {
-        let size = model.size(state, voiceActive: companionManager.voiceState != .idle || companionManager.dictationFace != .none)
+        let size = model.size(state, voiceActive: state == .closed && (companionManager.voiceState != .idle || companionManager.dictationFace != .none))
         return NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - model.layout.topInset(for: state) - size.height,
                       width: size.width, height: size.height)
     }
@@ -378,11 +389,15 @@ final class NotchPanelManager {
         } completion: { [weak self] in
             guard let self, self.transitionGeneration == generation,
                   self.model.state != .home, self.panel.isKeyWindow else { return }
-            // Return the keyboard only once the island has settled. Ordering the
-            // panel out mid-collapse used to expose the outgoing content layers.
-            self.panel.orderOut(nil)
-            self.panel.orderFrontRegardless()
-            self.updateMousePassThrough(at: NSEvent.mouseLocation)
+            // Return the keyboard once the island has settled, without taking the panel off
+            // screen (ordering it out and back blinked the whole notch for a frame).
+            if let front = NSWorkspace.shared.frontmostApplication, front != .current { front.activate() }
+            else { NSApp.windows.first { $0 !== self.panel && $0.isVisible && $0.canBecomeKey }?.makeKey() }
+            DispatchQueue.main.async {
+                // ponytail: fallback when the app above didn't take the keyboard back.
+                if self.panel.isKeyWindow { self.panel.orderOut(nil); self.panel.orderFrontRegardless() }
+                self.updateMousePassThrough(at: NSEvent.mouseLocation)
+            }
         }
         if state == .home { panel.makeKey() }
         updateMousePassThrough(at: NSEvent.mouseLocation)
@@ -412,16 +427,6 @@ final class NotchPanelManager {
     private func popOut() {
         setState(.closed)
         windowController.show()
-        CookieCalendar.shared.$pendingBrief.receive(on: DispatchQueue.main).sink { [weak self] brief in
-            guard let self, let brief else { return }
-            if let current = self.model.notice, current.meetingBrief?.meeting.id == brief.meeting.id {
-                self.model.notice = NotchNotice(threadID: current.threadID, title: current.title,
-                                                message: brief.noticeMessage, failed: false, meetingBrief: brief)
-                return
-            }
-            self.show(NotchNotice(threadID: UUID(), title: "Meeting in 2 min · " + brief.meeting.title,
-                                  message: brief.noticeMessage, failed: false, meetingBrief: brief))
-        }.store(in: &cancellables)
     }
 
     /// A notification was clicked: show that chat.
@@ -719,7 +724,6 @@ struct NotchIslandView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(CK.spring, value: voiceActive)
-        .animation(CK.spring, value: model.threadCount)
         .onChange(of: companionManager.lastCaptureAt) { _, _ in
             withAnimation(.easeOut(duration: 0.12)) { capturing = true }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -818,7 +822,8 @@ private struct LiveActivity: View {
                                     waited: timeline.date.timeIntervalSince(stepChangedAt))
             HStack(spacing: 0) {
                 LiveStatusLabel(status: status)
-                    .frame(maxWidth: .infinity)
+                    .padding(.trailing, 10)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
                 Color.clear.frame(width: notchWidth)
                 HStack(spacing: 3) {
                     Group {
@@ -839,7 +844,8 @@ private struct LiveActivity: View {
                     .buttonStyle(.plain).cookiePointingCursor().help("Stop · Escape")
                     .accessibilityLabel("Stop Cookie")
                 }
-                .frame(maxWidth: .infinity)
+                .padding(.leading, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .animation(CK.spring, value: status)
         }

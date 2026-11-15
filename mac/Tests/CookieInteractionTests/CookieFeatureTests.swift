@@ -158,7 +158,7 @@ enum CookieFeatureTests {
         precondition(word(.processing, "Searching the web") == "Searching" && word(.processing, "Reading a page") == "Reading")
         precondition(word(.processing, "Checking a quote") == "Checking" && word(.processing, "Using calendar") == "Working")
         precondition(word(.processing, "Thinking") == "Thinking" && word(.processing, nil, LiveStatus.harderAfter) == "Thinking harder")
-        // Every word fits its side of the notch: the narrowest live width leaves (196 + 12) / 2 pt a side.
+        // Every word fits its side of the notch: the narrowest live width leaves (236 + 12) / 2 pt a side.
         for w in ["Listening", "Speaking", "Looking", "Searching", "Reading", "Checking", "Writing", "Working", "Thinking harder"] {
             let width = (w as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold)]).width
             precondition(width + 13 < 104, "\(w) is \(width) pt")

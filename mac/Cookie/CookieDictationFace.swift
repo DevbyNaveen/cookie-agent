@@ -17,7 +17,7 @@ enum NotchVoiceFace: Equatable {
         switch phase {
         case .listening:
             if let editScope { return .words(label: editScope) }
-            return .words(label: toMemory ? "Listening, saving to memory" : "Listening")
+            return .words(label: toMemory ? "To memory" : "Listening")
         case .finishing:
             return .words(label: "Writing")
         case .idle, .done:
@@ -46,13 +46,15 @@ struct DictationLiveActivity: View {
             HStack(spacing: 6) {
                 FluidOrb(energy: dictation.level, palette: dictation.toMemory ? .memory : .listening)
                     .frame(width: 16, height: 16)
-                Text(label).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                Text(label).font(.system(size: 11, weight: .medium)).lineLimit(1).truncationMode(.tail)
             }
-            .frame(maxWidth: .infinity)
+            .padding(.trailing, 10)
+            .frame(maxWidth: .infinity, alignment: .trailing)
             Color.clear.frame(width: notchWidth)
             Text(NotchVoiceFace.tail(dictation.liveText, limit: 28))
-                .font(.system(size: 11)).foregroundStyle(CK.secondary).lineLimit(1)
-                .frame(maxWidth: .infinity)
+                .font(.system(size: 11)).foregroundStyle(CK.secondary).lineLimit(1).truncationMode(.head)
+                .padding(.leading, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .foregroundStyle(CK.text)
         .accessibilityElement(children: .combine)

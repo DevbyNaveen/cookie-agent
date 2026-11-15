@@ -62,6 +62,7 @@ struct CookieChatView: View {
                     .padding(.bottom, 10)
                     .transition(.opacity.combined(with: .offset(y: 10)))
             }
+            VStack(spacing: 0) {
             if let approval = companionManager.pendingApproval {
                 Group {
                     if approval.actions.count == 1 {
@@ -75,6 +76,8 @@ struct CookieChatView: View {
                     .transition(.asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.97, anchor: .bottom)).combined(with: .offset(y: 10)),
                                             removal: .opacity.combined(with: .scale(scale: 0.98, anchor: .bottom))))
             }
+            }
+            .animation(CK.spring, value: companionManager.pendingApproval)
             CookieComposer(companionManager: companionManager,
                            draft: companionManager.drafts.draft(for: companionManager.currentThreadID),
                            availableWidth: max(0, conversationWidth - (roomy ? 56 : 36)))
@@ -111,7 +114,6 @@ struct CookieChatView: View {
             return true
         }
         .animation(CK.quick, value: dropTargeted)
-        .animation(CK.spring, value: companionManager.pendingApproval)
         .cookieMotionPreferences()
     }
 }
@@ -173,6 +175,7 @@ private struct MessageList: View {
     @State private var followsLatest = true
     @State private var userIsScrolling = false
     @State private var isNearBottom = true
+    @State private var lastStreamScroll = Date.distantPast
 
     var body: some View {
         let messages = companionManager.chatMessages
@@ -190,6 +193,7 @@ private struct MessageList: View {
                         MessageRow(message: message, isLast: index == messages.count - 1,
                                    navigation: navigation, onShowScreen: onShowScreen, onScreenAccess: onScreenAccess,
                                    onSuggestion: onSuggestion)
+                            .equatable()
                             .id(message.id)
                             .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 8)), removal: .opacity))
                     }
@@ -223,7 +227,12 @@ private struct MessageList: View {
                 scrollToEnd(proxy)
             }
             .onChange(of: companionManager.workingStep) { _, _ in scrollToEnd(proxy) }
-            .onChange(of: companionManager.streamingText) { _, _ in scrollToEnd(proxy) }
+            .onChange(of: companionManager.streamingText) { _, _ in
+                // Per token, the list measured and jumped; a few times a second reads as smooth.
+                guard Date().timeIntervalSince(lastStreamScroll) > 0.08 else { return }
+                lastStreamScroll = Date()
+                scrollToEnd(proxy)
+            }
         }
     }
 
@@ -241,7 +250,8 @@ private struct MessageList: View {
     }
 }
 
-struct MessageRow: View {
+struct MessageRow: View, Equatable {
+    static func == (a: MessageRow, b: MessageRow) -> Bool { a.message == b.message && a.isLast == b.isLast }
     let message: CompanionChatMessage
     let isLast: Bool
     @ObservedObject var navigation: CookieNavigation
