@@ -11,7 +11,9 @@
 //  small picture of the area round the pointer go too. Let go, or move off,
 //  and it fades. Never a blocked app, a password field, or while a password
 //  is being typed: those get "Cookie doesn't read this" and no model call.
-//  Nothing is read until the person holds the keys.
+//  Nothing is read until the person holds the keys. Over a name, a ticket or
+//  an amount, what the person's Enkeon knows about it takes the pill's place
+//  (CookieMemoryCursor.swift).
 //
 
 import AppKit
@@ -40,6 +42,8 @@ struct CookieHoverExplanation: Equatable {
     var text = ""
     /// Cookie doesn't read here: no outline, no model call.
     var refused = false
+    /// What Enkeon knows about the name under the pointer; shown in place of the pill when there is some.
+    var memory: CookieMemoryCard?
 
     /// Where the hand's tip rests: just outside the element's lower right, or beside the pointer
     /// when the element is too big for its corner to be near what the person is looking at.
@@ -62,6 +66,8 @@ struct CookieHoverReading {
     var cacheKey: String?
     /// No words to go on: a picture of the area round the pointer goes instead.
     var needsPicture = false
+    /// A name, ticket or amount under the pointer, for Memory at your cursor.
+    var entity: CookieEntity?
 
     // ponytail: read on the main thread, like CookieDrawingResolver.controlFrame; AX calls are bounded
     // by the 0.2 s messaging timeout CaptureGuard sets on the system-wide element.
@@ -114,13 +120,17 @@ struct CookieHoverReading {
         if let underPointer {
             lines.append("Under the pointer: \"\(underPointer.sentence)\" (the word \"\(underPointer.word)\")")
         }
+        // The words under the pointer; else a short label, a contact's name in a list say.
+        let entity = underPointer.flatMap { CookieEntity.extract(from: $0.around, at: $0.index) }
+            ?? (label.split(separator: " ").count <= 4 ? CookieEntity.extract(from: label, at: 0) : nil)
 
         return CookieHoverReading(
             element: element,
             frame: CGRect(x: axFrame.minX, y: mainHeight - axFrame.maxY, width: axFrame.width, height: axFrame.height),
             context: hidingSecrets(lines.joined(separator: "\n")),
             cacheKey: label.isEmpty ? nil : "\(appName)|\(role)|\(label)",
-            needsPicture: label.isEmpty && value.isEmpty && help.isEmpty && underPointer == nil
+            needsPicture: label.isEmpty && value.isEmpty && help.isEmpty && underPointer == nil,
+            entity: entity
         )
     }
 
@@ -128,7 +138,7 @@ struct CookieHoverReading {
     /// `kAXRangeForPositionParameterizedAttribute` (a point, top-left global, in; the character's
     /// range out), then `kAXStringForRangeParameterizedAttribute` over ±300 characters round it.
     @MainActor
-    private static func textUnderPointer(_ element: AXUIElement, at topLeft: CGPoint) -> (word: String, sentence: String)? {
+    private static func textUnderPointer(_ element: AXUIElement, at topLeft: CGPoint) -> (word: String, sentence: String, around: String, index: Int)? {
         var point = topLeft
         guard let position = AXValueCreate(.cgPoint, &point),
               let rangeValue = CookieReadingPen.parameterized(element, kAXRangeForPositionParameterizedAttribute, position),
@@ -155,7 +165,7 @@ struct CookieHoverReading {
         }
         let word = enclosing(.byWords)
         guard !word.isEmpty else { return nil }
-        return (word, String(enclosing(.bySentences).prefix(300)))
+        return (word, String(enclosing(.bySentences).prefix(300)), text, index)
     }
 
     /// Card numbers, IBANs and keys never leave the Mac, as in screenshots (Privacy → hide secrets).
@@ -198,6 +208,9 @@ final class CookieHoverExplainer: ObservableObject {
 
     /// Its own helper, so a hover never cancels the reply in front of the person.
     private let harness = HarnessClient()
+    /// Memory at your cursor; the checks give it their own lookup.
+    var memory = CookieMemoryCursor.shared
+    private var recalling: Task<Void, Never>?
     private var timer: Timer?
     private var lastPointer = CGPoint.zero
     private var restingSince = Date()
@@ -242,6 +255,10 @@ final class CookieHoverExplainer: ObservableObject {
         guard let reading = CookieHoverReading.read(at: pointer) else { return }
         if let element, CFEqual(element, reading.element) { return }
         guard let display = NSScreen.screens.first(where: { $0.frame.contains(pointer) })?.frame else { return }
+        present(reading, pointer: pointer, display: display)
+    }
+
+    func present(_ reading: CookieHoverReading, pointer: CGPoint, display: CGRect) {
         clear()
         element = reading.element
         showOverlay()
@@ -252,6 +269,23 @@ final class CookieHoverExplainer: ObservableObject {
         }
         let shown = CookieHoverExplanation(frame: reading.frame, pointer: pointer, displayFrame: display)
         explanation = shown
+        // Both at once: the explanation as always, and Enkeon asked about the name under the pointer.
+        // A card that comes back replaces the pill (what the person knows about Anna says more than
+        // "a contact's name"); none, and the explanation was never held up.
+        if let entity = reading.entity {
+            recalling = Task { [weak self] in
+                guard let self, let card = await self.memory.card(for: entity),
+                      !Task.isCancelled, self.explanation?.id == shown.id else { return }
+                self.answer?.cancel()
+                self.answer = nil
+                if self.spoke {
+                    self.spoke = false
+                    self.stopSpeaking()
+                }
+                self.explanation?.memory = card
+                self.say(card.lines[0].text)
+            }
+        }
         if let key = reading.cacheKey, let known = cache[key] {
             explanation?.text = known
             say(known)
@@ -281,7 +315,7 @@ final class CookieHoverExplainer: ObservableObject {
                     self.explanation?.text = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(Self.maxCharacters))
                     if text.count > Self.maxCharacters { self.answer?.cancel() }
                 }
-                guard self.explanation?.id == shown.id else { return }
+                guard self.explanation?.id == shown.id, self.explanation?.memory == nil else { return }
                 let text = reply.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.explanation?.text = text
                 if let key = reading.cacheKey { self.cache[key] = text }
@@ -302,6 +336,8 @@ final class CookieHoverExplainer: ObservableObject {
     private func clear() {
         answer?.cancel()
         answer = nil
+        recalling?.cancel()
+        recalling = nil
         element = nil
         if spoke {
             spoke = false
@@ -337,31 +373,90 @@ struct CookieHoverLayer: View {
                         .id(explanation.id)
                         .transition(.opacity)
                 }
-                // Right of the hand, or left of it near the edge; whole inside the display's visible area.
-                CookieOnScreen(point: CGPoint(x: tip.x + 12, y: tip.y + 24), side: .leading, flipX: tip.x - 12,
-                               area: CookieMarksLayer.visibleArea(of: screenFrame)) { flipped in
-                    Text(explanation.text.isEmpty ? "…" : explanation.text)
-                        .font(.system(size: 11, weight: .semibold)).foregroundStyle(CookieMarksLayer.onInk)
-                        .lineLimit(2)
-                        .padding(.horizontal, 7).padding(.vertical, 3)
-                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(CookieMarksLayer.ink))
-                        .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
-                        // Background before the frame: the pill hugs its words, up to two lines this
-                        // wide, on the hand's side of the frame.
-                        .frame(width: Self.pillWidth, alignment: flipped ? .trailing : .leading)
+                if let memory = explanation.memory {
+                    // Under the cursor, where the eye already is.
+                    CookieMemoryCardPlacement(card: memory, pointer: local(explanation.pointer),
+                                              area: CookieMarksLayer.visibleArea(of: screenFrame))
+                        .id(explanation.id)
+                        .transition(.opacity)
+                } else {
+                    // Right of the hand, or left of it near the edge; whole inside the display's visible area.
+                    CookieOnScreen(point: CGPoint(x: tip.x + 12, y: tip.y + 24), side: .leading, flipX: tip.x - 12,
+                                   area: CookieMarksLayer.visibleArea(of: screenFrame)) { flipped in
+                        Text(explanation.text.isEmpty ? "…" : explanation.text)
+                            .font(.system(size: 11, weight: .semibold)).foregroundStyle(CookieMarksLayer.onInk)
+                            .lineLimit(2)
+                            .padding(.horizontal, 7).padding(.vertical, 3)
+                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(CookieMarksLayer.ink))
+                            .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
+                            // Background before the frame: the pill hugs its words, up to two lines this
+                            // wide, on the hand's side of the frame.
+                            .frame(width: Self.pillWidth, alignment: flipped ? .trailing : .leading)
+                    }
+                    .id(explanation.id)
+                    .transition(.opacity)
                 }
-                .id(explanation.id)
-                .transition(.opacity)
             }
         }
         .frame(width: screenFrame.width, height: screenFrame.height, alignment: .topLeading)
         .animation(.easeOut(duration: 0.15), value: explanation?.id)
+        .animation(.easeOut(duration: 0.15), value: explanation?.memory)
         .allowsHitTesting(false)
     }
 
     /// AppKit global (bottom-left) → this overlay's SwiftUI coordinates (top-left).
     private func local(_ point: CGPoint) -> CGPoint {
         CGPoint(x: point.x - screenFrame.minX, y: screenFrame.maxY - point.y)
+    }
+}
+
+/// The memory card with its top edge just below the pointer: CookieOnScreen centres on its point, so the
+/// card's measured height decides how far down that centre goes. Near the bottom of the display it is
+/// nudged up inside the visible area like every other pill.
+private struct CookieMemoryCardPlacement: View {
+    let card: CookieMemoryCard
+    let pointer: CGPoint
+    let area: CGRect
+    @State private var height: CGFloat = 0
+
+    var body: some View {
+        CookieOnScreen(point: CGPoint(x: pointer.x + 4, y: pointer.y + 22 + height / 2), side: .leading,
+                       flipX: pointer.x - 4, area: area) { _ in
+            CookieMemoryCardView(card: card)
+                .background(GeometryReader { geo in Color.clear.preference(key: CookieMemoryCardHeight.self, value: geo.size.height) })
+                .onPreferenceChange(CookieMemoryCardHeight.self) { height = $0 }
+        }
+    }
+}
+
+private struct CookieMemoryCardHeight: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// Memory at your cursor: the name, up to three lines of what Enkeon knows, and where it came from, in Cookie's ink.
+private struct CookieMemoryCardView: View {
+    let card: CookieMemoryCard
+    /// Increase Contrast: a hard edge, as on Cookie's other pills.
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(card.title).font(.system(size: 11, weight: .bold))
+            ForEach(Array(card.lines.enumerated()), id: \.offset) { _, line in
+                Text(line.text).font(.system(size: 11, weight: .medium)).lineLimit(2)
+            }
+            Text(card.footer).font(.system(size: 9.5, weight: .semibold)).opacity(0.7)
+        }
+        .foregroundStyle(CookieMarksLayer.onInk)
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .frame(width: CookieHoverLayer.pillWidth + 20, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(CookieMarksLayer.ink))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .strokeBorder(contrast == .increased ? Color.black : .clear, lineWidth: 1.5))
+        .shadow(color: .black.opacity(contrast == .increased ? 0 : 0.38), radius: 2.5, y: 1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("What Enkeon knows about \(card.title): " + card.lines.map(\.text).joined(separator: " ") + " \(card.footer)")
     }
 }
 

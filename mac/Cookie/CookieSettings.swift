@@ -591,6 +591,8 @@ private struct EnkeonSettings: View {
 private struct ShortcutsPage: View {
     @AppStorage(CK.Key.hoverExplain) private var hoverExplain = true
     @AppStorage(CK.Key.hoverExplainAloud) private var hoverExplainAloud = false
+    @AppStorage(CookieMemoryCursor.enabledKey) private var memoryCursor = true
+    @ObservedObject private var account = CookieAccount.shared
 
     var body: some View {
         SettingsGroup {
@@ -632,6 +634,11 @@ private struct ShortcutsPage: View {
                     HStack(spacing: 3) { KeyCap(label: "⌥"); KeyCap(label: "⇧") }
                     SettingsSwitch(title: "Explain what's under the pointer", isOn: $hoverExplain)
                 }
+            }
+            SettingsRow(title: "Memory at your cursor", caption: account.isSignedIn
+                            ? "Over a name, a ticket or an amount, what your Enkeon knows about it shows first, dated, with where it came from. Only the name goes to Enkeon."
+                            : "Sign in to Enkeon (Settings → Account) and, over a name, a ticket or an amount, what you know about it shows first. Until then hover explains as usual.") {
+                SettingsSwitch(title: "Memory at your cursor", isOn: $memoryCursor)
             }
             SettingsRow(title: "Read hover answers aloud", caption: "Off, answers stay quiet in their pill.", divider: false) {
                 SettingsSwitch(title: "Read hover answers aloud", isOn: $hoverExplainAloud)
