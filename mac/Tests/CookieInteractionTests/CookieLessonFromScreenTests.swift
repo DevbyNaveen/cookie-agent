@@ -76,6 +76,11 @@ enum CookieLessonFromScreenTests {
         let manager = (try? String(contentsOfFile: "Cookie/CompanionManager.swift", encoding: .utf8)) ?? ""
         check(manager.contains("scenePresenter.inUse, let command = CookieLessonVoice.command(transcript)")
               && manager.contains("visual: scenePresenter.inUse || cardPresenter.inUse"), "the voice path asks whether it's in use")
+        // Typed, a reply's [VISUAL:…]/[TEACH:…] wait for its own card or model to show, then act on it.
+        let typedQueue = manager.range(of: "else { typedVisuals.append(change) }"), shown = manager.range(of: "if let scene { scenePresenter.showNow(scene, near: cardRegion) }"),
+            applied = manager.range(of: "typedVisuals.forEach { $0() }")
+        check(typedQueue != nil && shown != nil && applied != nil && shown!.upperBound < applied!.lowerBound && !manager.contains("else { change() }\n                    }\n                    if speakReply {"),
+              "a typed reply's visual verbs run after its card or model is up, not before")
 
         // MARK: Commands
         let bodies: [(String, CookieVisualCommand?)] = [

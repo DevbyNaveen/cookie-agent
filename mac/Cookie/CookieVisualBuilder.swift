@@ -26,18 +26,15 @@ enum CookieVisualBuilder {
             "id": .init(description: "Optional short id to show it by ([CARD:#id]); letters, digits and dashes."),
         ], required: ["card"]))
 
-    /// Calls this turn, so a model that can't converge stops trying and says so.
-    private static var callsThisTurn = 0
     static let callsPerTurn = 3
     /// How long the off-screen render may take before it's skipped (and said).
     static let renderBudget: TimeInterval = 2
 
-    static func beginTurn() { callsThisTurn = 0 }
-
-    /// What the tool answers: a JSON object, and whether it is an error.
-    static func perform(_ args: [String: Any]) -> (String, Bool) {
-        callsThisTurn += 1
-        guard callsThisTurn <= callsPerTurn else {
+    /// What the tool answers: a JSON object, and whether it is an error. The calls and the cards are
+    /// the calling client's turn (`shelf`).
+    static func perform(_ args: [String: Any], into shelf: CookieBuiltVisuals) async -> (String, Bool) {
+        shelf.calls += 1
+        guard shelf.calls <= callsPerTurn else {
             return (answer(["ok": false, "id": NSNull(), "repairs": [], "snapshot": NSNull(),
                             "errors": ["build_visual: \(callsPerTurn) tries this turn; show the last card that was ok, or explain in words"]]), true)
         }
@@ -46,7 +43,7 @@ enum CookieVisualBuilder {
         else if let object = args["card"], JSONSerialization.isValidJSONObject(object),
                 let data = try? JSONSerialization.data(withJSONObject: object) { json = String(decoding: data, as: UTF8.self) }
         else { return (answer(["ok": false, "id": NSNull(), "repairs": [], "snapshot": NSNull(), "errors": ["card: required, the card JSON"]]), true) }
-        let result = build(json, id: args["id"] as? String)
+        let result = await build(json, id: args["id"] as? String, into: shelf)
         return (answer(result.object), !result.ok)
     }
 
@@ -65,15 +62,16 @@ enum CookieVisualBuilder {
     }
 
     /// Reads, repairs, renders and keeps the card under its id.
-    static func build(_ json: String, id requested: String?) -> Result {
+    static func build(_ json: String, id requested: String?, into shelf: CookieBuiltVisuals) async -> Result {
         let reading = CookieCard.read(json)
         guard let card = reading.card else {
             return Result(ok: false, id: nil, repairs: reading.repairs, errors: reading.errors, layout: nil)
         }
         var repairs = reading.repairs
         let id = Self.id(requested ?? Self.writtenID(json), repairs: &repairs)
-        CookieBuiltVisuals.keep(card, id: id)
-        return Result(ok: true, id: id, repairs: repairs, errors: [], layout: describe(card, renders: render(card)))
+        let renders = await render(card)
+        shelf.keep(card, id: id)
+        return Result(ok: true, id: id, repairs: repairs, errors: [], layout: describe(card, renders: renders))
     }
 
     /// The id as written (in the call, or the card's own "id"), cleaned; one is made when there's none.
@@ -106,13 +104,16 @@ enum CookieVisualBuilder {
         let drawn: Bool
     }
 
-    /// Each state rendered whole, off screen, in light paper, until the time budget runs out.
-    /// ImageRenderer belongs to the main actor; a card is a few milliseconds.
-    static func render(_ card: CookieCard) -> (renders: [Render], skipped: Bool) {
+    /// Each state rendered whole, off screen, in light paper, until the time budget runs out: the
+    /// budget is checked before every stage, and once it's spent the stages left aren't rendered
+    /// (`describe` says so). ImageRenderer belongs to the main actor, so between stages the main
+    /// actor gets a turn for whatever is waiting (the reply, the pointer, a click).
+    static func render(_ card: CookieCard, budget: TimeInterval = renderBudget) async -> (renders: [Render], skipped: Bool) {
         let started = Date()
         var renders: [Render] = []
         for state in card.states.indices {
-            guard Date().timeIntervalSince(started) < renderBudget else { return (renders, true) }
+            if state > 0 { await Task.yield() }
+            guard Date().timeIntervalSince(started) < budget, !Task.isCancelled else { return (renders, true) }
             let reveal = CookieCardReveal(card: card)
             reveal.show(state: state)
             reveal.reveal(through: reveal.elements.count - 1, instant: true)

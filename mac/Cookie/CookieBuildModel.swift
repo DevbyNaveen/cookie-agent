@@ -78,8 +78,14 @@ final class CookieModelShelf {
     /// The file being fetched or opened now; a new turn or a cancel stops it.
     private var loading: Task<(file: URL, discovery: CookieModelAsset.Discovery, note: String), Error>?
 
+    /// Whether this turn may fetch a model from the web: the person asked for the real thing, or Full
+    /// access is on. A link the model got from a page it read can't fetch anything otherwise.
+    private(set) var webAllowed = false
+
     /// A new turn: nothing built, every build available again, any fetch still going stopped.
-    func beginRun() {
+    /// `personAsked` is the person's own words this turn (nil for runs nobody typed).
+    func beginRun(personAsked: String? = nil) {
+        webAllowed = CookieFullAccess.isOn || personAsked.map(CookieModelAsset.asksForRealModel) == true
         cancelLoading()
         models = [:]
         failedLoads = [:]
@@ -188,6 +194,11 @@ final class CookieModelShelf {
         var id = Self.slug(given.isEmpty ? title : given)
         do {
             let source = try CookieModelAsset.source(fields["asset"])
+            // The Mac doesn't see the pages the model read (they go through the helper), so it can't check a
+            // link came from one; it fetches only when the person asked for a real model this turn.
+            if case .web = source, !webAllowed {
+                throw CookieModelAsset.Failure(.address, "the person didn't ask for a real-looking model this turn, so nothing is fetched from the web; build it from parts, or use a file in their home folder")
+            }
             if given.isEmpty, title.isEmpty {
                 switch source { case .web(let url), .file(let url): id = Self.slug(url.deletingPathExtension().lastPathComponent) }
             }
@@ -204,7 +215,7 @@ final class CookieModelShelf {
                     note = fetched.reused ? "kept from an earlier download" : "downloaded \(CookieModelAsset.megabytes(fetched.bytes)) MB"
                     if !fetched.reused {
                         // Proof: where it came from and how big, never what's in it.
-                        CookieProof.shared.record(.acted, feature: "3D model", summary: "Downloaded a 3D model from \(url.host ?? "the web")\(url.path)",
+                        CookieProof.shared.record(.acted, feature: "3D model", summary: CookieModelAsset.proofSummary(url),
                                                   destination: url.host, bytes: fetched.bytes)
                     }
                 }
@@ -265,6 +276,9 @@ final class CookieModelShelf {
         }
         if discovery.namedFound > named.count {
             lines.append("the file names \(discovery.namedFound) parts; the first \(named.count) (biggest first) can be pointed at")
+        }
+        if discovery.truncated {
+            lines.append("the file has more than \(CookieModelAsset.maxNodesVisited) nodes; Cookie looked at the first \(CookieModelAsset.maxNodesVisited), so parts deeper in it aren't listed")
         }
         return lines
     }

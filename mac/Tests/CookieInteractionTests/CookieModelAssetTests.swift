@@ -136,6 +136,20 @@ enum CookieModelAssetTests {
               "an asset needs a url or a path")
         check(CookieModelAsset.allowsRedirect(to: URL(string: "https://cdn.example.com/a.usdz")) && !CookieModelAsset.allowsRedirect(to: URL(string: "http://cdn.example.com/a.usdz"))
               && !CookieModelAsset.allowsRedirect(to: nil), "a redirect is followed only to https")
+        // Nothing rides out in the link, and nothing local is reached by one.
+        let tracked = try? CookieModelAsset.source(["url": "https://example.com/models/a.usdz?who=you&notes=secret#here"])
+        check(tracked == .web(URL(string: "https://example.com/models/a.usdz")!), "a link's query and fragment are dropped before it's fetched: \(String(describing: tracked))")
+        for local in ["https://127.0.0.1/a.usdz", "https://127.1/a.usdz", "https://0x7f.1/a.usdz", "https://[::1]/a.usdz", "https://localhost/a.usdz",
+                      "https://printer.local/a.usdz", "https://10.0.0.5/a.usdz", "https://fileserver/a.usdz", "https://router.home.arpa/a.usdz", "https://db.internal/a.usdz"] {
+            check(failure { _ = try CookieModelAsset.source(["url": local]) }?.kind == .address, "\(local) is this Mac or the local network, so it isn't fetched")
+        }
+        check(!CookieModelAsset.allowsRedirect(to: URL(string: "https://192.168.1.1/a.usdz")) && CookieModelAsset.allowsRedirect(to: URL(string: "https://cdn.example.co.uk/a.usdz")),
+              "nor is a redirect there")
+        check(CookieModelAsset.asksForRealModel("show me a realistic jet engine") && CookieModelAsset.asksForRealModel("what does the real space shuttle look like")
+              && !CookieModelAsset.asksForRealModel("how does a jet engine work") && !CookieModelAsset.asksForRealModel("I really want to see gears"),
+              "the person asking for the real thing is what opens the web")
+        check(CookieModelAsset.proofSummary(URL(string: "https://example.com/models/a.usdz")!) == "Downloaded a 3D model from https://example.com/models/a.usdz",
+              "Proof keeps the whole link as fetched")
     }
 
     private static func paths(home: URL, outside: URL) {
@@ -188,6 +202,9 @@ enum CookieModelAssetTests {
               "a link has one file, its own")
         check(file.deletingPathExtension().lastPathComponent.count == 64 && file.pathExtension == "usdz" && file.deletingLastPathComponent() == folder,
               "named by the link's SHA-256, in the models folder")
+        let partA = CookieModelAsset.partFile(for: file), partB = CookieModelAsset.partFile(for: file)
+        check(partA != partB && partA.lastPathComponent.hasPrefix(".") && partA.pathExtension == "part" && partA.deletingLastPathComponent() == folder,
+              "two fetches of one link at once each write their own hidden file")
         // Asked again: the kept copy, no fetch (there's no network here), marked as just used.
         try? Data([0x50, 0x4B, 0x03, 0x04, 9, 9]).write(to: file)
         try? FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -86_400)], ofItemAtPath: file.path)
@@ -225,6 +242,25 @@ enum CookieModelAssetTests {
         }
         let quick = try? await CookieModelAsset.within(1, .init(.timeout, "too slow")) { 7 }
         check(quick == 7, "quick work comes back")
+        // Work that can't be stopped (RealityKit opening a file) doesn't hold the deadline or a cancel up.
+        let stubborn: @Sendable () async throws -> Int = {
+            await withCheckedContinuation { done in DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) { done.resume(returning: 1) } }
+        }
+        let late = Date()
+        do {
+            _ = try await CookieModelAsset.within(0.05, .init(.timeout, "too slow"), stubborn)
+            check(false, "stubborn work times out")
+        } catch {
+            check((error as? CookieModelAsset.Failure)?.kind == .timeout && Date().timeIntervalSince(late) < 0.5,
+                  "the deadline answers at once even when the work can't stop: \(Date().timeIntervalSince(late)) s")
+        }
+        let cancelledAt = Date()
+        let waiting = Task { try await CookieModelAsset.within(10, .init(.timeout, "too slow"), stubborn) }
+        try? await Task.sleep(for: .milliseconds(50))
+        waiting.cancel()
+        let outcome = await waiting.result
+        check({ if case .failure(let error) = outcome { return error is CancellationError } else { return false } }() && Date().timeIntervalSince(cancelledAt) < 0.5,
+              "and so does a cancel")
     }
 
     // MARK: Reading the file
@@ -245,8 +281,26 @@ enum CookieModelAssetTests {
         check(CookieModelAsset.meaningful("Front_Wheel") && !CookieModelAsset.meaningful("Mesh_0") && !CookieModelAsset.meaningful("polySurface12")
               && !CookieModelAsset.meaningful("Object_3") && !CookieModelAsset.meaningful("x"), "a name counts when it says what the part is")
         let blob = try? await CookieModelAssets.shared.prototype(home.appendingPathComponent("blob.usda"))
-        let pieces = blob.flatMap(CookieModelAsset.discover)
+        let pieces = blob.flatMap { CookieModelAsset.discover($0) }
         check(pieces?.nodes.map(\.id) == ["piece-1", "piece-2"] && pieces?.named.isEmpty == true, "unnamed pieces still explode, under Cookie's names: \(pieces?.nodes.map(\.id) ?? [])")
+        check(!found.truncated, "a small file is looked at whole")
+        // A file with a huge tree: the walk stops at its cap and the report says so.
+        let huge = Entity()
+        let body = ModelEntity(mesh: .generateBox(size: 0.2)), lid = ModelEntity(mesh: .generateBox(size: 0.2))
+        body.name = "Body"
+        lid.name = "Lid"
+        lid.position = [0.4, 0, 0]
+        huge.addChild(body)
+        huge.addChild(lid)
+        for index in 0..<(CookieModelAsset.maxNodesVisited + 1_000) {
+            let bolt = Entity()
+            bolt.name = "Bolt \(index)"
+            body.addChild(bolt)
+        }
+        let capped = CookieModelAsset.discover(huge)
+        check(capped?.truncated == true && capped?.pieces.map(\.id) == ["body", "lid"]
+              && CookieModelShelf.assetLines(capped!, credit: "x", note: "y").contains { $0.contains("more than \(CookieModelAsset.maxNodesVisited) nodes") },
+              "a file past \(CookieModelAsset.maxNodesVisited) nodes is looked at that far, and the report says so")
         let copy = CookieModelAssets.shared.copy(lampFile)
         check(copy != nil && copy !== prototype && CookieModelAsset.entity(at: found.nodes[1].path, in: copy!)?.name == "Arm", "a stage gets its own copy, with the same paths")
     }
@@ -307,6 +361,16 @@ enum CookieModelAssetTests {
         check(away.isError && fresh.failedLoads["away"]?.contains("home folder") == true, "a path outside the home folder is refused by name")
         fresh.beginRun()
         check(fresh.failedLoads.isEmpty, "a new turn forgets last turn's failures")
+        // The web only when the person asked for the real thing (the Mac can't see which pages the model read).
+        if !CookieFullAccess.isOn {
+            let unasked = await fresh.build(["scene": #"{"title":"shuttle","asset":{"url":"https://example.com/shuttle.usdz?q=1"}}"#])
+            check(!fresh.webAllowed && unasked.isError && fresh.failedLoads["shuttle"]?.contains("didn't ask for a real-looking model") == true,
+                  "a link the person didn't ask for isn't fetched: \(unasked.output)")
+        }
+        fresh.beginRun(personAsked: "show me the real space shuttle")
+        check(fresh.webAllowed, "asked for, it may be")
+        fresh.beginRun(personAsked: "how does a jet engine work")
+        check(fresh.webAllowed == CookieFullAccess.isOn, "and a new turn asks again")
     }
 
     // MARK: On stage

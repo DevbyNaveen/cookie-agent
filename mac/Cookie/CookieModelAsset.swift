@@ -95,11 +95,42 @@ enum CookieModelAsset {
         guard scheme == "https" else { throw Failure(.address, "asset.url: only https:// links are fetched, not \(scheme)://") }
         guard let host = url.host, !host.isEmpty else { throw Failure(.address, "asset.url: the link has no site in it") }
         guard url.user == nil, url.password == nil else { throw Failure(.address, "asset.url: a link carrying a user name or password isn't fetched") }
+        guard publicHost(host) else {
+            throw Failure(.address, "asset.url: \(host) is this Mac, the local network or a bare IP address; only a link to a public site is fetched")
+        }
         guard webExtensions.contains(url.pathExtension.lowercased()) else {
             throw Failure(.notModel, "asset.url: \(url.lastPathComponent.isEmpty ? host : url.lastPathComponent) isn't a .usdz file; give a direct link to the .usdz, not a page that shows it")
         }
-        return url
+        // The file is the path; a query or fragment could carry words out to the site, so neither is sent.
+        var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        parts?.query = nil
+        parts?.fragment = nil
+        guard let clean = parts?.url else { throw Failure(.address, "asset.url: \"\(text.prefix(80))\" isn't a link") }
+        return clean
     }
+
+    /// A site on the public web, by name: not this Mac, not a local-network name, not an IP address
+    /// in any spelling (127.0.0.1, 127.1, 0x7f.1, [::1]). A model's link names its site. A public
+    /// name that resolves to a private address still gets through: Cookie doesn't see DNS here.
+    static func publicHost(_ raw: String) -> Bool {
+        var host = raw.lowercased()
+        while host.hasSuffix(".") { host.removeLast() }
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 2, labels.allSatisfy({ !$0.isEmpty }), !host.contains(":"), !host.contains("%"), let top = labels.last else { return false }
+        // A last label that's a number (or hex) is an IP address written some way.
+        guard top.contains(where: \.isLetter), !top.hasPrefix("0x") else { return false }
+        return !["localhost", "local", "localdomain", "internal", "intranet", "lan", "home", "corp", "arpa", "test", "invalid"].contains(String(top))
+    }
+
+    /// Whether the person's own words this turn ask for the real thing (only then is a model fetched
+    /// from the web, unless Full access is on): "a realistic engine", "the real space shuttle".
+    static func asksForRealModel(_ request: String) -> Bool {
+        request.range(of: #"\b(real|realistic|real-looking|lifelike|life-like|photo-?realistic|actual|usdz)\b"#,
+                      options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// What Proof says was fetched: the whole link, as sent (no query or fragment).
+    static func proofSummary(_ url: URL) -> String { "Downloaded a 3D model from \(url.absoluteString)" }
 
     /// A path starting "~/" (or absolute), resolved through any links, that must land inside the home folder.
     static func localFile(_ text: String) throws -> URL {
@@ -131,7 +162,7 @@ enum CookieModelAsset {
     }
 
     /// A redirect is followed only to another https address.
-    static func allowsRedirect(to url: URL?) -> Bool { url?.scheme?.lowercased() == "https" && url?.host?.isEmpty == false }
+    static func allowsRedirect(to url: URL?) -> Bool { url?.scheme?.lowercased() == "https" && url?.host.map(publicHost) == true }
 
     /// What a server says it's sending: anything that is plainly a page, text, a picture or a film isn't a model.
     static func acceptable(contentType: String?) -> Bool {
@@ -185,8 +216,7 @@ enum CookieModelAsset {
         } catch {
             throw Failure(.load, "couldn't make the models folder (\(error.localizedDescription))")
         }
-        let part = folder.appendingPathComponent("." + file.lastPathComponent + ".part")
-        try? FileManager.default.removeItem(at: part)
+        let part = partFile(for: file)
         do {
             let bytes = try await CookieModelDownload.run(url, to: part, timeout: timeout)
             try? FileManager.default.removeItem(at: file)
@@ -200,6 +230,12 @@ enum CookieModelAsset {
             try? FileManager.default.removeItem(at: part)
             throw Failure(.load, "couldn't keep the file (\(error.localizedDescription))")
         }
+    }
+
+    /// Where one fetch writes as it comes in: its own name, so two turns fetching the same link at once
+    /// never write into the same file (the last to finish replaces the kept copy whole).
+    static func partFile(for file: URL) -> URL {
+        file.deletingLastPathComponent().appendingPathComponent(".\(file.lastPathComponent).\(UUID().uuidString).part")
     }
 
     /// Lets go of the files used longest ago until the folder is under `limit` (never `keeping`).
@@ -218,17 +254,59 @@ enum CookieModelAsset {
         }
     }
 
-    /// `work`, or the failure when it takes longer than `seconds` (the work is cancelled).
+    /// `work`, or the failure when it takes longer than `seconds`, or CancellationError when the caller
+    /// is cancelled: whichever comes first, at once. The work runs on its own and is asked to stop; work
+    /// that can't stop (RealityKit opening a file) finishes in the background and its result is dropped.
     static func within<T: Sendable>(_ seconds: TimeInterval, _ failure: Failure, _ work: @escaping @Sendable () async throws -> T) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await work() }
-            group.addTask {
-                try await Task.sleep(for: .seconds(seconds))
-                throw failure
+        let race = Race<T>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                race.start(continuation)
+                let worker = Task {
+                    do { race.end(.success(try await work())) } catch { race.end(.failure(error)) }
+                }
+                let timer = Task {
+                    try? await Task.sleep(for: .seconds(seconds))
+                    race.end(.failure(failure))
+                }
+                race.onEnd { worker.cancel(); timer.cancel() }
             }
-            defer { group.cancelAll() }
-            guard let first = try await group.next() else { throw failure }
-            return first
+        } onCancel: {
+            race.end(.failure(CancellationError()))
+        }
+    }
+
+    /// The first of work, deadline and cancel resumes the caller; the rest are ignored.
+    private final class Race<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<T, Error>?
+        private var result: Result<T, Error>?
+        private var cleanup: (() -> Void)?
+
+        func start(_ continuation: CheckedContinuation<T, Error>) {
+            lock.lock()
+            if let result { lock.unlock(); return continuation.resume(with: result) }
+            self.continuation = continuation
+            lock.unlock()
+        }
+
+        func onEnd(_ action: @escaping () -> Void) {
+            lock.lock()
+            guard result == nil else { lock.unlock(); return action() }
+            cleanup = action
+            lock.unlock()
+        }
+
+        func end(_ outcome: Result<T, Error>) {
+            lock.lock()
+            guard result == nil else { return lock.unlock() }
+            result = outcome
+            let waiting = continuation, action = cleanup
+            continuation = nil
+            cleanup = nil
+            lock.unlock()
+            waiting?.resume(with: outcome)
+            action?()
         }
     }
 
@@ -268,15 +346,22 @@ enum CookieModelAsset {
         /// Scale and centre (in the file's units) that bring the model to `radius` about the origin.
         let scale: Float
         let centre: SIMD3<Float>
-        /// Named nodes the file had, including any past the cap.
+        /// Named nodes the file had, including any past the cap (among the nodes looked at).
         let namedFound: Int
+        /// The file had more than `maxNodesVisited` nodes; the ones past that weren't looked at.
+        var truncated = false
         var pieces: [Node] { nodes.filter { $0.piece == $0.id } }
         var named: [Node] { nodes.filter(\.named) }
     }
 
-    /// The parts of a loaded file; nil when it has nothing to draw.
+    /// Nodes looked at in one file, at most: the walk runs on the main actor, so a file of a million
+    /// nodes doesn't hold Cookie up.
+    static let maxNodesVisited = 5_000
+
+    /// The parts of a loaded file; nil when it has nothing to draw. Boxes are measured only while
+    /// there's room for parts; past `maxParts` named nodes are only counted.
     @MainActor
-    static func discover(_ root: Entity) -> Discovery? {
+    static func discover(_ root: Entity, maxVisited: Int = maxNodesVisited) -> Discovery? {
         let whole = root.visualBounds(relativeTo: root)
         guard !whole.isEmpty, simd_reduce_max(whole.extents) > 0, whole.extents.x.isFinite, whole.extents.y.isFinite, whole.extents.z.isFinite else { return nil }
         let centre = whole.center
@@ -319,20 +404,26 @@ enum CookieModelAsset {
         }
         // Named nodes inside the pieces, breadth first, so the bigger parts come before their details.
         var namedFound = nodes.filter(\.named).count
-        var head = 0
-        while head < queue.count {
+        var head = 0, visited = queue.count, truncated = false
+        walk: while head < queue.count {
             let (entity, path, piece) = queue[head]
             head += 1
             for (index, child) in entity.children.enumerated() {
+                guard visited < maxVisited else { truncated = true; break walk }
+                visited += 1
                 let childPath = path + [index]
                 queue.append((child, childPath, piece))
-                guard meaningful(child.name), !child.visualBounds(relativeTo: root).isEmpty else { continue }
+                guard meaningful(child.name) else { continue }
+                guard nodes.count < maxParts else { namedFound += 1; continue }
+                guard let found = node(child, path: childPath, piece: piece, fallback: "part") else { continue }
                 namedFound += 1
-                if nodes.count < maxParts, let found = node(child, path: childPath, piece: piece, fallback: "part") { nodes.append(found) }
+                nodes.append(found)
             }
         }
         guard !nodes.isEmpty else { return nil }
-        return Discovery(nodes: nodes, scale: scale, centre: centre, namedFound: namedFound)
+        var discovery = Discovery(nodes: nodes, scale: scale, centre: centre, namedFound: namedFound)
+        discovery.truncated = truncated
+        return discovery
     }
 
     /// The entity at `path` below `root`, if the file still has it.

@@ -228,6 +228,8 @@ final class HarnessClient {
     private var runCounter = 0
     /// The 3D models `build_model` made this run, shown by the reply's [SCENE:#id].
     let models = CookieModelShelf()
+    /// The cards `build_visual` made this run, shown by the reply's [CARD:#id].
+    let visuals = CookieBuiltVisuals()
 
     init() {
         // A write to a helper that just died must fail, not kill Cookie.
@@ -238,7 +240,7 @@ final class HarnessClient {
     /// or CancellationError when the caller's task was cancelled.
     func run(model: String, input text: String, instructions: String, images: [HarnessRequest.Image],
              history: [HarnessRequest.Turn], workspaceThreadID: UUID? = nil, backgroundProject: Bool = false, unattended: Bool = false,
-             closeWithAnswer: Bool = false,
+             closeWithAnswer: Bool = false, personAsked: String? = nil,
              onText: @escaping (String) -> Void,
              onStep: @escaping (String) -> Void,
              onApproval: @escaping (HarnessApproval?) -> Void,
@@ -246,9 +248,9 @@ final class HarnessClient {
         let enkeonKey = await CookieModelSettings.enkeonKey()
         try ensureRunning(environment: CookieModelSettings.helperEnvironment(model: model, enkeonKey: enkeonKey))
         CookieProof.shared.recordSent(images, model: model, feature: feature)
-        CookieVisualBuilder.beginTurn()
+        visuals.beginTurn()
         runCounter += 1
-        models.beginRun()
+        models.beginRun(personAsked: personAsked)
         let request = HarnessRequest.Run(
             id: "cookie-\(runCounter)", model: model, input: text, instructions: instructions,
             tools: Self.tools(backgroundProject: backgroundProject, unattended: unattended, workspace: workspaceThreadID != nil),
@@ -542,9 +544,11 @@ final class HarnessClient {
             }
             if name == CookieVisualBuilder.tool.name {
                 // Drawn here, off screen, before the reply shows it ([CARD:#id]).
-                let result = CookieVisualBuilder.perform(args)
-                if !result.1 { run.onStep("Drew a card") }
-                send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.0, is_error: result.1)))
+                Task { @MainActor in
+                    let result = await CookieVisualBuilder.perform(args, into: self.visuals)
+                    if !result.1 { run.onStep("Drew a card") }
+                    self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.0, is_error: result.1)))
+                }
                 return
             }
             if name == CookieModelShelf.tool.name {

@@ -6,7 +6,7 @@ import SwiftUI
 /// [VISUAL:…] verbs, paused when hidden, and the prompt's own example.
 @MainActor
 enum CookieSimTests {
-    static func run() {
+    static func run() async {
         var count = 0
         func check(_ condition: Bool, _ message: String) {
             precondition(condition, message)
@@ -195,8 +195,8 @@ enum CookieSimTests {
         check(!folding.sim!.ticking && !runner.ticking, "closed, it stops")
 
         // MARK: build_visual
-        CookieVisualBuilder.beginTurn()
-        let built = CookieVisualBuilder.build(#"{"kind":"sim","title":"How far it flies","model":"projectile","params":{"speed":20,"angle":45},"sliders":["angle","drag"]}"#, id: "throw")
+        let shelf = CookieBuiltVisuals()
+        let built = await CookieVisualBuilder.build(#"{"kind":"sim","title":"How far it flies","model":"projectile","params":{"speed":20,"angle":45},"sliders":["angle","drag"]}"#, id: "throw", into: shelf)
         check(built.ok && built.layout?.contains("Values to quote: range " + CookieCard.format(40.8) + " m") == true && built.layout?.contains("pt card") == true,
               "build_visual reports the values the voice may quote: \(built.layout ?? "")")
 
@@ -207,7 +207,7 @@ enum CookieSimTests {
             ("sim-orbit", card("orbit", "An elliptical orbit", #"{"speed":7.5}"#, sliders: #"["speed"]"#), 0),
             ("sim-spring", card("spring", "A damped spring", sliders: #"["damping","stiffness"]"#), 0),
             ("sim-pendulum", moon, 0),
-            ("sim-projectile", CookieBuiltVisuals.card("throw")!, 0),
+            ("sim-projectile", shelf.card("throw")!, 0),
             ("sim-wave", card("wave", "A wave on a rope"), 0),
             ("sim-interference", card("wave", "Two sources interfering", #"{"sources":2,"frequency":1.5}"#, sliders: #"["separation"]"#), 0),
             ("sim-queue", card("queue", "A line at one counter", #"{"arrivals":2.6}"#, sliders: #"["arrivals","service"]"#), 0),

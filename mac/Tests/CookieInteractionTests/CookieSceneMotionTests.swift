@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import RealityKit
@@ -297,6 +298,19 @@ enum CookieSceneMotionTests {
         stage.apply(.reset)
         check(!stage.playing && stage.motionTime == 0 && stage.cutParts == ["bore"], "reset puts the machine back as it was built")
         stage.release()
+
+        // The reply's [VISUAL:run] and a spoken "run it" reach the model on screen; a card's verbs don't.
+        let presenter = CookieScenePresenter()
+        presenter.showNow(scene, near: nil)
+        check(presenter.apply(.run) && presenter.stage?.playing == true, "[VISUAL:run] sets the model on screen working")
+        check(presenter.apply(.pause) && presenter.stage?.playing == false, "[VISUAL:pause] holds it")
+        check(!presenter.apply(.state(2)) && !presenter.apply(.set(parameter: "angle", value: 30)) && !presenter.apply(.highlight("m")),
+              "stages, sim parameters and equation parts stay the card's")
+        let motionReduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        check(presenter.perform(spoken: .run) == (motionReduced ? CookieLessonVoice.note(.run, rateBefore: 0, rateAfter: 0, spinning: false, reduceMotion: true, labelled: 0, moving: true) : "Running.")
+              && presenter.stage?.playing == true, "\"run it\" runs it, and says so")
+        check(presenter.perform(spoken: .state(2)) == nil, "a command that isn't the model's claims nothing and goes on as a question")
+        presenter.dismiss()
     }
 
     private static func stillness() {

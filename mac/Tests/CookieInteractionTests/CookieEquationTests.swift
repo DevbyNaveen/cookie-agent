@@ -6,7 +6,7 @@ import SwiftUI
 /// the speech clock, what's outside the subset shown as written, and the prompt's own example.
 @MainActor
 enum CookieEquationTests {
-    static func run() {
+    static func run() async {
         var count = 0
         func check(_ condition: Bool, _ message: String) {
             precondition(condition, message)
@@ -128,15 +128,15 @@ enum CookieEquationTests {
         check(glyphs(after.layout!, "F")[0].origin.y < 0 && glyphs(before.layout!, "F")[0].origin.y == 0, "and they really move (F rises into the numerator)")
 
         // MARK: build_visual
-        CookieVisualBuilder.beginTurn()
-        let built = CookieVisualBuilder.build(#"{"kind":"equation","title":"The quadratic formula","tex":"x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}"}"#, id: "quad")
+        let shelf = CookieBuiltVisuals()
+        let built = await CookieVisualBuilder.build(#"{"kind":"equation","title":"The quadratic formula","tex":"x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}"}"#, id: "quad", into: shelf)
         check(built.ok && built.layout?.contains("Equation typeset") == true && built.layout?.contains("pt card") == true
               && built.layout?.contains("read as \"x equals") == true, "build_visual typesets, renders and reports the equation: \(built.layout ?? "")")
 
         let bigger = CookieCard.read(#"{"kind":"equation","title":"Gauss's sum","tex":"\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}","caption":"add the first n numbers"}"#).card!
         let calculus = CookieCard.read(#"{"kind":"equation","title":"Area under a curve","tex":"\\int_0^1 x^2\\,dx = \\left[\\frac{x^3}{3}\\right]_0^1 = \\frac{1}{3}"}"#).card!
         let rotation = CookieCard.read(#"{"kind":"equation","title":"A rotation","tex":"R = \\begin{bmatrix} \\cos\\theta & -\\sin\\theta \\\\ \\sin\\theta & \\cos\\theta \\end{bmatrix}"}"#).card!
-        CookiePaperTests.render([("equation-quadratic", CookieBuiltVisuals.card("quad")!, 0), ("equation-newton", newton, 0), ("equation-sum", bigger, 0),
+        CookiePaperTests.render([("equation-quadratic", shelf.card("quad")!, 0), ("equation-newton", newton, 0), ("equation-sum", bigger, 0),
                                  ("equation-integral", calculus, 0), ("equation-matrix", rotation, 0), ("equation-plain", unknown.card!, 0),
                                  ("equation-solve-1", steps, 0), ("equation-solve-2", steps, 1)])
         print("\(count) equation checks passed.")

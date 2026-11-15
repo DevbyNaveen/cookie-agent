@@ -1937,6 +1937,9 @@ final class CompanionManager: ObservableObject {
                 var pointSearches: [Task<CGPoint?, Never>] = []
                 var pointedLabel: String?
                 var streamedReply = ""
+                // Typed: the reply's [VISUAL:…] and [TEACH:…] act on its own card or model, which shows
+                // only once the reply is in, so they wait for it.
+                var typedVisuals: [@MainActor () -> Void] = []
                 @MainActor func place(_ tags: [CookieReplyTag]) {
                     for tag in tags where tag.kind == "WORK" {
                         let parts = tag.body.split(separator: ":", maxSplits: 1).map(String.init)
@@ -1963,7 +1966,7 @@ final class CompanionManager: ObservableObject {
                             }
                         }
                         if speakReply { self.markSchedules.append(self.speechClock.schedule(atOffset: tag.offset, change)) }
-                        else { change() }
+                        else { typedVisuals.append(change) }
                     }
                     if speakReply {
                         if let scene = tags.lazy.compactMap(self.harness.models.scene).first {
@@ -1971,7 +1974,7 @@ final class CompanionManager: ObservableObject {
                             self.showOverlayForDrawing()
                             self.scenePresenter.prepare(scene, clock: self.speechClock)
                             self.scenePresenter.escapeAnywhere = lessonSource != nil
-                        } else if let card = tags.compactMap(CookieCard.init(tag:)).first {
+                        } else if let card = tags.compactMap(self.harness.visuals.card(for:)).first {
                             self.scenePresenter.dismiss()
                             self.showOverlayForDrawing()
                             self.cardPresenter.prepare(card, clock: self.speechClock)
@@ -1998,7 +2001,9 @@ final class CompanionManager: ObservableObject {
                             let label = parsed.elementLabel
                             pointedLabel = label ?? pointedLabel ?? "it"
                             CookieAnalytics.trackElementPointed(elementLabel: label)
-                            if let observed = MacOperator.shared.observedElement(id) {
+                            // The id is from the look the reply was written against; a `look` mid-turn renumbers
+                            // them, so a control whose words aren't the tag's is found by the tag's words instead.
+                            if let observed = MacOperator.shared.observedElement(id), Self.tagNames(observed: observed.label, tagged: label) {
                                 points.append((parsed.offset, { self.point(toElement: observed.element, label: label ?? (observed.label.isEmpty ? nil : observed.label)) }))
                                 continue
                             }
@@ -2120,7 +2125,7 @@ final class CompanionManager: ObservableObject {
                     instructions: Self.companionVoiceResponseSystemPrompt + Self.agentBrief(CookieAgentStore.shared.agent(threads.first { $0.id == threadID }?.agentID)) + (isConversationMode ? "\nConversation mode is active. Keep spoken turns brief and natural, and ask at most one question at a time. For language practice, role-play and offer gentle corrections to wording after the user finishes. You receive a transcript, not their audio: do not claim to assess their actual pronunciation or accent." : "") + (isConversationMode ? CookieConversationPreferences.shared.guidance : ""),
                     images: images,
                     history: Self.historyTurns(conversationHistory), workspaceThreadID: threadID,
-                    closeWithAnswer: deep,
+                    closeWithAnswer: deep, personAsked: transcript,
                     onText: { text in
                         guard !Task.isCancelled, self.replyGeneration == generation else { return }
                         depthTurn?.wordsArrived()
@@ -2203,7 +2208,7 @@ final class CompanionManager: ObservableObject {
                 let visualTags = requestMode == .work || requestMode == .edit ? [] : tagged.tags
                 // [SCENE:#id] is a model build_model made this run; [SCENE {json}] is read where it stands.
                 let scene = visualTags.lazy.compactMap(harness.models.scene).first
-                let cards = scene != nil ? [] : visualTags.compactMap(CookieCard.init(tag:))
+                let cards = scene != nil ? [] : visualTags.compactMap(harness.visuals.card(for:))
                 if scene != nil { cardPresenter.dismiss(); showOverlayForDrawing() }
                 else if !cards.isEmpty { scenePresenter.dismiss(); showOverlayForDrawing() }
                 let cardRegion = CookieCardPresenter.region(of: placedMarks)
@@ -2310,6 +2315,7 @@ final class CompanionManager: ObservableObject {
                     placedPoints.last?.show()
                     if let card = cards.first { cardPresenter.showNow(card, near: cardRegion) }
                     if let scene { scenePresenter.showNow(scene, near: cardRegion) }
+                    typedVisuals.forEach { $0() }
                 }
                 // The lesson stays for follow-ups; the emphasis and the hand belong to the explanation
                 // and end with it. A typed answer keeps them a moment so the eye can find the part.
@@ -2418,6 +2424,13 @@ final class CompanionManager: ObservableObject {
 
     /// Reads a POINT tag's body: "none", "#id", "#id:label", "#id:label:screenN", "x,y",
     /// "x,y:label" or "x,y:label:screenN".
+    /// Whether a [POINT:#id:label] tag still means the control now under that id: yes when the tag
+    /// or the control has no words to compare, else when the words match (`CookieLabelMatch`).
+    static func tagNames(observed: String, tagged label: String?) -> Bool {
+        guard let label, !label.isEmpty, !observed.isEmpty else { return true }
+        return CookieLabelMatch.matches(label: label, text: observed)
+    }
+
     static func parsePointing(_ tag: CookieReplyTag) -> PointingParseResult {
         let body = tag.body
         guard let regex = pointBody,

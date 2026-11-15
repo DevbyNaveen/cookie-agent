@@ -182,13 +182,12 @@ struct CookieCard: Equatable {
     static let shortLength = 28
     static let lineLength = 90
 
-    /// The card a CARD tag describes — inline JSON, or `#id` for one `build_visual` built — or nil
-    /// when it can't be shown.
+    /// The card an inline CARD tag describes, or nil when it can't be shown. `#id` (a card
+    /// `build_visual` built) is the turn's to resolve: `CookieBuiltVisuals.card(for:)`.
     init?(tag: CookieReplyTag) {
         guard tag.kind == "CARD" else { return nil }
         let body = tag.body.trimmingCharacters(in: .whitespacesAndNewlines)
-        let found = body.hasPrefix("#") ? CookieBuiltVisuals.card(String(body.dropFirst())) : Self.read(body).card
-        guard let found else { return nil }
+        guard !body.hasPrefix("#"), let found = Self.read(body).card else { return nil }
         self = found
         self.offset = tag.offset
     }
@@ -1195,22 +1194,33 @@ private struct CookieCardReader {
 
 // MARK: - Built visuals
 
-/// Cards `build_visual` made this session, by id, for the reply's [CARD:#id]. A few dozen at most,
-/// oldest out first; reachable from the card reader on any thread.
-enum CookieBuiltVisuals {
-    private static let lock = NSLock()
-    private static var cards: [(id: String, card: CookieCard)] = []
-    static let capacity = 24
+/// Cards `build_visual` made in one client's turn, by id, for that reply's [CARD:#id], and how many
+/// times it was called. Each harness client keeps its own (as it does its model shelf), and a new
+/// turn starts empty: an id from an earlier turn never brings back an old card, so a build that
+/// failed this turn is said rather than covered by a stale one. Three calls a turn bound it.
+@MainActor
+final class CookieBuiltVisuals {
+    private(set) var cards: [String: CookieCard] = [:]
+    /// build_visual calls this turn, so a model that can't converge stops trying and says so.
+    var calls = 0
 
-    static func card(_ id: String) -> CookieCard? {
-        lock.lock(); defer { lock.unlock() }
-        return cards.last { $0.id == id }?.card
+    func beginTurn() {
+        cards = [:]
+        calls = 0
     }
 
-    static func keep(_ card: CookieCard, id: String) {
-        lock.lock(); defer { lock.unlock() }
-        cards.removeAll { $0.id == id }
-        cards.append((id, card))
-        if cards.count > capacity { cards.removeFirst(cards.count - capacity) }
+    func keep(_ card: CookieCard, id: String) { cards[id] = card }
+
+    func card(_ id: String) -> CookieCard? { cards[id] }
+
+    /// The card a CARD tag shows: inline JSON as written, or `#id` for one built this turn; nil when
+    /// it can't be shown.
+    func card(for tag: CookieReplyTag) -> CookieCard? {
+        guard tag.kind == "CARD" else { return nil }
+        let body = tag.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard body.hasPrefix("#") else { return CookieCard(tag: tag) }
+        guard var card = cards[String(body.dropFirst())] else { return nil }
+        card.offset = tag.offset
+        return card
     }
 }

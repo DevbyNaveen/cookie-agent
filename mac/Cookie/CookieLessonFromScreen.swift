@@ -313,11 +313,11 @@ enum CookieLessonVoice {
 
 extension CookieScenePresenter {
     /// A spoken command for the model on screen, applied now; what to tell the person, or nil when no
-    /// model is up.
+    /// model is up or the command isn't a model's (it then goes to the model as a question).
     func perform(spoken command: CookieVisualCommand) -> String? {
         guard let stage else { return nil }
         let before = stage.spinRate
-        apply(command)
+        guard apply(command) else { return nil }
         return CookieLessonVoice.note(command, rateBefore: before, rateAfter: stage.spinRate, spinning: stage.spinning,
                                       reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
                                       labelled: stage.scene.labelled.count, moving: stage.scene.hasMotion)

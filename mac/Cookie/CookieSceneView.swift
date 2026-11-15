@@ -1178,9 +1178,10 @@ final class CookieScenePresenter {
     }
     func pauseTeaching() { cancelSchedules(); stage?.pauseTeaching() }
     @discardableResult func apply(_ command: CookieVisualCommand) -> Bool {
-        // Stages, sims and equation parts belong to cards; a model has none.
+        // Stages, sim parameters and equation parts belong to cards; a model has none. Run and
+        // pause are a model's too (a machine works and holds), so they reach it.
         switch command {
-        case .state, .run, .pause, .set, .highlight: return false
+        case .state, .set, .highlight: return false
         default: break
         }
         guard let stage else { return false }

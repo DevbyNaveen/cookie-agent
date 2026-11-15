@@ -5,7 +5,7 @@ import SwiftUI
 /// the pen's taper and wobble, and build_visual from a tool call through to [CARD:#id].
 @MainActor
 enum CookiePaperTests {
-    static func run() {
+    static func run() async {
         var count = 0
         func check(_ condition: Bool, _ message: String) {
             precondition(condition, message)
@@ -117,22 +117,42 @@ enum CookiePaperTests {
         // MARK: build_visual, from the tool call to [CARD:#id]
         check(HarnessClient.tools(backgroundProject: false, unattended: false, workspace: false).contains { $0.name == "build_visual" && $0.effect == "read" },
               "every voice run can check a card")
-        CookieVisualBuilder.beginTurn()
-        let built = CookieVisualBuilder.perform(["card": #"{"kind":"cycle","title":"The water cycle","steps":["Evaporation","Condensation","Rain"]}"#, "id": "water"])
+        let shelf = CookieBuiltVisuals()
+        let built = await CookieVisualBuilder.perform(["card": #"{"kind":"cycle","title":"The water cycle","steps":["Evaporation","Condensation","Rain"]}"#, "id": "water"], into: shelf)
         let answer = try! JSONSerialization.jsonObject(with: Data(built.0.utf8)) as! [String: Any]
         check(!built.1 && answer["ok"] as? Bool == true && answer["id"] as? String == "water" && answer["snapshot"] is NSNull
               && (answer["layout"] as? String)?.contains("Cycle clockwise from the top") == true && (answer["layout"] as? String)?.contains("pt card") == true
               && (answer["repairs"] as? [String])?.contains { $0.contains("read as {id: \"rain\"") } == true,
               "build_visual repairs, renders off screen and describes the render: \(built.0)")
         let reply = CookieReplyTags.split("water goes round [CARD:#water] it rises as evaporation, gathers by condensation and falls as rain.")
-        check(CookieCard(tag: reply.tags[0])?.nodes.map(\.id) == ["evaporation", "condensation", "rain"], "the reply shows the built card by its id")
+        check(shelf.card(for: reply.tags[0])?.nodes.map(\.id) == ["evaporation", "condensation", "rain"] && shelf.card(for: reply.tags[0])?.offset == reply.tags[0].offset,
+              "the reply shows the built card by its id, at its tag")
+        check(CookieCard(tag: reply.tags[0]) == nil, "an id is the turn's to resolve, never a card from some other run")
         let lost = CookieReplyTags.split("here [CARD:#never-built] it is.").tags
-        check(CookieCard(tag: lost[0]) == nil && CompanionManager.pictureFailed(lost, shown: false), "an id nobody built is said, not silently skipped")
-        let failed = CookieVisualBuilder.perform(["card": #"{"kind":"tree","title":"T","nodes":[{"id":"a","label":"A"},{"id":"b","label":"B"}]}"#])
+        check(shelf.card(for: lost[0]) == nil && CompanionManager.pictureFailed(lost, shown: false), "an id nobody built is said, not silently skipped")
+        let failed = await CookieVisualBuilder.perform(["card": #"{"kind":"tree","title":"T","nodes":[{"id":"a","label":"A"},{"id":"b","label":"B"}]}"#], into: shelf)
         check(failed.1 && failed.0.contains("one root") && failed.0.contains("\"ok\":false"), "a card that can't be built comes back with its field errors")
-        _ = CookieVisualBuilder.perform(["card": "{}"])
-        check(CookieVisualBuilder.perform(["card": "{}"]).0.contains("tries this turn"), "three tries a turn, then words")
-        CookieVisualBuilder.beginTurn()
+        let other = CookieBuiltVisuals()
+        other.beginTurn()
+        _ = await CookieVisualBuilder.perform(["card": "{}"], into: shelf)
+        let fourth = await CookieVisualBuilder.perform(["card": "{}"], into: shelf)
+        check(fourth.0.contains("tries this turn"), "three tries a turn, then words")
+        let elsewhere = await CookieVisualBuilder.perform(["card": "{}"], into: other)
+        check(!elsewhere.0.contains("tries this turn"),
+              "each client counts its own tries: another run starting doesn't reset or spend this one's")
+        // Next turn: a failed build under last turn's id shows nothing old, and the reply says the picture failed.
+        shelf.beginTurn()
+        _ = await CookieVisualBuilder.perform(["card": #"{"kind":"tree","title":"T","nodes":[{"id":"a","label":"A"},{"id":"b","label":"B"}]}"#, "id": "water"], into: shelf)
+        let stale = CookieReplyTags.split("again [CARD:#water] here.").tags
+        check(shelf.card(for: stale[0]) == nil && CompanionManager.pictureFailureNote(stale, scene: false, cards: false) != nil,
+              "an id built in an earlier turn doesn't resolve: no stale card, and the failure is said")
+        // The off-screen render gives the main actor a turn between stages and stops when the budget is spent.
+        let spent = await CookieVisualBuilder.render(staged, budget: 0)
+        check(spent.skipped && spent.renders.isEmpty && CookieVisualBuilder.describe(staged, renders: spent).contains("not rendered (over the"),
+              "past the render budget the stages left aren't drawn, and the layout says so")
+        let whole = await CookieVisualBuilder.render(staged)
+        check(!whole.skipped && whole.renders.count == staged.states.count, "within it every stage is drawn")
+        shelf.beginTurn()
         check(prompt.contains("build_visual") && prompt.contains("[CARD:#id]") && prompt.contains("[VISUAL:state:n]") && prompt.contains("never made up"),
               "the voice prompt teaches checking, showing by id, stages and honest numbers")
 

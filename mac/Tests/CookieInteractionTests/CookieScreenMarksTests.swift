@@ -122,6 +122,16 @@ enum CookieScreenMarksTests {
             let tagged = CompanionManager.parsePointing(CookieReplyTags.split("tap share [POINT:#2:Share]").tags[0])
             check(tagged.elementID.flatMap { MacOperator.shared.observedElement($0) }?.label == "Share", "POINT:#2 resolves to the tagged control")
             check(MacOperator.shared.observedElement(3) == nil, "an id the look didn't have falls back to the label")
+            // A `look` mid-turn renumbers the controls: #2 is now the heading, so the tag's "Share" is found by its words.
+            MacOperator.shared.adoptLook([found[1], found[0]], app: 4242)
+            let renumbered = MacOperator.shared.observedElement(2)
+            check(renumbered?.label == "Heading" && !CompanionManager.tagNames(observed: renumbered!.label, tagged: tagged.elementLabel),
+                  "a tag whose words aren't the control now under its id doesn't point at that control")
+            check(CompanionManager.tagNames(observed: "Share…", tagged: "Share") && CompanionManager.tagNames(observed: "Heading", tagged: nil)
+                  && CompanionManager.tagNames(observed: "", tagged: "Share"), "the same words, or nothing to compare, keep the tagged control")
+            let manager = (try? String(contentsOfFile: "Cookie/CompanionManager.swift", encoding: .utf8)) ?? ""
+            check(manager.contains("observedElement(id), Self.tagNames(observed: observed.label, tagged: label)"),
+                  "the reply's POINT takes the find-by-words path when the words differ")
             MacOperator.shared.endRun()
             check(MacOperator.shared.observedElement(2) == nil, "ids end with the run")
         }
