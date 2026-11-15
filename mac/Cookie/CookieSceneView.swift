@@ -232,8 +232,10 @@ final class CookieSceneStage: ObservableObject {
             let current = selectedPart.flatMap { ids.firstIndex(of: $0) } ?? (command == .next ? -1 : ids.count)
             focus(ids[min(ids.count - 1, max(0, current + (command == .next ? 1 : -1)))])
         case .isolate:
+            // A grouped part isolates with its group.
             guard let selectedPart else { return }
-            for (id, entity) in parts { entity.isEnabled = id == selectedPart }
+            let kept = scene.members(of: selectedPart)
+            for (id, entity) in parts { entity.isEnabled = kept.contains(id) }
         case .showAll:
             parts.values.forEach { $0.isEnabled = true }
         case .zoomIn: zoom(by: 20)
@@ -358,32 +360,49 @@ final class CookieSceneStage: ObservableObject {
 
     // MARK: Building
 
+    /// The part's shape from the parts library (`CookieMeshes`), usually already warmed off the main thread.
     private static func mesh(_ part: CookieScene.Part) -> MeshResource {
-        let size = part.size
-        switch part.shape {
-        case .box: return .generateBox(size: SIMD3(size[0], size[1], size[2]), cornerRadius: min(size[0], size[1], size[2]) * 0.04)
-        case .sphere: return .generateSphere(radius: size[0])
-        case .cylinder: return .generateCylinder(height: size[1], radius: size[0])
-        case .cone: return .generateCone(height: size[1], radius: size[0])
-        case .capsule: return MeshResource(shape: .generateCapsule(height: size[1], radius: size[0]))
+        CookieMeshResources.mesh(part.form)
+    }
+
+    /// How rough and how metal each tint is, before its finish.
+    static func surface(_ tint: CookieScene.Tint) -> (roughness: Float, metallic: Float) {
+        switch tint {
+        case .amber: (0.45, 0)
+        case .cream: (0.7, 0)
+        case .graphite: (0.55, 0.2)
+        case .sky, .mint, .rose: (0.5, 0)
+        case .steel: (0.3, 0.9)
+        case .glass: (0.05, 0)
+        case .copper: (0.32, 1)
+        case .brass: (0.3, 1)
+        case .rubber: (0.92, 0)
+        case .plasticWhite: (0.38, 0)
+        case .carbon: (0.3, 0.15)
+        }
+    }
+
+    /// The tint's roughness under a finish: matte roughens, polished smooths (and lacquers what isn't metal).
+    static func finished(_ tint: CookieScene.Tint, _ finish: CookieScene.Finish?) -> (roughness: Float, metallic: Float, clearcoat: Float) {
+        let (roughness, metallic) = surface(tint)
+        switch finish ?? .satin {
+        case .matte: return (min(1, roughness + 0.35), metallic, 0)
+        case .satin: return (roughness, metallic, tint == .carbon ? 0.8 : 0)
+        case .polished: return (max(0.04, roughness * 0.3), metallic, metallic < 0.5 ? 0.7 : 0)
         }
     }
 
     private static func material(_ part: CookieScene.Part) -> PhysicallyBasedMaterial {
-        let (color, roughness, metallic): (NSColor, Float, Float) = switch part.tint {
-        case .amber: (NSColor(red: 0.93, green: 0.56, blue: 0.24, alpha: 1), 0.45, 0)
-        case .cream: (NSColor(red: 0.96, green: 0.92, blue: 0.84, alpha: 1), 0.7, 0)
-        case .graphite: (NSColor(red: 0.24, green: 0.24, blue: 0.26, alpha: 1), 0.55, 0.2)
-        case .sky: (NSColor(red: 0.48, green: 0.70, blue: 0.90, alpha: 1), 0.5, 0)
-        case .mint: (NSColor(red: 0.55, green: 0.84, blue: 0.70, alpha: 1), 0.5, 0)
-        case .rose: (NSColor(red: 0.92, green: 0.52, blue: 0.56, alpha: 1), 0.5, 0)
-        case .steel: (NSColor(red: 0.72, green: 0.74, blue: 0.78, alpha: 1), 0.3, 0.9)
-        case .glass: (NSColor(red: 0.85, green: 0.93, blue: 0.97, alpha: 1), 0.05, 0)
-        }
+        let rgb = CookieScene.rgb(part.tint)
+        let (roughness, metallic, clearcoat) = finished(part.tint, part.finish)
         var material = PhysicallyBasedMaterial()
-        material.baseColor = .init(tint: color)
+        material.baseColor = .init(tint: NSColor(red: CGFloat(rgb.x), green: CGFloat(rgb.y), blue: CGFloat(rgb.z), alpha: 1))
         material.roughness = .init(floatLiteral: roughness)
         material.metallic = .init(floatLiteral: metallic)
+        if clearcoat > 0 {
+            material.clearcoat = .init(floatLiteral: clearcoat)
+            material.clearcoatRoughness = .init(floatLiteral: 0.08)
+        }
         // A cut part is see-through so what's inside shows; glass always is.
         let opacity: Float = part.tint == .glass ? 0.28 : part.cut ? 0.32 : 1
         if opacity < 1 {
@@ -636,6 +655,7 @@ final class CookieScenePresenter {
 
     func prepare(_ scene: CookieScene, clock: CookieSpeechClock) {
         cancelSchedules()
+        CookieMeshResources.warm(scene)
         self.clock = clock
         schedules.append(clock.schedule(atOffset: scene.offset) { [weak self] in
             _ = self?.show(scene, near: nil)
@@ -646,6 +666,7 @@ final class CookieScenePresenter {
     /// after it. Call from `onPlaybackStarted`.
     func schedule(_ scene: CookieScene, spoken: String, near region: (rect: CGRect, display: CGRect)?, clock: CookieSpeechClock) {
         cancelSchedules()
+        CookieMeshResources.warm(scene)
         self.clock = clock
         let offsets = scene.revealOffsets(in: spoken)
         var shown: CookieSceneStage?

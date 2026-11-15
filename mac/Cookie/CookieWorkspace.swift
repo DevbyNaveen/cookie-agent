@@ -251,7 +251,8 @@ final class CookieWorkspaceStore: ObservableObject {
         guard controls.count <= 8, Set(controls.map(\.id)).count == controls.count,
               controls.allSatisfy({ $0.minimum.isFinite && $0.maximum.isFinite && $0.value.isFinite && $0.minimum < $0.maximum && ($0.minimum...$0.maximum).contains($0.value) && $0.label.count <= 80 }),
               content.nodes.allSatisfy({ ($0.formula?.count ?? 0) <= 500 }) else { throw Failure("Invalid lesson controls or formulas.") }
-        if kind == .scene, CookieScene(tag: .init(kind: "SCENE", body: content.body, offset: 0)) == nil { throw Failure("The 3D scene does not match Cookie's scene format.") }
+        // Repairs are fine to keep; anything Cookie couldn't build is named so it can be fixed.
+        if kind == .scene, let problems = CookieScene.problems(CookieScene.read(content.body)) { throw Failure("The 3D scene can't be built: " + problems) }
     }
     func checks(_ artifact: CookieArtifact) -> [String] {
         let content = artifact.current.content

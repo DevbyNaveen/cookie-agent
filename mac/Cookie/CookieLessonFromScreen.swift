@@ -199,10 +199,10 @@ enum CookieLessonFromScreen {
         return """
         LESSON FROM THE SCREEN. The user wants \(from) explained as a visual they can explore. This overrides the usual rule against visuals for things on the screen: build exactly one, as early in the reply as it can go, then explain it.
         Choose one:
-        - SCENE for a physical or spatial thing: an engine, a molecule, a device, a building, anatomy, a network topology. Simple shapes placed where the real pieces sit; cut the outer casing so inner parts show, explode when parts hide each other.
+        - SCENE for a physical or spatial thing: an engine, a molecule, a device, a building, anatomy, a network topology. Parts from the shape library (gear, bladeRing, tube, shaft, spring, pipe, piston, crank, rod, valve, wheel, screw, lathe, extrude, as well as box, sphere, cylinder, cone, capsule, torus) placed where the real pieces sit; cut the outer casing so inner parts show, explode when parts hide each other.
         - CARD for an abstract thing: an error or a bug as a flow of its cause (what called what, what failed, what was raised), a procedure as steps, a balance sheet or a choice as compare (or number for the one figure that matters), dated events as a timeline.
         \(grounding)
-        Exactly these fields, nothing else, every limit above (labels up to twenty-eight characters, a scene's numbers within ten, up to 24 parts):
+        Exactly these fields, nothing else, every limit above (labels up to twenty-eight characters, a scene's numbers within ten, up to 64 parts):
         [SCENE {"title":"...","parts":[{"id":"a","label":"...","shape":"box","size":[1,1,1],"position":[0,0,0],"rotation":[0,0,0],"color":"steel","cut":true}],"explode":true,"spin":false}]
         [CARD {"kind":"flow","title":"...","nodes":[{"id":"a","label":"...","icon":"cube"}],"edges":[{"from":"a","to":"b","label":"..."}]}] or steps {"kind":"steps","title":"...","steps":[{"text":"..."}]}, compare {"kind":"compare","title":"...","columns":[{"heading":"...","points":["..."]}]}, timeline {"kind":"timeline","title":"...","events":[{"label":"...","when":"..."}]}, list {"kind":"list","title":"...","items":["..."]}, number {"kind":"number","value":"...","label":"...","caption":"..."}.
         Name the labelled parts or nodes in order in the sentence after the tag. Leave spin off; the user can say "spin it", "rotate left", "turn it around" or "label everything". End with up to two [NEXT:…] such as [NEXT:what does the impeller do?].
