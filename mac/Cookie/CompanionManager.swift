@@ -1375,6 +1375,33 @@ final class CompanionManager: ObservableObject {
     /// person talked, plays the response aloud. The cursor stays in the spinner/processing state until
     /// TTS audio begins playing. The response may include a [POINT:x,y:label]
     /// tag which triggers the buddy to fly to that element on screen.
+    private func performAIHandoff(_ target: CookieAIHandoff.Target, selection: (app: String, text: String)?) {
+        let thread = threads.first { $0.id == currentThreadID }
+        guard let packet = CookieAIHandoff.packet(selectedText: selection?.text, messages: thread?.messages ?? []) else {
+            _ = append(CompanionChatMessage(role: .failure, text: "There is no selected text or recent Cookie chat to hand off yet."))
+            return
+        }
+        let resolution = CookieAIHandoff.resolve(target, apps: CookieOpen.installedApps())
+        guard case .success(.app(let appURL)) = resolution else {
+            let message: String
+            if case .failure(let reason) = resolution { message = reason }
+            else { message = "Cookie could not identify the installed \(target.appName) app." }
+            _ = append(CompanionChatMessage(role: .failure, text: message))
+            return
+        }
+        let board = NSPasteboard.general
+        board.clearContents()
+        guard board.setString(packet, forType: .string) else {
+            _ = append(CompanionChatMessage(role: .failure, text: "Cookie couldn't copy the context. \(target.appName) was not opened."))
+            return
+        }
+        guard NSWorkspace.shared.open(appURL) else {
+            _ = append(CompanionChatMessage(role: .failure, text: "The context is copied, but macOS couldn't open \(target.appName)."))
+            return
+        }
+        _ = append(CompanionChatMessage(role: .assistant, text: "Copied the selected text and recent Cookie chat to the clipboard, then opened \(target.appName). Paste it there when you're ready."))
+    }
+
     private func startReplyForMe(_ instruction: String, transcript: String, selectedMessage: String?,
                                  screenLookRequested: Bool, destination: CookieTextDestination?) {
         guard let destination else {
@@ -1478,6 +1505,10 @@ final class CompanionManager: ObservableObject {
         let editTarget = textDestinationAtPress
         selectionAtPress = nil
         textDestinationAtPress = nil
+        if attachments.isEmpty, let target = CookieAIHandoff.target(in: transcript) {
+            performAIHandoff(target, selection: selectedText)
+            return
+        }
         let replyMessage = selectedText?.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasSelectedReplyMessage = replyMessage?.isEmpty == false
         if attachments.isEmpty,
