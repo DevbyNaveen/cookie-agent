@@ -242,6 +242,10 @@ final class MacOperator {
     private var elements: [Int: AXUIElement] = [:]
     private var labels: [Int: String] = [:]
     private var lookedAt: pid_t?
+    private var ghostElements: [Int: AXUIElement] = [:]
+    private var ghostLabels: [Int: String] = [:]
+    private var ghostLookedAt: pid_t?
+    private var ghostGrant: MacGrant?
     private var escMonitors: [Any] = []
     /// Bumped when a run ends (Escape, Stop, done): a guided step still waiting stops.
     private var runGeneration = 0
@@ -257,7 +261,7 @@ final class MacOperator {
 
     // MARK: Tools
 
-    static let writeTools: Set<String> = ["press", "set_value", "type_text", "key", "scroll", "drag", "choose_menu", "click_at", "run_script", "replace_selection"]
+    static let writeTools: Set<String> = ["press", "set_value", "type_text", "key", "scroll", "drag", "choose_menu", "click_at", "run_script", "replace_selection", "ghost_press", "ghost_set_value"]
 
     /// The frame (CG global, top-left origin) of an element from the latest look, for drawing on it.
     func frameOfElement(_ id: Int) -> CGRect? {
@@ -269,7 +273,7 @@ final class MacOperator {
     private(set) var lastTyped: (element: AXUIElement, draft: CookieTypedDraft)?
     /// The chat a typed draft belongs to; the manager fills it in.
     var currentThreadID: (() -> UUID?)?
-    static let names: Set<String> = writeTools.union(["start_task", "finish_task", "look", "point_at", "wait_for_step"])
+    static let names: Set<String> = writeTools.union(["start_task", "finish_task", "look", "point_at", "wait_for_step", "ghost_start_task", "ghost_finish_task", "ghost_look", "ghost_take_screen"])
 
     static var tools: [HarnessRequest.Tool] {
         func tool(_ name: String, _ effect: String, _ description: String, _ props: [String: String], _ required: [String]) -> HarnessRequest.Tool {
@@ -277,6 +281,14 @@ final class MacOperator {
                                 schema: .init(properties: props.mapValues { .init(description: $0) }, required: required),
                                 parallel_safe: false)
         }
+        let ghostTools = [
+            tool("ghost_start_task", "outbound", "Ask before Ghost Mode reads or changes named background apps. It uses AXPress and AXValue only; risky actions need their own yes.", ["plan": "The task in plain words.", "apps": "Running background app names, comma-separated."], ["plan", "apps"]),
+            tool("ghost_finish_task", "read", "End the approved Ghost Mode task.", [:], []),
+            tool("ghost_look", "read", "Read the named background app's AX windows without activating it. Required before every ghost action. If no AX tree is exposed, stop.", ["app": "Exact running app name.", "max_elements": "Optional limit, up to 400."], ["app"]),
+            tool("ghost_press", "write", "AXPress an element id from the latest ghost_look; never click coordinates or focus the app.", ["id": "Observed element id."], ["id"]),
+            tool("ghost_set_value", "write", "Set AXValue on an observed control without focusing the app or field.", ["id": "Observed element id.", "value": "New value."], ["id", "value"]),
+            tool("ghost_take_screen", "outbound", "If background AX cannot do the step and it needs focus or screen access, request this approval. Only then may Cookie bring the app forward for 1–15 seconds and capture one redacted screenshot of that app window. The image is not saved; redacted text is supplied only for this reply. No recording.", ["app": "App in the approved Ghost Mode task.", "seconds": "1 to 15 seconds.", "reason": "Why focus or a one-shot screen look is needed."], ["app", "seconds", "reason"]),
+        ]
         return [
             // `outbound` so the harness always asks: the person approves the plan once.
             tool("start_task", "outbound",
@@ -316,7 +328,7 @@ final class MacOperator {
                   "say": "The instruction, a few words, e.g. \"Click Insert\".",
                   "hint": "Optional: where it is, for a gentle nudge, e.g. \"It's the blue button on the right\".",
                   "step": "Optional: this step's number (default: the next one)."], ["id", "say"]),
-        ]
+        ] + ghostTools
     }
 
     // MARK: Approvals
@@ -325,6 +337,7 @@ final class MacOperator {
     /// in a granted app, on nothing risky, with no value the person didn't write.
     func taskCovers(_ approval: HarnessApproval) -> Bool {
         approval.actions.allSatisfy { action in
+            if ["ghost_press", "ghost_set_value"].contains(action.tool) { return ghostTaskCovers(action) }
             guard Self.writeTools.contains(action.tool), action.fromData.isEmpty, let grant else { return false }
             let front = NSWorkspace.shared.frontmostApplication
             let args = Self.args(of: action)
@@ -348,9 +361,16 @@ final class MacOperator {
         guard Self.names.contains(action.tool) else { return nil }
         let args = Self.args(of: action)
         let app = NSWorkspace.shared.frontmostApplication?.localizedName ?? "the front app"
-        let label = Self.int(args["id"]).flatMap { labels[$0] }.map { "“\($0)”" } ?? "this"
+        let observedLabel = Self.int(args["id"]).flatMap { id in
+            action.tool.hasPrefix("ghost_") ? ghostLabels[id] : labels[id]
+        }
+        let label = observedLabel.map { "“\($0)”" } ?? "this"
         switch action.tool {
         case "start_task": return "Let Cookie do this on your Mac?"
+        case "ghost_start_task": return "Let Cookie work in these background apps?"
+        case "ghost_take_screen": return CookieAXActionPolicy.screenQuestion(seconds: Self.int(args["seconds"]) ?? 5)
+        case "ghost_press": return "Press \(label) in the background app?"
+        case "ghost_set_value": return "Change \(label) in the background app?"
         case "press": return "Press \(label) in \(app)?"
         case "set_value": return "Change \(label) in \(app)?"
         case "type_text": return "Type into \(app)?"
@@ -386,6 +406,11 @@ final class MacOperator {
         if name == "start_task" { return startTask(args) }
         if name == "finish_task" { return finishTask(args) }
         if name == "look" { return look(args) }
+        if name == "ghost_start_task" { return startGhostTask(args) }
+        if name == "ghost_finish_task" { return finishGhostTask() }
+        if name == "ghost_look" { return ghostLook(args) }
+        if name == "ghost_take_screen" { return await takeGhostScreen(args) }
+        if name == "ghost_press" || name == "ghost_set_value" { return ghostAction(name, args) }
 
         let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         if CookieAXActionPolicy.mustReadAXBefore(name),
@@ -454,6 +479,7 @@ final class MacOperator {
         guideStepsShown = 0
         guiding?(nil)
         grant = nil
+        ghostGrant = nil; ghostElements = [:]; ghostLabels = [:]; ghostLookedAt = nil
         screens = []
         elements = [:]
         labels = [:]
@@ -467,6 +493,7 @@ final class MacOperator {
         let apps = (args["apps"] as? String ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         guard !plan.isEmpty, !apps.isEmpty else { return ("start_task needs a plan and at least one app.", true) }
         grant = MacGrant(plan: plan, apps: apps, started: Date())
+        ghostGrant = nil; ghostElements = [:]; ghostLabels = [:]; ghostLookedAt = nil
         rate = MacRateLimit()
         startEscWatch()
         log("start_task", app: apps.joined(separator: ", "), element: nil, ok: true)
@@ -476,6 +503,7 @@ final class MacOperator {
     private func finishTask(_ args: [String: Any]) -> (String, Bool) {
         log("finish_task", app: grant?.apps.joined(separator: ", "), element: nil, ok: true)
         grant = nil
+        ghostGrant = nil; ghostElements = [:]; ghostLabels = [:]; ghostLookedAt = nil
         stopEscWatch()
         return ("Task finished.", false)
     }
@@ -485,9 +513,11 @@ final class MacOperator {
         let handler: (NSEvent) -> Void = { [weak self] event in
             guard event.keyCode == UInt16(kVK_Escape), event.type == .keyDown else { return }
             MainActor.assumeIsolated {
-                guard let self, self.grant != nil else { return }
-                self.log("stopped_by_person", app: self.grant?.apps.joined(separator: ", "), element: nil, ok: true)
+                guard let self, self.grant != nil || self.ghostGrant != nil else { return }
+                self.log("stopped_by_person", app: self.grant?.apps.joined(separator: ", ") ?? self.ghostGrant?.apps.joined(separator: ", "), element: nil, ok: true)
                 self.grant = nil
+                self.ghostGrant = nil
+                self.ghostElements = [:]; self.ghostLabels = [:]; self.ghostLookedAt = nil
                 self.stopEscWatch()
                 self.stopRun?()
             }
@@ -561,6 +591,155 @@ final class MacOperator {
             return ("\(lines.joined(separator: "\n"))\n\(message) For a canvas, click_at can click the current screenshot inside the approved task.", false)
         }
         return (lines.joined(separator: "\n"), false)
+    }
+
+    private func startGhostTask(_ args: [String: Any]) -> (String, Bool) {
+        let plan = (args["plan"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let apps = (args["apps"] as? String ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard !plan.isEmpty, !apps.isEmpty else { return ("ghost_start_task needs a plan and running background apps.", true) }
+        guard apps.allSatisfy({ Self.runningApplication(named: $0) != nil }) else { return ("Every named Ghost Mode app must already be running.", true) }
+        guard apps.allSatisfy({ name in
+            guard let app = Self.runningApplication(named: name) else { return false }
+            return app.processIdentifier != NSWorkspace.shared.frontmostApplication?.processIdentifier
+                && !MacSafety.blocked(bundleID: app.bundleIdentifier, category: Self.category(app))
+        }) else { return ("Ghost Mode only works on background apps; it cannot target the frontmost, blocked, finance or medical apps.", true) }
+        grant = nil
+        ghostGrant = MacGrant(plan: plan, apps: apps, started: Date())
+        ghostElements = [:]; ghostLabels = [:]; ghostLookedAt = nil
+        rate = MacRateLimit(); startEscWatch()
+        return ("Ghost Mode is approved for \(apps.joined(separator: ", ")). It uses AXPress and AXValue only and will not activate those apps. Run ghost_look before each action. Esc stops the task.", false)
+    }
+
+    private func finishGhostTask() -> (String, Bool) {
+        ghostGrant = nil; ghostElements = [:]; ghostLabels = [:]; ghostLookedAt = nil
+        stopEscWatch()
+        return ("Ghost Mode task finished.", false)
+    }
+
+    private func ghostLook(_ args: [String: Any]) -> (String, Bool) {
+        guard AXIsProcessTrusted() else { return ("Cookie needs Accessibility access to read background apps.", true) }
+        guard let name = args["app"] as? String, let app = Self.runningApplication(named: name) else { return ("That background app isn't running.", true) }
+        guard let ghostGrant, ghostGrant.covers(appName: app.localizedName, bundleID: app.bundleIdentifier) else { return ("Call ghost_start_task and get the person's approval before reading this background app.", true) }
+        guard app.processIdentifier != NSWorkspace.shared.frontmostApplication?.processIdentifier else { return ("This app is now frontmost. Ghost Mode reads background windows only; use normal look.", true) }
+        if let refusal = CaptureGuard.refusal() { return (refusal, true) }
+        guard !MacSafety.blocked(bundleID: app.bundleIdentifier, category: Self.category(app)) else { return ("Cookie never reads \(app.localizedName ?? "this app").", true) }
+        ghostElements = [:]; ghostLabels = [:]; ghostLookedAt = nil
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetAttributeValue(root, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        let windows = Self.attribute(root, kAXWindowsAttribute) as? [AXUIElement] ?? []
+        guard !windows.isEmpty else { return ("\(app.localizedName ?? "The app") exposes no background AX tree; Cookie can't act on it in Ghost Mode.", true) }
+        let limit = min(400, max(20, Self.int(args["max_elements"]) ?? 150))
+        var lines = ["Background app: \(app.localizedName ?? "?")"]
+        var queue: [(AXUIElement, Int)] = windows.map { ($0, 0) }
+        var nextID = 1; var visited = 0
+        while !queue.isEmpty, ghostElements.count < limit {
+            let (element, depth) = queue.removeFirst(); visited += 1
+            AXUIElementSetMessagingTimeout(element, 0.2)
+            if depth == 0, let title = Self.string(element, kAXTitleAttribute), !title.isEmpty { lines.append("Window: \(title)") }
+            let role = Self.string(element, kAXRoleAttribute) ?? ""
+            if Self.worthShowing(element, role: role) {
+                ghostElements[nextID] = element; ghostLabels[nextID] = Self.label(element)
+                lines.append("[\(nextID)] \(Self.describe(element))"); nextID += 1
+            }
+            if depth < 30, let children = Self.attribute(element, kAXChildrenAttribute) as? [AXUIElement] {
+                queue.append(contentsOf: children.prefix(200).map { ($0, depth + 1) })
+            }
+        }
+        guard !ghostElements.isEmpty else {
+            let reason = visited == 0 ? "exposes no AX tree" : "exposes no usable AX controls"
+            return ("\(app.localizedName ?? "The app") \(reason); Cookie can't act on it in Ghost Mode.", true)
+        }
+        ghostLookedAt = app.processIdentifier
+        if ghostElements.count >= limit { lines.append("(More controls were available; narrow the area and look again.)") }
+        return (lines.joined(separator: "\n"), false)
+    }
+
+    private func ghostTaskCovers(_ action: HarnessAction) -> Bool {
+        guard action.fromData.isEmpty, let ghostGrant,
+              let id = Self.int(Self.args(of: action)["id"]), ghostElements[id] != nil,
+              let pid = ghostLookedAt,
+              let app = NSWorkspace.shared.runningApplications.first(where: { $0.processIdentifier == pid }),
+              app.processIdentifier != NSWorkspace.shared.frontmostApplication?.processIdentifier,
+              ghostGrant.covers(appName: app.localizedName, bundleID: app.bundleIdentifier),
+              !MacSafety.isRisky(label: ghostLabels[id] ?? "") else { return false }
+        return ["ghost_press", "ghost_set_value"].contains(action.tool)
+    }
+
+    private func ghostAction(_ name: String, _ args: [String: Any]) -> (String, Bool) {
+        guard AXIsProcessTrusted() else { return ("Cookie needs Accessibility access to act on background apps.", true) }
+        if let refusal = CaptureGuard.refusal() { return (refusal, true) }
+        guard var grant = ghostGrant, let pid = ghostLookedAt,
+              let app = NSWorkspace.shared.runningApplications.first(where: { $0.processIdentifier == pid }),
+              grant.covers(appName: app.localizedName, bundleID: app.bundleIdentifier),
+              CookieAXActionPolicy.permitsBackgroundAction(targetPID: pid, frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                  approved: true, observedElementCount: ghostElements.count) else { return ("Ghost Mode needs approval and a fresh AX look at a background app. It will not activate the app.", true) }
+        guard !MacSafety.blocked(bundleID: app.bundleIdentifier, category: Self.category(app)) else { return ("Cookie never acts in \(app.localizedName ?? "this app").", true) }
+        guard let id = Self.int(args["id"]), CookieAXActionPolicy.containsObservedElement(id, elementIDs: Set(ghostElements.keys)),
+              let element = ghostElements[id] else { return ("That id was not in the latest ghost_look. Look again.", true) }
+        guard grant.actions < MacGrant.maxActions else { return ("This Ghost Mode task reached \(MacGrant.maxActions) actions. Finish it and start a new one.", true) }
+        guard rate.allow() else { return ("Too many actions in a minute. Wait, then look again.", true) }
+        grant.actions += 1; ghostGrant = grant
+        let previous = NSWorkspace.shared.frontmostApplication
+        let result: (String, Bool)
+        if name == "ghost_press" {
+            result = AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+                ? ("Pressed the observed background AX control.", false)
+                : ("This background control does not support AXPress. Cookie did not click or focus it.", true)
+        } else {
+            let value = args["value"] as? String ?? String(describing: args["value"] ?? "")
+            guard AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFString) == .success else { return ("This control does not accept AXValue. Cookie did not focus it.", true) }
+            let actual = Self.string(element, kAXValueAttribute) ?? ""
+            result = actual == value ? ("Set the observed background AX value.", false) : ("Set AXValue; the control now reads \"\(actual.prefix(80))\".", false)
+        }
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+            if previous?.processIdentifier != pid { _ = previous?.activate(options: [.activateIgnoringOtherApps]) }
+            ghostGrant = nil; ghostElements = [:]; ghostLabels = [:]; ghostLookedAt = nil
+            return ("The app came to the front during an AX action. Cookie restored the previous app when possible and stopped Ghost Mode.", true)
+        }
+        return result
+    }
+
+    private func takeGhostScreen(_ args: [String: Any]) async -> (String, Bool) {
+        // This tool is outbound, so the harness reaches this method only after the user approves.
+        guard CookieAXActionPolicy.canTakeScreen(isApproved: true), let name = args["app"] as? String,
+              let app = Self.runningApplication(named: name), let ghostGrant,
+              ghostGrant.covers(appName: app.localizedName, bundleID: app.bundleIdentifier) else { return ("This screen request needs its own approval and an app in the approved Ghost Mode task.", true) }
+        let seconds = CookieAXActionPolicy.screenDuration(Self.int(args["seconds"]) ?? 5)
+        guard CGPreflightScreenCaptureAccess() else { return ("Screen access is off. Cookie did not ask for permission or capture anything.", true) }
+        if let refusal = CaptureGuard.refusal() { return (refusal, true) }
+        guard !MacSafety.blocked(bundleID: app.bundleIdentifier, category: Self.category(app)) else { return ("Cookie never looks at \(app.localizedName ?? "this app").", true) }
+        let previous = NSWorkspace.shared.frontmostApplication
+        let changesFocus = previous?.processIdentifier != app.processIdentifier
+        if changesFocus && !app.activate(options: [.activateIgnoringOtherApps]) {
+            return ("macOS did not allow \(app.localizedName ?? "the app") to come forward.", true)
+        }
+        let lines: [String]
+        do {
+            try await Task.sleep(for: .milliseconds(250))
+            if changesFocus && NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier {
+                return ("The app did not stay frontmost. Cookie stopped without overriding the app you switched to.", true)
+            }
+            guard let image = try await CompanionScreenCaptureUtility.captureVisibleWindowImage(processIdentifier: app.processIdentifier) else {
+                if changesFocus && NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier { _ = previous?.activate(options: [.activateIgnoringOtherApps]) }
+                return ("No visible app window was available to capture.", true)
+            }
+            let redacted = try await Redactor.redact(image)
+            let read = try await CookieVisionText.read(redacted.image, faces: false)
+            lines = read.lines.map(\.text)
+        } catch {
+            if changesFocus && NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier { _ = previous?.activate(options: [.activateIgnoringOtherApps]) }
+            return ("The approved one-shot screen look failed safely: \(error.localizedDescription)", true)
+        }
+        try? await Task.sleep(for: .seconds(seconds))
+        if changesFocus && NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
+            _ = previous?.activate(options: [.activateIgnoringOtherApps])
+        }
+        guard !lines.isEmpty else { return ("One redacted screenshot was read locally and not retained; it had no readable text.", false) }
+        return ("One redacted screenshot of \(app.localizedName ?? "the app") was read locally (\(seconds) seconds). The image was not saved; redacted text is supplied only for this reply.\n\(lines.joined(separator: "\n").prefix(12_000))", false)
+    }
+
+    private static func runningApplication(named name: String) -> NSRunningApplication? {
+        NSWorkspace.shared.runningApplications.first { $0.localizedName?.caseInsensitiveCompare(name) == ComparisonResult.orderedSame }
     }
 
     private static func worthShowing(_ element: AXUIElement, role: String) -> Bool {

@@ -478,6 +478,8 @@ extension HarnessAction {
     }
 
     var consequence: String {
+        if tool == "ghost_start_task" { return "Acts only in named background apps after your approval; risky actions ask again." }
+        if tool == "ghost_take_screen" { return "One redacted app-window screenshot after approval; its image is not saved, and redacted text is supplied only for this reply. No recording." }
         if tool == "workspace" { return "Saves a local draft in this conversation. Nothing is published or sent." }
         if tool == "start_task" { return "One yes covers this task in these apps. Sending, paying or deleting still asks. Esc stops it." }
         if tool == CookieRoutineWords.tool.name {

@@ -471,7 +471,9 @@ final class HarnessClient {
                 let plain = ["recall": "Looked in Enkeon", "remember": "Saving to Enkeon", "web_search": "Searching the web",
                              "fetch_page": "Reading a page", "fetch_pages": "Reading pages", "check_quote": "Checking a quote",
                              "connector_actions": "Looking at your connected apps", "connector_call": "Using a connected app",
-                             "use_skill": "Opening a skill", "look": "Looking at the app"]
+                             "use_skill": "Opening a skill", "look": "Looking at the app",
+                             "ghost_look": "Reading a background app with Accessibility", "ghost_press": "Pressing an observed background control",
+                             "ghost_set_value": "Updating an observed background value", "ghost_take_screen": "Waiting for screen approval"]
                 run.onStep(plain[name] ?? "Using \(name.replacingOccurrences(of: "_", with: " "))")
             case "usage":
                 if let usage = event.usage {

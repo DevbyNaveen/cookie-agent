@@ -167,6 +167,19 @@ enum CompanionScreenCaptureUtility {
         return capturedScreens
     }
 
+    /// Captures one visible window from one approved app. The caller redacts this image before
+    /// reading it; no other app window or display is included.
+    static func captureVisibleWindowImage(processIdentifier: pid_t) async throws -> CGImage? {
+        let content = try await shareableContent()
+        guard let window = content.windows.filter({ $0.owningApplication?.processID == processIdentifier && $0.isOnScreen })
+            .max(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }) else { return nil }
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+        let size = CookieImageSize.processed(width: max(1, Int(window.frame.width * 2)), height: max(1, Int(window.frame.height * 2)))
+        let configuration = SCStreamConfiguration()
+        configuration.width = size.width; configuration.height = size.height
+        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+    }
+
     /// Captures one rectangle of the screen (global AppKit coordinates, the
     /// area the user circled) as JPEG. Cookie's own windows are left out, so
     /// the magic trail never shows up in the picture. Kept in memory only.
