@@ -340,6 +340,7 @@ private struct VoicePage: View {
     @AppStorage(BuddyTranscriptionProviderFactory.speechProviderKey) private var speechEngine = "apple"
     @AppStorage(CookieDictation.editorProviderKey) private var editor = "anthropic"
     @AppStorage(AppModel.completeKey) private var pen = true
+    @AppStorage(CookieDepth.byDefaultKey) private var deepByDefault = false
 
     var body: some View {
         ModelSettings()
@@ -376,6 +377,15 @@ private struct VoicePage: View {
             CredentialRow(field: CookieModelSettings.elevenLabsField, title: "ElevenLabs key",
                           caption: "Optional. With a key, Cookie's spoken replies use ElevenLabs, and the reply's text is sent to ElevenLabs to be spoken. Without one, the best voice installed on this Mac speaks, on this Mac.") { savedKey += 1 }
             ElevenLabsVoiceRow(hasKey: hasKey)
+        }
+        SettingsGroup(label: "Explaining") {
+            SettingsRow(title: "Explain in depth by default",
+                        caption: deepByDefault
+                            ? "Why and how questions get a researched, step-by-step answer with a picture, about a minute and a half long. Say “quickly” or “short answer” for a short one."
+                            : "Cookie answers in a sentence or two, and goes in depth when you ask, like “explain how this works in depth” or “teach me about it”.",
+                        divider: false) {
+                SettingsSwitch(title: "Explain in depth by default", isOn: $deepByDefault)
+            }
         }
     }
 

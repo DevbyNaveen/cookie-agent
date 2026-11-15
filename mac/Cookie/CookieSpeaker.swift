@@ -177,12 +177,19 @@ final class CookieSpeaker {
     /// nothing has been said yet, a short acknowledgement fills the wait.
     func toolStarted() {
         guard let reply, !reply.finished else { return }
-        if !reply.anyWordsSent && !reply.acknowledged {
-            reply.acknowledged = true
-            send(Self.acknowledgement + " ", flush: true, aside: true, in: reply)
-        } else if reply.anyWordsSent {
+        if reply.anyWordsSent {
             send("", flush: true, aside: false, in: reply)
+        } else {
+            acknowledge(Self.acknowledgement)
         }
+    }
+
+    /// Words heard ahead of the reply that aren't its own ("One moment.", or a deep turn's
+    /// "Let me look into that properly."): once a reply, and only before any of its words.
+    func acknowledge(_ words: String) {
+        guard let reply, !reply.finished, !reply.anyWordsSent, !reply.acknowledged else { return }
+        reply.acknowledged = true
+        send(words + " ", flush: true, aside: true, in: reply)
     }
 
     /// The reply is complete: its last words go, then the voice finishes what it has.

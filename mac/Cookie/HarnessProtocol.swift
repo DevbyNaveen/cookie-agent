@@ -163,6 +163,9 @@ enum HarnessRequest {
         struct Budget: Encodable { let max_steps: Int }
         /// nil leaves Enkeon to the helper's environment (on with ENKEON_API_KEY); false turns it off.
         let enkeon: Bool?
+        /// true: a `finish_turn` (or a spent limit) ends the run with an answer written from what
+        /// it found, not an error (serve.rs `close_with_answer`). Left out unless set.
+        var close_with_answer: Bool? = nil
     }
 
     /// A quick question (hover to explain): one model call, no tools, MCP, skills, history or Enkeon.
@@ -217,6 +220,9 @@ enum HarnessRequest {
     }
 
     struct Cancel: Encodable { let type = "cancel" }
+
+    /// Ask the run to write its answer now from what it has (serve.rs `finish_turn`).
+    struct FinishTurn: Encodable { let type = "finish_turn" }
 
     /// Open the connection to the model's host ahead of a run (serve.rs `warm`); answered on
     /// its own line, which Cookie doesn't wait for.

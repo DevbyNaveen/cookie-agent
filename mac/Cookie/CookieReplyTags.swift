@@ -3,7 +3,7 @@
 //  Cookie
 //
 //  The tags a reply carries inline ([DRAW:…], [READ:…], [FOCUS:…], [POINT:…], [NEXT:…], [CARD {…}],
-//  [SCENE {…}]), each
+//  [SCENE {…}], [SOURCE:…]), each
 //  kept with the place it sat in the words. The words without the tags are
 //  exactly what the voice speaks, so a tag's place is a place on the speech
 //  clock: a mark written after "this cell" draws as "this cell" is said.
@@ -13,7 +13,7 @@ import Foundation
 
 /// One tag from a reply, and where it sat in the spoken text.
 struct CookieReplyTag: Equatable {
-    /// The tag's name, as written: "DRAW", "READ", "FOCUS", "POINT", "NEXT", "CARD", "SCENE", "LOOK".
+    /// The tag's name, as written: "DRAW", "READ", "FOCUS", "POINT", "NEXT", "CARD", "SCENE", "LOOK", "SOURCE".
     let kind: String
     /// Everything after "KIND:" up to the closing bracket, or the JSON object after "KIND ".
     let body: String
@@ -25,7 +25,7 @@ enum CookieReplyTags {
     /// The tags a reply may carry. A tag is "[KIND:body]", or "[KIND {json}]" when its body is
     /// a JSON object (brackets inside JSON strings are fine). A new kind is one more name here
     /// plus a reader for its body.
-    static let kinds = ["NEXT", "DRAW", "READ", "FOCUS", "POINT", "CARD", "SCENE", "LOOK", "TEACH", "VISUAL", "WORK"]
+    static let kinds = ["NEXT", "DRAW", "READ", "FOCUS", "POINT", "CARD", "SCENE", "LOOK", "TEACH", "VISUAL", "WORK", "SOURCE"]
 
     /// Splits a reply into the words to speak and its tags, in order.
     ///

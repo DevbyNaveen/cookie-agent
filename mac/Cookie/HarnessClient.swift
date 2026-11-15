@@ -202,7 +202,7 @@ final class HarnessClient {
         /// A tool round started since the last words: the next words begin a new sentence.
         var afterTool = false
         let onText: (String) -> Void
-        let onToolStarted: () -> Void
+        let onToolStarted: (String) -> Void
         let onStep: (String) -> Void
         let onApproval: (HarnessApproval?) -> Void
         let workspaceThreadID: UUID?
@@ -236,10 +236,11 @@ final class HarnessClient {
     /// or CancellationError when the caller's task was cancelled.
     func run(model: String, input text: String, instructions: String, images: [HarnessRequest.Image],
              history: [HarnessRequest.Turn], workspaceThreadID: UUID? = nil, backgroundProject: Bool = false, unattended: Bool = false,
+             closeWithAnswer: Bool = false,
              onText: @escaping (String) -> Void,
              onStep: @escaping (String) -> Void,
              onApproval: @escaping (HarnessApproval?) -> Void,
-             onToolStarted: @escaping () -> Void = {}, feature: String = "question") async throws -> String {
+             onToolStarted: @escaping (String) -> Void = { _ in }, feature: String = "question") async throws -> String {
         let enkeonKey = await CookieModelSettings.enkeonKey()
         try ensureRunning(environment: CookieModelSettings.helperEnvironment(model: model, enkeonKey: enkeonKey))
         CookieProof.shared.recordSent(images, model: model, feature: feature)
@@ -251,7 +252,8 @@ final class HarnessClient {
             images: images,
             history: history,
             // On: left out, so the helper uses ENKEON_API_KEY from its environment.
-            enkeon: enkeonKey == nil ? false : nil
+            enkeon: enkeonKey == nil ? false : nil,
+            close_with_answer: closeWithAnswer ? true : nil
         )
         return try await start(id: request.id, line: HarnessWire.encode(request),
                                onText: onText, onStep: onStep, onApproval: onApproval, onToolStarted: onToolStarted, workspaceThreadID: workspaceThreadID, model: model)
@@ -300,7 +302,7 @@ final class HarnessClient {
                        onText: @escaping (String) -> Void,
                        onStep: @escaping (String) -> Void,
                        onApproval: @escaping (HarnessApproval?) -> Void,
-                       onToolStarted: @escaping () -> Void = {}, workspaceThreadID: UUID? = nil, model: String) async throws -> String {
+                       onToolStarted: @escaping (String) -> Void = { _ in }, workspaceThreadID: UUID? = nil, model: String) async throws -> String {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 cancel() // one run at a time: an older one still going ends here
@@ -333,6 +335,13 @@ final class HarnessClient {
         if queued != nil { queued = nil } else { send(HarnessWire.encode(HarnessRequest.Cancel())) }
         run.onApproval(nil)
         run.continuation.resume(throwing: CancellationError())
+    }
+
+    /// Asks the run going now to stop working and write its answer from what it found; only a
+    /// run started with `closeWithAnswer` answers (any other is stopped by it).
+    func finishTurn() {
+        guard active != nil else { return }
+        send(HarnessWire.encode(HarnessRequest.FinishTurn()))
     }
 
     /// Ends the run and its helper: for a client that lives only as long as one background run.
@@ -478,8 +487,8 @@ final class HarnessClient {
                 run.onText(active?.text ?? "")
             case "tool_call_started":
                 active?.afterTool = true
-                run.onToolStarted()
                 let name = event.detail?.name ?? "a tool"
+                run.onToolStarted(name)
                 // A connected-app action may be parked on Enkeon for the person's yes.
                 if name == "connector_call" { CookieAppApprovals.shared.watch() }
                 // The model saving to Enkeon is a memory write like any other: what kind, never the words.
