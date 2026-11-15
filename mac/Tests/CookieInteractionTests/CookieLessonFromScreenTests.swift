@@ -225,7 +225,7 @@ enum CookieLessonFromScreenTests {
         } else { preconditionFailure("the error example must be a flow") }
 
         // MARK: Fallback
-        let rejected = CookieReplyTags.split(#"[SCENE {"title":"Pump","parts":[{"id":"a","shape":"torus","size":[1],"position":[0,0,0],"color":"steel"}]}]"#).tags
+        let rejected = CookieReplyTags.split(#"[SCENE {"title":"Pump","parts":[{"id":"a","shape":"blob","size":[1],"position":[0,0,0],"color":"steel"}]}]"#).tags
         check(rejected.count == 1 && CookieScene(tag: rejected[0]) == nil, "a scene outside the schema is rejected")
         check(CookieLessonFromScreen.fallbackReason(rejected).contains("didn't pass its checks"), "the fallback says the model was rejected")
         check(CookieLessonFromScreen.fallbackReason([]).contains("words only"), "a reply with no visual says so")

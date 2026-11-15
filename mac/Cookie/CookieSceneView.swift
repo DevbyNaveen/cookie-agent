@@ -7,8 +7,15 @@
 //  the scene's own size, labelled with paper pills and hand-inked leader lines
 //  drawn in SwiftUI at each part's projected point (RealityView's in-scene
 //  attachments are visionOS-only). Dragging turns the model, scrolling zooms.
+//  A model that works (`CookieSceneMotion`) runs, slows and steps; its flows
+//  run beads along their route; the camera flies to frame a part or a preset
+//  view on a spring and gives way whenever the person turns or zooms. A soft
+//  contact shadow sits under the model; cut parts are x-rays with a lit edge,
+//  and isolate fades the rest back instead of hiding it.
 //  `CookieScenePresenter` floats it like a card: one at a time, beside the
 //  notch or the marks, click-through except while the pointer is over it.
+//  `CookieSceneDirector` runs the scene's beats on the speech clock, each once,
+//  in order, as the voice reaches its words.
 //
 //  The scene sits on the paper whether or not RealityView draws its own
 //  background: the view's background style is the paper, and the card is
@@ -19,8 +26,8 @@ import AppKit
 import RealityKit
 import SwiftUI
 
-/// The live scene: its entities, camera and lights, how far it's turned and zoomed, and where each
-/// shown label's part is on the view. Built once per scene; dropped with the panel.
+/// The live scene: its entities, camera and lights, how far it's turned and zoomed, what moves and
+/// where each shown label's part is on the view. Built once per scene; dropped with the panel.
 @MainActor
 final class CookieSceneStage: ObservableObject {
     let scene: CookieScene
@@ -35,9 +42,36 @@ final class CookieSceneStage: ObservableObject {
     private let camera = PerspectiveCamera()
     private var lights: [Entity] = []
     private var parts: [String: ModelEntity] = [:]
+    /// The soft contact shadow under the model; it stays level as the model turns.
+    let shadow = Entity()
+    /// Flow beads (or, with Reduce Motion, still arrows), turned with the model.
+    let flowLayer = Entity()
+    private var markers: [String: [ModelEntity]] = [:]
+    private var flowPaths: [String: CookieFlowPath] = [:]
 
-    /// How many labels are showing, in `scene.labelled` order.
-    @Published private(set) var shownLabels = 0
+    // A real model (`scene.asset`): a copy of the file under `assetFrame`, which scales and centres it.
+    /// Scales and centres the file so its units are the scene's; its parent puts the centroid at the origin.
+    private let assetFrame = Entity()
+    /// Each part's node in the copy.
+    private var assetNodes: [String: Entity] = [:]
+    /// A point at the middle of each part's box, riding its node: where its label and the hand point.
+    private var assetPoints: [String: Entity] = [:]
+    /// Where each piece sits in the file, so exploding moves it out from there.
+    private var pieceBases: [String: SIMD3<Float>] = [:]
+    /// Every drawn mesh of the file, the parts it belongs to, and the materials it came with.
+    private var assetMeshes: [(entity: ModelEntity, owners: Set<String>, materials: [any RealityKit.Material])] = []
+    private var meshOpacity: [ObjectIdentifier: Float] = [:]
+    private var assetTask: Task<Void, Never>?
+    /// The file is in and drawn (a copy shows at once when it's open already, else a moment later).
+    @Published private(set) var assetShown = false
+    /// How see-through a cut part of a real model is (its materials are its own, so the whole part fades).
+    static let cutOpacity: Float = 0.3
+
+    /// The labelled parts whose labels are showing (a beat may show any of them, in any order).
+    @Published private(set) var shownLabelIDs: Set<String> = []
+    var shownLabels: Int { shownLabelIDs.count }
+    /// The showing labels' parts, in `scene.labelled` order (which keeps each on its rail).
+    var shownLabelled: [CookieScene.Part] { scene.labelled.filter { shownLabelIDs.contains($0.id) } }
     /// Each shown label's part, projected onto the view (view points, top-left origin).
     @Published private(set) var anchors: [String: CGPoint] = [:]
     /// The scene's centre on the view; labels lean away from it.
@@ -50,7 +84,7 @@ final class CookieSceneStage: ObservableObject {
     private(set) var spinning: Bool
     /// Radians a second while spinning; "faster" and "slower" move it within `spinRates`.
     private(set) var spinRate = CookieSceneStage.defaultSpinRate
-    private(set) var turn = simd_quatf(angle: -0.5, axis: [0, 1, 0])
+    private(set) var turn = CookieSceneCamera.turn
     /// A spoken turn in progress: where it started, how far it goes, how long it has run.
     private var yawTurn: (base: simd_quatf, degrees: Float, elapsed: Float)?
     /// Every label shows at once ("label everything"), past the usual six.
@@ -63,12 +97,41 @@ final class CookieSceneStage: ObservableObject {
     private var subscription: EventSubscription?
     private var initialExplosionStarted = false
     private var explosionTask: Task<Void, Never>?
+    /// 0 assembled, 1 exploded; eased between by `explosion`.
+    private(set) var explosionBlend: Float = 0
+    private var explosion: (from: Float, to: Float, elapsed: Float)?
 
-    private static let fieldOfView: Float = 34
+    // Motion: the machine working.
+    /// The joints are turning and the beads flowing.
+    @Published private(set) var playing: Bool
+    /// Running at `slowFactor` of its speed.
+    @Published private(set) var slowMotion = false
+    /// Seconds of motion so far (slow motion counts slowly); a step adds a twelfth of a turn.
+    private(set) var motionTime: Float = 0
+    /// Steps taken with Reduce Motion on, where the pose moves only a step at a time.
+    private(set) var steps = 0
+    @Published private(set) var flowsOn: Set<String>
+    /// Parts drawn as a cutaway: see-through with a lit edge.
+    @Published private(set) var cutParts: Set<String>
+    /// The parts kept bright by "isolate"; the rest fade back. Nil: everything shows.
+    private(set) var isolated: Set<String>?
+    private var highlighted: Set<String> = []
+    private var opacity: [String: Float] = [:]
+    private var poseDirty = true
+    private var pathsDirty = true
+    private var shadowTurn: simd_quatf?
+    private var rig: CookieSceneCameraRig
+
+    private static let fieldOfView = CookieSceneCamera.fieldOfView
     static let defaultSpinRate: Float = 0.35
     static let spinRates: ClosedRange<Float> = 0.1...1.6
     /// Each "faster" or "slower" multiplies or divides the rate by this.
     static let spinFactor: Float = 1.6
+    /// Slow motion runs the machine at this fraction of its speed.
+    static let slowFactor: Float = 0.25
+    /// How faint the parts "isolate" leaves out become.
+    static let fadedOpacity: Float = 0.12
+    static let explodeSeconds: Float = 1.2
     /// How long a spoken turn takes, eased in and out; longer turns take a little longer.
     static func turnSeconds(_ degrees: Float) -> Float { 0.45 + min(abs(degrees), 360) / 360 * 0.55 }
 
@@ -76,15 +139,37 @@ final class CookieSceneStage: ObservableObject {
         self.scene = scene
         self.reduceMotion = reduceMotion
         self.spinning = scene.spin && !reduceMotion
+        playing = scene.run
+        flowsOn = Set(scene.flows.filter(\.on).map(\.id))
+        cutParts = Set(scene.parts.filter(\.cut).map(\.id))
+        rig = CookieSceneCameraRig(overview: simd_length(CookieSceneCamera.eye(radius: CookieSceneCamera.radius(scene, exploded: false))))
         let studio = Self.studioLight()
-        for part in scene.parts {
-            let entity = ModelEntity(mesh: Self.mesh(part), materials: [Self.material(part)])
+        if let asset = scene.asset {
+            let holder = Entity()
+            holder.position = -scene.centroid
+            assetFrame.scale = SIMD3(repeating: asset.scale)
+            assetFrame.position = -asset.centre * asset.scale
+            holder.addChild(assetFrame)
+            root.addChild(holder)
+            if let copy = CookieModelAssets.shared.copy(asset.file) {
+                attach(copy, studio: studio)
+            } else {
+                assetTask = Task { [weak self] in
+                    guard let prototype = try? await CookieModelAssets.shared.prototype(asset.file), !Task.isCancelled, let self else { return }
+                    self.attach(prototype.clone(recursive: true), studio: studio)
+                }
+            }
+        }
+        for part in scene.parts where scene.asset == nil {
+            let entity = ModelEntity(mesh: Self.mesh(part), materials: [Self.material(part, cut: part.cut)])
             entity.position = scene.place(of: part, exploded: false)
             entity.orientation = part.orientation
             if let studio { entity.components.set(ImageBasedLightReceiverComponent(imageBasedLight: studio)) }
             root.addChild(entity)
             parts[part.id] = entity
+            Self.setRim(entity, part: part, on: part.cut)
         }
+        root.addChild(flowLayer)
         root.orientation = turn
         // A key light from above and in front, a dim fill from the other side; the studio image does the rest.
         let key = DirectionalLight()
@@ -95,14 +180,19 @@ final class CookieSceneStage: ObservableObject {
         fill.look(at: .zero, from: [-2, 0.6, 1], relativeTo: nil)
         lights = [key, fill] + (studio.map { [$0] } ?? [])
         camera.camera.fieldOfViewInDegrees = Self.fieldOfView
-        placeCamera()
+        Self.buildShadow(shadow)
+        buildFlows()
+        layout()
+        placeShadow()
+        placeCamera(instantly: true)
     }
 
-    /// Puts the scene into the RealityView and starts the per-frame update (spin and label positions).
+    /// Puts the scene into the RealityView and starts the per-frame update (motion, camera, labels).
     func install(in content: inout RealityViewCameraContent) {
         subscription?.cancel()
         content.camera = .virtual
         content.add(root)
+        content.add(shadow)
         content.add(camera)
         lights.forEach { content.add($0) }
         let projector = content
@@ -119,13 +209,60 @@ final class CookieSceneStage: ObservableObject {
         }
     }
 
+    /// Hangs a copy of the file under the frame and finds each part's node, point and meshes in it.
+    private func attach(_ model: Entity, studio: Entity?) {
+        guard let asset = scene.asset, assetFrame.children.isEmpty else { return }
+        assetFrame.addChild(model)
+        var owners: [ObjectIdentifier: Set<String>] = [:]
+        for part in scene.parts {
+            guard let path = asset.paths[part.id], let node = CookieModelAsset.entity(at: path, in: model) else { continue }
+            assetNodes[part.id] = node
+            let point = Entity()
+            node.addChild(point)
+            point.setPosition(part.position, relativeTo: assetFrame.parent)
+            assetPoints[part.id] = point
+            if asset.pieces.contains(part.id) { pieceBases[part.id] = node.position(relativeTo: assetFrame) }
+            Self.meshes(in: node).forEach { owners[ObjectIdentifier($0), default: []].insert(part.id) }
+        }
+        assetMeshes = Self.meshes(in: model).map { mesh in
+            if let studio { mesh.components.set(ImageBasedLightReceiverComponent(imageBasedLight: studio)) }
+            return (mesh, owners[ObjectIdentifier(mesh)] ?? [], mesh.model?.materials ?? [])
+        }
+        assetShown = true
+        layout()
+        refreshMaterials()
+        placeShadow()
+    }
+
+    private static func meshes(in entity: Entity) -> [ModelEntity] {
+        var found: [ModelEntity] = []
+        var stack = [entity]
+        while let next = stack.popLast() {
+            if let mesh = next as? ModelEntity, mesh.model != nil { found.append(mesh) }
+            stack.append(contentsOf: next.children)
+        }
+        return found
+    }
+
+    /// Where a part is drawn: its own entity, or for a real model the point riding its node.
+    private func point(_ id: String) -> Entity? { parts[id] ?? assetPoints[id] }
+
     /// Stops the per-frame work and lets go of every entity.
     func release() {
+        assetTask?.cancel()
+        assetTask = nil
+        assetNodes = [:]
+        assetPoints = [:]
+        assetMeshes = []
+        assetFrame.children.removeAll()
         pauseTeaching()
         subscription?.cancel()
         subscription = nil
         root.children.removeAll()
+        flowLayer.children.removeAll()
+        shadow.children.removeAll()
         parts = [:]
+        markers = [:]
         lights = []
     }
 
@@ -135,7 +272,7 @@ final class CookieSceneStage: ObservableObject {
     /// shows the first n labels. `all` shows everything at once.
     func reveal(through beat: Int, all: Bool) {
         let count = all ? scene.labelled.count : min(scene.labelled.count, beat)
-        if count > shownLabels { shownLabels = count }
+        shownLabelIDs.formUnion(scene.labelled.prefix(count).map(\.id))
         if !all, count > 0 { focus(scene.labelled[count - 1].id) }
         guard scene.explode, !initialExplosionStarted else { return }
         initialExplosionStarted = true
@@ -158,19 +295,67 @@ final class CookieSceneStage: ObservableObject {
 
     func focus(_ id: String, hand: Bool = true) {
         guard scene.labelled.contains(where: { $0.id == id }) else { return }
+        light(id, members: [id], hand: hand)
+    }
+
+    /// Lights `members` (the active one `id`), brings back any of them isolate faded, and lets the hand follow.
+    private func light(_ id: String, members: Set<String>, hand: Bool) {
         collapsed = false
         handFollows = hand
         activePart = id
         selectedPart = id
-        parts[id]?.isEnabled = true
+        if isolated != nil { isolated?.formUnion(members) }
         spinning = false
-        if let index = scene.labelled.firstIndex(where: { $0.id == id }) { shownLabels = max(shownLabels, index + 1) }
-        for part in scene.parts {
-            var material = Self.material(part)
-            if part.id == id { material.baseColor = .init(tint: NSColor.systemOrange) }
-            parts[part.id]?.model?.materials = [material]
-        }
+        if scene.labelled.contains(where: { $0.id == id }) { shownLabelIDs.insert(id) }
+        highlighted = members
+        refreshMaterials()
         if hand, let anchor = anchors[id] { onFocus(anchor) }
+    }
+
+    /// [VISUAL:focus:part]: the camera flies to frame the part (or its whole group), which lights up
+    /// while the hand follows it. Nothing happens for a name the model doesn't have.
+    func frame(_ name: String) {
+        guard let resolved = Self.match(name, in: scene.parts.map(\.id) + scene.parts.compactMap(\.group)).flatMap(scene.resolve) else { return }
+        let members = scene.parts(named: resolved)
+        guard let first = members.first else { return }
+        light(members.first { $0.label != nil }?.id ?? first.id, members: Set(members.map(\.id)), hand: true)
+        // Mid-explosion (a beat that explodes, then focuses) the camera aims where the parts are going.
+        let pose = scene.moves ? CookieSceneMotion.pose(scene, turns: currentTurns) : [:]
+        func at(_ part: CookieScene.Part) -> SIMD3<Float> {
+            explosion == nil ? parts[part.id]?.position ?? scene.place(of: part, exploded: exploded)
+                : CookieSceneMotion.placed(scene, part, pose: pose, explosion: exploded ? 1 : 0).position
+        }
+        var low = SIMD3<Float>(repeating: .greatestFiniteMagnitude), high = -low
+        for part in members {
+            low = simd_min(low, at(part) - part.reach)
+            high = simd_max(high, at(part) + part.reach)
+        }
+        let centre = (low + high) / 2
+        let radius = members.map { simd_length(at($0) - centre) + $0.reach }.max() ?? 0.1
+        let overview = overviewDistance
+        rig.frame(centre, turn: turn, distance: min(overview, max(overview * 0.3, CookieSceneCameraRig.distance(radius: radius))),
+                  instantly: reduceMotion)
+        updateCamera()
+    }
+
+    /// One beat of the scene's timeline: its actions in order, so the camera, the light, the hand,
+    /// the labels and the motion all move on together from the same words.
+    func perform(_ beat: CookieScene.Beat) {
+        for action in beat.actions {
+            switch action {
+            case .command(let command):
+                apply(command)
+            case .isolate(let name):
+                let members = scene.parts(named: name)
+                guard let first = members.first else { continue }
+                light(members.first { $0.label != nil }?.id ?? first.id, members: Set(members.map(\.id)), hand: true)
+                isolated = Set(members.map(\.id))
+                onInteract()
+            case .label(let name):
+                shownLabelIDs.formUnion(scene.parts(named: name).filter { $0.label != nil }.map(\.id))
+                onInteract()
+            }
+        }
     }
 
     func pauseTeaching() {
@@ -179,19 +364,20 @@ final class CookieSceneStage: ObservableObject {
         handFollows = false
         activePart = nil
         CookieHand.shared.stopTeaching(owner: teachingOwner)
-        for part in scene.parts { parts[part.id]?.model?.materials = [Self.material(part)] }
+        highlighted = []
+        refreshMaterials()
     }
 
     private func explodeParts(animated: Bool) {
-        for part in scene.parts {
-            guard let entity = parts[part.id] else { continue }
-            var target = entity.transform
-            target.translation = scene.place(of: part, exploded: exploded)
-            if animated {
-                entity.move(to: target, relativeTo: root, duration: 1.2, timingFunction: .easeInOut)
-            } else {
-                entity.transform = target
-            }
+        let target: Float = exploded ? 1 : 0
+        if animated, target != explosionBlend {
+            explosion = (from: explosionBlend, to: target, elapsed: 0)
+        } else {
+            explosion = nil
+            explosionBlend = target
+            poseDirty = true
+            pathsDirty = true
+            layout()
         }
     }
 
@@ -207,12 +393,54 @@ final class CookieSceneStage: ObservableObject {
         case .labels(let shown):
             labelsHidden = !shown
             allLabels = shown
-            if shown { shownLabels = scene.labelled.count }
+            if shown { shownLabelIDs = Set(scene.labelled.map(\.id)) }
             onInteract()
             return
         case .rotate(let degrees):
             spinning = false
             rotate(by: degrees)
+            onInteract()
+            return
+        case .run, .slow:
+            // With Reduce Motion the machine holds a still pose; a step moves it on.
+            playing = scene.hasMotion
+            slowMotion = command == .slow
+            onInteract()
+            return
+        case .stop, .pause:
+            playing = false
+            onInteract()
+            return
+        case .step:
+            playing = false
+            if reduceMotion { steps += 1 } else { motionTime += CookieSceneMotion.stepSeconds(scene) }
+            poseDirty = true
+            layout()
+            onInteract()
+            return
+        case .flow(let id, let on):
+            guard let flow = Self.match(id, in: scene.flows.map(\.id)) else { return }
+            if on { flowsOn.insert(flow) } else { flowsOn.remove(flow) }
+            // Re-lay the route: Reduce Motion's still arrows are placed only then, and a flow that
+            // started hidden never was.
+            pathsDirty = true
+            updateFlows()
+            onInteract()
+            return
+        case .cut(let name, let on):
+            guard let resolved = Self.match(name, in: scene.parts.map(\.id) + scene.parts.compactMap(\.group)).flatMap(scene.resolve) else { return }
+            let members = Set(scene.parts(named: resolved).map(\.id))
+            if on { cutParts.formUnion(members) } else { cutParts.subtract(members) }
+            refreshMaterials()
+            onInteract()
+            return
+        case .view(let view):
+            rig.show(view, turn: turn, overview: overviewDistance, instantly: reduceMotion)
+            updateCamera()
+            onInteract()
+            return
+        case .focus(let name):
+            frame(name)
             onInteract()
             return
         default: break
@@ -232,26 +460,43 @@ final class CookieSceneStage: ObservableObject {
             let current = selectedPart.flatMap { ids.firstIndex(of: $0) } ?? (command == .next ? -1 : ids.count)
             focus(ids[min(ids.count - 1, max(0, current + (command == .next ? 1 : -1)))])
         case .isolate:
+            // A grouped part isolates with its group; the rest fade back rather than vanish.
             guard let selectedPart else { return }
-            for (id, entity) in parts { entity.isEnabled = id == selectedPart }
+            isolated = scene.members(of: selectedPart)
         case .showAll:
-            parts.values.forEach { $0.isEnabled = true }
+            isolated = nil
         case .zoomIn: zoom(by: 20)
         case .zoomOut: zoom(by: -20)
         case .reset:
-            parts.values.forEach { $0.isEnabled = true }
+            isolated = nil
             exploded = false
             explodeParts(animated: !reduceMotion)
             zoom = 1
             yawTurn = nil
             spinRate = Self.defaultSpinRate
-            turn = simd_quatf(angle: -0.5, axis: [0, 1, 0])
+            turn = CookieSceneCamera.turn
             root.orientation = turn
+            playing = scene.run
+            slowMotion = false
+            motionTime = 0
+            steps = 0
+            flowsOn = Set(scene.flows.filter(\.on).map(\.id))
+            cutParts = Set(scene.parts.filter(\.cut).map(\.id))
+            poseDirty = true
+            layout()
+            updateFlows()
             placeCamera()
             pauseTeaching()
-        case .rotate, .spin, .labels, .state, .run, .pause, .set, .highlight: break
+        case .rotate, .spin, .labels, .run, .slow, .pause, .stop, .step, .flow, .cut, .view, .focus, .state, .set, .highlight: break
         }
         onInteract()
+    }
+
+    /// A name from a [VISUAL:…] verb (lowercased on the way in) matched to one the scene has.
+    static func match(_ name: String, in names: [String]) -> String? {
+        let given = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return names.first { $0 == given } ?? names.first { $0.lowercased() == given.lowercased() }
+            ?? names.first { CookieScene.fold($0) == CookieScene.fold(given) && !CookieScene.fold(given).isEmpty }
     }
 
     /// The next spin rate, always inside `spinRates`. Stopping keeps the rate for the next start.
@@ -300,6 +545,7 @@ final class CookieSceneStage: ObservableObject {
         let base = dragBase ?? turn
         dragBase = base
         spinning = false // the person has taken over
+        rig.hold() // and the camera stops where it is until the next beat
         let yaw = Float(translation.width) * 0.01, pitch = Float(translation.height) * 0.01
         turn = simd_quatf(angle: pitch, axis: [1, 0, 0]) * simd_quatf(angle: yaw, axis: [0, 1, 0]) * base
         root.orientation = turn
@@ -310,42 +556,81 @@ final class CookieSceneStage: ObservableObject {
         dragBase = nil
     }
 
-    /// A scroll's vertical delta; up comes closer.
+    /// A scroll's vertical delta; up comes closer. The person's zoom sits on top of every camera move.
     func zoom(by delta: CGFloat) {
         zoom = min(3, max(0.5, zoom * Float(exp(Double(delta) * 0.01))))
-        placeCamera()
+        rig.hold()
+        updateCamera()
         onInteract()
     }
 
-    /// Far enough back that the scene's bounding ball fits the view's height, a little from above.
-    private func placeCamera() {
-        let half = Self.fieldOfView / 2 * .pi / 180
-        let radius = max(0.05, scene.parts.map { simd_length(scene.place(of: $0, exploded: exploded)) + $0.reach }.max() ?? 0.05)
-        let distance = radius / sin(half) * 1.12 / zoom
-        camera.look(at: .zero, from: simd_normalize(SIMD3<Float>(0, 0.32, 1)) * distance, relativeTo: nil)
+    /// How far back the whole model fits the view's height (`CookieSceneCamera`, which the build check
+    /// sees through too).
+    private var overviewDistance: Float {
+        simd_length(CookieSceneCamera.eye(radius: CookieSceneCamera.radius(scene, exploded: exploded)))
     }
 
-    /// One frame's motion: a spoken turn in progress, else the spin.
+    /// Back to the whole model, a little from above: a camera move, or a cut with Reduce Motion.
+    private func placeCamera(instantly: Bool = false) {
+        rig.show(.overview, turn: turn, overview: overviewDistance, instantly: instantly || reduceMotion)
+        updateCamera()
+    }
+
+    private func updateCamera() {
+        camera.look(at: rig.target, from: rig.eye(zoom: zoom), relativeTo: nil)
+    }
+
+    /// Where the camera is and what it looks at, for checks.
+    var cameraShot: (eye: SIMD3<Float>, target: SIMD3<Float>, settled: Bool) { (rig.eye(zoom: zoom), rig.target, rig.isSettled) }
+
+    /// One frame: the machine's motion, the explosion, fades, the camera; then a spoken turn in
+    /// progress, else the spin (neither while the person is dragging).
     func step(_ seconds: Float) {
-        guard dragBase == nil else { return }
-        if var current = yawTurn {
-            current.elapsed += seconds
-            let duration = Self.turnSeconds(current.degrees)
-            turn = Self.yawed(current.base, degrees: current.degrees, progress: Self.eased(current.elapsed / duration))
-            yawTurn = current.elapsed >= duration ? nil : current
-            root.orientation = turn
-        } else if spinning {
-            turn = simd_quatf(angle: seconds * spinRate, axis: [0, 1, 0]) * turn
-            root.orientation = turn
+        if playing, scene.hasMotion, !reduceMotion {
+            motionTime += seconds * (slowMotion ? Self.slowFactor : 1)
+            poseDirty = poseDirty || scene.moves
+            updateFlows()
         }
+        if var current = explosion {
+            current.elapsed += seconds
+            explosionBlend = current.from + (current.to - current.from) * Self.eased(current.elapsed / Self.explodeSeconds)
+            explosion = current.elapsed >= Self.explodeSeconds ? nil : current
+            poseDirty = true
+            pathsDirty = true
+        }
+        fade(seconds)
+        if poseDirty { layout() }
+        if pathsDirty { updateFlows() }
+        if dragBase == nil {
+            if var current = yawTurn {
+                current.elapsed += seconds
+                let duration = Self.turnSeconds(current.degrees)
+                turn = Self.yawed(current.base, degrees: current.degrees, progress: Self.eased(current.elapsed / duration))
+                yawTurn = current.elapsed >= duration ? nil : current
+                root.orientation = turn
+            } else if spinning {
+                turn = simd_quatf(angle: seconds * spinRate, axis: [0, 1, 0]) * turn
+                root.orientation = turn
+            }
+        }
+        if !rig.isSettled || rig.subject != nil {
+            rig.step(seconds, turn: turn)
+            updateCamera()
+        }
+        if shadowTurn.map({ abs(simd_dot($0.vector, turn.vector)) < 0.99999 }) ?? true { placeShadow() }
     }
 
     private func frame(_ seconds: Float, project: (SIMD3<Float>) -> CGPoint?) {
         step(seconds)
-        guard shownLabels > 0 else { return }
+        if handFollows, let activePart, let entity = point(activePart), !shownLabelIDs.contains(activePart),
+           let point = project(entity.position(relativeTo: nil)) {
+            // A part without a showing label (a focus on a group, an unlabelled part): the hand still follows it.
+            onFocus(point)
+        }
+        guard !shownLabelIDs.isEmpty else { return }
         var points: [String: CGPoint] = [:]
-        for part in scene.labelled.prefix(shownLabels) {
-            if let entity = parts[part.id], entity.isEnabled, let point = project(entity.position(relativeTo: nil)) { points[part.id] = point }
+        for part in shownLabelled where !isFaded(part.id) {
+            if let entity = point(part.id), entity.isEnabled, let point = project(entity.position(relativeTo: nil)) { points[part.id] = point }
         }
         let centre = project(.zero)
         // Only publish a real move: SwiftUI redraws the labels on every change.
@@ -356,41 +641,273 @@ final class CookieSceneStage: ObservableObject {
         if let centre, middle.map({ abs($0.x - centre.x) + abs($0.y - centre.y) > 0.25 }) ?? true { middle = centre }
     }
 
-    // MARK: Building
+    // MARK: Motion
 
-    private static func mesh(_ part: CookieScene.Part) -> MeshResource {
-        let size = part.size
-        switch part.shape {
-        case .box: return .generateBox(size: SIMD3(size[0], size[1], size[2]), cornerRadius: min(size[0], size[1], size[2]) * 0.04)
-        case .sphere: return .generateSphere(radius: size[0])
-        case .cylinder: return .generateCylinder(height: size[1], radius: size[0])
-        case .cone: return .generateCone(height: size[1], radius: size[0])
-        case .capsule: return MeshResource(shape: .generateCapsule(height: size[1], radius: size[0]))
+    /// The joints' turns now: running time, or Reduce Motion's still pose.
+    var currentTurns: [String: Float] {
+        reduceMotion ? CookieSceneMotion.representative(scene, steps: steps) : CookieSceneMotion.turns(scene, time: motionTime)
+    }
+
+    /// Where every part is placed and turned on the stage, about the centroid.
+    func placement(of id: String) -> CookieSceneMotion.Placement? {
+        parts[id].map { .init(position: $0.position, orientation: $0.orientation) }
+    }
+
+    /// Puts every part where the motion and the explosion have it.
+    private func layout() {
+        // A real model explodes piece by piece, each out along the same line its box takes in the check.
+        if let asset = scene.asset {
+            for part in scene.parts where asset.pieces.contains(part.id) {
+                guard let node = assetNodes[part.id], let base = pieceBases[part.id] else { continue }
+                let outward = (scene.place(of: part, exploded: true) - scene.place(of: part, exploded: false)) * explosionBlend
+                node.setPosition(base + outward / asset.scale, relativeTo: assetFrame)
+            }
+        }
+        let pose = scene.moves ? CookieSceneMotion.pose(scene, turns: currentTurns) : [:]
+        for part in scene.parts {
+            guard let entity = parts[part.id] else { continue }
+            let placed = CookieSceneMotion.placed(scene, part, pose: pose, explosion: explosionBlend)
+            entity.position = placed.position
+            entity.orientation = placed.orientation
+        }
+        poseDirty = false
+        shadowTurn = nil
+    }
+
+    // MARK: Flows
+
+    /// The bead pool (or Reduce Motion's arrows), made once: nothing is created while it runs.
+    private func buildFlows() {
+        guard !scene.flows.isEmpty else { return }
+        let radius = CookieSceneCamera.radius(scene, exploded: false)
+        let paths = scene.flows.map { CookieSceneMotion.path(scene, $0, explosion: 0) }
+        let counts = CookieSceneMotion.beadCounts(scene, lengths: paths.map(\.length))
+        let bead = MeshResource.generateSphere(radius: min(0.04, max(0.003, radius * 0.014)))
+        let arrow = CookieMeshResources.mesh(CookieScene.Form(.arrow, ["length": radius * 0.16, "radius": radius * 0.013]))
+        for (index, flow) in scene.flows.enumerated() {
+            let material = Self.glow(flow.tint)
+            let count = reduceMotion ? min(10, max(3, Int(paths[index].length / max(0.01, radius * 0.3)))) : counts[index]
+            markers[flow.id] = (0..<count).map { _ in
+                let entity = ModelEntity(mesh: reduceMotion ? arrow : bead, materials: [material])
+                flowLayer.addChild(entity)
+                return entity
+            }
+        }
+        pathsDirty = true
+        updateFlows()
+    }
+
+    /// Moves the beads along their paths (and re-lays the arrows when the paths move).
+    private func updateFlows() {
+        guard !scene.flows.isEmpty else { return }
+        if pathsDirty {
+            for flow in scene.flows { flowPaths[flow.id] = CookieSceneMotion.path(scene, flow, explosion: explosionBlend) }
+        }
+        let relay = pathsDirty
+        pathsDirty = false
+        for flow in scene.flows {
+            guard let entities = markers[flow.id], let path = flowPaths[flow.id] else { continue }
+            let on = flowsOn.contains(flow.id)
+            for (index, entity) in entities.enumerated() {
+                entity.isEnabled = on
+                guard on else { continue }
+                if reduceMotion {
+                    guard relay else { continue }
+                    // Still arrows, evenly along the route, each pointing the way it goes.
+                    let s = (Float(index) + 0.5) / Float(entities.count) * path.length
+                    let (a, b) = path.across(at: s)
+                    let angle = Float(index) * 2.1
+                    entity.position = path.point(at: s) + (a * cos(angle) + b * sin(angle)) * flow.spread * 0.7
+                    entity.orientation = simd_quatf(from: [0, 1, 0], to: path.tangent(at: s))
+                } else {
+                    let bead = CookieSceneMotion.bead(index, of: entities.count, flow: flow, path: path, time: motionTime)
+                    entity.position = path.point(at: bead.s) + bead.offset
+                    entity.scale = SIMD3(repeating: max(0.05, bead.fade))
+                }
+            }
         }
     }
 
-    private static func material(_ part: CookieScene.Part) -> PhysicallyBasedMaterial {
-        let (color, roughness, metallic): (NSColor, Float, Float) = switch part.tint {
-        case .amber: (NSColor(red: 0.93, green: 0.56, blue: 0.24, alpha: 1), 0.45, 0)
-        case .cream: (NSColor(red: 0.96, green: 0.92, blue: 0.84, alpha: 1), 0.7, 0)
-        case .graphite: (NSColor(red: 0.24, green: 0.24, blue: 0.26, alpha: 1), 0.55, 0.2)
-        case .sky: (NSColor(red: 0.48, green: 0.70, blue: 0.90, alpha: 1), 0.5, 0)
-        case .mint: (NSColor(red: 0.55, green: 0.84, blue: 0.70, alpha: 1), 0.5, 0)
-        case .rose: (NSColor(red: 0.92, green: 0.52, blue: 0.56, alpha: 1), 0.5, 0)
-        case .steel: (NSColor(red: 0.72, green: 0.74, blue: 0.78, alpha: 1), 0.3, 0.9)
-        case .glass: (NSColor(red: 0.85, green: 0.93, blue: 0.97, alpha: 1), 0.05, 0)
+    /// Where each showing flow's markers are, for checks.
+    func markerPositions(_ flow: String) -> [SIMD3<Float>] { (markers[flow] ?? []).filter(\.isEnabled).map(\.position) }
+
+    // MARK: Looks
+
+    /// Whether isolate has faded this part back.
+    func isFaded(_ id: String) -> Bool { isolated.map { !$0.contains(id) } ?? false }
+
+    /// Eases each part's opacity toward bright or faded (at once with Reduce Motion).
+    private func fade(_ seconds: Float) {
+        // A real model's meshes: faded when isolate leaves out every part they belong to, see-through when cut.
+        for mesh in assetMeshes {
+            let faded = isolated.map { $0.isDisjoint(with: mesh.owners) } ?? false
+            let target: Float = faded ? Self.fadedOpacity : cutParts.isDisjoint(with: mesh.owners) ? 1 : Self.cutOpacity
+            let key = ObjectIdentifier(mesh.entity)
+            let current = meshOpacity[key] ?? 1
+            guard current != target else { continue }
+            var next = reduceMotion ? target : current + (target - current) * min(1, 1 - exp(-seconds * 9))
+            if abs(next - target) < 0.01 { next = target }
+            meshOpacity[key] = next
+            if next >= 1 { mesh.entity.components.remove(OpacityComponent.self) } else { mesh.entity.components.set(OpacityComponent(opacity: next)) }
         }
+        for part in scene.parts {
+            guard let entity = parts[part.id] else { continue }
+            let target: Float = isFaded(part.id) ? Self.fadedOpacity : 1
+            let current = opacity[part.id] ?? 1
+            guard current != target else { continue }
+            var next = reduceMotion ? target : current + (target - current) * min(1, 1 - exp(-seconds * 9))
+            if abs(next - target) < 0.01 { next = target }
+            opacity[part.id] = next
+            if next >= 1 { entity.components.remove(OpacityComponent.self) } else { entity.components.set(OpacityComponent(opacity: next)) }
+        }
+    }
+
+    /// Each part's material for its tint, finish, cutaway and whether it's lit as the one being explained.
+    private func refreshMaterials() {
+        // A real model keeps its own materials; the part being explained glows warm over them.
+        for mesh in assetMeshes {
+            let lit = !highlighted.isDisjoint(with: mesh.owners)
+            mesh.entity.model?.materials = lit ? mesh.materials.map(Self.glowing) : mesh.materials
+        }
+        for part in scene.parts {
+            guard let entity = parts[part.id] else { continue }
+            let cut = cutParts.contains(part.id)
+            var material = Self.material(part, cut: cut)
+            if highlighted.contains(part.id) { material.baseColor = .init(tint: NSColor.systemOrange) }
+            entity.model?.materials = [material]
+            Self.setRim(entity, part: part, on: cut)
+        }
+    }
+
+    /// A real model's material with a warm glow over it, so the part being explained stands out in its own colours.
+    private static func glowing(_ material: any RealityKit.Material) -> any RealityKit.Material {
+        if var pbr = material as? PhysicallyBasedMaterial {
+            pbr.emissiveColor = .init(color: NSColor.systemOrange)
+            pbr.emissiveIntensity = 0.55
+            return pbr
+        }
+        if var simple = material as? SimpleMaterial {
+            simple.color = .init(tint: NSColor.systemOrange)
+            return simple
+        }
+        return SimpleMaterial(color: NSColor.systemOrange, roughness: 0.5, isMetallic: false)
+    }
+
+    /// A cut part's lit edge: the same shape a touch larger, drawn from behind only, so just its
+    /// silhouette and rims show round the see-through part.
+    private static func setRim(_ entity: ModelEntity, part: CookieScene.Part, on: Bool) {
+        let existing = entity.children.first { $0.name == "rim" }
+        guard on else { existing?.removeFromParent(); return }
+        guard existing == nil, let mesh = entity.model?.mesh else { return }
+        var rim = UnlitMaterial(color: NSColor(red: 1, green: 0.9, blue: 0.72, alpha: 1))
+        rim.blending = .transparent(opacity: .init(floatLiteral: 0.55))
+        rim.faceCulling = .front
+        let edge = ModelEntity(mesh: mesh, materials: [rim])
+        edge.name = "rim"
+        edge.scale = SIMD3(repeating: 1 + min(0.04, max(0.01, 0.006 / max(0.05, part.reach))))
+        entity.addChild(edge)
+    }
+
+    /// The contact shadow: stacked soft discs, each a little wider and fainter, so the edge feathers out.
+    private static func buildShadow(_ shadow: Entity) {
+        let rings = 7
+        for k in 0..<rings {
+            var material = UnlitMaterial(color: NSColor(red: 0.16, green: 0.12, blue: 0.09, alpha: 1))
+            material.blending = .transparent(opacity: .init(floatLiteral: 0.055))
+            let disc = ModelEntity(mesh: .generateCylinder(height: 0.0002, radius: 0.45 + 0.55 * Float(k) / Float(rings - 1)), materials: [material])
+            disc.position.y = Float(rings - k) * 0.0003
+            shadow.addChild(disc)
+        }
+    }
+
+    /// Lays the shadow under the model as it's turned now: just below its lowest point, as wide as it is.
+    private func placeShadow() {
+        shadowTurn = turn
+        var low = SIMD3<Float>(repeating: .greatestFiniteMagnitude), high = -low
+        for part in scene.parts where !isFaded(part.id) {
+            // A real model's parts are boxes in the scene, where its pieces have been moved to.
+            let placed = parts[part.id].map { CookieSceneMotion.Placement(position: $0.position, orientation: $0.orientation) }
+                ?? (scene.asset != nil ? CookieSceneMotion.placed(scene, part, pose: [:], explosion: explosionBlend) : nil)
+            guard let placed else { continue }
+            let box = part.form.bounds
+            for corner in 0..<8 {
+                let q = SIMD3<Float>(corner & 1 == 0 ? box.min.x : box.max.x, corner & 2 == 0 ? box.min.y : box.max.y, corner & 4 == 0 ? box.min.z : box.max.z)
+                let world = turn.act(placed.position + placed.orientation.act(q))
+                low = simd_min(low, world)
+                high = simd_max(high, world)
+            }
+        }
+        guard low.x <= high.x else { return }
+        let radius = CookieSceneCamera.radius(scene, exploded: exploded)
+        shadow.position = [(low.x + high.x) / 2, low.y - radius * 0.02, (low.z + high.z) / 2]
+        shadow.scale = [(high.x - low.x) * 0.6 + radius * 0.1, 1, (high.z - low.z) * 0.6 + radius * 0.1]
+    }
+
+    /// Where the shadow lies, for checks.
+    var shadowPlacement: (centre: SIMD3<Float>, scale: SIMD3<Float>) { (shadow.position, shadow.scale) }
+
+    // MARK: Building
+
+    /// The part's shape from the parts library (`CookieMeshes`), usually already warmed off the main thread.
+    private static func mesh(_ part: CookieScene.Part) -> MeshResource {
+        CookieMeshResources.mesh(part.form)
+    }
+
+    /// How rough and how metal each tint is, before its finish.
+    static func surface(_ tint: CookieScene.Tint) -> (roughness: Float, metallic: Float) {
+        switch tint {
+        case .amber: (0.45, 0)
+        case .cream: (0.7, 0)
+        case .graphite: (0.55, 0.2)
+        case .sky, .mint, .rose: (0.5, 0)
+        case .steel: (0.3, 0.9)
+        case .glass: (0.05, 0)
+        case .copper: (0.32, 1)
+        case .brass: (0.3, 1)
+        case .rubber: (0.92, 0)
+        case .plasticWhite: (0.38, 0)
+        case .carbon: (0.3, 0.15)
+        }
+    }
+
+    /// The tint's roughness under a finish: matte roughens, polished smooths (and lacquers what isn't metal).
+    static func finished(_ tint: CookieScene.Tint, _ finish: CookieScene.Finish?) -> (roughness: Float, metallic: Float, clearcoat: Float) {
+        let (roughness, metallic) = surface(tint)
+        switch finish ?? .satin {
+        case .matte: return (min(1, roughness + 0.35), metallic, 0)
+        case .satin: return (roughness, metallic, tint == .carbon ? 0.8 : 0)
+        case .polished: return (max(0.04, roughness * 0.3), metallic, metallic < 0.5 ? 0.7 : 0)
+        }
+    }
+
+    private static func material(_ part: CookieScene.Part, cut: Bool) -> PhysicallyBasedMaterial {
+        let rgb = CookieScene.rgb(part.tint)
+        let (roughness, metallic, clearcoat) = finished(part.tint, part.finish)
         var material = PhysicallyBasedMaterial()
-        material.baseColor = .init(tint: color)
+        material.baseColor = .init(tint: NSColor(red: CGFloat(rgb.x), green: CGFloat(rgb.y), blue: CGFloat(rgb.z), alpha: 1))
         material.roughness = .init(floatLiteral: roughness)
         material.metallic = .init(floatLiteral: metallic)
-        // A cut part is see-through so what's inside shows; glass always is.
-        let opacity: Float = part.tint == .glass ? 0.28 : part.cut ? 0.32 : 1
+        if clearcoat > 0 {
+            material.clearcoat = .init(floatLiteral: clearcoat)
+            material.clearcoatRoughness = .init(floatLiteral: 0.08)
+        }
+        // A cut part is see-through so what's inside shows, with a faint x-ray glow; glass always is see-through.
+        let opacity: Float = part.tint == .glass ? 0.28 : cut ? 0.26 : 1
         if opacity < 1 {
             material.blending = .transparent(opacity: .init(floatLiteral: opacity))
             material.faceCulling = .none
         }
+        if cut {
+            material.emissiveColor = .init(color: NSColor(red: 0.55, green: 0.75, blue: 0.95, alpha: 1))
+            material.emissiveIntensity = 0.25
+        }
         return material
+    }
+
+    /// A flow's beads glow in their tint, a little lifted toward white so they read against the parts.
+    private static func glow(_ tint: CookieScene.Tint) -> UnlitMaterial {
+        let rgb = simd_mix(CookieScene.rgb(tint), SIMD3(repeating: 1), SIMD3(repeating: 0.3))
+        return UnlitMaterial(color: NSColor(red: CGFloat(rgb.x), green: CGFloat(rgb.y), blue: CGFloat(rgb.z), alpha: 1))
     }
 
     /// A soft studio made in code (no bundled image): a bright sky fading to a warm horizon and a
@@ -425,7 +942,7 @@ struct CookieSceneView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    static let sceneSize = CGSize(width: 520, height: 360)
+    static let sceneSize = CookieSceneCamera.viewport
 
     private var paper: Color { CookieCardView.paper(colorScheme) }
     private var inkText: Color { CookieCardView.inkText(colorScheme) }
@@ -445,6 +962,14 @@ struct CookieSceneView: View {
                         .fill(CookieMarksLayer.ink)
                         .frame(width: 56, height: 4)
                 }
+            if let asset = stage.scene.asset {
+                // A real model says whose it is.
+                Text("Model from \(asset.credit)")
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .foregroundStyle(inkText.opacity(0.6))
+                    .padding(.horizontal, 12)
+                    .padding(.top, -6)
+            }
             if !stage.collapsed {
             RealityView { content in
                 stage.install(in: &content)
@@ -456,6 +981,14 @@ struct CookieSceneView: View {
                     .onChange(of: proxy.frame(in: .named("sceneSurface"))) { _, frame in stage.viewportOrigin = frame.origin }
             })
             .overlay { CookieSceneLabels(stage: stage, size: Self.sceneSize, paper: paper, inkText: inkText, reduceMotion: reduceMotion) }
+            .overlay {
+                if stage.scene.asset != nil, !stage.assetShown {
+                    ProgressView("Opening the model…")
+                        .controlSize(.small)
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(inkText)
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 2)
@@ -464,12 +997,27 @@ struct CookieSceneView: View {
             .accessibilityHidden(true)
             }
             if !stage.collapsed {
-                HStack(spacing: 16) {
-                    Button(stage.exploded ? "Assemble" : "Explode") { stage.apply(stage.exploded ? .assemble : .explode) }
+                HStack(spacing: stage.scene.hasMotion ? 12 : 16) {
+                    // A real model in one piece has nothing to pull apart.
+                    if (stage.scene.asset?.pieces.count ?? 2) > 1 {
+                        Button(stage.exploded ? "Assemble" : "Explode") { stage.apply(stage.exploded ? .assemble : .explode) }
+                    }
                     Button("Previous") { stage.apply(.previous) }
                     Button("Next part") { stage.apply(.next) }
                     Button("Reset") { stage.apply(.reset) }
                     Spacer(minLength: 0)
+                    if stage.scene.hasMotion {
+                        // With Reduce Motion the machine holds still; stepping moves it on a twelfth of a turn.
+                        if reduceMotion {
+                            Button("Step") { stage.apply(.step) }
+                                .accessibilityHint("Moves the machine on a twelfth of a turn")
+                        } else {
+                            Button(stage.playing ? "Stop" : "Run") { stage.apply(stage.playing ? .stop : .run) }
+                                .accessibilityHint(stage.playing ? "Stops the machine" : "Sets the machine working")
+                            Button(stage.slowMotion && stage.playing ? "Full speed" : "Slow") { stage.apply(stage.slowMotion && stage.playing ? .run : .slow) }
+                                .accessibilityHint("Runs the machine in slow motion, or back at full speed")
+                        }
+                    }
                     Button { stage.apply(.rotate(degrees: -CookieVisualCommand.rotateStep)) } label: { Image(systemName: "arrow.counterclockwise") }
                         .accessibilityLabel("Turn left")
                     Button { stage.apply(.rotate(degrees: CookieVisualCommand.rotateStep)) } label: { Image(systemName: "arrow.clockwise") }
@@ -524,7 +1072,7 @@ private struct CookieSceneLabels: View {
     let reduceMotion: Bool
 
     var body: some View {
-        let available = stage.labelsHidden ? [] : Array(stage.scene.labelled.prefix(stage.shownLabels))
+        let available = stage.labelsHidden ? [] : stage.shownLabelled
         let recent = Array(available.filter { $0.id != stage.activePart }.suffix(stage.activePart == nil ? 6 : 5))
         let visible = available.count <= 6 || stage.allLabels ? available : available.filter { part in recent.contains(where: { $0.id == part.id }) || part.id == stage.activePart }
         let shown = Array(visible.enumerated())
@@ -562,7 +1110,7 @@ private struct CookieSceneLabels: View {
             }
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: stage.shownLabels)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: stage.shownLabelIDs)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: stage.labelsHidden)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: stage.allLabels)
     }
@@ -603,9 +1151,19 @@ final class CookieScenePresenter {
     private var fadeTimer: Task<Void, Never>?
     private var lastActive = Date()
 
-    var teachingContext: String? { stage.map(Self.teachingContext) }
+    var teachingContext: String? {
+        stage.map { Self.teachingContext($0) + (director.notes.isEmpty ? "" : ". Beats whose words you didn't say, placed evenly: " + director.notes.joined(separator: "; ")) }
+    }
     static func teachingContext(_ stage: CookieSceneStage) -> String {
         "Visible 3D model: \(stage.scene.title). Selected: \(stage.selectedPart ?? "none"). Exploded: \(stage.exploded). Spinning: \(stage.spinning). Labels: \(stage.labelsHidden ? "hidden" : "shown"). Parts: " + stage.scene.labelled.map { "\($0.id)=\($0.label ?? $0.id)" }.joined(separator: "; ")
+            + (stage.scene.hasMotion ? ". Motion: \(stage.playing ? (stage.slowMotion ? "slow motion" : "running") : "stopped")" : "")
+            + (stage.scene.flows.isEmpty ? "" : ". Flows: " + stage.scene.flows.map { "\($0.id) \(stage.flowsOn.contains($0.id) ? "on" : "off")" }.joined(separator: ", "))
+            + (stage.cutParts.isEmpty ? "" : ". Cut: " + stage.cutParts.sorted().joined(separator: ", "))
+            + (stage.scene.asset.map { asset in
+                ". A real model from \(asset.credit); " + (asset.pointable
+                    ? "its parts, to point at with [VISUAL:focus:id]: " + stage.scene.parts.prefix(24).map(\.id).joined(separator: ", ")
+                    : "its parts aren't named in the file, so you can't point at them")
+            } ?? "")
     }
     /// A model is up (shown or folded).
     var isShowing: Bool { stage != nil }
@@ -639,17 +1197,42 @@ final class CookieScenePresenter {
 
     private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
+    /// Runs the scene's beats at their words.
+    let director = CookieSceneDirector()
+
+    /// A streamed reply's scene, as its tag arrives: it appears when the voice reaches the tag, and its
+    /// beats go on the clock from the words streamed by then (the rest when the reply is whole).
     func prepare(_ scene: CookieScene, clock: CookieSpeechClock) {
         cancelSchedules()
+        CookieMeshResources.warm(scene)
         self.clock = clock
-        schedules.append(clock.schedule(atOffset: scene.offset) { [weak self] in
-            _ = self?.show(scene, near: nil)
-        })
+        director.reset()
+        if scene.beats.isEmpty {
+            schedules.append(clock.schedule(atOffset: scene.offset) { [weak self] in
+                _ = self?.show(scene, near: nil)
+            })
+        } else {
+            scheduleShow(scene, near: nil, clock: clock)
+        }
     }
 
-    /// Puts the scene on the speech clock: it appears at its tag and its labels follow the sentence
-    /// after it. Call from `onPlaybackStarted`.
+    /// Puts the scene on the speech clock: it appears at its tag; then its beats run at their words,
+    /// or (without beats) its labels follow the sentence after it. Call once the reply is whole.
     func schedule(_ scene: CookieScene, spoken: String, near region: (rect: CGRect, display: CGRect)?, clock: CookieSpeechClock) {
+        CookieMeshResources.warm(scene)
+        if !scene.beats.isEmpty {
+            if let stage, stage.scene == scene, self.clock === clock {
+                director.finish(spoken: spoken)
+                director.schedule(scene, on: stage, clock: clock)
+            } else {
+                cancelSchedules()
+                self.clock = clock
+                director.reset()
+                director.finish(spoken: spoken)
+                scheduleShow(scene, near: region, clock: clock)
+            }
+            return
+        }
         cancelSchedules()
         self.clock = clock
         let offsets = scene.revealOffsets(in: spoken)
@@ -665,10 +1248,24 @@ final class CookieScenePresenter {
         }
     }
 
-    /// A scene that isn't spoken (a typed answer): all of it now.
+    /// The scene at its tag (and, with beats, the explosion it starts with); then its beats.
+    private func scheduleShow(_ scene: CookieScene, near region: (rect: CGRect, display: CGRect)?, clock: CookieSpeechClock) {
+        schedules.append(clock.schedule(atOffset: scene.offset) { [weak self] in
+            guard let self else { return }
+            let stage = self.show(scene, near: region)
+            stage.reveal(through: 0, all: false)
+            self.director.schedule(scene, on: stage, clock: clock)
+            self.restartFadeTimer()
+        })
+    }
+
+    /// A scene that isn't spoken (a typed answer): all of it now, its beats played through to their end state.
     func showNow(_ scene: CookieScene, near region: (rect: CGRect, display: CGRect)?) {
         cancelSchedules()
-        show(scene, near: region).reveal(through: scene.labelled.count, all: true)
+        director.reset()
+        let shown = show(scene, near: region)
+        shown.reveal(through: scene.labelled.count, all: true)
+        scene.beats.forEach(shown.perform)
         restartFadeTimer()
     }
 
@@ -682,6 +1279,7 @@ final class CookieScenePresenter {
         if let panel { fadeOut(panel, stage: stage) }
         panel = nil
         stage = nil
+        director.reset()
         escapeAnywhere = false
     }
 
@@ -690,6 +1288,7 @@ final class CookieScenePresenter {
     private func cancelSchedules() {
         if let clock { schedules.forEach(clock.cancel) }
         schedules = []
+        director.cancel()
     }
 
     @discardableResult
@@ -698,6 +1297,7 @@ final class CookieScenePresenter {
         if let stage, stage.scene == scene { return stage }
         let newStage = CookieSceneStage(scene: scene, reduceMotion: reduceMotion)
         newStage.onInteract = { [weak self] in self?.restartFadeTimer() }
+        director.onBeat = { [weak self] in self?.restartFadeTimer() }
         let hosting = CookieSceneHostingView(rootView: CookieSceneView(stage: newStage, onClose: { [weak self] in self?.dismiss() }))
         let newPanel = CookieCardPanel(contentRect: CookieCardPresenter.frame(for: hosting.fittingSize, near: region))
         newPanel.contentView = hosting
@@ -807,6 +1407,58 @@ final class CookieScenePresenter {
         }
         if let keys = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { escape($0, false) }) { monitors.append(keys) }
         if let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { escape($0, true); return $0 }) { monitors.append(keys) }
+    }
+}
+
+/// A scene's beats on the speech clock, for the stage showing it. Each beat runs once, in order,
+/// when the voice reaches its words. Until the reply is whole only beats whose place is already
+/// certain (found in the words streamed so far, or between two found) wait on the clock; the rest
+/// go on when `finish` gives the whole reply. An interruption (`cancel`, or the clock stopping)
+/// leaves the model as the last beat left it.
+@MainActor
+final class CookieSceneDirector {
+    private var schedules: [CookieSpeechClock.Scheduled] = []
+    private weak var clock: CookieSpeechClock?
+    /// How many beats have run.
+    private(set) var ran = 0
+    private var spoken: String?
+    /// Beats whose words weren't in the reply, placed evenly; the next turn hears about them.
+    private(set) var notes: [String] = []
+    /// After each beat (the presenter keeps the model up).
+    var onBeat: () -> Void = {}
+
+    /// A new scene: nothing run, nothing known.
+    func reset() {
+        cancel()
+        ran = 0
+        spoken = nil
+        notes = []
+    }
+
+    /// The whole reply's spoken words.
+    func finish(spoken: String) { self.spoken = spoken }
+
+    /// Puts every beat not yet run on the clock, against the whole reply when it's known and the
+    /// words the voice has so far otherwise.
+    func schedule(_ scene: CookieScene, on stage: CookieSceneStage, clock: CookieSpeechClock) {
+        cancel()
+        self.clock = clock
+        let timeline = scene.timeline(in: spoken ?? clock.text)
+        let known = spoken != nil ? scene.beats.count : (timeline.found.lastIndex(of: true).map { $0 + 1 } ?? 0)
+        if spoken != nil { notes = timeline.notes }
+        for index in min(ran, known)..<known {
+            schedules.append(clock.schedule(atOffset: timeline.offsets[index]) { [weak self, weak stage] in
+                guard let self, let stage, stage.scene == scene, index == self.ran else { return }
+                self.ran += 1
+                stage.perform(scene.beats[index])
+                self.onBeat()
+            })
+        }
+    }
+
+    func cancel() {
+        if let clock { schedules.forEach(clock.cancel) }
+        schedules = []
     }
 }
 

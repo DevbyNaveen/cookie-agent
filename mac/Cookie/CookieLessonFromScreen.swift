@@ -199,10 +199,10 @@ enum CookieLessonFromScreen {
         return """
         LESSON FROM THE SCREEN. The user wants \(from) explained as a visual they can explore. This overrides the usual rule against visuals for things on the screen: build exactly one, as early in the reply as it can go, then explain it.
         Choose one:
-        - SCENE for a physical or spatial thing: an engine, a molecule, a device, a building, anatomy, a network topology. Simple shapes placed where the real pieces sit; cut the outer casing so inner parts show, explode when parts hide each other.
+        - SCENE for a physical or spatial thing: an engine, a molecule, a device, a building, anatomy, a network topology. Parts from the shape library (gear, bladeRing, tube, shaft, spring, pipe, piston, crank, rod, valve, wheel, screw, lathe, extrude, as well as box, sphere, cylinder, cone, capsule, torus) placed where the real pieces sit; cut the outer casing so inner parts show, explode when parts hide each other.
         - CARD for an abstract thing: an error or a bug as a flow of its cause (what called what, what failed, what was raised), a procedure as steps, a balance sheet or a choice as compare (or number for the one figure that matters), dated events as a timeline.
         \(grounding)
-        Exactly these fields, nothing else, every limit above (labels up to twenty-eight characters, a scene's numbers within ten, up to 24 parts):
+        Exactly these fields, nothing else, every limit above (labels up to twenty-eight characters, a scene's numbers within ten, up to 64 parts):
         [SCENE {"title":"...","parts":[{"id":"a","label":"...","shape":"box","size":[1,1,1],"position":[0,0,0],"rotation":[0,0,0],"color":"steel","cut":true}],"explode":true,"spin":false}]
         [CARD {"kind":"flow","title":"...","nodes":[{"id":"a","label":"...","icon":"cube"}],"edges":[{"from":"a","to":"b","label":"..."}]}] or steps {"kind":"steps","title":"...","steps":[{"text":"..."}]}, compare {"kind":"compare","title":"...","columns":[{"heading":"...","points":["..."]}]}, timeline {"kind":"timeline","title":"...","events":[{"label":"...","when":"..."}]}, list {"kind":"list","title":"...","items":["..."]}, number {"kind":"number","value":"...","label":"...","caption":"..."}.
         Name the labelled parts or nodes in order in the sentence after the tag. Leave spin off; the user can say "spin it", "rotate left", "turn it around" or "label everything". End with up to two [NEXT:…] such as [NEXT:what does the impeller do?].
@@ -264,13 +264,32 @@ enum CookieLessonVoice {
         if matches("hide (?:all )?(?:the )?labels|(?:remove|turn off) (?:all )?(?:the )?labels|no labels|labels off") != nil {
             return .labels(shown: false)
         }
+        // The machine working. A bare "stop" or "run" isn't enough: it could mean the voice.
+        if matches("(?:show (?:me )?it |run it |play it )?in slow motion|slow motion|slow-mo") != nil { return .slow }
+        if matches("(?:run|start|play) (?:it|the model|the machine|the engine)|(?:make|set) it (?:run|work|going)|show (?:me )?(?:it|how it) (?:running|working|works)") != nil {
+            return .run
+        }
+        if matches("(?:stop|pause) (?:it|the model|the machine|the engine|the motion|moving)") != nil { return .stop }
+        if matches("step (?:it )?(?:on|forward)|one step|move it on a step") != nil { return .step }
+        if let found = matches("(?:show (?:me )?)?(?:the )?(front|side|top) view|(?:show (?:me )?|look at )?(?:it )?from (?:the )?(front|side|top)") {
+            if let view = found.dropFirst().first(where: { !$0.isEmpty }).flatMap(CookieSceneCameraRig.View.init(rawValue:)) { return .view(view) }
+        }
+        if matches("(?:show (?:me )?)?(?:the )?overview|(?:show (?:me )?|back to )the whole (?:thing|model)") != nil { return .view(.overview) }
         return nil
     }
 
     /// What Cookie says it did, true to what the model can do.
     static func note(_ command: CookieVisualCommand, rateBefore: Float, rateAfter: Float, spinning: Bool,
-                     reduceMotion: Bool, labelled: Int) -> String {
+                     reduceMotion: Bool, labelled: Int, moving: Bool = false) -> String {
         switch command {
+        case .run, .slow, .stop, .pause, .step:
+            guard moving else { return "This model has no moving parts." }
+            if command == .stop || command == .pause { return "Stopped." }
+            if command == .step { return "Moved it on a step." }
+            if reduceMotion { return "Reduce Motion is on, so the machine holds one position. Say “step it on” to move it a step." }
+            return command == .slow ? "Running in slow motion." : "Running."
+        case .view(let view):
+            return view == .overview ? "Showing the whole model." : "Showing it from the \(view.rawValue)."
         case .rotate(let degrees):
             if abs(degrees) == 180 { return "Turned the model around." }
             let side = degrees < 0 ? "left" : "right"
@@ -301,7 +320,7 @@ extension CookieScenePresenter {
         apply(command)
         return CookieLessonVoice.note(command, rateBefore: before, rateAfter: stage.spinRate, spinning: stage.spinning,
                                       reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-                                      labelled: stage.scene.labelled.count)
+                                      labelled: stage.scene.labelled.count, moving: stage.scene.hasMotion)
     }
 }
 

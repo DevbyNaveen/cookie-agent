@@ -1380,12 +1380,12 @@ final class CookieCardPresenter {
         if let sim = reveal.sim {
             switch command {
             case .run: sim.run()
-            case .pause: sim.pause()
+            case .pause, .stop: sim.pause()
             case .reset: sim.restart()
             case .set(let parameter, let value): guard sim.set(parameter, value) else { return false }
             default: break
             }
-            if [.run, .pause, .reset].contains(command) || { if case .set = command { return true }; return false }() {
+            if [.run, .pause, .stop, .reset].contains(command) || { if case .set = command { return true }; return false }() {
                 lastActive = Date()
                 return true
             }

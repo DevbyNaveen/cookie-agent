@@ -226,6 +226,8 @@ final class HarnessClient {
     /// Said with the next reply when the helper had to be started again.
     private(set) var restartNote: String?
     private var runCounter = 0
+    /// The 3D models `build_model` made this run, shown by the reply's [SCENE:#id].
+    let models = CookieModelShelf()
 
     init() {
         // A write to a helper that just died must fail, not kill Cookie.
@@ -246,6 +248,7 @@ final class HarnessClient {
         CookieProof.shared.recordSent(images, model: model, feature: feature)
         CookieVisualBuilder.beginTurn()
         runCounter += 1
+        models.beginRun()
         let request = HarnessRequest.Run(
             id: "cookie-\(runCounter)", model: model, input: text, instructions: instructions,
             tools: Self.tools(backgroundProject: backgroundProject, unattended: unattended, workspace: workspaceThreadID != nil),
@@ -264,7 +267,7 @@ final class HarnessClient {
     /// There is no layer tool: a layer reads the window and sends it for ten minutes, so only the
     /// person's own words start one, never a page or a screen the model read.
     static func tools(backgroundProject: Bool, unattended: Bool, workspace: Bool) -> [HarnessRequest.Tool] {
-        let mac = [CookieOpen.tool, CookieOpenFile.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieHistorySearch.tool, CookieDecisionRecall.tool, CookieRoutineWords.tool, CookieVisualBuilder.tool]
+        let mac = [CookieOpen.tool, CookieOpenFile.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieHistorySearch.tool, CookieDecisionRecall.tool, CookieRoutineWords.tool, CookieVisualBuilder.tool, CookieModelShelf.tool]
             + (unattended ? [] : [CookieTimeMachineTool.tool]) + MacOperator.tools
         return (backgroundProject ? [] : mac) + (workspace ? [CookieWorkspaceTool.tool] : [])
     }
@@ -332,6 +335,7 @@ final class HarnessClient {
     func cancel(_ id: String? = nil) {
         guard let run = active, id == nil || run.id == id else { return }
         active = nil
+        models.cancelLoading()
         if queued != nil { queued = nil } else { send(HarnessWire.encode(HarnessRequest.Cancel())) }
         run.onApproval(nil)
         run.continuation.resume(throwing: CancellationError())
@@ -498,7 +502,7 @@ final class HarnessClient {
                 let plain = ["recall": "Looked in Enkeon", "remember": "Saving to Enkeon", "web_search": "Searching the web",
                              "fetch_page": "Reading a page", "fetch_pages": "Reading pages", "check_quote": "Checking a quote",
                              "connector_actions": "Looking at your connected apps", "connector_call": "Using a connected app",
-                             "use_skill": "Opening a skill", "look": "Looking at the app", "time_machine": "Looking at what Cookie changed",
+                             "use_skill": "Opening a skill", "build_model": "Building a model", "look": "Looking at the app", "time_machine": "Looking at what Cookie changed",
                              "ghost_look": "Reading a background app with Accessibility", "ghost_press": "Pressing an observed background control",
                              "ghost_set_value": "Updating an observed background value", "ghost_take_screen": "Waiting for screen approval",
                              "build_visual": "Drawing a card"]
@@ -541,6 +545,16 @@ final class HarnessClient {
                 let result = CookieVisualBuilder.perform(args)
                 if !result.1 { run.onStep("Drew a card") }
                 send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.0, is_error: result.1)))
+                return
+            }
+            if name == CookieModelShelf.tool.name {
+                Task { @MainActor in
+                    let result = await self.models.build(args)
+                    let real = (args["scene"] as? String)?.contains("\"asset\"") == true || (args["scene"] as? [String: Any])?["asset"] != nil
+                    run.onStep(result.isError ? (real ? "Couldn't load the model" : "Couldn't build the model")
+                               : (real ? "Loaded a real model and checked how it looks" : "Built a model and checked how it looks"))
+                    self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.output, is_error: result.isError)))
+                }
                 return
             }
             if name == CookieHistorySearch.tool.name {

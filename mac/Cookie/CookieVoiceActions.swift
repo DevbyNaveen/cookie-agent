@@ -330,8 +330,9 @@ final class CookieTextInsertion {
 }
 
 /// Finite commands for an existing visual; the model never supplies executable scene code.
-/// Written as [VISUAL:name], for a turn by a set amount [VISUAL:rotate:degrees], and for a
-/// card's stage [VISUAL:state:n].
+/// Written as [VISUAL:name], for a turn by a set amount [VISUAL:rotate:degrees], for a card's
+/// stage [VISUAL:state:n], and for a named part, flow or view [VISUAL:focus:part],
+/// [VISUAL:flow:id:on|off], [VISUAL:cut:part:on|off], [VISUAL:view:front|side|top|overview].
 enum CookieVisualCommand: Equatable {
     enum Spin: String { case start, faster, slower, stop }
     case explode, assemble, reset, next, previous, isolate, showAll, zoomIn, zoomOut
@@ -342,11 +343,18 @@ enum CookieVisualCommand: Equatable {
     case labels(shown: Bool)
     /// A card with states moves to stage n (1 is the first): its pictures morph to that one.
     case state(Int)
-    /// A sim card runs or holds still; `set` moves one of its parameters (and starts it again).
-    case run, pause
+    /// The machine or sim working: at full speed, in slow motion, held still (pause), stopped, or
+    /// moved on one step. A sim treats stop as pause; a model treats pause as stop.
+    case run, slow, pause, stop, step
+    /// A sim's parameter moves (and the sim starts again).
     case set(parameter: String, value: Double)
     /// An equation's part lights up (as [TEACH:id] does).
     case highlight(String)
+    /// The camera frames a part or group, which lights up while the hand follows it.
+    case focus(String)
+    case flow(String, on: Bool)
+    case cut(String, on: Bool)
+    case view(CookieSceneCameraRig.View)
 
     /// One "rotate left" or "rotate right".
     static let rotateStep: Float = 45
@@ -377,8 +385,11 @@ enum CookieVisualCommand: Equatable {
         case "stop-spin": self = .spin(.stop)
         case "label-all": self = .labels(shown: true)
         case "hide-labels": self = .labels(shown: false)
-        case "run": self = .run
+        case "run", "play", "start": self = .run
+        case "slow", "slow-motion": self = .slow
         case "pause": self = .pause
+        case "stop": self = .stop
+        case "step": self = .step
         case _ where body.hasPrefix("set:"):
             // set:<parameter>:<value>, the value a finite number.
             let parts = body.dropFirst(4).split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
@@ -393,6 +404,22 @@ enum CookieVisualCommand: Equatable {
                   (1...CookieCard.maxStates).contains(number) else { return nil }
             self = .state(number)
         default:
+            let fields = body.split(separator: ":", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+            func toggle(_ word: String) -> Bool? { ["on", "show"].contains(word) ? true : ["off", "hide"].contains(word) ? false : nil }
+            switch fields.first {
+            case "focus" where fields.count == 2 && !fields[1].isEmpty:
+                self = .focus(fields[1]); return
+            case "view" where fields.count == 2:
+                guard let view = CookieSceneCameraRig.View(rawValue: fields[1]) else { return nil }
+                self = .view(view); return
+            case "flow" where fields.count == 3 && !fields[1].isEmpty:
+                guard let on = toggle(fields[2]) else { return nil }
+                self = .flow(fields[1], on: on); return
+            case "cut" where fields.count == 3 && !fields[1].isEmpty:
+                guard let on = toggle(fields[2]) else { return nil }
+                self = .cut(fields[1], on: on); return
+            default: break
+            }
             // A set turn: a finite, non-zero number of degrees, at most one full turn either way.
             guard body.hasPrefix("rotate:"), let degrees = Float(body.dropFirst(7).trimmingCharacters(in: .whitespaces)),
                   degrees.isFinite, degrees != 0, abs(degrees) <= 360 else { return nil }

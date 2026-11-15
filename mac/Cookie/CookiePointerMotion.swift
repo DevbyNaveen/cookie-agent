@@ -15,6 +15,7 @@
 
 import AppKit
 import QuartzCore
+import simd
 
 /// A critically damped-ish spring in two dimensions. `duration` is the perceptual duration and
 /// `bounce` 0 (no overshoot) to 0.15 (a brisk tail) as Apple's guidance has it; stiffness and
@@ -64,6 +65,57 @@ struct CookieSpring2D {
     var isSettled: Bool {
         hypot(position.x - target.x, position.y - target.y) < 0.5 && hypot(velocity.dx, velocity.dy) < 8
     }
+}
+
+/// The same spring in three dimensions, for the 3D model's camera: where it looks and from which way.
+/// Retargeting mid-flight keeps position and velocity, so a camera move bends toward the new shot
+/// instead of restarting; `snap` (Reduce Motion, or the person taking over) lands at once, still.
+struct CookieSpring3D {
+    var position: SIMD3<Double>
+    var velocity = SIMD3<Double>.zero
+    var target: SIMD3<Double>
+    let stiffness: Double
+    let damping: Double
+
+    init(position: SIMD3<Double>, duration: Double = 0.9, bounce: Double = 0) {
+        self.position = position
+        target = position
+        let bounce = min(0.15, max(0, bounce))
+        stiffness = pow(2 * .pi / duration, 2)
+        damping = 4 * .pi * (1 - bounce) / duration
+    }
+
+    mutating func step(seconds: Double) {
+        guard seconds.isFinite, seconds > 0 else { return }
+        // Long gaps (a hidden view coming back) land rather than replaying the whole flight.
+        let seconds = min(seconds, 0.25)
+        let decay = damping / 2
+        let frequencySquared = stiffness - decay * decay
+        let envelope = exp(-decay * seconds)
+        let displacement = position - target
+        if frequencySquared > 0.000001 {
+            let frequency = sqrt(frequencySquared)
+            let cosine = cos(frequency * seconds), sine = sin(frequency * seconds)
+            position = target + envelope * (displacement * cosine + (velocity + decay * displacement) / frequency * sine)
+            velocity = envelope * (velocity * cosine - (decay * velocity + stiffness * displacement) / frequency * sine)
+        } else {
+            let slope = velocity + decay * displacement
+            position = target + envelope * (displacement + slope * seconds)
+            velocity = envelope * (velocity - decay * slope * seconds)
+        }
+    }
+
+    /// There now, not moving.
+    mutating func snap(to point: SIMD3<Double>) {
+        position = point
+        target = point
+        velocity = .zero
+    }
+
+    /// Stops where it is (the person grabbed the model): no flight left, no drift.
+    mutating func hold() { snap(to: position) }
+
+    var isSettled: Bool { simd_length(position - target) < 1e-4 && simd_length(velocity) < 1e-3 }
 }
 
 /// One hand's flight on one overlay: a spring driven by its screen's display link. `fly` starts it
