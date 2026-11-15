@@ -264,13 +264,32 @@ enum CookieLessonVoice {
         if matches("hide (?:all )?(?:the )?labels|(?:remove|turn off) (?:all )?(?:the )?labels|no labels|labels off") != nil {
             return .labels(shown: false)
         }
+        // The machine working. A bare "stop" or "run" isn't enough: it could mean the voice.
+        if matches("(?:show (?:me )?it |run it |play it )?in slow motion|slow motion|slow-mo") != nil { return .slow }
+        if matches("(?:run|start|play) (?:it|the model|the machine|the engine)|(?:make|set) it (?:run|work|going)|show (?:me )?(?:it|how it) (?:running|working|works)") != nil {
+            return .run
+        }
+        if matches("(?:stop|pause) (?:it|the model|the machine|the engine|the motion|moving)") != nil { return .stop }
+        if matches("step (?:it )?(?:on|forward)|one step|move it on a step") != nil { return .step }
+        if let found = matches("(?:show (?:me )?)?(?:the )?(front|side|top) view|(?:show (?:me )?|look at )?(?:it )?from (?:the )?(front|side|top)") {
+            if let view = found.dropFirst().first(where: { !$0.isEmpty }).flatMap(CookieSceneCameraRig.View.init(rawValue:)) { return .view(view) }
+        }
+        if matches("(?:show (?:me )?)?(?:the )?overview|(?:show (?:me )?|back to )the whole (?:thing|model)") != nil { return .view(.overview) }
         return nil
     }
 
     /// What Cookie says it did, true to what the model can do.
     static func note(_ command: CookieVisualCommand, rateBefore: Float, rateAfter: Float, spinning: Bool,
-                     reduceMotion: Bool, labelled: Int) -> String {
+                     reduceMotion: Bool, labelled: Int, moving: Bool = false) -> String {
         switch command {
+        case .run, .slow, .stop, .step:
+            guard moving else { return "This model has no moving parts." }
+            if command == .stop { return "Stopped." }
+            if command == .step { return "Moved it on a step." }
+            if reduceMotion { return "Reduce Motion is on, so the machine holds one position. Say “step it on” to move it a step." }
+            return command == .slow ? "Running in slow motion." : "Running."
+        case .view(let view):
+            return view == .overview ? "Showing the whole model." : "Showing it from the \(view.rawValue)."
         case .rotate(let degrees):
             if abs(degrees) == 180 { return "Turned the model around." }
             let side = degrees < 0 ? "left" : "right"
@@ -301,7 +320,7 @@ extension CookieScenePresenter {
         apply(command)
         return CookieLessonVoice.note(command, rateBefore: before, rateAfter: stage.spinRate, spinning: stage.spinning,
                                       reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-                                      labelled: stage.scene.labelled.count)
+                                      labelled: stage.scene.labelled.count, moving: stage.scene.hasMotion)
     }
 }
 

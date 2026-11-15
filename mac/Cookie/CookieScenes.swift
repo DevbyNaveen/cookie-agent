@@ -132,6 +132,14 @@ struct CookieScene: Equatable {
     let parts: [Part]
     let explode: Bool
     let spin: Bool
+    /// What moves (`CookieSceneMotion`): joints turn or slide parts, drives pass one joint's turning to
+    /// another, links tie a crank, rod and piston together, flows run beads through named parts.
+    let joints: [Joint]
+    let drives: [Drive]
+    let links: [Link]
+    let flows: [Flow]
+    /// The machine starts working as it appears (else on [VISUAL:run]).
+    let run: Bool
     /// UTF-16 offset in the spoken text where the tag sat (`CookieSpeechClock` units).
     var offset = 0
     /// Where each grouped part's group sits (the middle of its members): a group explodes as one.
@@ -154,12 +162,18 @@ struct CookieScene: Equatable {
         self = scene
     }
 
-    init(title: String, parts: [Part], explode: Bool, spin: Bool, offset: Int = 0) {
+    init(title: String, parts: [Part], explode: Bool, spin: Bool, offset: Int = 0,
+         joints: [Joint] = [], drives: [Drive] = [], links: [Link] = [], flows: [Flow] = [], run: Bool = false) {
         self.title = title
         self.parts = parts
         self.explode = explode
         self.spin = spin
         self.offset = offset
+        self.joints = joints
+        self.drives = drives
+        self.links = links
+        self.flows = flows
+        self.run = run
         var members: [String: [SIMD3<Float>]] = [:]
         for part in parts { if let group = part.group { members[group, default: []].append(part.position) } }
         groupCentres = members.mapValues { $0.reduce(.zero, +) / Float($0.count) }
@@ -345,7 +359,7 @@ struct CookieScene: Equatable {
         let errors: [String]
     }
 
-    static let sceneFields: Set<String> = ["title", "parts", "explode", "spin"]
+    static let sceneFields: Set<String> = ["title", "parts", "explode", "spin", "run", "joints", "drives", "links", "flows"]
     static let baseFields: Set<String> = ["id", "label", "shape", "size", "position", "rotation", "color", "colour", "finish", "cut", "group"]
     static let aliasFields: Set<String> = ["diameter", "outer", "module", "section", "holes"]
     /// Every field a part may carry, across all shapes.
@@ -429,7 +443,7 @@ struct CookieScene: Equatable {
 }
 
 /// Reads a scene's JSON leniently, writing down every repair and error as it goes.
-private struct SceneReader {
+struct SceneReader {
     var repairs: [String] = []
     var errors: [String] = []
     typealias Scene = CookieScene
@@ -461,13 +475,16 @@ private struct SceneReader {
             if let part = part(raw, index: index, taken: Set(parts.map(\.id))) { parts.append(part) }
         }
         guard !parts.isEmpty else { errors.append("scene: no part could be built, so there is nothing to show"); return nil }
+        let motion = motion(fields, parts: parts)
         return Scene(title: title, parts: parts, explode: flag(fields["explode"], at: "scene.explode"),
-                     spin: flag(fields["spin"], at: "scene.spin"), offset: offset)
+                     spin: flag(fields["spin"], at: "scene.spin"), offset: offset,
+                     joints: motion.joints, drives: motion.drives, links: motion.links, flows: motion.flows,
+                     run: flag(fields["run"], at: "scene.run"))
     }
 
     // MARK: Parts
 
-    private mutating func part(_ raw: [String: Any], index: Int, taken: Set<String>) -> Scene.Part? {
+    mutating func part(_ raw: [String: Any], index: Int, taken: Set<String>) -> Scene.Part? {
         var id = text(raw["id"]) ?? ""
         if id.isEmpty { id = "part\(index + 1)"; repairs.append("parts[\(index)].id: missing; named it \(id)") }
         id = shortened(id, to: Scene.labelLength, at: "parts[\(index)].id")
@@ -551,7 +568,7 @@ private struct SceneReader {
     }
 
     /// The shape's numbers: from named fields, else the positional size, else defaults; each clamped.
-    private mutating func numbers(of shape: Scene.Shape, _ raw: [String: Any], at: String) -> [String: Float]? {
+    mutating func numbers(of shape: Scene.Shape, _ raw: [String: Any], at: String) -> [String: Float]? {
         let parameters = Scene.parameters(shape)
         var given: [String: Float] = [:]
         var named = raw
@@ -592,7 +609,7 @@ private struct SceneReader {
     }
 
     /// Numbers that only make sense together; repaired the way the intent is plain.
-    private mutating func settle(_ shape: inout Scene.Shape, _ v: inout [String: Float], _ points: inout [SIMD3<Float>], _ holes: inout [[SIMD3<Float>]], at: String) -> Bool {
+    mutating func settle(_ shape: inout Scene.Shape, _ v: inout [String: Float], _ points: inout [SIMD3<Float>], _ holes: inout [[SIMD3<Float>]], at: String) -> Bool {
         func cap(_ name: String, below limit: Float, to repaired: Float, because reason: String) {
             guard let value = v[name], value >= limit else { return }
             v[name] = max(Scene.minSize, repaired)
@@ -687,7 +704,7 @@ private struct SceneReader {
     }
 
     /// Repeated points in a row are one point.
-    private mutating func dedupe(_ points: [SIMD3<Float>], at: String) -> [SIMD3<Float>] {
+    mutating func dedupe(_ points: [SIMD3<Float>], at: String) -> [SIMD3<Float>] {
         var kept: [SIMD3<Float>] = []
         for point in points where kept.last.map({ simd_distance($0, point) > Scene.minSize / 10 }) ?? true { kept.append(point) }
         if kept.count != points.count { repairs.append("\(at): \(points.count - kept.count) repeated point\(points.count - kept.count == 1 ? "" : "s") dropped") }
@@ -696,7 +713,7 @@ private struct SceneReader {
 
     // MARK: Values
 
-    private mutating func pointList(_ raw: Any, list: Scene.PointList, at: String) -> [SIMD3<Float>]? {
+    mutating func pointList(_ raw: Any, list: Scene.PointList, at: String) -> [SIMD3<Float>]? {
         guard let items = raw as? [Any] else { errors.append("\(at): must be a list of [\(list.dimensions == 3 ? "x, y, z" : "a, b")] points"); return nil }
         guard items.count >= list.count.lowerBound else {
             errors.append("\(at): \(items.count) point\(items.count == 1 ? "" : "s"); needs at least \(list.count.lowerBound)"); return nil
@@ -710,7 +727,7 @@ private struct SceneReader {
         return points
     }
 
-    private mutating func holeLists(_ raw: Any, at: String) -> [[SIMD3<Float>]]? {
+    mutating func holeLists(_ raw: Any, at: String) -> [[SIMD3<Float>]]? {
         guard let items = raw as? [Any] else { errors.append("\(at): must be a list of outlines"); return nil }
         if items.count > Scene.maxHoles { repairs.append("\(at): \(items.count) holes, past \(Scene.maxHoles); kept the first \(Scene.maxHoles)") }
         var holes: [[SIMD3<Float>]] = []
@@ -723,7 +740,7 @@ private struct SceneReader {
     }
 
     /// `count` numbers (2 or 3), each within ±10.
-    private mutating func coordinates(_ raw: Any, count: Int, at: String) -> SIMD3<Float>? {
+    mutating func coordinates(_ raw: Any, count: Int, at: String) -> SIMD3<Float>? {
         guard let items = raw as? [Any], items.count >= count else { errors.append("\(at): must be \(count) numbers"); return nil }
         if items.count > count { repairs.append("\(at): \(items.count) numbers; used the first \(count)") }
         var values: [Float] = []
@@ -737,7 +754,7 @@ private struct SceneReader {
     }
 
     /// Three numbers (position, rotation); two get a 0 added, missing ones default.
-    private mutating func vector(_ raw: Any?, at: String, range: ClosedRange<Float>, missing: String?) -> SIMD3<Float>? {
+    mutating func vector(_ raw: Any?, at: String, range: ClosedRange<Float>, missing: String?) -> SIMD3<Float>? {
         guard let raw else {
             if let missing { repairs.append("\(at): missing; \(missing)") }
             return .zero
@@ -759,7 +776,7 @@ private struct SceneReader {
     }
 
     /// A finite number; numbers written as text are read, anything else is an error.
-    private mutating func number(_ raw: Any, at: String) -> Float? {
+    mutating func number(_ raw: Any, at: String) -> Float? {
         if let value = raw as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite, abs(value.doubleValue) < 1e6 {
             return Float(value.doubleValue)
         }
@@ -771,7 +788,7 @@ private struct SceneReader {
         return nil
     }
 
-    private mutating func flag(_ raw: Any?, at: String) -> Bool {
+    mutating func flag(_ raw: Any?, at: String) -> Bool {
         guard let raw else { return false }
         if let value = raw as? NSNumber { return value.boolValue }
         if let text = raw as? String, ["true", "yes", "1", "false", "no", "0"].contains(text.lowercased()) {
@@ -782,13 +799,13 @@ private struct SceneReader {
         return false
     }
 
-    private func text(_ raw: Any?) -> String? {
+    func text(_ raw: Any?) -> String? {
         if let text = raw as? String { return text }
         if let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() { return number.stringValue }
         return nil
     }
 
-    private mutating func tint(_ raw: Any?, at: String) -> Scene.Tint {
+    mutating func tint(_ raw: Any?, at: String) -> Scene.Tint {
         guard let name = text(raw)?.trimmingCharacters(in: .whitespaces), !name.isEmpty else {
             repairs.append("\(at): missing; used steel"); return .steel
         }
@@ -805,7 +822,7 @@ private struct SceneReader {
         return .steel
     }
 
-    private mutating func finish(_ raw: Any?, at: String) -> Scene.Finish? {
+    mutating func finish(_ raw: Any?, at: String) -> Scene.Finish? {
         guard let name = text(raw)?.trimmingCharacters(in: .whitespaces), !name.isEmpty else { return nil }
         if let exact = Scene.Finish(rawValue: Scene.fold(name)) {
             if exact.rawValue != name { repairs.append("\(at): \"\(name)\" read as \(exact.rawValue)") }
@@ -819,13 +836,13 @@ private struct SceneReader {
     }
 
     /// "#B87333" or "B87333" as 0–1 RGB.
-    private static func hex(_ text: String) -> SIMD3<Float>? {
+    static func hex(_ text: String) -> SIMD3<Float>? {
         let digits = text.hasPrefix("#") ? String(text.dropFirst()) : text
         guard digits.count == 6, let value = UInt32(digits, radix: 16) else { return nil }
         return SIMD3(Float((value >> 16) & 0xFF), Float((value >> 8) & 0xFF), Float(value & 0xFF)) / 255
     }
 
-    private mutating func shortened(_ text: String, to limit: Int, at: String) -> String {
+    mutating func shortened(_ text: String, to limit: Int, at: String) -> String {
         guard text.count > limit else { return text }
         var cut = String(text.prefix(limit))
         if let space = cut.lastIndex(of: " "), cut.distance(from: cut.startIndex, to: space) > limit / 2 { cut = String(cut[..<space]) }
@@ -834,7 +851,7 @@ private struct SceneReader {
         return cut
     }
 
-    private func format(_ value: Float) -> String {
+    func format(_ value: Float) -> String {
         value == value.rounded() && abs(value) < 1e6 ? String(Int(value)) : String(format: "%.3g", value)
     }
 }

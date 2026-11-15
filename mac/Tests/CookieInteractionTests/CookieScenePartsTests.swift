@@ -173,7 +173,8 @@ enum CookieScenePartsTests {
         // A stage builds every shape in the library.
         let all = CookieScene.read(everyShape).scene!
         let stage = CookieSceneStage(scene: all, reduceMotion: true)
-        check(stage.root.children.count == all.parts.count && stage.root.children.allSatisfy { ($0 as? ModelEntity)?.model != nil },
+        let drawn = stage.root.children.filter { $0 !== stage.flowLayer }
+        check(drawn.count == all.parts.count && drawn.allSatisfy { ($0 as? ModelEntity)?.model != nil },
               "a stage holds one drawn entity per part")
         stage.release()
         let steel = CookieSceneStage.surface(.steel)
@@ -257,7 +258,7 @@ enum CookieScenePartsTests {
         let stage = CookieSceneStage(scene: scene, reduceMotion: true)
         stage.focus("a", hand: false)
         stage.apply(.isolate)
-        check(stage.root.children.filter(\.isEnabled).count == 2, "isolating a part keeps its whole group")
+        check(!stage.isFaded("a") && !stage.isFaded("b") && stage.isFaded("c"), "isolating a part keeps its whole group and fades the rest")
         stage.apply(.showAll)
         stage.release()
     }
