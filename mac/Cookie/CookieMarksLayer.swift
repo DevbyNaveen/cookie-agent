@@ -186,16 +186,21 @@ final class CookieInkCache {
     private var strokes: [UUID: [CookieInkStroke]] = [:]
     private static let pen: CGFloat = 3.4
 
+    /// Each stroke of a mark its own hand, the same every redraw (`CookieFreehand.pressureWobble`).
+    static func strokeSeed(_ seed: UInt32, _ stroke: Int) -> UInt32 {
+        max(1, seed &* 31 &+ UInt32(truncatingIfNeeded: stroke) &+ 1)
+    }
+
     func strokes(for mark: CookieResolvedDrawing, local: (CGPoint) -> CGPoint) -> [CookieInkStroke] {
         if let known = strokes[mark.id] { return known }
         var rough = CookieRough(seed: mark.seed)
         let pen = Self.pen
         // A pass and its echo: the echo a finer pen, as a hand going over it again.
         func passes(_ lines: [[CGPoint]]) -> [CookieInkStroke] {
-            lines.enumerated().map { CookieInkStroke($0.element, size: $0.offset % 2 == 0 ? pen : pen * 0.7) }
+            lines.enumerated().map { CookieInkStroke($0.element, size: $0.offset % 2 == 0 ? pen : pen * 0.7, seed: Self.strokeSeed(mark.seed, $0.offset)) }
         }
         func firstPasses(_ lines: [[CGPoint]]) -> [CookieInkStroke] {
-            lines.enumerated().filter { $0.offset % 2 == 0 }.map { CookieInkStroke($0.element, size: pen) }
+            lines.enumerated().filter { $0.offset % 2 == 0 }.map { CookieInkStroke($0.element, size: pen, seed: Self.strokeSeed(mark.seed, $0.offset)) }
         }
         let made: [CookieInkStroke]
         switch mark.geometry {
@@ -219,7 +224,7 @@ final class CookieInkCache {
             // The reading pen: one steady pass of a broad nib, as a highlighter goes under a line.
             var steady = rough
             steady.roughness = 0.35
-            made = steady.line(local(from), local(to)).prefix(1).map { CookieInkStroke($0, size: 6) }
+            made = steady.line(local(from), local(to)).prefix(1).map { CookieInkStroke($0, size: 6, seed: Self.strokeSeed(mark.seed, 0)) }
         case .underline(let from, let to):
             made = passes(rough.line(local(from), local(to)))
         case .bracket(let x, let top, let bottom):

@@ -330,7 +330,8 @@ final class CookieTextInsertion {
 }
 
 /// Finite commands for an existing visual; the model never supplies executable scene code.
-/// Written as [VISUAL:name], and for a turn by a set amount [VISUAL:rotate:degrees].
+/// Written as [VISUAL:name], for a turn by a set amount [VISUAL:rotate:degrees], and for a
+/// card's stage [VISUAL:state:n].
 enum CookieVisualCommand: Equatable {
     enum Spin: String { case start, faster, slower, stop }
     case explode, assemble, reset, next, previous, isolate, showAll, zoomIn, zoomOut
@@ -339,6 +340,8 @@ enum CookieVisualCommand: Equatable {
     case spin(Spin)
     /// Every label on, or every label off.
     case labels(shown: Bool)
+    /// A card with states moves to stage n (1 is the first): its pictures morph to that one.
+    case state(Int)
 
     /// One "rotate left" or "rotate right".
     static let rotateStep: Float = 45
@@ -369,6 +372,10 @@ enum CookieVisualCommand: Equatable {
         case "stop-spin": self = .spin(.stop)
         case "label-all": self = .labels(shown: true)
         case "hide-labels": self = .labels(shown: false)
+        case _ where body.hasPrefix("state:"):
+            guard let number = Int(body.dropFirst(6).trimmingCharacters(in: .whitespaces)),
+                  (1...CookieCard.maxStates).contains(number) else { return nil }
+            self = .state(number)
         default:
             // A set turn: a finite, non-zero number of degrees, at most one full turn either way.
             guard body.hasPrefix("rotate:"), let degrees = Float(body.dropFirst(7).trimmingCharacters(in: .whitespaces)),

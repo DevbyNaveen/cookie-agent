@@ -4,7 +4,8 @@
 //
 //  Cookie's pen. A mark's ideal shape (a ring, a line) is first roughened the
 //  way a hand misses a ruler, then each stroke is inked as a filled outline
-//  whose width follows the pen's speed. Both halves are small pure-math ports:
+//  whose width follows the pen's speed, tapers where the nib lands and lifts,
+//  and wobbles a little the same way every redraw (seeded per stroke). Both halves are small pure-math ports:
 //
 //  - The roughening is the core of Rough.js's line and ellipse perturbation
 //    (renderer.js `_line`, `_doubleLine`, `_curve`, `_computeEllipsePoints`,
@@ -30,11 +31,14 @@ struct CookieInkStroke {
     let lengths: [CGFloat]
     /// Pen diameter in points.
     let size: CGFloat
+    /// This stroke's hand: the same seed gives the same wobble in its width on every redraw.
+    let seed: UInt32
 
     var length: CGFloat { lengths.last ?? 0 }
 
-    init(_ polyline: [CGPoint], size: CGFloat, spacing: CGFloat = 2) {
+    init(_ polyline: [CGPoint], size: CGFloat, seed: UInt32 = 0, spacing: CGFloat = 2) {
         self.size = size
+        self.seed = seed
         var points: [CGPoint] = []
         var lengths: [CGFloat] = []
         var run: CGFloat = 0
@@ -76,7 +80,7 @@ struct CookieInkStroke {
                 break
             }
         }
-        let polygon = CookieFreehand.outline(prefix, size: size, complete: reveal >= length)
+        let polygon = CookieFreehand.outline(prefix, size: size, complete: reveal >= length, seed: seed)
         guard polygon.count >= 3 else { return nil }
         let path = CGMutablePath()
         path.addLines(between: polygon)
@@ -292,9 +296,24 @@ enum CookieFreehand {
 
     /// The filled outline around `input`, a pen `size` across. `complete` = the pen has lifted.
     /// The end always tapers, so the tip moving across the screen reads as a pen, and the
-    /// stroke doesn't change shape when it finishes.
-    static func outline(_ input: [CGPoint], size: CGFloat, complete: Bool) -> [CGPoint] {
-        outlinePoints(strokePoints(input, size: size, complete: complete), size: size, taperEnd: size * 2.5)
+    /// stroke doesn't change shape when it finishes. The start tapers too, shorter, as a nib
+    /// landing; `seed` gives the width a slow, slight wobble of its own (none for seed 0).
+    static func outline(_ input: [CGPoint], size: CGFloat, complete: Bool, seed: UInt32 = 0) -> [CGPoint] {
+        outlinePoints(strokePoints(input, size: size, complete: complete), size: size,
+                      taperStart: size * 1.5, taperEnd: size * 2.5, seed: seed)
+    }
+
+    /// How much wider or narrower the pen runs at `distance` along a stroke: two seeded sines of
+    /// different wavelengths, within ±`wobble`. A function of distance only, so revealing more of
+    /// a stroke never changes the part already drawn.
+    static let wobble: CGFloat = 0.12
+    static func pressureWobble(at distance: CGFloat, seed: UInt32) -> CGFloat {
+        guard seed != 0 else { return 1 }
+        var state = seed &* 2_654_435_761
+        func next() -> CGFloat { state = state &* 48271 &+ 11; return CGFloat(state & 0xFFFF) / 65_535 }
+        let phase1 = next() * .pi * 2, phase2 = next() * .pi * 2
+        let wave1 = 26 + next() * 18, wave2 = 9 + next() * 6
+        return 1 + wobble * (0.65 * sin(distance / wave1 + phase1) + 0.35 * sin(distance / wave2 + phase2))
     }
 
     private static func strokePoints(_ input: [CGPoint], size: CGFloat, complete: Bool) -> [StrokePoint] {
@@ -339,7 +358,7 @@ enum CookieFreehand {
         size * (0.5 - thinning * (0.5 - pressure))
     }
 
-    private static func outlinePoints(_ points: [StrokePoint], size: CGFloat, taperEnd: CGFloat) -> [CGPoint] {
+    private static func outlinePoints(_ points: [StrokePoint], size: CGFloat, taperStart: CGFloat, taperEnd: CGFloat, seed: UInt32) -> [CGPoint] {
         guard let lastStroke = points.last, size > 0 else { return [] }
         let totalLength = lastStroke.runningLength
         let minDistance = pow(size * smoothing, 2)
@@ -362,6 +381,12 @@ enum CookieFreehand {
             let pressure = simulatePressure(prevPressure, current.distance, size)
             r = radius(size, pressure)
             if firstRadius == nil { firstRadius = r }
+            r *= pressureWobble(at: current.runningLength, seed: seed)
+            // Taper the start (taperStart easing: t * (2 - t)), never below a third of the pen.
+            if taperStart > 0, current.runningLength < taperStart {
+                let t = current.runningLength / taperStart
+                r *= 0.35 + 0.65 * t * (2 - t)
+            }
             // Taper the end (taperEnd easing: --t * t * t + 1).
             if taperEnd > 0, totalLength - current.runningLength < taperEnd {
                 let x = (totalLength - current.runningLength) / taperEnd - 1

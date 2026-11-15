@@ -19,7 +19,9 @@ enum CookieTeachingTests {
         guard case .flow(_, let nodes, let edges, _, _) = card.content else { preconditionFailure("diagram must be a graph") }
         precondition(nodes.count == 6 && edges.count == 5 && nodes.allSatisfy { $0.icon != nil })
         let bad = photosynthesis.replacingOccurrences(of: "sun.max", with: "unknown.symbol")
-        precondition(CookieCard(tag: CookieReplyTags.split(bad).tags[0]) == nil)
+        // An icon outside the teaching set is left off (and the repair said), the diagram kept.
+        let repaired = CookieCard.read(CookieReplyTags.split(bad).tags[0].body)
+        precondition(repaired.card?.nodes.first { $0.id == "sun" }?.icon == nil && repaired.repairs.contains { $0.contains("unknown.symbol") })
         let narration = "Sunlight reaches the plant. Water arrives next. Carbon dioxide enters the Leaf, which makes Sugar and Oxygen."
         let beats = card.revealOffsets(in: narration, nextCardOffset: nil)
         precondition(beats.count == card.elements.count && beats == beats.sorted())

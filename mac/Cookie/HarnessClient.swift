@@ -243,6 +243,7 @@ final class HarnessClient {
         let enkeonKey = await CookieModelSettings.enkeonKey()
         try ensureRunning(environment: CookieModelSettings.helperEnvironment(model: model, enkeonKey: enkeonKey))
         CookieProof.shared.recordSent(images, model: model, feature: feature)
+        CookieVisualBuilder.beginTurn()
         runCounter += 1
         let request = HarnessRequest.Run(
             id: "cookie-\(runCounter)", model: model, input: text, instructions: instructions,
@@ -261,7 +262,7 @@ final class HarnessClient {
     /// There is no layer tool: a layer reads the window and sends it for ten minutes, so only the
     /// person's own words start one, never a page or a screen the model read.
     static func tools(backgroundProject: Bool, unattended: Bool, workspace: Bool) -> [HarnessRequest.Tool] {
-        let mac = [CookieOpen.tool, CookieOpenFile.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieHistorySearch.tool, CookieDecisionRecall.tool, CookieRoutineWords.tool]
+        let mac = [CookieOpen.tool, CookieOpenFile.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieHistorySearch.tool, CookieDecisionRecall.tool, CookieRoutineWords.tool, CookieVisualBuilder.tool]
             + (unattended ? [] : [CookieTimeMachineTool.tool]) + MacOperator.tools
         return (backgroundProject ? [] : mac) + (workspace ? [CookieWorkspaceTool.tool] : [])
     }
@@ -490,7 +491,8 @@ final class HarnessClient {
                              "connector_actions": "Looking at your connected apps", "connector_call": "Using a connected app",
                              "use_skill": "Opening a skill", "look": "Looking at the app", "time_machine": "Looking at what Cookie changed",
                              "ghost_look": "Reading a background app with Accessibility", "ghost_press": "Pressing an observed background control",
-                             "ghost_set_value": "Updating an observed background value", "ghost_take_screen": "Waiting for screen approval"]
+                             "ghost_set_value": "Updating an observed background value", "ghost_take_screen": "Waiting for screen approval",
+                             "build_visual": "Drawing a card"]
                 run.onStep(plain[name] ?? "Using \(name.replacingOccurrences(of: "_", with: " "))")
             case "usage":
                 if let usage = event.usage {
@@ -523,6 +525,13 @@ final class HarnessClient {
                     }
                     self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.output, is_error: result.isError)))
                 }
+                return
+            }
+            if name == CookieVisualBuilder.tool.name {
+                // Drawn here, off screen, before the reply shows it ([CARD:#id]).
+                let result = CookieVisualBuilder.perform(args)
+                if !result.1 { run.onStep("Drew a card") }
+                send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.0, is_error: result.1)))
                 return
             }
             if name == CookieHistorySearch.tool.name {

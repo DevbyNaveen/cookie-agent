@@ -718,6 +718,7 @@ struct CookieInteractionCheckRunner {
         CookiePermissionTests.run()
         CookieSpeedTests.run()
         CookieTeachingTests.run()
+        CookiePaperTests.run()
         CookieVoiceActionTests.run()
         CookieDictationFaceTests.run()
         CookieWordsPagesTests.run()
