@@ -694,14 +694,37 @@ private struct ConnectorsPage: View {
 }
 
 private struct AboutPage: View {
+    @ObservedObject private var updater = CookieUpdater.shared
+
     private var version: String {
         let info = Bundle.main.infoDictionary
         return "\(info?["CFBundleShortVersionString"] as? String ?? "–") (\(info?["CFBundleVersion"] as? String ?? "–"))"
     }
 
+    private var updateCaption: String {
+        let checked = updater.lastChecked.map { "Last checked \($0.formatted(.relative(presentation: .named)))." } ?? "Not checked yet."
+        return updater.status.text + " " + checked
+    }
+
+    private var isBusy: Bool {
+        switch updater.status {
+        case .checking, .downloading, .installing: return true
+        default: return false
+        }
+    }
+
     var body: some View {
         SettingsGroup {
-            SettingsRow(title: "Cookie by Enkeon", caption: "Version \(version)", divider: false) { CookieAvatar(size: 30) }
+            SettingsRow(title: "Cookie by Enkeon", caption: "Version \(version)") { CookieAvatar(size: 30) }
+            SettingsRow(title: "Updates", caption: updateCaption, symbol: "arrow.down.circle", tint: CK.accent, divider: false) {
+                switch updater.status {
+                case .ready, .waiting:
+                    PillButton(title: "Restart to update", primary: true) { updater.restartToUpdate() }
+                default:
+                    PillButton(title: isBusy ? "Checking…" : "Check for updates") { Task { await updater.check() } }
+                        .disabled(isBusy)
+                }
+            }
         }
     }
 }

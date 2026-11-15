@@ -26,8 +26,10 @@ struct NotchNotice: Equatable {
     var copyText: String? = nil
     var meetingBrief: CookieMeetingBrief? = nil
     var apprenticePatternID: String? = nil
+    /// A verified update waiting for Restart (CookieUpdater): the notice stays until Restart or Later.
+    var updateVersion: String? = nil
 
-    var keepsUntilActed: Bool { copyText != nil || apprenticePatternID != nil }
+    var keepsUntilActed: Bool { copyText != nil || apprenticePatternID != nil || updateVersion != nil }
     static func recovery(_ text: String) -> NotchNotice {
         NotchNotice(threadID: UUID(), title: "Dictation", message: "Not typed: the field changed or couldn't confirm it. Copy your words.",
                     failed: true, copyText: text)
@@ -148,6 +150,12 @@ final class NotchPanelManager {
         CookieApprentice.shared.onOffer = { [weak self] offer in
             self?.show(NotchNotice(threadID: UUID(), title: "Cookie noticed a pattern", message: offer.pattern.offerText,
                                    failed: false, apprenticePatternID: offer.id))
+        }
+        // "Cookie 0.2.0 is ready · Restart to update", once per verified release.
+        CookieUpdater.shared.onReady = { [weak self] release in
+            let notes = release.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+            self?.show(NotchNotice(threadID: UUID(), title: "Cookie \(release.version) is ready", message: notes.isEmpty ? "Restart to update." : notes,
+                                   failed: false, updateVersion: release.version))
         }
         CookieApprentice.shared.onSchedule = { [weak self] skillName in
             guard let self else { return }
@@ -781,6 +789,10 @@ struct NotchIslandView: View {
                                if let id = notice.apprenticePatternID { CookieApprentice.shared.acceptOffer(id) }
                                setState(.closed)
                            },
+                           restartToUpdate: {
+                               setState(.closed)
+                               CookieUpdater.shared.restartToUpdate()
+                           },
                            dismiss: {
                                if let brief = notice.meetingBrief { CookieCalendar.shared.dismissBrief(brief.meeting.id) }
                                if let id = notice.apprenticePatternID { CookieApprentice.shared.dismissOffer(id) }
@@ -1051,6 +1063,7 @@ private struct NoticeView: View {
     let stop: () -> Void
     let open: () -> Void
     let acceptApprentice: () -> Void
+    let restartToUpdate: () -> Void
     let dismiss: () -> Void
 
     var body: some View {
@@ -1063,7 +1076,7 @@ private struct NoticeView: View {
                     HStack(spacing: 6) {
                         Text(notice.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                         Circle().fill(notice.failed ? Color.orange : CK.accent).frame(width: 5, height: 5)
-                        Text(notice.meetingBrief != nil ? "Meeting brief" : notice.copyText != nil ? "Not typed" : voiceState == .responding ? "Speaking" : notice.failed ? "Couldn't reply" : "Replied")
+                        Text(notice.updateVersion != nil ? "Update" : notice.meetingBrief != nil ? "Meeting brief" : notice.copyText != nil ? "Not typed" : voiceState == .responding ? "Speaking" : notice.failed ? "Couldn't reply" : "Replied")
                             .font(.system(size: 11))
                             .foregroundStyle(notice.failed ? Color.orange : CK.secondary)
                     }
@@ -1077,6 +1090,9 @@ private struct NoticeView: View {
                         if notice.copyText != nil {
                             PillButton(title: "Dismiss") { CookieDictation.shared.controller.dismissRecovery(); dismiss() }
                             PillButton(title: "Copy", primary: true) { CookieDictation.shared.controller.copyLast(); dismiss() }
+                        } else if notice.updateVersion != nil {
+                            PillButton(title: "Later", action: dismiss)
+                            PillButton(title: "Restart to update", primary: true, action: restartToUpdate)
                         } else if notice.apprenticePatternID != nil {
                             PillButton(title: "Later", action: dismiss)
                             PillButton(title: "Yes, teach it", primary: true, action: acceptApprentice)

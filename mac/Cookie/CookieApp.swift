@@ -61,6 +61,20 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
             openSetup: { [weak self] in self?.setupController?.show() })
         if let pendingRelayURL { notchPanelManager?.openRelay(pendingRelayURL); self.pendingRelayURL = nil }
         CookieApprentice.shared.startIfEnabled()
+        // Updates: never restart over a dictation, a task, a conversation or a recording.
+        CookieUpdater.shared.busyReasons = { [companionManager] in
+            var reasons: [String] = []
+            switch CookieDictation.shared.controller.phase {
+            case .listening, .finishing: reasons.append("the dictation")
+            default: break
+            }
+            if companionManager.isConversationMode || companionManager.voiceState != .idle { reasons.append("the conversation") }
+            if companionManager.isWorking { reasons.append("the task") }
+            if !CookieBackgroundRuns.shared.runs.isEmpty { reasons.append("the background work") }
+            if CookieRecorder.shared.isBusy { reasons.append("the meeting recording") }
+            return reasons
+        }
+        CookieUpdater.shared.start()
         if !companionManager.hasCompletedOnboarding { setupController?.show() }
         // ponytail: no auto login item — the user opts in later from settings
     }
