@@ -30,6 +30,8 @@ final class CookieBackgroundRuns: ObservableObject {
         var step: String
         var history: [String]
         let startedAt: Date
+        var pendingApproval: HarnessApproval? = nil
+        let allowsApprovals: Bool
     }
 
     @Published private(set) var runs: [Run] = []
@@ -41,25 +43,34 @@ final class CookieBackgroundRuns: ObservableObject {
     /// Starts a run for this Cookie; nil when three are already going (the person sees why in the dock title).
     @discardableResult
     func start(agent: CookieAgent, input: String, title: String, kind: Kind,
+               instructions: String? = nil, allowsApprovals: Bool = false,
                onReply: @escaping (String, UUID) -> Void = { _, _ in }) -> UUID? {
         guard let manager = companionManager, runs.count < Self.maxParallel else { return nil }
         let threadID = manager.startBackgroundThread(agentID: agent.id, userText: input)
         let id = UUID()
         let client = HarnessClient()
         clients[id] = client
-        runs.append(Run(id: id, agentID: agent.id, threadID: threadID, title: title, kind: kind, step: "Starting", history: [], startedAt: Date()))
+        runs.append(Run(id: id, agentID: agent.id, threadID: threadID, title: title, kind: kind, step: "Starting",
+                        history: [], startedAt: Date(), allowsApprovals: allowsApprovals))
         tasks[id] = Task { [weak self] in
             do {
                 let model = CookieModelSettings.model
                 if let missing = CookieModelSettings.missing(model: model) { throw HarnessClient.HarnessFailure(message: missing) }
                 let reply = try await client.run(
                     model: model, input: input,
-                    instructions: CompanionManager.instructions(for: agent, background: true),
+                    instructions: instructions ?? CompanionManager.instructions(for: agent, background: true),
                     images: [], history: [],
                     onText: { _ in },
                     onStep: { [weak self] step in self?.update(id) { $0.step = step; $0.history.append(step) } },
                     // Unattended: nothing is approved. The model was told it can't act.
-                    onApproval: { approval in if let approval { client.approve(approval, allow: false) } }
+                    onApproval: { [weak self] approval in
+                        guard let approval else { return }
+                        guard allowsApprovals else { client.approve(approval, allow: false); return }
+                        self?.update(id) {
+                            $0.pendingApproval = approval
+                            $0.step = Self.approvalQuestion(approval)
+                        }
+                    }
                 )
                 guard !Task.isCancelled else { return }
                 let steps = self?.runs.first { $0.id == id }?.history ?? []
@@ -73,6 +84,18 @@ final class CookieBackgroundRuns: ObservableObject {
             self?.finish(id)
         }
         return id
+    }
+
+    func answerApproval(runID: UUID, approvalID: String, allow: Bool) {
+        guard let run = runs.first(where: { $0.id == runID }),
+              let approval = run.pendingApproval, approval.id == approvalID,
+              let client = clients[runID] else { return }
+        update(runID) { $0.pendingApproval = nil; $0.step = allow ? "Approved. Continuing" : "Declined. Stopping this action" }
+        client.approve(approval, allow: allow)
+    }
+
+    static func approvalQuestion(_ approval: HarnessApproval) -> String {
+        approval.actions.first.flatMap { MacOperator.shared.question(for: $0) } ?? "Review Cookie's requested action."
     }
 
     func stop(_ id: UUID) {
@@ -125,17 +148,28 @@ final class CookieBackgroundRuns: ObservableObject {
     @discardableResult
     private func fire(_ routine: CookieRoutine, of agent: CookieAgent) -> Bool {
         let kind: Kind = routine.onlyWhen.isEmpty ? .routine : .watcher
+        let taught = routine.skillSlug != nil
         let title = "\(agent.name): \(routine.instruction.prefix(60))"
-        return start(agent: agent, input: Self.input(for: routine), title: title, kind: kind) { [weak self] reply, threadID in
+        var instructions: String?
+        var input = Self.input(for: routine)
+        if let slug = routine.skillSlug {
+            guard let skill = CookieSkills.workflowText(slug: slug) else { return false }
+            input = "Run this saved, reviewed workflow now. If a required step needs a different app or screen context, stop and ask.\n\n\(skill)"
+            instructions = CompanionManager.instructions(for: agent, background: false)
+                + "\n\nThis is a scheduled taught workflow. Use look first and start_task to show the person the plan; wait for the existing approval before any action. Follow only the saved steps. Never silently activate an app or send, delete, purchase, or publish. Anything consequential still requires its separate approval."
+        }
+        return start(agent: agent, input: input, title: title, kind: kind,
+                     instructions: instructions, allowsApprovals: taught) { [weak self] reply, threadID in
             guard let self, let manager = self.companionManager else { return }
             if reply.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().hasPrefix(Self.nothingNew) {
-                manager.deleteThread(threadID) // quiet: nothing to show
+                manager.deleteThread(threadID)
                 return
             }
-            let item = WorkStore.shared.add(title: title, nextStep: "Read what \(agent.name) found", by: "cookie")
+            let completion = taught ? "Done, check it" : reply
+            let item = WorkStore.shared.add(title: title, nextStep: taught ? "Review the taught workflow run" : "Read what \(agent.name) found", by: "cookie")
             WorkStore.shared.update(item.id, by: "cookie", note: kind == .watcher ? "\(agent.name) noticed something" : "\(agent.name) ran its routine") { $0.threadID = threadID }
-            CookieNotifications.shared.post(.reply, threadID: threadID, title: agent.name, body: reply, panelOpen: false)
-            manager.replyFinished.send((threadID, CompanionChatMessage(role: .assistant, text: reply)))
+            CookieNotifications.shared.post(.reply, threadID: threadID, title: agent.name, body: completion, panelOpen: false)
+            manager.replyFinished.send((threadID, CompanionChatMessage(role: .assistant, text: completion)))
         } != nil
     }
 }

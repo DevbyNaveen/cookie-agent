@@ -532,13 +532,14 @@ final class LocalCookiePage {
 enum CookieRoutineWords {
     static let tool = HarnessRequest.Tool(
         name: "make_routine",
-        description: "Make a routine: a job Cookie does again on a schedule, when the person asks for one (\"every Tuesday and Thursday at 5, clean up my inbox\"). The person sees the schedule and says yes first. It shows on the Board under Routines, where they can pause it.",
+        description: "Make a routine: a job Cookie does again on a schedule, when the person asks for one (\"every Tuesday and Thursday at 5, clean up my inbox\"). The person sees the schedule and says yes first. You can also schedule an exact saved taught workflow name.",
         effect: "outbound",
         guard: ["job"],
         schema: .init(properties: [
             "job": .init(description: "What to do each time, in the person's own words exactly as they said them, without the schedule: \"clean up my inbox\"."),
             "days": .init(description: "Which days: weekday names joined by commas (\"Tuesday, Thursday\"), \"every day\", \"weekdays\", or \"every hour\"."),
             "time": .init(description: "The time, 24-hour HH:MM on the person's clock. \"at 5\" for an inbox or a report means 17:00; ask when it could be either."),
+            "workflow": .init(description: "Optional exact name of an already reviewed and saved taught workflow. Use only when the user asks to schedule a workflow they taught Cookie."),
         ], required: ["job", "days", "time"]),
         parallel_safe: false)
 
@@ -556,6 +557,7 @@ enum CookieRoutineWords {
         let weekdays: [Int]
         let hour: Int
         let minute: Int
+        let skillSlug: String?
 
         var sentence: String {
             let clock = Calendar.current.date(from: DateComponents(hour: hour, minute: minute)).map { $0.formatted(date: .omitted, time: .shortened) } ?? ""
@@ -573,17 +575,24 @@ enum CookieRoutineWords {
     /// The tool's arguments as a plan; nil when the days or time don't read.
     static func plan(_ args: [String: Any]) -> Plan? {
         let job = (args["job"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let workflowName = (args["workflow"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let skillSlug: String?
+        if workflowName.isEmpty { skillSlug = nil }
+        else {
+            guard let resolved = CookieSkills.workflowSlug(named: workflowName) else { return nil }
+            skillSlug = resolved
+        }
         let words = (args["days"] as? String ?? "").lowercased()
         let time = (args["time"] as? String ?? "").split(separator: ":").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
         guard !job.isEmpty, let hour = time.first, (0...23).contains(hour) else { return nil }
         let minute = time.count > 1 ? time[1] : 0
         guard (0...59).contains(minute) else { return nil }
-        if words.contains("hour") { return Plan(job: job, cadence: "hourly", weekdays: [], hour: hour, minute: minute) }
-        if words.contains("every day") || words.contains("daily") { return Plan(job: job, cadence: "daily", weekdays: [], hour: hour, minute: minute) }
+        if words.contains("hour") { return Plan(job: job, cadence: "hourly", weekdays: [], hour: hour, minute: minute, skillSlug: skillSlug) }
+        if words.contains("every day") || words.contains("daily") { return Plan(job: job, cadence: "daily", weekdays: [], hour: hour, minute: minute, skillSlug: skillSlug) }
         let picked = words.contains("weekday") ? Array(1...5) : days.indices.filter { words.contains(days[$0]) }.map { $0 + 1 }
         guard !picked.isEmpty else { return nil }
-        return picked.count == 7 ? Plan(job: job, cadence: "daily", weekdays: [], hour: hour, minute: minute)
-            : Plan(job: job, cadence: "weekly", weekdays: picked, hour: hour, minute: minute)
+        return picked.count == 7 ? Plan(job: job, cadence: "daily", weekdays: [], hour: hour, minute: minute, skillSlug: skillSlug)
+            : Plan(job: job, cadence: "weekly", weekdays: picked, hour: hour, minute: minute, skillSlug: skillSlug)
     }
 
     /// The named Cookie whose reply is in flight; nil for Cookie herself.
@@ -613,6 +622,15 @@ enum CookieRoutineWords {
             CookieAgentStore.shared.update(agent)
             return ("Made: \(plan.sentence). \(agent.name) runs it on this Mac; it's on the Board under Routines, where it can be removed.", false)
         }
+        if let skillSlug = plan.skillSlug,
+           var cookie = CookieAgentStore.shared.agents.first(where: \.builtIn) {
+            let fresh = localRoutines(plan).filter { new in
+                !cookie.routines.contains { $0.instruction == new.instruction && $0.cadence == new.cadence && $0.skillSlug == skillSlug }
+            }
+            cookie.routines += fresh
+            CookieAgentStore.shared.update(cookie)
+            return ("Scheduled the saved workflow: \(plan.sentence). Cookie will ask before it acts; the finished run will link back here.", false)
+        }
         let api = CookieAPI.shared
         await api.sendTimeZone()
         var made: [String] = []
@@ -632,7 +650,9 @@ enum CookieRoutineWords {
 
     /// The plan as a named Cookie's own routines (the Mac's calendar counts Sunday as 1).
     static func localRoutines(_ plan: Plan) -> [CookieRoutine] {
-        func routine(_ cadence: CookieRoutine.Cadence) -> CookieRoutine { CookieRoutine(instruction: plan.job, cadence: cadence) }
+        func routine(_ cadence: CookieRoutine.Cadence) -> CookieRoutine {
+            CookieRoutine(instruction: plan.job, cadence: cadence, skillSlug: plan.skillSlug)
+        }
         switch plan.cadence {
         case "hourly": return [routine(.every(minutes: 60))]
         case "daily": return [routine(.daily(hour: plan.hour, minute: plan.minute))]

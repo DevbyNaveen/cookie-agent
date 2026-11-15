@@ -5,6 +5,7 @@ struct AgentDockView: View {
     @ObservedObject private var agents = CookieAgentStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let stop: (DockEntry) -> Void
+    var answerApproval: (DockEntry, Bool) -> Void = { _, _ in }
     let open: (DockEntry) -> Void
 
     var body: some View {
@@ -17,7 +18,7 @@ struct AgentDockView: View {
                                       historyProgress: state.historyID == entry.id ? 1 : 0,
                                       expand: { state.expand(entry.id) }, collapse: state.collapse,
                                       toggleHistory: { state.historyID = state.historyID == entry.id ? nil : entry.id },
-                                      stop: { stop(entry) }, open: { open(entry) })
+                                      stop: { stop(entry) }, answerApproval: { answerApproval(entry, $0) }, open: { open(entry) })
                 }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -46,6 +47,7 @@ struct CookieDockSurface: View, Animatable {
     let collapse: () -> Void
     let toggleHistory: () -> Void
     let stop: () -> Void
+    var answerApproval: (Bool) -> Void = { _ in }
     let open: () -> Void
 
     var animatableData: AnimatablePair<CGFloat, CGFloat> {
@@ -140,9 +142,16 @@ struct CookieDockSurface: View, Animatable {
                     .help("Show the steps so far")
                 }
                 Spacer(minLength: 0)
-                Button(action: stop) { Label("Stop", systemImage: "stop.fill") }
-                    .buttonStyle(CookieDockButtonStyle())
-                    .accessibilityLabel("Stop \(agent?.name ?? "Cookie")")
+                if entry.pendingApproval != nil {
+                    Button { answerApproval(false) } label: { Label("Decline", systemImage: "xmark") }
+                        .buttonStyle(CookieDockButtonStyle())
+                    Button { answerApproval(true) } label: { Label("Approve", systemImage: "checkmark") }
+                        .buttonStyle(CookieDockButtonStyle(prominent: true))
+                } else {
+                    Button(action: stop) { Label("Stop", systemImage: "stop.fill") }
+                        .buttonStyle(CookieDockButtonStyle())
+                        .accessibilityLabel("Stop \(agent?.name ?? "Cookie")")
+                }
                 Button(action: open) { Label("Open", systemImage: "arrow.up.right") }
                     .buttonStyle(CookieDockButtonStyle(prominent: true))
                     .accessibilityLabel("Open conversation")

@@ -121,6 +121,22 @@ enum CookieSkills {
         let steps: [CookieTeachStep]
     }
 
+    static func workflowSlug(named name: String, in directory: URL = userDirectory) -> String? {
+        let query = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return nil }
+        return records(in: directory).first { $0.record.name.caseInsensitiveCompare(query) == .orderedSame }?
+            .folder.lastPathComponent
+    }
+
+    static func workflowText(slug: String, in directory: URL = userDirectory) -> String? {
+        guard slug.range(of: #"^taught-[a-z0-9-]{1,80}$"#, options: .regularExpression) != nil else { return nil }
+        let folder = directory.appendingPathComponent(slug, isDirectory: true).standardizedFileURL
+        guard folder.deletingLastPathComponent() == directory.standardizedFileURL else { return nil }
+        let file = folder.appendingPathComponent("SKILL.md")
+        guard let text = try? String(contentsOf: file, encoding: .utf8), !text.isEmpty else { return nil }
+        return String(text.prefix(20_000))
+    }
+
     static func records(in directory: URL = userDirectory) -> [(folder: URL, record: TaskRecord)] {
         ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []).compactMap { folder in
             guard let data = try? Data(contentsOf: folder.appendingPathComponent("demonstration.json")),

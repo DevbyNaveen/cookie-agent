@@ -103,13 +103,16 @@ struct CookieRoutine: Identifiable, Codable, Equatable {
     var cadence: Cadence
     /// Watching: only raise a card when this is true ("anyone from Northwind replied"); empty runs every time.
     var onlyWhen: String = ""
+    /// A locally taught workflow to replay after the scheduled run's task approval.
+    var skillSlug: String? = nil
     var lastRun: Date?
     var nextRun: Date
 
-    init(instruction: String, cadence: Cadence, onlyWhen: String = "", from date: Date = Date()) {
+    init(instruction: String, cadence: Cadence, onlyWhen: String = "", skillSlug: String? = nil, from date: Date = Date()) {
         self.instruction = instruction
         self.cadence = cadence
         self.onlyWhen = onlyWhen
+        self.skillSlug = skillSlug
         self.nextRun = cadence.next(after: date)
     }
 

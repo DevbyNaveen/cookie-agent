@@ -32,6 +32,9 @@ final class CookieAgentDock {
     init() {
         hosting = NSHostingView(rootView: AgentDockView(state: state, stop: { entry in
             CookieBackgroundRuns.shared.stop(entry.id)
+        }, answerApproval: { entry, allow in
+            guard let approval = entry.pendingApproval else { return }
+            CookieBackgroundRuns.shared.answerApproval(runID: entry.id, approvalID: approval.id, allow: allow)
         }, open: { entry in
             NotificationCenter.default.post(name: Self.openThread, object: entry.threadID)
         }))
@@ -61,8 +64,8 @@ final class CookieAgentDock {
             .map { runs -> [DockEntry] in
                 runs.map { run in
                     DockEntry(id: run.id, agentID: run.agentID, threadID: run.threadID,
-                              status: run.kind == .watcher ? "Watching" : run.kind == .handoff ? "Picking it up" : "Working on its own",
-                              step: run.step, history: run.history)
+                              status: run.pendingApproval != nil ? "Needs your approval" : run.kind == .watcher ? "Watching" : run.kind == .handoff ? "Picking it up" : "Working on its own",
+                              step: run.step, history: run.history, pendingApproval: run.pendingApproval)
                 }
             }
             .removeDuplicates()
@@ -185,6 +188,7 @@ struct DockEntry: Identifiable, Equatable {
     let status: String
     let step: String
     let history: [String]
+    var pendingApproval: HarnessApproval? = nil
 
     var phase: CookieComposerPhase {
         status == "Speaking" ? .speaking : status == "Listening" ? .listening : .thinking

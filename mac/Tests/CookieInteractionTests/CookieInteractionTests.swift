@@ -725,6 +725,7 @@ struct CookieInteractionCheckRunner {
         CookieMeetingTests.run()
         CookieMeetingBriefTests.run()
         CookieDecisionRecallTests.run()
+        CookieTeachScheduleTests.run()
         CookieDictationCorrectionTests.run()
         CookieWeeklyCardTests.run()
         CookieHistoryFeatureTests.run()
