@@ -343,6 +343,8 @@ extension CookieSceneCheck {
     /// faded), the first and what seals it; nil when any of them can be seen.
     static func sealed(_ ids: Set<String>, in scene: CookieScene, exploded: Bool, cut: Set<String>,
                        faded: (String) -> Bool) -> (part: String, by: String)? {
+        // A loaded model's nodes nest by design and its boxes don't say what's hollow: nothing reads as sealed.
+        guard scene.asset == nil else { return nil }
         let placed = place(scene, exploded: exploded)
         var first: (part: String, by: String)?
         for b in placed where ids.contains(b.part.id) {

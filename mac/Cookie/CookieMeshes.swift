@@ -850,7 +850,8 @@ enum CookieMeshResources {
     /// Draws and uploads every part of the scene off the main thread, so showing it is instant.
     @discardableResult
     static func warm(_ scene: CookieScene) -> Task<Void, Never> {
-        let forms = Array(Set(scene.parts.map(\.form))).filter { meshes[$0] == nil }
+        // A loaded model's parts are its file's nodes; their boxes are never drawn.
+        let forms = scene.asset != nil ? [] : Array(Set(scene.parts.map(\.form))).filter { meshes[$0] == nil }
         return Task.detached(priority: .userInitiated) {
             for form in forms {
                 if Task.isCancelled { return }

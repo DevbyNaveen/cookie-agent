@@ -332,6 +332,7 @@ final class HarnessClient {
     func cancel(_ id: String? = nil) {
         guard let run = active, id == nil || run.id == id else { return }
         active = nil
+        models.cancelLoading()
         if queued != nil { queued = nil } else { send(HarnessWire.encode(HarnessRequest.Cancel())) }
         run.onApproval(nil)
         run.continuation.resume(throwing: CancellationError())
@@ -531,7 +532,9 @@ final class HarnessClient {
             if name == CookieModelShelf.tool.name {
                 Task { @MainActor in
                     let result = await self.models.build(args)
-                    run.onStep(result.isError ? "Couldn't build the model" : "Built a model and checked how it looks")
+                    let real = (args["scene"] as? String)?.contains("\"asset\"") == true || (args["scene"] as? [String: Any])?["asset"] != nil
+                    run.onStep(result.isError ? (real ? "Couldn't load the model" : "Couldn't build the model")
+                               : (real ? "Loaded a real model and checked how it looks" : "Built a model and checked how it looks"))
                     self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.output, is_error: result.isError)))
                 }
                 return

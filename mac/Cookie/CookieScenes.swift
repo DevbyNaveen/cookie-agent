@@ -144,6 +144,9 @@ struct CookieScene: Equatable {
     let run: Bool
     /// The explanation's timeline, in order: what happens at which spoken words (`CookieSceneBeats`).
     let beats: [Beat]
+    /// A real model loaded from a file (`CookieModelAsset`): its parts are the file's named nodes, drawn
+    /// from the file rather than the parts library. Nil for a model built from parts.
+    let asset: Asset?
     /// UTF-16 offset in the spoken text where the tag sat (`CookieSpeechClock` units).
     var offset = 0
     /// Where each grouped part's group sits (the middle of its members): a group explodes as one.
@@ -167,7 +170,7 @@ struct CookieScene: Equatable {
     }
 
     init(title: String, parts: [Part], explode: Bool, spin: Bool, offset: Int = 0,
-         joints: [Joint] = [], drives: [Drive] = [], links: [Link] = [], flows: [Flow] = [], run: Bool = false, beats: [Beat] = []) {
+         joints: [Joint] = [], drives: [Drive] = [], links: [Link] = [], flows: [Flow] = [], run: Bool = false, beats: [Beat] = [], asset: Asset? = nil) {
         self.title = title
         self.parts = parts
         self.explode = explode
@@ -179,6 +182,7 @@ struct CookieScene: Equatable {
         self.flows = flows
         self.run = run
         self.beats = beats
+        self.asset = asset
         var members: [String: [SIMD3<Float>]] = [:]
         for part in parts { if let group = part.group { members[group, default: []].append(part.position) } }
         groupCentres = members.mapValues { $0.reduce(.zero, +) / Float($0.count) }
@@ -467,6 +471,9 @@ struct SceneReader {
         }
         guard let object else { errors.append("scene: not valid JSON; write one JSON object {\"title\":…,\"parts\":[…]}"); return nil }
         guard let fields = object as? [String: Any] else { errors.append("scene: must be a JSON object {\"title\":…,\"parts\":[…]}"); return nil }
+        if fields["asset"] != nil {
+            errors.append("scene.asset: a real model is fetched and opened by build_model; build it there, then show it with [SCENE:#id]"); return nil
+        }
         for key in fields.keys.sorted() where !Scene.sceneFields.contains(key) { repairs.append("scene.\(key): not a scene field; ignored") }
 
         var title = (fields["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

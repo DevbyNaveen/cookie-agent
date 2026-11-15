@@ -49,6 +49,24 @@ final class CookieSceneStage: ObservableObject {
     private var markers: [String: [ModelEntity]] = [:]
     private var flowPaths: [String: CookieFlowPath] = [:]
 
+    // A real model (`scene.asset`): a copy of the file under `assetFrame`, which scales and centres it.
+    /// Scales and centres the file so its units are the scene's; its parent puts the centroid at the origin.
+    private let assetFrame = Entity()
+    /// Each part's node in the copy.
+    private var assetNodes: [String: Entity] = [:]
+    /// A point at the middle of each part's box, riding its node: where its label and the hand point.
+    private var assetPoints: [String: Entity] = [:]
+    /// Where each piece sits in the file, so exploding moves it out from there.
+    private var pieceBases: [String: SIMD3<Float>] = [:]
+    /// Every drawn mesh of the file, the parts it belongs to, and the materials it came with.
+    private var assetMeshes: [(entity: ModelEntity, owners: Set<String>, materials: [any RealityKit.Material])] = []
+    private var meshOpacity: [ObjectIdentifier: Float] = [:]
+    private var assetTask: Task<Void, Never>?
+    /// The file is in and drawn (a copy shows at once when it's open already, else a moment later).
+    @Published private(set) var assetShown = false
+    /// How see-through a cut part of a real model is (its materials are its own, so the whole part fades).
+    static let cutOpacity: Float = 0.3
+
     /// The labelled parts whose labels are showing (a beat may show any of them, in any order).
     @Published private(set) var shownLabelIDs: Set<String> = []
     var shownLabels: Int { shownLabelIDs.count }
@@ -126,7 +144,23 @@ final class CookieSceneStage: ObservableObject {
         cutParts = Set(scene.parts.filter(\.cut).map(\.id))
         rig = CookieSceneCameraRig(overview: simd_length(CookieSceneCamera.eye(radius: CookieSceneCamera.radius(scene, exploded: false))))
         let studio = Self.studioLight()
-        for part in scene.parts {
+        if let asset = scene.asset {
+            let holder = Entity()
+            holder.position = -scene.centroid
+            assetFrame.scale = SIMD3(repeating: asset.scale)
+            assetFrame.position = -asset.centre * asset.scale
+            holder.addChild(assetFrame)
+            root.addChild(holder)
+            if let copy = CookieModelAssets.shared.copy(asset.file) {
+                attach(copy, studio: studio)
+            } else {
+                assetTask = Task { [weak self] in
+                    guard let prototype = try? await CookieModelAssets.shared.prototype(asset.file), !Task.isCancelled, let self else { return }
+                    self.attach(prototype.clone(recursive: true), studio: studio)
+                }
+            }
+        }
+        for part in scene.parts where scene.asset == nil {
             let entity = ModelEntity(mesh: Self.mesh(part), materials: [Self.material(part, cut: part.cut)])
             entity.position = scene.place(of: part, exploded: false)
             entity.orientation = part.orientation
@@ -175,8 +209,52 @@ final class CookieSceneStage: ObservableObject {
         }
     }
 
+    /// Hangs a copy of the file under the frame and finds each part's node, point and meshes in it.
+    private func attach(_ model: Entity, studio: Entity?) {
+        guard let asset = scene.asset, assetFrame.children.isEmpty else { return }
+        assetFrame.addChild(model)
+        var owners: [ObjectIdentifier: Set<String>] = [:]
+        for part in scene.parts {
+            guard let path = asset.paths[part.id], let node = CookieModelAsset.entity(at: path, in: model) else { continue }
+            assetNodes[part.id] = node
+            let point = Entity()
+            node.addChild(point)
+            point.setPosition(part.position, relativeTo: assetFrame.parent)
+            assetPoints[part.id] = point
+            if asset.pieces.contains(part.id) { pieceBases[part.id] = node.position(relativeTo: assetFrame) }
+            Self.meshes(in: node).forEach { owners[ObjectIdentifier($0), default: []].insert(part.id) }
+        }
+        assetMeshes = Self.meshes(in: model).map { mesh in
+            if let studio { mesh.components.set(ImageBasedLightReceiverComponent(imageBasedLight: studio)) }
+            return (mesh, owners[ObjectIdentifier(mesh)] ?? [], mesh.model?.materials ?? [])
+        }
+        assetShown = true
+        layout()
+        refreshMaterials()
+        placeShadow()
+    }
+
+    private static func meshes(in entity: Entity) -> [ModelEntity] {
+        var found: [ModelEntity] = []
+        var stack = [entity]
+        while let next = stack.popLast() {
+            if let mesh = next as? ModelEntity, mesh.model != nil { found.append(mesh) }
+            stack.append(contentsOf: next.children)
+        }
+        return found
+    }
+
+    /// Where a part is drawn: its own entity, or for a real model the point riding its node.
+    private func point(_ id: String) -> Entity? { parts[id] ?? assetPoints[id] }
+
     /// Stops the per-frame work and lets go of every entity.
     func release() {
+        assetTask?.cancel()
+        assetTask = nil
+        assetNodes = [:]
+        assetPoints = [:]
+        assetMeshes = []
+        assetFrame.children.removeAll()
         pauseTeaching()
         subscription?.cancel()
         subscription = nil
@@ -544,7 +622,7 @@ final class CookieSceneStage: ObservableObject {
 
     private func frame(_ seconds: Float, project: (SIMD3<Float>) -> CGPoint?) {
         step(seconds)
-        if handFollows, let activePart, let entity = parts[activePart], !shownLabelIDs.contains(activePart),
+        if handFollows, let activePart, let entity = point(activePart), !shownLabelIDs.contains(activePart),
            let point = project(entity.position(relativeTo: nil)) {
             // A part without a showing label (a focus on a group, an unlabelled part): the hand still follows it.
             onFocus(point)
@@ -552,7 +630,7 @@ final class CookieSceneStage: ObservableObject {
         guard !shownLabelIDs.isEmpty else { return }
         var points: [String: CGPoint] = [:]
         for part in shownLabelled where !isFaded(part.id) {
-            if let entity = parts[part.id], entity.isEnabled, let point = project(entity.position(relativeTo: nil)) { points[part.id] = point }
+            if let entity = point(part.id), entity.isEnabled, let point = project(entity.position(relativeTo: nil)) { points[part.id] = point }
         }
         let centre = project(.zero)
         // Only publish a real move: SwiftUI redraws the labels on every change.
@@ -577,6 +655,14 @@ final class CookieSceneStage: ObservableObject {
 
     /// Puts every part where the motion and the explosion have it.
     private func layout() {
+        // A real model explodes piece by piece, each out along the same line its box takes in the check.
+        if let asset = scene.asset {
+            for part in scene.parts where asset.pieces.contains(part.id) {
+                guard let node = assetNodes[part.id], let base = pieceBases[part.id] else { continue }
+                let outward = (scene.place(of: part, exploded: true) - scene.place(of: part, exploded: false)) * explosionBlend
+                node.setPosition(base + outward / asset.scale, relativeTo: assetFrame)
+            }
+        }
         let pose = scene.moves ? CookieSceneMotion.pose(scene, turns: currentTurns) : [:]
         for part in scene.parts {
             guard let entity = parts[part.id] else { continue }
@@ -652,6 +738,18 @@ final class CookieSceneStage: ObservableObject {
 
     /// Eases each part's opacity toward bright or faded (at once with Reduce Motion).
     private func fade(_ seconds: Float) {
+        // A real model's meshes: faded when isolate leaves out every part they belong to, see-through when cut.
+        for mesh in assetMeshes {
+            let faded = isolated.map { $0.isDisjoint(with: mesh.owners) } ?? false
+            let target: Float = faded ? Self.fadedOpacity : cutParts.isDisjoint(with: mesh.owners) ? 1 : Self.cutOpacity
+            let key = ObjectIdentifier(mesh.entity)
+            let current = meshOpacity[key] ?? 1
+            guard current != target else { continue }
+            var next = reduceMotion ? target : current + (target - current) * min(1, 1 - exp(-seconds * 9))
+            if abs(next - target) < 0.01 { next = target }
+            meshOpacity[key] = next
+            if next >= 1 { mesh.entity.components.remove(OpacityComponent.self) } else { mesh.entity.components.set(OpacityComponent(opacity: next)) }
+        }
         for part in scene.parts {
             guard let entity = parts[part.id] else { continue }
             let target: Float = isFaded(part.id) ? Self.fadedOpacity : 1
@@ -666,6 +764,11 @@ final class CookieSceneStage: ObservableObject {
 
     /// Each part's material for its tint, finish, cutaway and whether it's lit as the one being explained.
     private func refreshMaterials() {
+        // A real model keeps its own materials; the part being explained glows warm over them.
+        for mesh in assetMeshes {
+            let lit = !highlighted.isDisjoint(with: mesh.owners)
+            mesh.entity.model?.materials = lit ? mesh.materials.map(Self.glowing) : mesh.materials
+        }
         for part in scene.parts {
             guard let entity = parts[part.id] else { continue }
             let cut = cutParts.contains(part.id)
@@ -674,6 +777,20 @@ final class CookieSceneStage: ObservableObject {
             entity.model?.materials = [material]
             Self.setRim(entity, part: part, on: cut)
         }
+    }
+
+    /// A real model's material with a warm glow over it, so the part being explained stands out in its own colours.
+    private static func glowing(_ material: any RealityKit.Material) -> any RealityKit.Material {
+        if var pbr = material as? PhysicallyBasedMaterial {
+            pbr.emissiveColor = .init(color: NSColor.systemOrange)
+            pbr.emissiveIntensity = 0.55
+            return pbr
+        }
+        if var simple = material as? SimpleMaterial {
+            simple.color = .init(tint: NSColor.systemOrange)
+            return simple
+        }
+        return SimpleMaterial(color: NSColor.systemOrange, roughness: 0.5, isMetallic: false)
     }
 
     /// A cut part's lit edge: the same shape a touch larger, drawn from behind only, so just its
@@ -708,11 +825,14 @@ final class CookieSceneStage: ObservableObject {
         shadowTurn = turn
         var low = SIMD3<Float>(repeating: .greatestFiniteMagnitude), high = -low
         for part in scene.parts where !isFaded(part.id) {
-            guard let entity = parts[part.id] else { continue }
+            // A real model's parts are boxes in the scene, where its pieces have been moved to.
+            let placed = parts[part.id].map { CookieSceneMotion.Placement(position: $0.position, orientation: $0.orientation) }
+                ?? (scene.asset != nil ? CookieSceneMotion.placed(scene, part, pose: [:], explosion: explosionBlend) : nil)
+            guard let placed else { continue }
             let box = part.form.bounds
             for corner in 0..<8 {
                 let q = SIMD3<Float>(corner & 1 == 0 ? box.min.x : box.max.x, corner & 2 == 0 ? box.min.y : box.max.y, corner & 4 == 0 ? box.min.z : box.max.z)
-                let world = turn.act(entity.position + entity.orientation.act(q))
+                let world = turn.act(placed.position + placed.orientation.act(q))
                 low = simd_min(low, world)
                 high = simd_max(high, world)
             }
@@ -842,6 +962,14 @@ struct CookieSceneView: View {
                         .fill(CookieMarksLayer.ink)
                         .frame(width: 56, height: 4)
                 }
+            if let asset = stage.scene.asset {
+                // A real model says whose it is.
+                Text("Model from \(asset.credit)")
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .foregroundStyle(inkText.opacity(0.6))
+                    .padding(.horizontal, 12)
+                    .padding(.top, -6)
+            }
             if !stage.collapsed {
             RealityView { content in
                 stage.install(in: &content)
@@ -853,6 +981,14 @@ struct CookieSceneView: View {
                     .onChange(of: proxy.frame(in: .named("sceneSurface"))) { _, frame in stage.viewportOrigin = frame.origin }
             })
             .overlay { CookieSceneLabels(stage: stage, size: Self.sceneSize, paper: paper, inkText: inkText, reduceMotion: reduceMotion) }
+            .overlay {
+                if stage.scene.asset != nil, !stage.assetShown {
+                    ProgressView("Opening the model…")
+                        .controlSize(.small)
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(inkText)
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 2)
@@ -862,7 +998,10 @@ struct CookieSceneView: View {
             }
             if !stage.collapsed {
                 HStack(spacing: stage.scene.hasMotion ? 12 : 16) {
-                    Button(stage.exploded ? "Assemble" : "Explode") { stage.apply(stage.exploded ? .assemble : .explode) }
+                    // A real model in one piece has nothing to pull apart.
+                    if (stage.scene.asset?.pieces.count ?? 2) > 1 {
+                        Button(stage.exploded ? "Assemble" : "Explode") { stage.apply(stage.exploded ? .assemble : .explode) }
+                    }
                     Button("Previous") { stage.apply(.previous) }
                     Button("Next part") { stage.apply(.next) }
                     Button("Reset") { stage.apply(.reset) }
@@ -1020,6 +1159,11 @@ final class CookieScenePresenter {
             + (stage.scene.hasMotion ? ". Motion: \(stage.playing ? (stage.slowMotion ? "slow motion" : "running") : "stopped")" : "")
             + (stage.scene.flows.isEmpty ? "" : ". Flows: " + stage.scene.flows.map { "\($0.id) \(stage.flowsOn.contains($0.id) ? "on" : "off")" }.joined(separator: ", "))
             + (stage.cutParts.isEmpty ? "" : ". Cut: " + stage.cutParts.sorted().joined(separator: ", "))
+            + (stage.scene.asset.map { asset in
+                ". A real model from \(asset.credit); " + (asset.pointable
+                    ? "its parts, to point at with [VISUAL:focus:id]: " + stage.scene.parts.prefix(24).map(\.id).joined(separator: ", ")
+                    : "its parts aren't named in the file, so you can't point at them")
+            } ?? "")
     }
     /// A model is up (shown or folded).
     var isShowing: Bool { stage != nil }

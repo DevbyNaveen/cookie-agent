@@ -63,7 +63,7 @@ final class CookieModelShelf {
 
     static let tool = HarnessRequest.Tool(
         name: "build_model",
-        description: "Build a 3D model before showing it. scene: the SCENE JSON ({\"title\",\"parts\",\"explode\",\"spin\"}, and for a machine that works \"joints\",\"drives\",\"links\",\"flows\",\"run\", and for a planned explanation \"beats\"; the same fields as an inline [SCENE {json}]). id: optional; leave it out and the id comes from the title, so a rebuild with the same title replaces the model. Answers {ok, id, show, repairs, errors, issues, render, snapshot, rebuilds_left}: show is the tag to put in the reply at the word where the model should appear ([SCENE:#id]); repairs are what Cookie fixed for you; errors name the part and field that couldn't be built (that part is left out); render reports, from the camera the person sees, each part's box on the 520×360 view, what hides behind what, what is sealed inside an opaque part, label collisions and framing, assembled and exploded, and for a model that moves, motion: what each joint does, whether driven gears touch at the teeth's ratio, whether a piston stays in its cylinder over a whole crank turn, whether moving parts stay in view, and beats: each beat in order with its actions (its words are matched to what you say when the reply is spoken); issues is the short list worth fixing, including beat actions that do nothing at that moment and focuses on a part hidden then. Fix errors and issues once and call again if they matter; at most \(buildsPerTurn) calls a turn.",
+        description: "Build a 3D model before showing it. scene: the SCENE JSON ({\"title\",\"parts\",\"explode\",\"spin\"}, and for a machine that works \"joints\",\"drives\",\"links\",\"flows\",\"run\", and for a planned explanation \"beats\"; the same fields as an inline [SCENE {json}]). id: optional; leave it out and the id comes from the title, so a rebuild with the same title replaces the model. Answers {ok, id, show, repairs, errors, issues, render, snapshot, rebuilds_left}: show is the tag to put in the reply at the word where the model should appear ([SCENE:#id]); repairs are what Cookie fixed for you; errors name the part and field that couldn't be built (that part is left out); render reports, from the camera the person sees, each part's box on the 520×360 view, what hides behind what, what is sealed inside an opaque part, label collisions and framing, assembled and exploded, and for a model that moves, motion: what each joint does, whether driven gears touch at the teeth's ratio, whether a piston stays in its cylinder over a whole crank turn, whether moving parts stay in view, and beats: each beat in order with its actions (its words are matched to what you say when the reply is spoken); issues is the short list worth fixing, including beat actions that do nothing at that moment and focuses on a part hidden then. For a real-looking model, scene may instead be {\"title\",\"asset\":{\"url\":\"https://….usdz\"} or {\"path\":\"~/….usdz\"},\"labels\":{\"node name\":\"label\"},\"beats\",\"explode\"}: Cookie fetches it (https only, 50 MB, 20 s; .usdz links, or .usdz/.usda/.usdc/.reality files in the home folder), scales and centres it, and its named nodes become the parts (answer: parts, can_point, credit, render.asset); a failure answers ok false with the reason. Fix errors and issues once and call again if they matter; at most \(buildsPerTurn) calls a turn.",
         effect: "read",
         schema: .init(properties: [
             "scene": .init(description: "the scene as a JSON object encoded as a string"),
@@ -73,11 +73,28 @@ final class CookieModelShelf {
 
     private(set) var models: [String: CookieScene.Reading] = [:]
     private(set) var builds = 0
+    /// Real models that couldn't be loaded this turn, by id, with why: their [SCENE:#id] says so.
+    private(set) var failedLoads: [String: String] = [:]
+    /// The file being fetched or opened now; a new turn or a cancel stops it.
+    private var loading: Task<(file: URL, discovery: CookieModelAsset.Discovery, note: String), Error>?
 
-    /// A new turn: nothing built, every build available again.
+    /// A new turn: nothing built, every build available again, any fetch still going stopped.
     func beginRun() {
+        cancelLoading()
         models = [:]
+        failedLoads = [:]
         builds = 0
+    }
+
+    /// The person stopped the turn: a model still downloading or opening stops too.
+    func cancelLoading() {
+        loading?.cancel()
+        loading = nil
+    }
+
+    /// Whether the reply shows a real model that couldn't be loaded (it then says "I couldn't load that model").
+    func loadFailed(_ tags: [CookieReplyTag]) -> Bool {
+        tags.contains { $0.kind == "SCENE" && Self.reference($0.body).map { failedLoads[$0] != nil } == true }
     }
 
     /// The reading a SCENE tag stands for: a built model by id ([SCENE:#id]), or an inline scene.
@@ -85,6 +102,9 @@ final class CookieModelShelf {
     func reading(_ tag: CookieReplyTag) -> CookieScene.Reading? {
         guard tag.kind == "SCENE" else { return nil }
         guard let id = Self.reference(tag.body) else { return CookieScene.read(tag: tag) }
+        if models[id] == nil, let why = failedLoads[id] {
+            return .init(scene: nil, repairs: [], errors: ["SCENE:#\(id): I couldn't load that model: \(why)"])
+        }
         guard let built = models[id], var scene = built.scene else {
             let known = models.keys.sorted()
             return .init(scene: nil, repairs: [], errors: ["SCENE:#\(id): no model was built with that id this turn"
@@ -131,6 +151,10 @@ final class CookieModelShelf {
         guard body.utf8.count <= Self.maxBody else {
             return (Self.json(["ok": false, "errors": ["scene: \(body.utf8.count) bytes, past the limit of \(Self.maxBody)"], "rebuilds_left": left]), true)
         }
+        let given = (args["id"] as? String).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+        if let fields = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any], fields["asset"] != nil {
+            return await buildAsset(fields, given: given, left: left)
+        }
         let deadline = Date().addingTimeInterval(2)
         let (reading, check) = await Task.detached(priority: .userInitiated) { () -> (CookieScene.Reading, CookieSceneCheck.Report?) in
             let reading = CookieScene.read(body)
@@ -139,7 +163,6 @@ final class CookieModelShelf {
         guard let scene = reading.scene, let check else {
             return (Self.json(["ok": false, "repairs": reading.repairs, "errors": reading.errors, "snapshot": NSNull(), "rebuilds_left": left]), true)
         }
-        let given = (args["id"] as? String).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
         let id = Self.slug(given.isEmpty ? scene.title : given)
         models[id] = reading
         _ = CookieMeshResources.warm(scene)
@@ -155,6 +178,95 @@ final class CookieModelShelf {
             "snapshot_note": "no picture: tool results here carry text only, so render is the same view described in words",
             "rebuilds_left": left,
         ]), false)
+    }
+
+    /// A real model: fetched (or found in the home folder), opened, its named nodes made parts, then checked
+    /// like any model. Every way it can fail comes back as one plain error, and its id remembers it, so
+    /// a reply that shows it anyway says "I couldn't load that model".
+    private func buildAsset(_ fields: [String: Any], given: String, left: Int) async -> (output: String, isError: Bool) {
+        let title = (fields["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var id = Self.slug(given.isEmpty ? title : given)
+        do {
+            let source = try CookieModelAsset.source(fields["asset"])
+            if given.isEmpty, title.isEmpty {
+                switch source { case .web(let url), .file(let url): id = Self.slug(url.deletingPathExtension().lastPathComponent) }
+            }
+            loading?.cancel()
+            let task = Task { @MainActor () throws -> (file: URL, discovery: CookieModelAsset.Discovery, note: String) in
+                var file: URL, note: String
+                switch source {
+                case .file(let url):
+                    file = url
+                    note = "opened from your home folder"
+                case .web(let url):
+                    let fetched = try await CookieModelAsset.fetch(url)
+                    file = fetched.file
+                    note = fetched.reused ? "kept from an earlier download" : "downloaded \(CookieModelAsset.megabytes(fetched.bytes)) MB"
+                    if !fetched.reused {
+                        // Proof: where it came from and how big, never what's in it.
+                        CookieProof.shared.record(.acted, feature: "3D model", summary: "Downloaded a 3D model from \(url.host ?? "the web")\(url.path)",
+                                                  destination: url.host, bytes: fetched.bytes)
+                    }
+                }
+                try Task.checkCancellation()
+                let prototype = try await CookieModelAssets.shared.prototype(file)
+                try Task.checkCancellation()
+                guard let discovery = CookieModelAsset.discover(prototype) else {
+                    throw CookieModelAsset.Failure(.load, "it opened but has nothing in it to draw")
+                }
+                return (file, discovery, note)
+            }
+            loading = task
+            let loaded = try await task.value
+            if loading == task { loading = nil }
+            let reading = CookieScene.read(asset: fields, discovery: loaded.discovery, file: loaded.file, credit: source.credit)
+            guard let scene = reading.scene else {
+                return (Self.json(["ok": false, "repairs": reading.repairs, "errors": reading.errors, "rebuilds_left": left]), true)
+            }
+            let deadline = Date().addingTimeInterval(2)
+            let check = await Task.detached(priority: .userInitiated) { CookieSceneCheck.report(scene, until: deadline) }.value
+            models[id] = reading
+            failedLoads[id] = nil
+            var render: [String: Any] = ["view": check.view, "assembled": check.assembled.lines, "asset": Self.assetLines(loaded.discovery, credit: source.credit, note: loaded.note)]
+            if let exploded = check.exploded { render["exploded"] = exploded.lines }
+            if let motion = check.motion { render["motion"] = motion.lines }
+            if let beats = check.beats { render["beats"] = beats.lines }
+            let pointable = !loaded.discovery.named.isEmpty
+            return (Self.json([
+                "ok": true, "id": id, "show": "[SCENE:#\(id)]",
+                "credit": source.credit, "parts": scene.parts.map(\.id), "can_point": pointable,
+                "repairs": reading.repairs, "errors": reading.errors,
+                "issues": check.issues + (pointable ? [] : ["its parts have no names in the file, so you can't point at them; say so, and let the person turn and zoom it"]),
+                "render": render, "snapshot": NSNull(),
+                "snapshot_note": "no picture: tool results here carry text only, so render is the same view described in words",
+                "rebuilds_left": left,
+            ]), false)
+        } catch {
+            let failure = error as? CookieModelAsset.Failure
+                ?? (error is CancellationError ? .init(.cancelled, "stopped before it loaded") : .init(.load, error.localizedDescription))
+            failedLoads[id] = failure.message
+            return (Self.json([
+                "ok": false, "id": id, "errors": ["asset (\(failure.kind.rawValue)): \(failure.message)"],
+                "reply": "if you show it anyway, Cookie says \"I couldn't load that model\"; better: say so yourself, or build it from parts",
+                "rebuilds_left": left,
+            ]), true)
+        }
+    }
+
+    /// What the file gave, for the render report.
+    static func assetLines(_ discovery: CookieModelAsset.Discovery, credit: String, note: String) -> [String] {
+        let pieces = discovery.pieces.map(\.id), named = discovery.named.map(\.id)
+        var lines = ["from \(credit), \(note); scaled to fit the view and centred, in the studio light",
+                     "\(pieces.count) top-level piece\(pieces.count == 1 ? "" : "s"), each exploding on its own: \(pieces.joined(separator: ", "))"]
+        if named.isEmpty {
+            lines.append("no node in the file has a name that says what it is, so Cookie can't point at its parts; it can be turned and zoomed\(pieces.count > 1 ? ", and exploded into its pieces" : "")")
+        } else {
+            lines.append("parts named in the file, to focus, label, isolate and cut by id: \(named.joined(separator: ", "))")
+        }
+        if discovery.namedFound > named.count {
+            lines.append("the file names \(discovery.namedFound) parts; the first \(named.count) (biggest first) can be pointed at")
+        }
+        return lines
     }
 
     /// The scene's JSON: a string, an object, or (leniently) the scene's fields given at the top level.
@@ -286,7 +398,9 @@ enum CookieSceneCheck {
         for p in placed {
             if Date() > deadline { cutShort = true; break }
             var line = "\(name(p)): x \(pt(p.box.minX))–\(pt(p.box.maxX)), y \(pt(p.box.minY))–\(pt(p.box.maxY)) (\(pt(p.box.width))×\(pt(p.box.height)) pt), depth \(String(format: "%.2f", p.depth))"
-            let nearer = placed.filter { $0.part.id != p.part.id && $0.opaque && $0.depth < p.depth && $0.box.intersects(p.box) }
+            // In a loaded model a node's box holds its children's: a part isn't hidden by the node it's part of.
+            let nearer = placed.filter { $0.part.id != p.part.id && $0.opaque && $0.depth < p.depth && $0.box.intersects(p.box)
+                && !(scene.asset != nil && all($0.low .<= p.low + 0.001) && all($0.high .>= p.high - 0.001)) }
             var covered = 0, by: [String: Int] = [:]
             let steps = 10
             for i in 0..<steps { for j in 0..<steps {
@@ -310,8 +424,9 @@ enum CookieSceneCheck {
             }
         }
 
-        // In space: parts sealed inside an opaque part, and parts sitting in the same place.
-        for a in placed {
+        // In space: parts sealed inside an opaque part, and parts sitting in the same place. A loaded
+        // model's nodes sit inside one another by design, and its boxes don't say what's hollow.
+        for a in placed where scene.asset == nil {
             if cutShort || Date() > deadline { cutShort = true; break }
             for b in placed where a.part.id != b.part.id {
                 if a.opaque, a.volume > b.volume, all(b.low .>= a.low - 0.001), all(b.high .<= a.high + 0.001), encloses(a, b) {
