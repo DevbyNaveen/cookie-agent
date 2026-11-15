@@ -296,21 +296,21 @@ final class EnkeonDirect {
     }
 
     func rememberPlan(text: String, name: String, to: String?, owner: String?, due: String?, acceptance: String?) async throws -> String {
-        try await call("remember", [
+        try await remembered("a plan", call("remember", [
             "text": text, "purpose": "Work the person is moving forward in Cookie.", "kind": "plan", "weight": "notable",
             "feeling": NSNull(), "about": to.map { [$0] } ?? NSNull(), "name": name, "updates": NSNull(), "branch": NSNull(),
             "due": due ?? NSNull(), "to": to ?? NSNull(), "owner": owner ?? NSNull(), "resources": NSNull(),
             "depends_on": NSNull(), "acceptance": acceptance ?? NSNull(),
-        ])
+        ]))
     }
 
     /// A preference Cookie learned from how the person edited a draft, filed under that Cookie.
     func rememberCorrection(text: String, agent: String) async throws -> String {
-        try await call("remember", [
+        try await remembered("a writing preference", call("remember", [
             "text": text, "purpose": "So \(agent)'s next draft sounds more like the person.", "kind": "preference", "weight": "routine",
             "feeling": NSNull(), "about": [agent, "Cookie"], "name": NSNull(), "updates": NSNull(), "branch": NSNull(),
             "due": NSNull(), "to": NSNull(), "owner": NSNull(), "resources": NSNull(), "depends_on": NSNull(), "acceptance": NSNull(),
-        ])
+        ]))
     }
 
     func recall(query: String) async throws -> String {
@@ -322,11 +322,17 @@ final class EnkeonDirect {
     }
 
     func update(id: String, state: String?, owner: String?, to: String?, due: String?) async throws -> String {
-        try await call("update", [
+        try await remembered("a change to a work item", call("update", [
             "id": id, "text": NSNull(), "kind": NSNull(), "weight": NSNull(), "feeling": NSNull(), "purpose": NSNull(),
             "name": NSNull(), "state": state ?? NSNull(), "due": due ?? NSNull(), "to": to ?? NSNull(),
             "owner": owner ?? NSNull(), "workspace": NSNull(),
-        ])
+        ]))
+    }
+
+    /// A write that went through: Proof's `.remembered` row (what kind, never the words).
+    private func remembered(_ what: String, _ result: String) -> String {
+        CookieProof.shared.record(.remembered, feature: "memory", summary: what, destination: "Enkeon")
+        return result
     }
 
     private func call(_ tool: String, _ arguments: [String: Any]) async throws -> String {

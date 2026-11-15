@@ -546,6 +546,10 @@ enum CookieLessonIdle {
     static let collapseAfter: TimeInterval = 45
     static let closeAfter: TimeInterval = 600
     enum Step: Equatable { case stay, collapse, close }
+    /// Open and used within the last 45 s: only then are "faster", "turn it" or "spin" the visual's.
+    /// Folded or left alone, the words go through the usual routing.
+    static func inUse(collapsed: Bool, idle: TimeInterval) -> Bool { !collapsed && idle < collapseAfter }
+
     static func step(idle: TimeInterval, collapsed: Bool) -> Step {
         if idle >= closeAfter { return .close }
         return idle >= collapseAfter && !collapsed ? .collapse : .stay
@@ -568,6 +572,14 @@ final class CookieCardPresenter {
             return "Visible teaching diagram: \(title). Selected: \(reveal.selectedNode ?? "none"). Objects: " + nodes.map { "\($0.id)=\($0.label)" }.joined(separator: "; ")
         }
         return "Visible card: " + reveal.card.spokenSummary
+    }
+    var inUse: Bool { reveal.map { CookieLessonIdle.inUse(collapsed: $0.collapsed, idle: Date().timeIntervalSince(lastActive)) } ?? false }
+    /// Called when a card appears, so whatever stood in for it ("Building your model…") can go.
+    var onShow: (() -> Void)?
+    /// A lesson the person asked for from their screen closes on Esc wherever the pointer is
+    /// (when it's the newest Cookie surface: `CookieEscape`).
+    var escapeAnywhere = false {
+        didSet { escapeAnywhere ? CookieEscape.shared.push(.card) : CookieEscape.shared.pop(.card) }
     }
     func pauseTeaching() { cancelSchedules(); reveal?.pauseTeaching() }
     @discardableResult func apply(_ command: CookieVisualCommand) -> Bool {
@@ -633,6 +645,7 @@ final class CookieCardPresenter {
         reveal = nil
         if let panel { fadeOut(panel) }
         panel = nil
+        escapeAnywhere = false
     }
 
     /// Where the reply's marks are, as one rectangle on the first mark's display (AppKit global).
@@ -662,6 +675,7 @@ final class CookieCardPresenter {
 
     @discardableResult
     private func show(_ card: CookieCard, near region: (rect: CGRect, display: CGRect)?) -> CookieCardReveal {
+        onShow?()
         if let reveal, reveal.card == card { return reveal }
         let cardReveal = CookieCardReveal(card: card)
         let hosting = CookieCardHostingView(rootView: CookieCardView(reveal: cardReveal, onClose: { [weak self] in self?.dismiss() }))
@@ -793,7 +807,8 @@ final class CookieCardPresenter {
         let escape: (NSEvent, Bool) -> Void = { [weak self] event, local in
             MainActor.assumeIsolated {
                 guard event.keyCode == 53, let self, let panel = self.panel else { return }
-                if local || panel.frame.contains(NSEvent.mouseLocation) { self.dismiss() }
+                let anywhere = self.escapeAnywhere ? CookieEscape.shared.claims(.card, at: event.timestamp, local: local) : local
+                if anywhere || panel.frame.contains(NSEvent.mouseLocation) { self.dismiss() }
             }
         }
         if let keys = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { escape($0, false) }) { monitors.append(keys) }

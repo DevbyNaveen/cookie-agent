@@ -4,8 +4,8 @@ import Foundation
 struct CookieArtifact: Codable, Identifiable, Equatable {
     enum Kind: String, Codable, CaseIterable { case html, document, sheet, diagram, scene }
     struct Block: Codable, Equatable, Identifiable { var id: String; var text: String }
-    struct Node: Codable, Equatable, Identifiable { var id: String; var label: String; var x: Double; var y: Double; var formula: String? = nil }
-    struct Edge: Codable, Equatable { var from: String; var to: String }
+    struct Node: Codable, Equatable, Identifiable { var id: String; var label: String; var x: Double; var y: Double; var formula: String? = nil; var group: String? = nil }
+    struct Edge: Codable, Equatable { var from: String; var to: String; var label: String? = nil }
     struct Source: Codable, Equatable, Identifiable {
         var id: String; var title: String; var url: String; var retrievedAt: String
         var target: String?

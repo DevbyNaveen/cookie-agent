@@ -33,6 +33,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var notchPanelManager: NotchPanelManager?
     private var setupController: CookieSetupController?
     private let companionManager = CompanionManager()
+    private var pendingRelayURL: URL?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // GUI launches redirect stdout to a file; flush diagnostics as events happen.
@@ -58,12 +59,27 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
             openSettings: { [weak self] in self?.openCookie(settingsPage: .general) },
             openShortcuts: { [weak self] in self?.openCookie(settingsPage: .shortcuts) },
             openSetup: { [weak self] in self?.setupController?.show() })
+        if let pendingRelayURL { notchPanelManager?.openRelay(pendingRelayURL); self.pendingRelayURL = nil }
+        CookieApprentice.shared.startIfEnabled()
         if !companionManager.hasCompletedOnboarding { setupController?.show() }
         // ponytail: no auto login item — the user opts in later from settings
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        CookieApprentice.shared.stopForTermination()
         companionManager.stop()
+    }
+
+    func application(_ application: NSApplication, openFile filename: String) -> Bool {
+        let url = URL(fileURLWithPath: filename)
+        guard url.pathExtension.caseInsensitiveCompare("cookierelay") == .orderedSame else { return false }
+        if let notchPanelManager { notchPanelManager.openRelay(url) } else { pendingRelayURL = url }
+        return true
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let relay = urls.first(where: { $0.pathExtension.caseInsensitiveCompare("cookierelay") == .orderedSame }) else { return }
+        if let notchPanelManager { notchPanelManager.openRelay(relay) } else { pendingRelayURL = relay }
     }
 
     private func openCookie(settingsPage: CookieNavigation.SettingsPage? = nil) {

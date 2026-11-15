@@ -64,7 +64,7 @@ enum CompanionScreenCaptureUtility {
     /// whether the user's cursor is on that screen. This gives the AI
     /// full context across multiple monitors. Displays are taken and checked
     /// at the same time, the cursor's first in the list.
-    static func captureAllScreensAsJPEG() async throws -> [CompanionScreenCapture] {
+    static func captureAllScreensAsJPEG(feature: String = "screen look") async throws -> [CompanionScreenCapture] {
         try Task.checkCancellation()
         let content = try await shareableContent()
         try Task.checkCancellation()
@@ -163,6 +163,9 @@ enum CompanionScreenCaptureUtility {
             throw NSError(domain: "CompanionScreenCapture", code: -2,
                           userInfo: [NSLocalizedDescriptionKey: "Failed to capture any screen"])
         }
+        let hidden = capturedScreens.reduce(0) { $0 + $1.hiddenItems }
+        recordProof(feature: feature, summary: capturedScreens.count == 1 ? "the screen" : "\(capturedScreens.count) screens",
+                    bytes: capturedScreens.reduce(0) { $0 + $1.imageData.count }, hidden: hidden)
 
         return capturedScreens
     }
@@ -183,15 +186,28 @@ enum CompanionScreenCaptureUtility {
     /// Captures one rectangle of the screen (global AppKit coordinates, the
     /// area the user circled) as JPEG. Cookie's own windows are left out, so
     /// the magic trail never shows up in the picture. Kept in memory only.
-    static func captureRegionAsJPEG(_ globalRect: CGRect) async throws -> RedactedJPEG? {
-        guard let cgImage = try await captureRegionImage(globalRect) else { return nil }
-        return try await encodeRedactedJPEG(cgImage, quality: 0.85)
+    static func captureRegionAsJPEG(_ globalRect: CGRect, feature: String = "circle") async throws -> RedactedJPEG? {
+        guard let cgImage = try await captureRegionImage(globalRect, feature: nil) else { return nil }
+        let redacted = try await encodeRedactedJPEG(cgImage, quality: 0.85)
+        recordProof(feature: feature, summary: "an area of the screen", bytes: redacted.data.count, hidden: redacted.hiddenItems)
+        return redacted
+    }
+
+    /// Proof of a look: `.saw`, and `.redacted` when something was hidden. Never what was on it.
+    static func recordProof(feature: String, summary: String, bytes: Int?, hidden: Int, into proof: CookieProof = .shared) {
+        let app = CookieProof.frontApp
+        proof.record(.saw, feature: feature, app: app, summary: summary, bytes: bytes)
+        if hidden > 0 {
+            proof.record(.redacted, feature: feature, app: app,
+                                      summary: "\(hidden) private \(hidden == 1 ? "item" : "items") hidden on this Mac", hidden: hidden)
+        }
     }
 
     /// One rectangle of the screen as a picture, Cookie and blocked apps left out, at most the size
     /// the model reads. Unredacted: for this Mac only (the circle redacts it before it is sent;
     /// the pointer only reads it to check where something is).
-    static func captureRegionImage(_ globalRect: CGRect) async throws -> CGImage? {
+    /// `feature` nil: the caller records the look itself (it redacts first).
+    static func captureRegionImage(_ globalRect: CGRect, feature: String? = "pointing") async throws -> CGImage? {
         try Task.checkCancellation()
         let content = try await shareableContent()
         try Task.checkCancellation()
@@ -216,7 +232,9 @@ enum CompanionScreenCaptureUtility {
         configuration.width = size.width
         configuration.height = size.height
 
-        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+        if let feature { recordProof(feature: feature, summary: "an area of the screen, kept on this Mac", bytes: nil, hidden: 0) }
+        return image
     }
 
     typealias RedactedJPEG = (data: Data, hiddenItems: Int, seconds: Double)

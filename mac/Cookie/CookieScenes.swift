@@ -143,8 +143,8 @@ struct CookieScene: Equatable {
 
     // MARK: Reading
 
-    private static let sceneFields: Set<String> = ["title", "parts", "explode", "spin"]
-    private static let partFields: Set<String> = ["id", "label", "shape", "size", "position", "rotation", "color", "cut"]
+    static let sceneFields: Set<String> = ["title", "parts", "explode", "spin"]
+    static let partFields: Set<String> = ["id", "label", "shape", "size", "position", "rotation", "color", "cut"]
 
     private struct Raw: Decodable {
         let title: String

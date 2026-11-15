@@ -366,15 +366,25 @@ final class CookieTeach: ObservableObject {
         self.typing = nil
     }
 
-    private func askForNameAndSave() {
+    func review(steps: [CookieTeachStep], suggestedName: String, onSaved: ((String) -> Void)? = nil) {
+        guard !steps.isEmpty, !isTeaching else { return }
+        self.steps = Array(steps.prefix(200))
+        askForNameAndSave(initialName: suggestedName, onSaved: onSaved)
+    }
+
+    private func askForNameAndSave(initialName: String? = nil, onSaved: ((String) -> Void)? = nil) {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Review what Cookie learned"
-        alert.informativeText = "Review these \(steps.count) steps before saving. Typed values are included; discard a recording that contains private data. Future runs still verify the screen and ask before consequential actions."
+        let includesTypedValues = steps.contains { if case .type(_, _, _) = $0 { return true }; return false }
+        alert.informativeText = includesTypedValues
+            ? "Review these \(steps.count) steps before saving. Typed values are included; discard a recording that contains private data. Future runs still verify the screen and ask before consequential actions."
+            : "Review these \(steps.count) structural steps before saving. Typed content is never captured; typing is an ‘ask me’ placeholder. Future runs still verify the screen and ask before consequential actions."
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Discard")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.placeholderString = "Send the weekly report"
+        field.stringValue = String((initialName ?? "").prefix(100))
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 280))
         field.frame = NSRect(x: 0, y: 250, width: 460, height: 24)
         container.addSubview(field)
@@ -394,9 +404,11 @@ final class CookieTeach: ObservableObject {
         guard alert.runModal() == .alertFirstButtonReturn else { steps = []; return }
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
-            let file = try CookieSkills.save(name: name.isEmpty ? "Taught task" : name, steps: steps)
+            let savedName = name.isEmpty ? "Taught task" : name
+            let file = try CookieSkills.save(name: savedName, steps: steps)
             problem = nil
-            CookieNotifications.shared.post(.reply, threadID: nil, title: "Cookie learned it", body: "“\(name.isEmpty ? "Taught task" : name)” is saved (\(file.deletingLastPathComponent().lastPathComponent)). Ask for it by name.", panelOpen: false)
+            CookieNotifications.shared.post(.reply, threadID: nil, title: "Cookie learned it", body: "“\(savedName)” is saved (\(file.deletingLastPathComponent().lastPathComponent)). Ask for it by name.", panelOpen: false)
+            onSaved?(savedName)
         } catch {
             problem = "Couldn't save the skill: \(error.localizedDescription)"
         }

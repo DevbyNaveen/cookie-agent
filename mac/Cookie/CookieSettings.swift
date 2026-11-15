@@ -591,6 +591,8 @@ private struct EnkeonSettings: View {
 private struct ShortcutsPage: View {
     @AppStorage(CK.Key.hoverExplain) private var hoverExplain = true
     @AppStorage(CK.Key.hoverExplainAloud) private var hoverExplainAloud = false
+    @AppStorage(CookieMemoryCursor.enabledKey) private var memoryCursor = true
+    @ObservedObject private var account = CookieAccount.shared
 
     var body: some View {
         SettingsGroup {
@@ -632,6 +634,11 @@ private struct ShortcutsPage: View {
                     HStack(spacing: 3) { KeyCap(label: "⌥"); KeyCap(label: "⇧") }
                     SettingsSwitch(title: "Explain what's under the pointer", isOn: $hoverExplain)
                 }
+            }
+            SettingsRow(title: "Memory at your cursor", caption: account.isSignedIn
+                            ? "Over a name, a ticket or an amount, what your Enkeon knows about it shows first, dated, with where it came from. Only the name goes to Enkeon."
+                            : "Sign in to Enkeon (Settings → Account) and, over a name, a ticket or an amount, what you know about it shows first. Until then hover explains as usual.") {
+                SettingsSwitch(title: "Memory at your cursor", isOn: $memoryCursor)
             }
             SettingsRow(title: "Read hover answers aloud", caption: "Off, answers stay quiet in their pill.", divider: false) {
                 SettingsSwitch(title: "Read hover answers aloud", isOn: $hoverExplainAloud)
@@ -701,6 +708,8 @@ private struct AboutPage: View {
 
 private struct PrivacyPage: View {
     @ObservedObject var companionManager: CompanionManager
+    @ObservedObject private var apprentice = CookieApprentice.shared
+    @State private var confirmClearApprentice = false
     @AppStorage(Redactor.hideSecretsKey) private var hideSecrets = true
     @AppStorage(Redactor.blurFacesKey) private var blurFaces = true
     @AppStorage(ChatLock.enabledKey) private var requireTouchID = false
@@ -712,6 +721,8 @@ private struct PrivacyPage: View {
     private var userBlocked: [String] { UserDefaults.standard.stringArray(forKey: CaptureGuard.userBlockedKey) ?? [] }
 
     var body: some View {
+        CookieProofSection()
+
         SettingsGroup(label: "Meetings") {
             SettingsRow(title: "Transcribe meetings in the cloud", caption: meetingsInCloud
                         ? "Your meeting audio goes to Enkeon a minute at a time and is transcribed in the EU (Amazon Transcribe, Frankfurt). Nothing is kept until you say Keep."
@@ -755,6 +766,38 @@ private struct PrivacyPage: View {
                 SettingsSwitch(title: "Blur faces", isOn: $blurFaces)
             }
         }
+
+        SettingsGroup(label: "Shadow apprentice") {
+            SettingsRow(title: "Notice repeated tasks", caption: apprentice.problem ?? (apprentice.isRecording
+                        ? "Noticing control labels and shortcuts. Rows, links and text are recorded by kind only, typing is a placeholder, and history stays on this Mac for 7 days. Stop here or with the × on the Noticing pill."
+                        : "Off by default. When on, Cookie notices app names, control labels and shortcuts, never what you type or the contents of rows, links and text. History stays on this Mac for 7 days and is never uploaded."),
+                        symbol: "eye.badge.checkmark", tint: CK.accent) {
+                HStack(spacing: 8) {
+                    if apprentice.isEnabled && !apprentice.isRecording && apprentice.problem != nil {
+                        if apprentice.missingPermission != nil {
+                            PillButton(title: "Open System Settings") { apprentice.openPermissionSettings() }
+                        }
+                        PillButton(title: "Retry") { apprentice.retryPermissions() }
+                    }
+                    SettingsSwitch(title: "Notice repeated tasks", isOn: Binding(
+                        get: { apprentice.isEnabled }, set: { apprentice.setEnabled($0) }))
+                }
+            }
+            SettingsRow(title: "Clear history", caption: apprentice.localSteps.isEmpty
+                        ? "Nothing noticed is kept on this Mac."
+                        : "Removes the \(apprentice.localSteps.count) structural \(apprentice.localSteps.count == 1 ? "step" : "steps") and offers kept from the last 7 days.",
+                        divider: false) {
+                PillButton(title: "Clear…") { confirmClearApprentice = true }
+                    .disabled(apprentice.localSteps.isEmpty)
+            }
+        }
+        .confirmationDialog("Clear what Cookie noticed?", isPresented: $confirmClearApprentice) {
+            Button("Clear History", role: .destructive) { apprentice.clearHistory() }
+        } message: {
+            Text("Every noticed step and suggestion on this Mac is removed. Skills you already saved stay. This can't be undone.")
+        }
+
+        CookieRelayTrustSettings()
 
         SettingsGroup(label: "What Cookie saw") {
             SettingsRow(title: "Remember the words on screen for a day", caption: "Text Cookie read when it looked, after the same hiding as the picture, sealed on this Mac. So you can ask about something you saw an hour ago.", symbol: "eye", tint: CK.accent) {

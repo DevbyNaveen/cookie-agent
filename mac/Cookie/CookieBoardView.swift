@@ -66,6 +66,7 @@ struct BoardView: View {
                     VStack(alignment: .leading, spacing: 26) {
                         header
                         jobField
+                        CookieTimeMachineSection()
                         if isEmpty {
                             emptyBoard
                         } else if items.isEmpty && !query.isEmpty && matchingLists.isEmpty && needs.isEmpty && working.isEmpty

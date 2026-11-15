@@ -71,7 +71,11 @@ struct CookieWorkspaceView: View {
                     Image(systemName: "square.stack.3d.up").font(.system(size: 32)).foregroundStyle(CK.accent)
                     Text("Make something with Cookie").font(.system(size: 20, weight: .semibold, design: .rounded))
                     Text("A website, spreadsheet, document, diagram, or 3D model.").foregroundStyle(CK.secondary)
-                    Button("Import a file") { importFile() }
+                    HStack(spacing: 10) {
+                        Button("Import a file") { importFile() }
+                        Button { startCanvas() } label: { Label("Start a voice canvas", systemImage: "point.3.connected.trianglepath.dotted") }
+                            .help("Think out loud and a diagram grows as you talk")
+                    }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             if let error = error ?? store.error { Text(error).font(.system(size: 11)).foregroundStyle(.orange).padding(8).textSelection(.enabled) }
@@ -120,6 +124,9 @@ struct CookieWorkspaceView: View {
                     }
                 }
             }.scrollIndicators(.hidden)
+            Button { startCanvas() } label: { Image(systemName: "point.3.connected.trianglepath.dotted") }
+                .help("Start a voice canvas: think out loud and a diagram grows as you talk")
+                .accessibilityLabel("Start a voice canvas")
             Button { projectPanel = true } label: { Image(systemName: "slider.horizontal.3") }.help("Project, scratchpad and background work")
             Button { importFile() } label: { Image(systemName: "plus") }.help("Import output")
         }.font(.system(size: 12, weight: .medium)).padding(.horizontal, 12).padding(.vertical, 8)
@@ -196,7 +203,10 @@ struct CookieWorkspaceView: View {
                         if let value, value.hasPrefix(artifact.id + ":") { proxy.scrollTo(String(value.dropFirst(artifact.id.count + 1)), anchor: .center) }
                     }
             }
-        case .diagram: diagram(artifact)
+        case .diagram:
+            if CookieCanvas.isCanvas(artifact) {
+                CookieCanvasBoard(artifact: artifact, canvas: .shared, selected: target, select: { select($0) })
+            } else { diagram(artifact) }
         case .scene: WorkspaceScene(artifact: artifact, focus: store.focusedTarget, selection: select, close: { store.setSession(thread) { $0.showing = false } })
         }
     }
@@ -298,6 +308,16 @@ struct CookieWorkspaceView: View {
                     }
             }
         }
+    }
+    /// The console's canvas button: listening into a new canvas in this chat, or back to the one that's on.
+    private func startCanvas() {
+        let canvas = CookieCanvas.shared
+        if canvas.isOn, canvas.thread == thread, let id = canvas.artifactID {
+            store.setSession(thread) { $0.artifactID = id; $0.showing = true }
+            if case .paused = canvas.phase { canvas.resume() }
+            return
+        }
+        if let problem = canvas.start(thread: thread) { error = problem.message }
     }
     private func saveScroll() { store.setSession(thread) { $0.scrollY = max(0, scrollOffset.y); $0.scrollX = max(0, scrollOffset.x) } }
     private static func connectorEnd(_ origin: CGPoint, toward target: CGPoint) -> CGPoint {

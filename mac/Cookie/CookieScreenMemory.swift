@@ -62,6 +62,13 @@ final class CookieScreenMemory: ObservableObject {
         save()
     }
 
+    /// What was read off the screen in `app` within a minute of `date` (Proof's Forget).
+    // ponytail: a read still being OCR'd when you forget lands afterwards; forget again catches it.
+    func forget(app: String?, around date: Date) {
+        entries.removeAll { abs($0.date.timeIntervalSince(date)) < 60 && (app == nil || $0.app == app) }
+        save()
+    }
+
     func forgetAll() {
         entries = []
         save()

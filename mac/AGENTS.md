@@ -126,6 +126,8 @@ The compact composer swaps its typing controls for `CookieVoiceMedallion` during
 | `CookieMeetingBrief.swift` | ~80 | Source-backed T−2 minute calendar brief from attendees, matching meeting transcripts, Board promises, linked work and Enkeon recall. |
 | `CookieRecentGreeting.swift` | ~15 | Names the latest local Cookie thread in the chat console greeting. |
 | `CookieWeeklyShareCard.swift` | ~115 | Compact weekly summary and locally rendered shareable PNG card. |
+| `CookieApprentice.swift` | ~950 | Opt-in listen-only structural event history (controls by label, rows/links/text by role only, Option-typing as a placeholder), off-main Accessibility reads, debounced owner-only seven-day archive, detached repeated-session miner with junk and sub-pattern filtering, notch offer with Later snooze, stoppable Noticing pill, Clear history, and a daily proof row kept to the real count. |
+| `CookieRelay.swift` | ~1040 | Preview-first text-only teammate hand-off, SensitiveText masking, per-install Ed25519 identity with trust-on-first-use (six-digit-group codes, verified / not verified / key-changed states, explicit confirm), Enkeon plan write, and `.cookierelay` open/pick-up into a fenced untrusted chat note. |
 | `CookieScreenMemory.swift` | ~125 | OCR of what Cookie looked at, kept a day, the `recall_screen` tool. |
 | `CookieMarks.swift` | ~250 | DRAW tag bodies into marks (with their spoken offset), the per-display resolver with AX snapping; `readSeconds` marks a reading-pen line. |
 | `CookieReadingPen.swift` | ~270 | READ tags: the words found in the app's text (AX value + bounds per line) or the screenshot (Vision), the nearest match to the pointer, one timed underline per line; `Folded` matching. |
@@ -145,7 +147,7 @@ The compact composer swaps its typing controls for `CookieVoiceMedallion` during
 | `CookieDockInteraction.swift` | ~65 | Testable dock hover intent, screen geometry and rounded pointer containment. |
 | `CookieSounds.swift` | ~130 | System UI sounds with synthesized fallback, plus water-drop peek sounds, behind the Sounds setting. |
 | `CookiePeek.swift` | ~410 | Status, Latest and Up next presentation, shared compact layout measurements and quick-question composer with isolated callbacks for previews. |
-| `NotchIsland.swift` | ~815 | Notch panel lifecycle, clipped spring transitions, hover intent, screen geometry, voice status/Stop, notices and adaptive pop-out window. |
+| `NotchIsland.swift` | ~1040 | Notch panel lifecycle, clipped spring transitions, hover intent, screen geometry, voice status/Stop, notices, Shadow apprentice prompts and indicator, Team relay routes, and adaptive pop-out window. |
 | `CookieHome.swift` | ~205 | Shared notch/window home, responsive sidebar drawer and file preview layout. |
 | `CookieAPI.swift` | ~600 | One Cookie API over Enkeon (signed in) or `cookie page` on this Mac (signed out): board overview, jobs, live streams, drafts, approvals, routines, prefs, soul, session, speech; `LocalCookiePage` lifecycle; `make_routine` (routines by voice). |
 | `CookieWork.swift` | ~415 | Work items, stage transitions, sealed local persistence and Enkeon plan mirroring (kept: work items exist only on the Mac, and the plan memories are how AI tools see them). |

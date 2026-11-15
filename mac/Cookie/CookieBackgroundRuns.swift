@@ -59,7 +59,7 @@ final class CookieBackgroundRuns: ObservableObject {
                 let reply = try await client.run(
                     model: model, input: input,
                     instructions: instructions ?? CompanionManager.instructions(for: agent, background: true),
-                    images: [], history: [],
+                    images: [], history: [], unattended: true,
                     onText: { _ in },
                     onStep: { [weak self] step in self?.update(id) { $0.step = step; $0.history.append(step) } },
                     // Unattended: nothing is approved. The model was told it can't act.

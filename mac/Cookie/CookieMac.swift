@@ -456,15 +456,22 @@ final class MacOperator {
         let result: (String, Bool)
         switch name {
         case "press": result = press(args)
-        case "set_value": result = setValue(args)
-        case "type_text": result = typeText(args)
-        case "replace_selection": result = await replaceSelection(args)
+        // Text and script writes leave a receipt (CookieTimeMachine): before and after, or a copy of the document.
+        case "set_value": result = await Self.withReceipt(name, app: target, target: Self.int(args["id"]).flatMap { labels[$0] } ?? "a field",
+                                                          field: element(args)) { setValue(args) }
+        case "type_text": result = await Self.withReceipt(name, app: target, target: "the focused field", field: Self.focusedElement()) { typeText(args) }
+        case "replace_selection": result = await Self.withReceipt(name, app: target, target: "the selected text",
+                                                                  field: selectionDestination?.element) { await replaceSelection(args) }
         case "key": result = key(args)
         case "scroll": result = scroll(args)
         case "drag": result = await drag(args)
         case "choose_menu": result = chooseMenu(args)
         case "click_at": result = clickAt(args)
-        case "run_script": result = runScript(args)
+        case "run_script":
+            // A script that won't pass the vet never runs, so it needs no copy.
+            // The script and its snapshot both drive `target`, so the copy is of the app the script tells.
+            if MacSafety.vetScript(app: target ?? "", script: args["script"] as? String ?? "") != nil { result = runScript(args, app: target ?? "") }
+            else { result = await Self.withSnapshot(name, app: target, document: target.flatMap(Self.frontDocument)) { runScript(args, app: target ?? "") } }
         default: result = ("Cookie has no tool named \(name).", true)
         }
         log(name, app: target, element: Self.int(args["id"]).flatMap { labels[$0] }, ok: !result.1)
@@ -1064,8 +1071,7 @@ final class MacOperator {
         return CookieReadingPen.bounds(field, CFRange(location: selection.location, length: 1)).map { CGPoint(x: $0.minX, y: $0.midY) }
     }
 
-    private func runScript(_ args: [String: Any]) -> (String, Bool) {
-        let app = args["app"] as? String ?? ""
+    private func runScript(_ args: [String: Any], app: String) -> (String, Bool) {
         let source = args["script"] as? String ?? ""
         if let why = MacSafety.vetScript(app: app, script: source) { return (why, true) }
         guard let script = NSAppleScript(source: source) else { return ("That script doesn't compile.", true) }
@@ -1199,10 +1205,17 @@ final class MacOperator {
     /// One line per action: never the text typed or values set.
     private func log(_ tool: String, app: String?, element: String?, ok: Bool) {
         let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Cookie")
+        Self.log(tool, app: app, element: element, ok: ok, task: grant?.plan, folder: folder, proof: .shared)
+    }
+
+    /// The action log line, and Proof's `.acted` row (the tool and the app; never the element's label or typed text).
+    static func log(_ tool: String, app: String?, element: String?, ok: Bool, task: String?, folder: URL, proof: CookieProof) {
+        proof.record(.acted, feature: "Mac action", app: app,
+                     summary: tool.replacingOccurrences(of: "_", with: " ") + (ok ? "" : ", didn't work"))
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let url = folder.appendingPathComponent("actions.jsonl")
         let entry: [String: Any] = ["at": ISO8601DateFormatter().string(from: Date()), "tool": tool, "app": app ?? "",
-                                    "element": element ?? "", "ok": ok, "task": grant?.plan.prefix(200).description ?? ""]
+                                    "element": element ?? "", "ok": ok, "task": task?.prefix(200).description ?? ""]
         guard var line = try? JSONSerialization.data(withJSONObject: entry) else { return }
         line.append(0x0A)
         if let handle = try? FileHandle(forWritingTo: url) {

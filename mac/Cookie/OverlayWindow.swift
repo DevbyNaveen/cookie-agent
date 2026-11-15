@@ -285,6 +285,7 @@ struct BlueCursorView: View {
     @ObservedObject private var presence = CursorPresence.shared
     @ObservedObject private var hand = CookieHand.shared
     @ObservedObject private var hover = CookieHoverExplainer.shared
+    @ObservedObject private var layers = CookieLayers.shared
     /// What holds the hand away from the person's cursor: a card or scene opening (`visit`), an
     /// action about to run (`act`), a guided step waiting on the person (`guide`), an element
     /// explained on hover (`hover`); nil when nothing does.
@@ -363,6 +364,10 @@ struct BlueCursorView: View {
                 CookieMarksLayer(marks: companionManager.marks, screenFrame: screenFrame, onPen: { pen in follow(pen) })
                     .transition(.opacity)
             }
+
+            // Live screen layers: translations, review notes and who-you-owe badges, held to the front window's lines.
+            CookieLayerView(marks: layers.marks, window: layers.windowFrame, display: layers.displayFrame,
+                            settling: layers.settling, screenFrame: screenFrame)
 
             // Hover to explain: the outline round the element and the answer beside the hand.
             CookieHoverLayer(explanation: hover.explanation, screenFrame: screenFrame)

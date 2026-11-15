@@ -170,6 +170,12 @@ struct WorkItemView: View {
         Button { companionManager.startWork(on: id) } label: { Label("Ask Cookie", systemImage: "sparkles") }
             .buttonStyle(WorkButtonStyle(primary: true))
             .disabled(item.nextStep.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        Button {
+            let messages = item.threadID.flatMap { id in companionManager.threads.first { $0.id == id }?.messages } ?? []
+            CookieRelay.shared.beginBoardHandoff(item, messages: messages)
+        } label: { Label("Relay…", systemImage: "arrowshape.turn.up.right") }
+            .buttonStyle(WorkButtonStyle(quiet: true))
+            .accessibilityHint("Preview a text-only hand-off to a teammate")
         if let threadID = item.threadID {
             Button {
                 companionManager.selectThread(threadID)

@@ -20,7 +20,7 @@ enum CookieRequestMode: String {
         if (contains(["reply to this", "reply to the message", "respond to this", "respond to the message", "answer this message", "say yes but"]) ||
             (selection && contains(["reply", "respond", "answer"]))) { return .screen }
         if contains(["underline", "highlight this", "highlight that", "circle this", "circle that", "draw a circle", "bullet point", "already shared", "already been shared", "on my screen", "this screen", "on screen", "this button", "this paragraph", "this feature", "these feature", "this list", "these items", "what's this", "what is this", "point at", "point to", "click", "open the app"]) { return .screen }
-        if visual && contains(["this part", "that part", "explode", "assemble", "airflow", "rotate", "zoom", "next part", "previous part", "reset model"]) { return .lesson }
+        if visual && contains(["this part", "that part", "explode", "assemble", "airflow", "rotate", "turn it", "spin", "labels", "label every", "label all", "zoom", "next part", "previous part", "reset model"]) { return .lesson }
         if contains(["diagram", "3d", "teach me", "how does", "how do", "explain", "show me how"]) { return .lesson }
         if contains(["research", "find ", "leads", "connector", "calendar", "inbox", "gmail", "schedule", "draft", "search the web"]) { return .work }
         return .answer
@@ -330,11 +330,51 @@ final class CookieTextInsertion {
 }
 
 /// Finite commands for an existing visual; the model never supplies executable scene code.
-enum CookieVisualCommand: String, CaseIterable {
-    case explode, assemble, reset, next, previous, isolate, showAll = "show-all", zoomIn = "zoom-in", zoomOut = "zoom-out"
+/// Written as [VISUAL:name], and for a turn by a set amount [VISUAL:rotate:degrees].
+enum CookieVisualCommand: Equatable {
+    enum Spin: String { case start, faster, slower, stop }
+    case explode, assemble, reset, next, previous, isolate, showAll, zoomIn, zoomOut
+    /// A turn about the vertical axis; positive brings the model's left side to the front (it turns right).
+    case rotate(degrees: Float)
+    case spin(Spin)
+    /// Every label on, or every label off.
+    case labels(shown: Bool)
+
+    /// One "rotate left" or "rotate right".
+    static let rotateStep: Float = 45
+
     init?(tag: CookieReplyTag) {
         guard tag.kind == "VISUAL" else { return nil }
-        self.init(rawValue: tag.body.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        self.init(body: tag.body)
+    }
+
+    init?(body: String) {
+        let body = body.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch body {
+        case "explode": self = .explode
+        case "assemble": self = .assemble
+        case "reset": self = .reset
+        case "next": self = .next
+        case "previous": self = .previous
+        case "isolate": self = .isolate
+        case "show-all": self = .showAll
+        case "zoom-in": self = .zoomIn
+        case "zoom-out": self = .zoomOut
+        case "rotate-left": self = .rotate(degrees: -Self.rotateStep)
+        case "rotate-right": self = .rotate(degrees: Self.rotateStep)
+        case "turn-around": self = .rotate(degrees: 180)
+        case "spin": self = .spin(.start)
+        case "spin-faster": self = .spin(.faster)
+        case "spin-slower": self = .spin(.slower)
+        case "stop-spin": self = .spin(.stop)
+        case "label-all": self = .labels(shown: true)
+        case "hide-labels": self = .labels(shown: false)
+        default:
+            // A set turn: a finite, non-zero number of degrees, at most one full turn either way.
+            guard body.hasPrefix("rotate:"), let degrees = Float(body.dropFirst(7).trimmingCharacters(in: .whitespaces)),
+                  degrees.isFinite, degrees != 0, abs(degrees) <= 360 else { return nil }
+            self = .rotate(degrees: degrees)
+        }
     }
 }
 

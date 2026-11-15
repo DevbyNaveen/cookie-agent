@@ -25,8 +25,9 @@ struct NotchNotice: Equatable {
     /// Words Enkeon couldn't confirm typing: the notice offers Copy and stays until acted on.
     var copyText: String? = nil
     var meetingBrief: CookieMeetingBrief? = nil
+    var apprenticePatternID: String? = nil
 
-    var keepsUntilActed: Bool { copyText != nil }
+    var keepsUntilActed: Bool { copyText != nil || apprenticePatternID != nil }
     static func recovery(_ text: String) -> NotchNotice {
         NotchNotice(threadID: UUID(), title: "Dictation", message: "Not typed: the field changed or couldn't confirm it. Copy your words.",
                     failed: true, copyText: text)
@@ -39,8 +40,14 @@ struct NotchNotice: Equatable {
 
 @MainActor
 final class NotchModel: ObservableObject {
-    @Published var state: NotchState = .closed
-    @Published var notice: NotchNotice?
+    @Published var state: NotchState = .closed {
+        didSet { if oldValue == .notice, state != .notice, let notice { noticeLeft?(notice) } }
+    }
+    @Published var notice: NotchNotice? {
+        didSet { if state == .notice, let oldValue, oldValue != notice { noticeLeft?(oldValue) } }
+    }
+    /// A notice left the screen, however it went (button, click away, Esc, replaced, display change).
+    var noticeLeft: (@MainActor (NotchNotice) -> Void)?
     @Published var threadCount = 0
     let notchSize: CGSize
     let hasNotch: Bool
@@ -90,12 +97,17 @@ final class NotchPanelManager {
     private var hoverIntent = NotchHoverIntent()
     private var transitionGeneration = 0
     private var agentDock: CookieAgentDock?
+    private var proofMeter: CookieProofMeter?
+    private var layerIndicator: CookieLayerIndicator?
+    private var canvasIndicator: CookieCanvasIndicator?
+    private lazy var apprenticeIndicator = CookieApprenticeIndicator()
     private lazy var windowController = CookieWindowController(companionManager: companionManager, navigation: navigation)
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
         screen = Self.notchScreen()
         model = Self.makeModel(for: screen)
+        model.noticeLeft = Self.noticeLeft
         panel = NotchPanel(
             contentRect: NSRect(origin: .zero, size: model.layout.panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -117,6 +129,36 @@ final class NotchPanelManager {
         installMonitors()
         applyPreferences()
         agentDock = CookieAgentDock()
+        // The "Sent 1 screen" pill under the notch; it opens Settings → Privacy → Proof.
+        proofMeter = CookieProofMeter { [weak self] in self?.showHome(settingsPage: .privacy) }
+        // "Layer · Translate · Esc to stop" while a live screen layer is on; a click stops it.
+        layerIndicator = CookieLayerIndicator()
+        // "Canvas · listening · 7 ideas" while a voice canvas is on; a click opens it in its chat's workspace.
+        canvasIndicator = CookieCanvasIndicator { [weak self] in self?.openCanvas() }
+        _ = apprenticeIndicator
+        CookieRelay.shared.companionManager = companionManager
+        CookieRelay.shared.onPresent = { [weak self] in
+            guard let self else { return }
+            self.navigation.settingsPage = nil
+            self.navigation.agentPage = nil
+            self.navigation.showsWorkComposer = false
+            self.navigation.section = .chats
+            self.setState(.home)
+        }
+        CookieApprentice.shared.onOffer = { [weak self] offer in
+            self?.show(NotchNotice(threadID: UUID(), title: "Cookie noticed a pattern", message: offer.pattern.offerText,
+                                   failed: false, apprenticePatternID: offer.id))
+        }
+        CookieApprentice.shared.onSchedule = { [weak self] skillName in
+            guard let self else { return }
+            self.navigation.settingsPage = nil
+            self.navigation.agentPage = nil
+            self.navigation.showsWorkComposer = false
+            self.navigation.section = .chats
+            self.companionManager.newThread()
+            self.companionManager.sendTypedMessage("Help me schedule my taught task ‘\(skillName)’. Ask me what days and time, then use the existing routine approval. Do not run the task until I approve the normal start_task plan.")
+            self.setState(.home)
+        }
         NotificationCenter.default.publisher(for: CookieAgentDock.openThread)
             .receive(on: RunLoop.main)
             .sink { [weak self] note in self?.openThread(note.object as? UUID) }
@@ -219,6 +261,11 @@ final class NotchPanelManager {
         NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main ?? NSScreen.screens[0]
     }
 
+    /// An apprentice offer whose notice is gone no longer blocks the next one.
+    private static func noticeLeft(_ notice: NotchNotice) {
+        if let id = notice.apprenticePatternID { CookieApprentice.shared.noticeLeft(id) }
+    }
+
     private static func makeModel(for screen: NSScreen) -> NotchModel {
         let availableSize = CGSize(width: screen.frame.width - 24,
                                    height: screen.frame.maxY - screen.visibleFrame.minY - 16)
@@ -261,7 +308,9 @@ final class NotchPanelManager {
         noticeTimer?.invalidate()
         transitionGeneration += 1
         screen = Self.notchScreen()
+        if model.state == .notice { model.state = .closed }
         model = Self.makeModel(for: screen)
+        model.noticeLeft = Self.noticeLeft
         mountContent()
         model.state = state == .notice ? .closed : state
         if model.state == .home { panel.makeKey() }
@@ -295,6 +344,9 @@ final class NotchPanelManager {
         guard state != model.state else { return }
         cancelHoverIntent()
         agentDock?.hidden = state == .home
+        proofMeter?.islandOpen = state != .closed
+        layerIndicator?.islandOpen = state != .closed
+        canvasIndicator?.islandOpen = state != .closed
         switch (model.state, state) {
         case (_, .home): CookieSounds.play(.open)
         case (.home, _): CookieSounds.play(.close)
@@ -336,6 +388,19 @@ final class NotchPanelManager {
         setState(.home)
     }
 
+    private func openCanvas() {
+        let canvas = CookieCanvas.shared
+        guard let thread = canvas.thread else { return }
+        CookieWorkspaceStore.shared.setSession(thread) { $0.artifactID = canvas.artifactID; $0.showing = true }
+        if windowController.isFrontmost {
+            companionManager.selectThread(thread)
+            navigation.section = .chats
+            windowController.show()
+        } else {
+            openThread(thread)
+        }
+    }
+
     private func popOut() {
         setState(.closed)
         windowController.show()
@@ -354,6 +419,17 @@ final class NotchPanelManager {
     /// A notification was clicked: show that chat.
     func openFromNotification(_ threadID: UUID) {
         openThread(threadID)
+        panel.makeKey()
+    }
+
+    func openRelay(_ url: URL) {
+        CookieRelay.shared.companionManager = companionManager
+        CookieRelay.shared.openFile(url)
+        navigation.settingsPage = nil
+        navigation.agentPage = nil
+        navigation.showsWorkComposer = false
+        navigation.section = .chats
+        setState(.home)
         panel.makeKey()
     }
 
@@ -423,6 +499,9 @@ final class NotchPanelManager {
                     withAnimation(CK.quick) { self.navigation.showsWorkComposer = false }
                 } else if self.navigation.preview != nil {
                     withAnimation(CK.spring) { self.navigation.preview = nil }
+                } else if self.model.state == .home, self.navigation.settingsPage == nil, self.navigation.agentPage == nil,
+                          !ChatLock.shared.isLocked, CookieRelay.shared.handleEscape() {
+                    // A relay screen closes first; the next Esc closes the island.
                 } else {
                     self.setState(.closed)
                 }
@@ -698,8 +777,13 @@ struct NotchIslandView: View {
                                    openThread(threadID)
                                } else { openThread(notice.threadID) }
                            },
+                           acceptApprentice: {
+                               if let id = notice.apprenticePatternID { CookieApprentice.shared.acceptOffer(id) }
+                               setState(.closed)
+                           },
                            dismiss: {
                                if let brief = notice.meetingBrief { CookieCalendar.shared.dismissBrief(brief.meeting.id) }
+                               if let id = notice.apprenticePatternID { CookieApprentice.shared.dismissOffer(id) }
                                setState(.closed)
                            })
                     .transition(contentTransition)
@@ -966,6 +1050,7 @@ private struct NoticeView: View {
     let voiceState: CompanionVoiceState
     let stop: () -> Void
     let open: () -> Void
+    let acceptApprentice: () -> Void
     let dismiss: () -> Void
 
     var body: some View {
@@ -992,6 +1077,9 @@ private struct NoticeView: View {
                         if notice.copyText != nil {
                             PillButton(title: "Dismiss") { CookieDictation.shared.controller.dismissRecovery(); dismiss() }
                             PillButton(title: "Copy", primary: true) { CookieDictation.shared.controller.copyLast(); dismiss() }
+                        } else if notice.apprenticePatternID != nil {
+                            PillButton(title: "Later", action: dismiss)
+                            PillButton(title: "Yes, teach it", primary: true, action: acceptApprentice)
                         } else {
                             PillButton(title: "Dismiss", action: dismiss)
                             PillButton(title: "Open", primary: true, action: open)

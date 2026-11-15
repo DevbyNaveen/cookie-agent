@@ -47,8 +47,16 @@ final class CookieSceneStage: ObservableObject {
     var onInteract: () -> Void = {}
 
     private let reduceMotion: Bool
-    private var spinning: Bool
-    private var turn = simd_quatf(angle: -0.5, axis: [0, 1, 0])
+    private(set) var spinning: Bool
+    /// Radians a second while spinning; "faster" and "slower" move it within `spinRates`.
+    private(set) var spinRate = CookieSceneStage.defaultSpinRate
+    private(set) var turn = simd_quatf(angle: -0.5, axis: [0, 1, 0])
+    /// A spoken turn in progress: where it started, how far it goes, how long it has run.
+    private var yawTurn: (base: simd_quatf, degrees: Float, elapsed: Float)?
+    /// Every label shows at once ("label everything"), past the usual six.
+    @Published private(set) var allLabels = false
+    /// No labels at all ("hide labels"); the parts still light up as Cookie names them.
+    @Published private(set) var labelsHidden = false
     private var dragBase: simd_quatf?
     private var zoom: Float = 1
     @Published private(set) var exploded = false
@@ -57,6 +65,12 @@ final class CookieSceneStage: ObservableObject {
     private var explosionTask: Task<Void, Never>?
 
     private static let fieldOfView: Float = 34
+    static let defaultSpinRate: Float = 0.35
+    static let spinRates: ClosedRange<Float> = 0.1...1.6
+    /// Each "faster" or "slower" multiplies or divides the rate by this.
+    static let spinFactor: Float = 1.6
+    /// How long a spoken turn takes, eased in and out; longer turns take a little longer.
+    static func turnSeconds(_ degrees: Float) -> Float { 0.45 + min(abs(degrees), 360) / 360 * 0.55 }
 
     init(scene: CookieScene, reduceMotion: Bool) {
         self.scene = scene
@@ -182,10 +196,30 @@ final class CookieSceneStage: ObservableObject {
     }
 
     func apply(_ command: CookieVisualCommand) {
+        collapsed = false
+        switch command {
+        case .spin(let change):
+            // Reduce Motion keeps the model still: it only turns when asked to, step by step.
+            spinRate = Self.spinRate(change, from: spinning ? spinRate : Self.defaultSpinRate)
+            spinning = change != .stop && !reduceMotion
+            onInteract()
+            return
+        case .labels(let shown):
+            labelsHidden = !shown
+            allLabels = shown
+            if shown { shownLabels = scene.labelled.count }
+            onInteract()
+            return
+        case .rotate(let degrees):
+            spinning = false
+            rotate(by: degrees)
+            onInteract()
+            return
+        default: break
+        }
         explosionTask?.cancel()
         explosionTask = nil
         initialExplosionStarted = true
-        collapsed = false
         spinning = false
         switch command {
         case .explode, .assemble:
@@ -209,17 +243,60 @@ final class CookieSceneStage: ObservableObject {
             exploded = false
             explodeParts(animated: !reduceMotion)
             zoom = 1
+            yawTurn = nil
+            spinRate = Self.defaultSpinRate
             turn = simd_quatf(angle: -0.5, axis: [0, 1, 0])
             root.orientation = turn
             placeCamera()
             pauseTeaching()
+        case .rotate, .spin, .labels: break
         }
         onInteract()
+    }
+
+    /// The next spin rate, always inside `spinRates`. Stopping keeps the rate for the next start.
+    static func spinRate(_ change: CookieVisualCommand.Spin, from rate: Float) -> Float {
+        let next: Float = switch change {
+        case .faster: rate * spinFactor
+        case .slower: rate / spinFactor
+        case .start, .stop: rate
+        }
+        return min(spinRates.upperBound, max(spinRates.lowerBound, next))
+    }
+
+    /// Smooth start, smooth stop (cubic ease in and out), for t in 0…1.
+    static func eased(_ t: Float) -> Float {
+        let t = min(1, max(0, t))
+        return t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2
+    }
+
+    /// `base` turned about the vertical (world y) axis by `degrees` × `progress`, the way spinning
+    /// and dragging sideways turn it.
+    static func yawed(_ base: simd_quatf, degrees: Float, progress: Float) -> simd_quatf {
+        simd_quatf(angle: degrees * progress * .pi / 180, axis: [0, 1, 0]) * base
+    }
+
+    /// Starts a spoken turn. A turn asked for mid-turn carries on from where the model is, with
+    /// what was left of the first turn added, so "left, left" ends 90° round without a jump.
+    private func rotate(by degrees: Float) {
+        var total = degrees
+        if let current = yawTurn {
+            let seconds = Self.turnSeconds(current.degrees)
+            total += current.degrees * (1 - Self.eased(current.elapsed / seconds))
+        }
+        if reduceMotion {
+            yawTurn = nil
+            turn = Self.yawed(turn, degrees: total, progress: 1)
+            root.orientation = turn
+        } else {
+            yawTurn = (base: turn, degrees: total, elapsed: 0)
+        }
     }
 
     // MARK: Turning and zooming
 
     func drag(_ translation: CGSize) {
+        yawTurn = nil
         let base = dragBase ?? turn
         dragBase = base
         spinning = false // the person has taken over
@@ -248,11 +325,23 @@ final class CookieSceneStage: ObservableObject {
         camera.look(at: .zero, from: simd_normalize(SIMD3<Float>(0, 0.32, 1)) * distance, relativeTo: nil)
     }
 
-    private func frame(_ seconds: Float, project: (SIMD3<Float>) -> CGPoint?) {
-        if spinning, dragBase == nil {
-            turn = simd_quatf(angle: seconds * 0.35, axis: [0, 1, 0]) * turn
+    /// One frame's motion: a spoken turn in progress, else the spin.
+    func step(_ seconds: Float) {
+        guard dragBase == nil else { return }
+        if var current = yawTurn {
+            current.elapsed += seconds
+            let duration = Self.turnSeconds(current.degrees)
+            turn = Self.yawed(current.base, degrees: current.degrees, progress: Self.eased(current.elapsed / duration))
+            yawTurn = current.elapsed >= duration ? nil : current
+            root.orientation = turn
+        } else if spinning {
+            turn = simd_quatf(angle: seconds * spinRate, axis: [0, 1, 0]) * turn
             root.orientation = turn
         }
+    }
+
+    private func frame(_ seconds: Float, project: (SIMD3<Float>) -> CGPoint?) {
+        step(seconds)
         guard shownLabels > 0 else { return }
         var points: [String: CGPoint] = [:]
         for part in scene.labelled.prefix(shownLabels) {
@@ -380,6 +469,12 @@ struct CookieSceneView: View {
                     Button("Previous") { stage.apply(.previous) }
                     Button("Next part") { stage.apply(.next) }
                     Button("Reset") { stage.apply(.reset) }
+                    Spacer(minLength: 0)
+                    Button { stage.apply(.rotate(degrees: -CookieVisualCommand.rotateStep)) } label: { Image(systemName: "arrow.counterclockwise") }
+                        .accessibilityLabel("Turn left")
+                    Button { stage.apply(.rotate(degrees: CookieVisualCommand.rotateStep)) } label: { Image(systemName: "arrow.clockwise") }
+                        .accessibilityLabel("Turn right")
+                        .padding(.trailing, 4)
                 }
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(inkText).shadow(color: paper, radius: 2)
@@ -429,10 +524,11 @@ private struct CookieSceneLabels: View {
     let reduceMotion: Bool
 
     var body: some View {
-        let available = Array(stage.scene.labelled.prefix(stage.shownLabels))
+        let available = stage.labelsHidden ? [] : Array(stage.scene.labelled.prefix(stage.shownLabels))
         let recent = Array(available.filter { $0.id != stage.activePart }.suffix(stage.activePart == nil ? 6 : 5))
-        let visible = available.count <= 6 ? available : available.filter { part in recent.contains(where: { $0.id == part.id }) || part.id == stage.activePart }
+        let visible = available.count <= 6 || stage.allLabels ? available : available.filter { part in recent.contains(where: { $0.id == part.id }) || part.id == stage.activePart }
         let shown = Array(visible.enumerated())
+        let crowded = shown.count > 6
         ZStack(alignment: .topLeading) {
             ForEach(shown, id: \.element.id) { index, part in
                 if let anchor = stage.anchors[part.id], let label = part.label {
@@ -446,10 +542,10 @@ private struct CookieSceneLabels: View {
                         .frame(width: 4, height: 4)
                         .position(anchor)
                     Text(label)
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .font(.system(size: crowded ? 10 : 11, weight: .semibold, design: .rounded))
                         .foregroundStyle(stage.activePart == part.id ? CookieMarksLayer.ink : inkText)
                         .fontWeight(stage.activePart == part.id ? .bold : .medium)
-                        .lineLimit(2)
+                        .lineLimit(crowded ? 1 : 2)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 130)
                         .padding(4)
@@ -467,6 +563,8 @@ private struct CookieSceneLabels: View {
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: stage.shownLabels)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: stage.labelsHidden)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: stage.allLabels)
     }
 
     private func unit(_ point: CGPoint) -> CGPoint {
@@ -478,9 +576,12 @@ private struct CookieSceneLabels: View {
 enum CookieSceneLabelLayout {
     static func centre(index: Int, count: Int, size: CGSize) -> CGPoint {
         let row = index / 2
-        let rows = max(1, (min(6, count) + 1) / 2)
+        let rows = max(1, (count + 1) / 2)
+        // Up to six labels sit well inside the view; every label at once ("label everything")
+        // uses nearly its full height, one line each.
+        let margin: CGFloat = count > 6 ? 22 : 74
         return CGPoint(x: index % 2 == 0 ? 78 : size.width - 78,
-                       y: 74 + CGFloat(row) * (size.height - 148) / CGFloat(max(1, rows - 1)))
+                       y: margin + CGFloat(row) * (size.height - 2 * margin) / CGFloat(max(1, rows - 1)))
     }
 }
 
@@ -495,21 +596,33 @@ final class CookieScenePresenter {
     private var panel: NSPanel?
     var previewWindowNumber: Int? { panel?.windowNumber }
     var previewFrame: CGRect? { panel?.frame }
-    private var stage: CookieSceneStage?
+    private(set) var stage: CookieSceneStage?
     private var schedules: [CookieSpeechClock.Scheduled] = []
     private weak var clock: CookieSpeechClock?
     private var monitors: [Any] = []
     private var fadeTimer: Task<Void, Never>?
     private var lastActive = Date()
 
-    var teachingContext: String? {
-        guard let stage else { return nil }
-        return "Visible 3D model: \(stage.scene.title). Selected: \(stage.selectedPart ?? "none"). Exploded: \(stage.exploded). Parts: " + stage.scene.labelled.map { "\($0.id)=\($0.label ?? $0.id)" }.joined(separator: "; ")
+    var teachingContext: String? { stage.map(Self.teachingContext) }
+    static func teachingContext(_ stage: CookieSceneStage) -> String {
+        "Visible 3D model: \(stage.scene.title). Selected: \(stage.selectedPart ?? "none"). Exploded: \(stage.exploded). Spinning: \(stage.spinning). Labels: \(stage.labelsHidden ? "hidden" : "shown"). Parts: " + stage.scene.labelled.map { "\($0.id)=\($0.label ?? $0.id)" }.joined(separator: "; ")
+    }
+    /// A model is up (shown or folded).
+    var isShowing: Bool { stage != nil }
+    /// Open and used just now (`CookieLessonIdle.inUse`): spoken commands like "faster" are its.
+    var inUse: Bool { stage.map { CookieLessonIdle.inUse(collapsed: $0.collapsed, idle: Date().timeIntervalSince(lastActive)) } ?? false }
+    /// Called when a scene appears, so whatever stood in for it ("Building your model…") can go.
+    var onShow: (() -> Void)?
+    /// A lesson the person asked for from their screen closes on Esc wherever the pointer is
+    /// (when it's the newest Cookie surface: `CookieEscape`).
+    var escapeAnywhere = false {
+        didSet { escapeAnywhere ? CookieEscape.shared.push(.scene) : CookieEscape.shared.pop(.scene) }
     }
     func pauseTeaching() { cancelSchedules(); stage?.pauseTeaching() }
     @discardableResult func apply(_ command: CookieVisualCommand) -> Bool {
         guard let stage else { return false }
         stage.apply(command)
+        lastActive = Date()
         return true
     }
     @discardableResult func focus(_ id: String) -> Bool {
@@ -564,6 +677,7 @@ final class CookieScenePresenter {
         if let panel { fadeOut(panel, stage: stage) }
         panel = nil
         stage = nil
+        escapeAnywhere = false
     }
 
     // MARK: Showing
@@ -575,6 +689,7 @@ final class CookieScenePresenter {
 
     @discardableResult
     private func show(_ scene: CookieScene, near region: (rect: CGRect, display: CGRect)?) -> CookieSceneStage {
+        onShow?()
         if let stage, stage.scene == scene { return stage }
         let newStage = CookieSceneStage(scene: scene, reduceMotion: reduceMotion)
         newStage.onInteract = { [weak self] in self?.restartFadeTimer() }
@@ -681,7 +796,8 @@ final class CookieScenePresenter {
         let escape: (NSEvent, Bool) -> Void = { [weak self] event, local in
             MainActor.assumeIsolated {
                 guard event.keyCode == 53, let self else { return }
-                if local || self.cardRect.contains(NSEvent.mouseLocation) { self.dismiss() }
+                let anywhere = self.escapeAnywhere ? CookieEscape.shared.claims(.scene, at: event.timestamp, local: local) : local
+                if anywhere || self.cardRect.contains(NSEvent.mouseLocation) { self.dismiss() }
             }
         }
         if let keys = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { escape($0, false) }) { monitors.append(keys) }
