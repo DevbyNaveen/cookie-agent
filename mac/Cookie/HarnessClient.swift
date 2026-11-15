@@ -237,9 +237,10 @@ final class HarnessClient {
              onText: @escaping (String) -> Void,
              onStep: @escaping (String) -> Void,
              onApproval: @escaping (HarnessApproval?) -> Void,
-             onToolStarted: @escaping () -> Void = {}) async throws -> String {
+             onToolStarted: @escaping () -> Void = {}, feature: String = "question") async throws -> String {
         let enkeonKey = await CookieModelSettings.enkeonKey()
         try ensureRunning(environment: CookieModelSettings.helperEnvironment(model: model, enkeonKey: enkeonKey))
+        CookieProof.shared.recordSent(images, model: model, feature: feature)
         runCounter += 1
         let request = HarnessRequest.Run(
             id: "cookie-\(runCounter)", model: model, input: text, instructions: instructions,
@@ -273,8 +274,9 @@ final class HarnessClient {
     /// One quick answer: no tools, no Enkeon, one model call (hover to explain). `onText` gets the
     /// answer so far as it streams.
     func ask(model: String, input text: String, instructions: String, images: [HarnessRequest.Image],
-             onText: @escaping (String) -> Void) async throws -> String {
+             feature: String = "question", onText: @escaping (String) -> Void) async throws -> String {
         try ensureRunning(environment: CookieModelSettings.helperEnvironment(model: model, enkeonKey: nil))
+        CookieProof.shared.recordSent(images, model: model, feature: feature)
         runCounter += 1
         let request = HarnessRequest.Ask(id: "cookie-\(runCounter)", model: model, input: text,
                                          instructions: instructions, images: images)

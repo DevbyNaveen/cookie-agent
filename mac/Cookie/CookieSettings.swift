@@ -712,6 +712,8 @@ private struct PrivacyPage: View {
     private var userBlocked: [String] { UserDefaults.standard.stringArray(forKey: CaptureGuard.userBlockedKey) ?? [] }
 
     var body: some View {
+        CookieProofSection()
+
         SettingsGroup(label: "Meetings") {
             SettingsRow(title: "Transcribe meetings in the cloud", caption: meetingsInCloud
                         ? "Your meeting audio goes to Enkeon a minute at a time and is transcribed in the EU (Amazon Transcribe, Frankfurt). Nothing is kept until you say Keep."

@@ -959,10 +959,17 @@ final class MacOperator {
     /// One line per action: never the text typed or values set.
     private func log(_ tool: String, app: String?, element: String?, ok: Bool) {
         let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Cookie")
+        Self.log(tool, app: app, element: element, ok: ok, task: grant?.plan, folder: folder, proof: .shared)
+    }
+
+    /// The action log line, and Proof's `.acted` row (the tool and the app; never the element's label or typed text).
+    static func log(_ tool: String, app: String?, element: String?, ok: Bool, task: String?, folder: URL, proof: CookieProof) {
+        proof.record(.acted, feature: "Mac action", app: app,
+                     summary: tool.replacingOccurrences(of: "_", with: " ") + (ok ? "" : ", didn't work"))
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let url = folder.appendingPathComponent("actions.jsonl")
         let entry: [String: Any] = ["at": ISO8601DateFormatter().string(from: Date()), "tool": tool, "app": app ?? "",
-                                    "element": element ?? "", "ok": ok, "task": grant?.plan.prefix(200).description ?? ""]
+                                    "element": element ?? "", "ok": ok, "task": task?.prefix(200).description ?? ""]
         guard var line = try? JSONSerialization.data(withJSONObject: entry) else { return }
         line.append(0x0A)
         if let handle = try? FileHandle(forWritingTo: url) {

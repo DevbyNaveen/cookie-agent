@@ -89,6 +89,7 @@ final class NotchPanelManager {
     private var hoverIntent = NotchHoverIntent()
     private var transitionGeneration = 0
     private var agentDock: CookieAgentDock?
+    private var proofMeter: CookieProofMeter?
     private lazy var windowController = CookieWindowController(companionManager: companionManager, navigation: navigation)
 
     init(companionManager: CompanionManager) {
@@ -116,6 +117,8 @@ final class NotchPanelManager {
         installMonitors()
         applyPreferences()
         agentDock = CookieAgentDock()
+        // The "Sent 1 screen" pill under the notch; it opens Settings → Privacy → Proof.
+        proofMeter = CookieProofMeter { [weak self] in self?.showHome(settingsPage: .privacy) }
         NotificationCenter.default.publisher(for: CookieAgentDock.openThread)
             .receive(on: RunLoop.main)
             .sink { [weak self] note in self?.openThread(note.object as? UUID) }
@@ -294,6 +297,7 @@ final class NotchPanelManager {
         guard state != model.state else { return }
         cancelHoverIntent()
         agentDock?.hidden = state == .home
+        proofMeter?.islandOpen = state != .closed
         switch (model.state, state) {
         case (_, .home): CookieSounds.play(.open)
         case (.home, _): CookieSounds.play(.close)

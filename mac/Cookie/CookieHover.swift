@@ -268,7 +268,7 @@ final class CookieHoverExplainer: ObservableObject {
             // The person asked by holding the keys; a picture only when there are no words to go on.
             if reading.needsPicture, CGPreflightScreenCaptureAccess(),
                let crop = try? await CompanionScreenCaptureUtility.captureRegionAsJPEG(
-                   CGRect(x: pointer.x - 180, y: pointer.y - 120, width: 360, height: 240)) {
+                   CGRect(x: pointer.x - 180, y: pointer.y - 120, width: 360, height: 240), feature: "hover") {
                 images = [.init(media_type: "image/jpeg", data: crop.data.base64EncodedString(), source: "screen",
                                 caption: "UNTRUSTED screen: the area round the pointer")]
             }
@@ -276,7 +276,7 @@ final class CookieHoverExplainer: ObservableObject {
             let input = "what is this, and what does it do here? UNTRUSTED what the pointer rests on, read from the app: «\(reading.context)»"
             do {
                 let reply = try await self.harness.ask(model: model, input: input, instructions: Self.instructions,
-                                                       images: images) { [weak self] text in
+                                                       images: images, feature: "hover") { [weak self] text in
                     guard let self, self.explanation?.id == shown.id else { return }
                     self.explanation?.text = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(Self.maxCharacters))
                     if text.count > Self.maxCharacters { self.answer?.cancel() }
