@@ -1382,6 +1382,25 @@ final class CompanionManager: ObservableObject {
     }
 
     private func sendToModel(transcript: String, attachments: [CookieAttachment] = [], lookAtScreen: Bool, speakReply: Bool) {
+        if attachments.isEmpty, speakReply, let relayRecipient = CookieRelayVoiceCommand.recipient(in: transcript) {
+            currentResponseTask?.cancel()
+            currentResponseTask = nil
+            elevenLabsTTSClient.stopPlayback()
+            let linkedWork = WorkStore.shared.items.first { $0.threadID == currentThreadID }
+            let source = CookieRelay.Source(messages: currentThread?.messages ?? [],
+                                            selectedText: selectionAtPress?.text, work: linkedWork)
+            selectionAtPress = nil
+            textDestinationAtPress = nil
+            voiceState = .idle
+            workingStep = nil
+            if CookieRelay.shared.handleVoiceRequest("hand this to \(relayRecipient)", source: source) {
+                _ = append(CompanionChatMessage(role: .note, text: "Review the relay for \(relayRecipient) before sharing. Nothing has been sent."))
+            } else {
+                _ = append(CompanionChatMessage(role: .failure, text: "Cookie couldn't prepare that relay. Check the teammate name and try again."))
+            }
+            scheduleTransientHideIfNeeded()
+            return
+        }
         if attachments.isEmpty, let command = CookieTeachingCommand.parse(transcript) {
             currentResponseTask?.cancel()
             currentResponseTask = nil

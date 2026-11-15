@@ -14,6 +14,7 @@ struct CookieHomeView: View {
     @ObservedObject private var agents = CookieAgentStore.shared
     enum Mode { case notch, window }
     @ObservedObject private var lock = ChatLock.shared
+    @ObservedObject private var relay = CookieRelay.shared
 
     let mode: Mode
     @ObservedObject var companionManager: CompanionManager
@@ -95,6 +96,12 @@ struct CookieHomeView: View {
                         CookieNewAgentView(store: CookieAgentStore.shared, companionManager: companionManager, navigation: navigation)
                     } else if navigation.showsWorkComposer {
                         CookieNewWorkView(store: WorkStore.shared, navigation: navigation, draft: navigation.workDraft)
+                    } else if let boardDraft = relay.boardDraft {
+                        CookieRelayRecipientView(draft: boardDraft)
+                    } else if let packet = relay.outgoingPacket {
+                        CookieRelaySendView(packet: packet)
+                    } else if relay.incoming != .idle {
+                        CookieRelayReceiveView(navigation: navigation, companionManager: companionManager)
                     } else if navigation.section == .words {
                         CookieWordsSection(model: CookieDictation.shared.words, tabs: Page.yourWords)
                     } else if navigation.section == .memory {

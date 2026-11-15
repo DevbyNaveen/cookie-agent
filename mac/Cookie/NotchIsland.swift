@@ -122,6 +122,15 @@ final class NotchPanelManager {
         // The "Sent 1 screen" pill under the notch; it opens Settings → Privacy → Proof.
         proofMeter = CookieProofMeter { [weak self] in self?.showHome(settingsPage: .privacy) }
         _ = apprenticeIndicator
+        CookieRelay.shared.companionManager = companionManager
+        CookieRelay.shared.onPresent = { [weak self] in
+            guard let self else { return }
+            self.navigation.settingsPage = nil
+            self.navigation.agentPage = nil
+            self.navigation.showsWorkComposer = false
+            self.navigation.section = .chats
+            self.setState(.home)
+        }
         CookieApprentice.shared.onOffer = { [weak self] offer in
             self?.show(NotchNotice(threadID: UUID(), title: "Cookie noticed a pattern", message: offer.pattern.offerText,
                                    failed: false, apprenticePatternID: offer.id))
@@ -364,6 +373,17 @@ final class NotchPanelManager {
     /// A notification was clicked: show that chat.
     func openFromNotification(_ threadID: UUID) {
         openThread(threadID)
+        panel.makeKey()
+    }
+
+    func openRelay(_ url: URL) {
+        CookieRelay.shared.companionManager = companionManager
+        CookieRelay.shared.openFile(url)
+        navigation.settingsPage = nil
+        navigation.agentPage = nil
+        navigation.showsWorkComposer = false
+        navigation.section = .chats
+        setState(.home)
         panel.makeKey()
     }
 

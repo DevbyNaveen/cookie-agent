@@ -123,6 +123,7 @@ The compact composer swaps its typing controls for `CookieVoiceMedallion` during
 | `CookieBackgroundRuns.swift` | ~175 | Up to three background Cookies (routines, watchers, hand-offs, meeting follow-ups), the scheduler, the `hand_off` tool. |
 | `CookieTeach.swift` | ~230 | Teach by doing: event-tap recorder, SKILL.md writer, merged skills folder. |
 | `CookieApprentice.swift` | ~580 | Opt-in listen-only structural event history, seven-day local retention, repeated-session miner, notch offer, and daily proof. |
+| `CookieRelay.swift` | ~715 | Preview-first text-only teammate hand-off, SensitiveText masking, Keychain HMAC plus integrity signature, Enkeon plan write, and `.cookierelay` open/pick-up flow. |
 | `CookieScreenMemory.swift` | ~125 | OCR of what Cookie looked at, kept a day, the `recall_screen` tool. |
 | `CookieMarks.swift` | ~250 | DRAW tag bodies into marks (with their spoken offset), the per-display resolver with AX snapping; `readSeconds` marks a reading-pen line. |
 | `CookieReadingPen.swift` | ~270 | READ tags: the words found in the app's text (AX value + bounds per line) or the screenshot (Vision), the nearest match to the pointer, one timed underline per line; `Folded` matching. |
@@ -142,7 +143,7 @@ The compact composer swaps its typing controls for `CookieVoiceMedallion` during
 | `CookieDockInteraction.swift` | ~65 | Testable dock hover intent, screen geometry and rounded pointer containment. |
 | `CookieSounds.swift` | ~130 | System UI sounds with synthesized fallback, plus water-drop peek sounds, behind the Sounds setting. |
 | `CookiePeek.swift` | ~410 | Status, Latest and Up next presentation, shared compact layout measurements and quick-question composer with isolated callbacks for previews. |
-| `NotchIsland.swift` | ~1040 | Notch panel lifecycle, clipped spring transitions, hover intent, screen geometry, voice status/Stop, notices, Shadow apprentice prompts and indicator, and adaptive pop-out window. |
+| `NotchIsland.swift` | ~1040 | Notch panel lifecycle, clipped spring transitions, hover intent, screen geometry, voice status/Stop, notices, Shadow apprentice prompts and indicator, Team relay routes, and adaptive pop-out window. |
 | `CookieHome.swift` | ~205 | Shared notch/window home, responsive sidebar drawer and file preview layout. |
 | `CookieAPI.swift` | ~600 | One Cookie API over Enkeon (signed in) or `cookie page` on this Mac (signed out): board overview, jobs, live streams, drafts, approvals, routines, prefs, soul, session, speech; `LocalCookiePage` lifecycle; `make_routine` (routines by voice). |
 | `CookieWork.swift` | ~415 | Work items, stage transitions, sealed local persistence and Enkeon plan mirroring (kept: work items exist only on the Mac, and the plan memories are how AI tools see them). |
