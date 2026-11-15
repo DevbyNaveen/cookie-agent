@@ -45,6 +45,8 @@ public struct MeetingRecord: Codable, Identifiable, Sendable {
     public var status = "recording"
     public var segments: [MeetingSegment] = []
     public var insights: [MeetingInsight] = []
+    /// Calendar attendee names when the person explicitly starts a meeting from an authorized event.
+    public var attendees: [String]? = nil
     public var draft = ""
     public init(title: String, branch: String) { self.title = title; self.branch = branch }
     public func memorySourceLabel(for memoryID: String) -> String? {

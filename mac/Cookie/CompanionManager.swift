@@ -1301,6 +1301,14 @@ final class CompanionManager: ObservableObject {
         CookieThreadStore.save(threads)
     }
 
+    @discardableResult
+    func showMeetingBriefInChat(_ brief: CookieMeetingBrief) -> UUID {
+        newThread()
+        let id = append(CompanionChatMessage(role: .user, text: "Meeting brief: \(brief.meeting.title)"))
+        append(CompanionChatMessage(role: .assistant, text: brief.text), to: id)
+        return id
+    }
+
     /// Appends to a thread (the current one, or a new one if none), keeps the
     /// list newest-first, saves, and returns the thread's id.
     @discardableResult

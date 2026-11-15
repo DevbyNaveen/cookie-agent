@@ -105,7 +105,11 @@ final class CookieRecorder: ObservableObject {
     }
 
     func start(title: String = "Meeting " + Date().formatted(date: .abbreviated, time: .shortened)) {
-        if MeetingTranscription.current() == .onDevice { return startOnDevice(title: title) }
+        let upcoming = CookieCalendar.shared.access == .allowed ? CookieCalendar.shared.next : nil
+        let startsFromCalendar = title.hasPrefix("Meeting ") && upcoming != nil
+        let actualTitle = startsFromCalendar ? upcoming!.title : title
+        let attendees = startsFromCalendar ? upcoming!.attendees : []
+        if MeetingTranscription.current() == .onDevice { return startOnDevice(title: actualTitle, attendees: attendees) }
         guard !isBusy else { return }
         Task {
             guard FileManager.default.isExecutableFile(atPath: helper.path) else { return fail("The recorder is missing from this build of Cookie.") }
@@ -114,7 +118,7 @@ final class CookieRecorder: ObservableObject {
             }
             let process = Process()
             process.executableURL = helper
-            process.arguments = ["record", "--project", project, "--title", title]
+            process.arguments = ["record", "--project", project, "--title", actualTitle]
             process.environment = ["COOKIE_TOKEN": token, "PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory()]
             let stdin = Pipe(), stdout = Pipe()
             process.standardInput = stdin
@@ -162,14 +166,14 @@ final class CookieRecorder: ObservableObject {
         send("stop")
     }
 
-    private func startOnDevice(title: String) {
+    private func startOnDevice(title: String, attendees: [String] = []) {
         guard !isBusy else { return }
         let model = local ?? MeetingModel()
         local = model
         model.title = title
         phase = .preparing
         Task {
-            await model.start()
+            await model.start(attendees: attendees)
             guard model.phase == .recording else {
                 phase = .failed(model.error ?? "The meeting couldn't start on this Mac.")
                 return

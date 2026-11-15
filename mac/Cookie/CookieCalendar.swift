@@ -11,6 +11,7 @@
 import AppKit
 import EventKit
 import Foundation
+import EnkeonVoiceKit
 
 struct UpcomingMeeting: Equatable {
     let id: String
@@ -30,11 +31,14 @@ final class CookieCalendar: ObservableObject {
     @Published private(set) var next: UpcomingMeeting?
     /// One line of prep per meeting id, from Enkeon.
     @Published private(set) var recalled: [String: String] = [:]
+    @Published private(set) var pendingBrief: CookieMeetingBrief?
 
     private let store = EKEventStore()
     private var recalledAt: [String: Date] = [:]
     private var observer: NSObjectProtocol?
     private var timer: Timer?
+    private let presentedBriefsKey = "cookie.calendar.presentedBriefs"
+    private var presentedBriefIDs: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "cookie.calendar.presentedBriefs") ?? [])
 
     /// How far ahead a meeting counts as "up next".
     static let horizon: TimeInterval = 12 * 3600
@@ -44,7 +48,8 @@ final class CookieCalendar: ObservableObject {
         observer = NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: store, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        // A 15-second poll keeps the T-2-minute brief within one short tick; a 60-second poll can make it nearly a minute late.
+        timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
         refresh()
@@ -75,7 +80,36 @@ final class CookieCalendar: ObservableObject {
         let predicate = store.predicateForEvents(withStart: now.addingTimeInterval(-3600), end: now.addingTimeInterval(Self.horizon), calendars: nil)
         let meeting = Self.pick(store.events(matching: predicate).map(Self.meeting), now: now)
         if meeting != next { next = meeting }
-        if let meeting { recallPrep(for: meeting) }
+        if let meeting {
+            recallPrep(for: meeting)
+            presentBriefIfDue(for: meeting, now: now)
+        }
+    }
+
+    func dismissBrief(_ id: String) {
+        guard pendingBrief?.meeting.id == id else { return }
+        pendingBrief = nil
+    }
+
+    private func presentBriefIfDue(for meeting: UpcomingMeeting, now: Date) {
+        let presented = CookieMeetingBriefBuilder.presentIfDue(
+            access: access, meeting: meeting, now: now,
+            alreadyPresented: presentedBriefIDs.contains(meeting.id), pendingBrief: &pendingBrief
+        ) { self.makeBrief(for: meeting) }
+        guard presented else { return }
+        presentedBriefIDs.insert(meeting.id)
+        UserDefaults.standard.set(Array(presentedBriefIDs).sorted(), forKey: presentedBriefsKey)
+    }
+
+    private func refreshPendingBrief(for meeting: UpcomingMeeting) {
+        guard pendingBrief?.meeting.id == meeting.id else { return }
+        pendingBrief = makeBrief(for: meeting)
+    }
+
+    private func makeBrief(for meeting: UpcomingMeeting) -> CookieMeetingBrief {
+        let past = (try? MeetingRepository(directory: MeetingModel.defaultDirectory).loadRecovering().records) ?? []
+        return CookieMeetingBriefBuilder.make(meeting: meeting, pastMeetings: past,
+                                              work: WorkStore.shared.items, recall: recalled[meeting.id])
     }
 
     private func readAccess() {
@@ -88,8 +122,11 @@ final class CookieCalendar: ObservableObject {
 
     private static func meeting(_ event: EKEvent) -> (UpcomingMeeting, skip: Bool) {
         let declined = event.attendees?.contains { $0.isCurrentUser && $0.participantStatus == .declined } ?? false
-        let names = (event.attendees ?? []).filter { !$0.isCurrentUser }.compactMap { attendee in
-            attendee.name ?? attendee.url.absoluteString.replacingOccurrences(of: "mailto:", with: "")
+        var seenNames = Set<String>()
+        let names = (event.attendees ?? []).filter { !$0.isCurrentUser }.compactMap { attendee -> String? in
+            guard let name = attendee.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
+                  seenNames.insert(name.lowercased()).inserted else { return nil }
+            return name
         }
         let meeting = UpcomingMeeting(id: event.calendarItemIdentifier + "@\(event.startDate.timeIntervalSince1970)",
                                       title: event.title?.isEmpty == false ? event.title! : "Meeting",
@@ -113,7 +150,10 @@ final class CookieCalendar: ObservableObject {
         let query = ([meeting.title] + meeting.attendees.prefix(3)).joined(separator: " ")
         Task {
             guard let answer = try? await EnkeonDirect.shared.recall(query: query) else { return }
-            if let line = Self.firstStatement(in: answer) { recalled[meeting.id] = line }
+            if let line = Self.firstStatement(in: answer) {
+                recalled[meeting.id] = line
+                refreshPendingBrief(for: meeting)
+            }
         }
     }
 

@@ -24,6 +24,7 @@ struct NotchNotice: Equatable {
     let failed: Bool
     /// Words Enkeon couldn't confirm typing: the notice offers Copy and stays until acted on.
     var copyText: String? = nil
+    var meetingBrief: CookieMeetingBrief? = nil
 
     var keepsUntilActed: Bool { copyText != nil }
     static func recovery(_ text: String) -> NotchNotice {
@@ -338,6 +339,16 @@ final class NotchPanelManager {
     private func popOut() {
         setState(.closed)
         windowController.show()
+        CookieCalendar.shared.$pendingBrief.receive(on: DispatchQueue.main).sink { [weak self] brief in
+            guard let self, let brief else { return }
+            if let current = self.model.notice, current.meetingBrief?.meeting.id == brief.meeting.id {
+                self.model.notice = NotchNotice(threadID: current.threadID, title: current.title,
+                                                message: brief.noticeMessage, failed: false, meetingBrief: brief)
+                return
+            }
+            self.show(NotchNotice(threadID: UUID(), title: "Meeting in 2 min · " + brief.meeting.title,
+                                  message: brief.noticeMessage, failed: false, meetingBrief: brief))
+        }.store(in: &cancellables)
     }
 
     /// A notification was clicked: show that chat.
@@ -371,6 +382,7 @@ final class NotchPanelManager {
             MainActor.assumeIsolated {
                 guard let self, self.model.state == .notice else { return }
                 if self.islandRect(.notice).contains(NSEvent.mouseLocation) { return } // reading it: keep
+                if let brief = self.model.notice?.meetingBrief { CookieCalendar.shared.dismissBrief(brief.meeting.id) }
                 self.setState(.closed)
             }
         }
@@ -679,8 +691,17 @@ struct NotchIslandView: View {
                            notchHeight: model.notchSize.height,
                            voiceState: companionManager.voiceState,
                            stop: companionManager.stopResponse,
-                           open: { openThread(notice.threadID) },
-                           dismiss: { setState(.closed) })
+                           open: {
+                               if let brief = notice.meetingBrief {
+                                   let threadID = companionManager.showMeetingBriefInChat(brief)
+                                   CookieCalendar.shared.dismissBrief(brief.meeting.id)
+                                   openThread(threadID)
+                               } else { openThread(notice.threadID) }
+                           },
+                           dismiss: {
+                               if let brief = notice.meetingBrief { CookieCalendar.shared.dismissBrief(brief.meeting.id) }
+                               setState(.closed)
+                           })
                     .transition(contentTransition)
             }
         }
@@ -957,14 +978,14 @@ private struct NoticeView: View {
                     HStack(spacing: 6) {
                         Text(notice.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                         Circle().fill(notice.failed ? Color.orange : CK.accent).frame(width: 5, height: 5)
-                        Text(notice.copyText != nil ? "Not typed" : voiceState == .responding ? "Speaking" : notice.failed ? "Couldn't reply" : "Replied")
+                        Text(notice.meetingBrief != nil ? "Meeting brief" : notice.copyText != nil ? "Not typed" : voiceState == .responding ? "Speaking" : notice.failed ? "Couldn't reply" : "Replied")
                             .font(.system(size: 11))
                             .foregroundStyle(notice.failed ? Color.orange : CK.secondary)
                     }
                     Text(notice.message)
                         .font(.system(size: 12))
                         .foregroundStyle(CK.secondary)
-                        .lineLimit(2)
+                        .lineLimit(notice.meetingBrief == nil ? 2 : 5)
                     HStack(spacing: 8) {
                         Spacer()
                         if voiceState != .idle { PillButton(title: "Stop", symbol: "stop.fill", action: stop) }

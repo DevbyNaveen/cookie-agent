@@ -51,9 +51,13 @@ final class MeetingModel: ObservableObject {
         operation = nil; phase = .idle; showSetup = false
     }
 
-    init() {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    static var defaultDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Enkeon/Meetings", isDirectory: true)
+    }
+
+    init() {
+        let base = Self.defaultDirectory
         repository = MeetingRepository(directory: base)
         audioDirectory = base.appendingPathComponent("PendingAudio", isDirectory: true)
         do {
@@ -85,15 +89,16 @@ final class MeetingModel: ObservableObject {
         }
     }
 
-    func start() async {
+    func start(attendees: [String] = []) async {
         guard phase == .idle else { return }
         phase = .preparing; error = nil; notice = nil; microphoneAt = nil; systemAt = nil
         let token = UUID(); operation = token
         do {
             try await transcriber.prepare()
             guard operation == token else { return }
-            let record = MeetingRecord(title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Meeting" : String(title.prefix(160)),
+            var record = MeetingRecord(title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Meeting" : String(title.prefix(160)),
                                        branch: branch.trimmingCharacters(in: .whitespacesAndNewlines))
+            record.attendees = attendees.isEmpty ? nil : Array(attendees.prefix(30))
             try repository.save(record)
             records.insert(record, at: 0); activeID = record.id; selected = record.id
             lastCatchUp = 0; catchUp = []
