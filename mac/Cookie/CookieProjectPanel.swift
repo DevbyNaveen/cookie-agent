@@ -167,7 +167,7 @@ struct CookieScratchpad: View {
             HStack {
                 Button("Undo box") { if !nodes.isEmpty { nodes.removeLast() } }
                 Spacer()
-                ForEach([CookieArtifact.Kind.diagram, .sheet, .html], id: \.self) { kind in Button("Make \(kind.rawValue)") { make(kind) }.disabled(nodes.isEmpty) }
+                ForEach([CookieArtifact.Kind.diagram, .html], id: \.self) { kind in Button("Make \(kind.rawValue)") { make(kind) }.disabled(nodes.isEmpty) }
             }
             if let error { Text(error).foregroundStyle(.orange) }
         }.padding(20).frame(width: 640).background(CK.island).foregroundStyle(CK.text)

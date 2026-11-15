@@ -186,3 +186,43 @@ enum CookieOpen {
         }
     }
 }
+
+/// Opens a file Cookie made (or you have) in its own Mac app: Excel or Numbers,
+/// Word or Pages, Keynote, Preview. Only office files and PDFs under Desktop,
+/// Documents and Downloads, so it can't run anything.
+enum CookieOpenFile {
+    static let kinds: Set<String> = ["xlsx", "xls", "csv", "numbers", "docx", "doc", "rtf", "pages", "pptx", "key", "pdf", "txt", "md"]
+
+    static let tool = HarnessRequest.Tool(
+        name: "open_file",
+        description: "Opens a spreadsheet, document, deck or PDF in the person's own app (Excel/Numbers, Word/Pages, Keynote, Preview). Call it right after make_spreadsheet, make_document or edit_spreadsheet so the person sees the real file. Only files under Desktop, Documents or Downloads.",
+        effect: "read",
+        schema: .init(properties: ["path": .init(description: "Absolute path, or ~/Desktop/…, of the file to open.")], required: ["path"]),
+        parallel_safe: false
+    )
+
+    /// The file `path` names, or why it won't open.
+    static func resolve(_ path: String, home: URL, exists: (String) -> Bool = FileManager.default.fileExists(atPath:)) -> Result<URL, CookieWorkspaceStore.Failure> {
+        let raw = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expanded = raw.hasPrefix("~/") ? home.appendingPathComponent(String(raw.dropFirst(2))).path : raw
+        let url = URL(fileURLWithPath: expanded).standardizedFileURL.resolvingSymlinksInPath()
+        guard CookieServers.roots(home: home).contains(where: { url.path.hasPrefix(URL(fileURLWithPath: $0).resolvingSymlinksInPath().path + "/") }) else {
+            return .failure(.init("Cookie opens files only from Desktop, Documents or Downloads."))
+        }
+        guard kinds.contains(url.pathExtension.lowercased()) else {
+            return .failure(.init("Cookie opens spreadsheets, documents, decks and PDFs, not .\(url.pathExtension) files."))
+        }
+        guard exists(url.path) else { return .failure(.init("There's no file at \(raw).")) }
+        return .success(url)
+    }
+
+    @MainActor static func perform(path: String) -> (String, Bool) {
+        switch resolve(path, home: FileManager.default.homeDirectoryForCurrentUser) {
+        case .failure(let why): return (why.localizedDescription, true)
+        case .success(let url):
+            guard NSWorkspace.shared.open(url) else { return ("Couldn't open \(url.lastPathComponent).", true) }
+            NotificationCenter.default.post(name: CookieOpen.didOpen, object: nil)
+            return ("Opened \(url.lastPathComponent).", false)
+        }
+    }
+}

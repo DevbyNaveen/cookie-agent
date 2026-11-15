@@ -475,31 +475,15 @@ struct CookieWorkspaceView: View {
     }
     private func importFile() {
         let panel = NSOpenPanel(); panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.html, .plainText, .commaSeparatedText, .json, UTType(filenameExtension: "xlsx") ?? .data]
+        panel.allowedContentTypes = [.html, .json]
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            if url.pathExtension.lowercased() == "xlsx" {
-                // Unzipping and parsing happen off the main thread; the window keeps drawing.
-                Task {
-                    do {
-                        var content = CookieArtifact.Content()
-                        content.grid = try await Task.detached(priority: .userInitiated) { try CookieWorkbookImport.load(url) }.value
-                        _ = try store.put(thread: thread, id: UUID().uuidString, title: url.deletingPathExtension().lastPathComponent, kind: .sheet, content: content, base: nil, summary: "Imported first worksheet")
-                        self.error = "Imported the first tab. Formatting, macros and formulas Cookie can't calculate (shown as errors) are not reproduced."
-                    } catch { self.error = error.localizedDescription }
-                }
-                return
-            }
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
             guard data.count <= 1_000_000, let text = String(data: data, encoding: .utf8) else { throw CookieWorkspaceStore.Failure("Import UTF-8 files up to 1 MB.") }
             var content = CookieArtifact.Content()
             let kind: CookieArtifact.Kind
-            switch url.pathExtension.lowercased() {
-            case "html", "htm": kind = .html; content.body = text
-            case "csv": kind = .sheet; content.grid = try CookieWorkspaceCSV.parse(text)
-            case "json": kind = .diagram; content = try JSONDecoder().decode(CookieArtifact.Content.self, from: data)
-            default: kind = .document; content.body = text
-            }
+            if url.pathExtension.lowercased() == "json" { kind = .diagram; content = try JSONDecoder().decode(CookieArtifact.Content.self, from: data) }
+            else { kind = .html; content.body = text }
             _ = try store.put(thread: thread, id: UUID().uuidString, title: url.deletingPathExtension().lastPathComponent, kind: kind, content: content, base: nil, summary: "Imported file")
         } catch { self.error = error.localizedDescription }
     }
@@ -526,26 +510,6 @@ private struct WorkspaceScene: View {
         }.onChange(of: focus) { _, value in
             if let value, value.hasPrefix(artifact.id + ":") { stage?.focus(String(value.dropFirst(artifact.id.count + 1))) }
         }
-    }
-}
-
-enum CookieWorkspaceCSV {
-    static func parse(_ text: String) throws -> [[String]] {
-        var rows: [[String]] = [], row: [String] = [], field = "", quoted = false
-        let characters = Array(text); var index = 0
-        while index < characters.count {
-            let character = characters[index]
-            if character == "\"" {
-                if quoted, index + 1 < characters.count, characters[index + 1] == "\"" { field.append("\""); index += 1 }
-                else { quoted.toggle() }
-            } else if character == "," && !quoted { row.append(field); field = "" }
-            else if (character == "\n" || character == "\r\n" || character == "\r") && !quoted { row.append(field); rows.append(row); row = []; field = "" }
-            else { field.append(character) }
-            index += 1
-        }
-        guard !quoted else { throw CookieWorkspaceStore.Failure("CSV has an unclosed quoted field.") }
-        if !field.isEmpty || !row.isEmpty { row.append(field); rows.append(row) }
-        return rows
     }
 }
 

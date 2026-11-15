@@ -261,7 +261,7 @@ final class HarnessClient {
     /// There is no layer tool: a layer reads the window and sends it for ten minutes, so only the
     /// person's own words start one, never a page or a screen the model read.
     static func tools(backgroundProject: Bool, unattended: Bool, workspace: Bool) -> [HarnessRequest.Tool] {
-        let mac = [CookieOpen.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieHistorySearch.tool, CookieDecisionRecall.tool, CookieRoutineWords.tool]
+        let mac = [CookieOpen.tool, CookieOpenFile.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieHistorySearch.tool, CookieDecisionRecall.tool, CookieRoutineWords.tool]
             + (unattended ? [] : [CookieTimeMachineTool.tool]) + MacOperator.tools
         return (backgroundProject ? [] : mac) + (workspace ? [CookieWorkspaceTool.tool] : [])
     }
@@ -576,6 +576,7 @@ final class HarnessClient {
             }
             let result = name == CookieOpen.tool.name
                 ? CookieOpen.perform(name: args["name"] as? String ?? "")
+                : name == CookieOpenFile.tool.name ? CookieOpenFile.perform(path: args["path"] as? String ?? "")
                 : ("Cookie has no tool named \(name.isEmpty ? "that" : name).", true)
             if !result.1 { run.onStep(result.0.hasSuffix(".") ? String(result.0.dropLast()) : result.0) }
             send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.0, is_error: result.1)))

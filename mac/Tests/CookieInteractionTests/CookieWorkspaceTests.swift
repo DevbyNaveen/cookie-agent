@@ -39,36 +39,23 @@ enum CookieWorkspaceTests {
         // What reads back differently stays text.
         precondition(!CookieWorkbookExport.isPlainNumber("007") && !CookieWorkbookExport.isPlainNumber("+15551234") && !CookieWorkbookExport.isPlainNumber("1e3"))
         precondition(CookieWorkbookExport.isPlainNumber("12.5") && CookieWorkbookExport.isPlainNumber("-3"))
-        // Shared formulas move with their cell; anchors and quoted text don't.
-        precondition(CookieWorkbookImport.shift("B2*C2", rows: 1, columns: 0) == "B3*C3")
-        precondition(CookieWorkbookImport.shift("$B$2*C2&\"A1\"", rows: 2, columns: 1) == "$B$2*D4&\"A1\"")
-        precondition(CookieWorkbookImport.shift("SUM(A1:A3)+LOG10(B$1)", rows: 1, columns: 0) == "SUM(A2:A4)+LOG10(B$1)")
-        precondition(CookieWorkbookImport.shift("A1", rows: 0, columns: -1) == "#REF!")
-        func xml(_ text: String) -> Data { Data(("<?xml version=\"1.0\" encoding=\"UTF-8\"?>" + text).utf8) }
-        let workbook = xml("<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets><sheet name=\"Totals\" sheetId=\"3\" r:id=\"rId3\"/><sheet name=\"Old\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>")
-        let rels = xml("<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"x\" Target=\"worksheets/sheet1.xml\"/><Relationship Id=\"rId3\" Type=\"x\" Target=\"worksheets/sheet3.xml\"/></Relationships>")
-        precondition(CookieWorkbookImport.firstSheetPath(workbook: workbook, relationships: rels) == "xl/worksheets/sheet3.xml", "the first tab, not the first file")
-        precondition(CookieWorkbookImport.firstSheetPath(workbook: workbook, relationships: xml("<Relationships><Relationship Id=\"rId3\" Target=\"../../secret.xml\"/></Relationships>")) == nil)
-        let filled = xml("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>"
-            + "<row r=\"1\"><c r=\"A1\"><v>2</v></c><c r=\"B1\"><v>3</v></c><c r=\"C1\"><f t=\"shared\" ref=\"C1:C3\" si=\"0\">A1*B1</f><v>6</v></c></row>"
-            + "<row r=\"2\"><c r=\"A2\"><v>4</v></c><c r=\"B2\"><v>5</v></c><c r=\"C2\"><f t=\"shared\" si=\"0\"/><v>20</v></c></row>"
-            + "<row r=\"3\"><c r=\"A3\"><v>6</v></c><c r=\"B3\"><v>7</v></c><c r=\"C3\"><f t=\"shared\" si=\"0\"/><v>42</v></c><c r=\"D3\"><f t=\"array\" ref=\"D3:E3\">A1:B1*2</f><v>4</v></c><c r=\"E3\"><v>6</v></c></row>"
-            + "</sheetData></worksheet>")
-        let book = CookieWorkbookExport.zip([("xl/workbook.xml", workbook), ("xl/_rels/workbook.xml.rels", rels), ("xl/worksheets/sheet3.xml", filled),
-                                             ("xl/worksheets/sheet1.xml", xml("<worksheet><sheetData><row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>wrong tab</t></is></c></row></sheetData></worksheet>"))])
-        let bookURL = FileManager.default.temporaryDirectory.appendingPathComponent("cookie-shared-\(UUID().uuidString).xlsx")
-        try! book.write(to: bookURL); defer { try? FileManager.default.removeItem(at: bookURL) }
-        let imported = try! CookieWorkbookImport.load(bookURL)
-        precondition(imported[1][2] == "=A2*B2" && imported[2][2] == "=A3*B3", "filled-down formulas stay formulas")
-        precondition(imported[2][3] == "=ARRAY()" && imported[2][4] == "=ARRAY()", "an array formula's cells are never frozen numbers")
-        precondition(CookieSheet(grid: imported).value(row: 2, column: 2) == .success(42))
-        let parsed = try! CookieWorkspaceCSV.parse("Name,Note\r\n\"A,B\",\"line1\nline2\"\r\n")
-        precondition(parsed == [["Name", "Note"], ["A,B", "line1\nline2"]])
-        do { _ = try CookieWorkspaceCSV.parse("\"unclosed"); preconditionFailure("Malformed CSV accepted") } catch {}
+        // Spreadsheets and documents are real files now: the workspace makes no new ones.
+        let refuseThread = UUID()
+        let refused = CookieWorkspaceTool.perform(["action": "put", "payload": #"{"id":"b","title":"Budget","kind":"sheet","content":{"grid":[["a"]]}}"#], thread: refuseThread)
+        precondition(refused.1 && refused.0.contains("make_spreadsheet"), "no built-in spreadsheet")
+        let refusedDoc = CookieWorkspaceTool.perform(["action": "put", "payload": #"{"id":"d","title":"Report","kind":"document","content":{"blocks":[]}}"#], thread: refuseThread)
+        precondition(refusedDoc.1 && refusedDoc.0.contains("make_document"), "no built-in document")
+        precondition(HarnessClient.tools(backgroundProject: false, unattended: false, workspace: true).contains { $0.name == "open_file" })
+        // open_file: office files under Desktop/Documents/Downloads only.
+        let home = URL(fileURLWithPath: "/Users/someone")
+        let yes: (String) -> Bool = { _ in true }
+        if case .success(let url) = CookieOpenFile.resolve("~/Documents/budget.xlsx", home: home, exists: yes) { precondition(url.path == "/Users/someone/Documents/budget.xlsx") } else { preconditionFailure("budget.xlsx should open") }
+        if case .success = CookieOpenFile.resolve("~/Documents/../.ssh/id.txt", home: home, exists: yes) { preconditionFailure("escaped the roots") }
+        if case .success = CookieOpenFile.resolve("~/Desktop/run.command", home: home, exists: yes) { preconditionFailure("opened a script") }
+        if case .success = CookieOpenFile.resolve("~/Desktop/gone.docx", home: home, exists: { _ in false }) { preconditionFailure("opened a missing file") }
         let data = CookieWorkbookExport.data(grid + [["007", "+15551234", "", ""]])
         precondition(data.prefix(4) == Data([0x50, 0x4b, 0x03, 0x04]))
-        try! data.write(to: URL(fileURLWithPath: "/tmp/cookie-workspace-test.xlsx"))
-        precondition(try! CookieWorkbookImport.load(URL(fileURLWithPath: "/tmp/cookie-workspace-test.xlsx")) == grid + [["007", "+15551234", "", ""]])
+        _ = data
     }
     static func testVersionsIsolationAndDependencies() {
         let store = CookieWorkspaceStore(persistent: false), thread = UUID(), other = UUID()
@@ -105,7 +92,7 @@ enum CookieWorkspaceTests {
     }
     static func testToolAndSources() {
         let store = CookieWorkspaceStore(persistent: false), thread = UUID()
-        let result = CookieWorkspaceTool.perform(["action": "put", "payload": #"{"id":"leads","title":"Leads","kind":"sheet","content":{"grid":[["Name","Source"],["Unknown",""]],"sources":[{"id":"s1","title":"Bad","url":"file:///secret","retrievedAt":"yesterday"}]}}"#], thread: thread, store: store)
+        let result = CookieWorkspaceTool.perform(["action": "put", "payload": #"{"id":"leads","title":"Leads","kind":"html","content":{"body":"<p id='a'>Leads</p>","sources":[{"id":"s1","title":"Bad","url":"file:///secret","retrievedAt":"yesterday"}]}}"#], thread: thread, store: store)
         precondition(!result.1)
         precondition(store.checks(store.project(thread)[0]).contains(where: { $0.contains("valid web URL") }))
         precondition(CookieWorkspaceTool.perform(["action": "read", "payload": "{\"id\":\"leads\"}"], thread: UUID(), store: store).1)
