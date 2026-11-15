@@ -276,8 +276,10 @@ enum CompanionScreenCaptureUtility {
 enum CookieImageSize {
     static let maxEdge = 1568
     static let maxTokens = 1568
-    /// The long edge Cookie captures a screen at: legible, and ~1,300 tokens for 16:10.
-    static let screenLongEdge = 1280
+    /// The long edge Cookie asks for when capturing a screen: the model's native edge, so pixel
+    /// points are as fine as they can be; `processed` then fits it to the token budget (a 16:10
+    /// screen comes out near 1,370 px wide).
+    static let screenLongEdge = maxEdge
 
     static func tokens(width: Int, height: Int) -> Int {
         ((width + 27) / 28) * ((height + 27) / 28)

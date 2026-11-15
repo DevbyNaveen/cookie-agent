@@ -268,6 +268,23 @@ final class MacOperator {
         elements[id].flatMap(Self.frame)
     }
 
+    /// An element from the latest look and what it says, for pointing the hand at it.
+    func observedElement(_ id: Int) -> (element: AXUIElement, label: String)? {
+        elements[id].map { ($0, labels[id] ?? "") }
+    }
+
+    /// The look Cookie took for a turn's tagged screenshot is the latest look: its ids are the
+    /// tags the model sees, for POINT, DRAW, FOCUS and the actions alike, until it looks again.
+    func adoptLook(_ found: [Observed], app: pid_t) {
+        elements = [:]
+        labels = [:]
+        for (index, seen) in found.enumerated() {
+            elements[index + 1] = seen.element
+            labels[index + 1] = seen.label
+        }
+        lookedAt = found.isEmpty ? nil : app
+    }
+
     /// What Cookie last typed, and into which element, until the person moves on.
     var selectionDestination: CookieTextDestination?
     private(set) var lastTyped: (element: AXUIElement, draft: CookieTypedDraft)?
@@ -565,30 +582,20 @@ final class MacOperator {
         labels = [:]
         lookedAt = nil
 
-        var visitedElementCount = 0
         var lines = ["App: \(app.localizedName ?? "?")"]
         let window = Self.attribute(root, kAXFocusedWindowAttribute) as! AXUIElement?
         if let window, let title = Self.string(window, kAXTitleAttribute), !title.isEmpty { lines.append("Window: \(title)") }
         if let focused = Self.attribute(root, kAXFocusedUIElementAttribute) as! AXUIElement? {
             lines.append("Focused: \(Self.describe(focused))")
         }
-        var queue: [(AXUIElement, Int)] = [(window ?? root, 0)]
-        if let menuBar = Self.attribute(root, kAXMenuBarAttribute) as! AXUIElement? { _ = menuBar } // menus are reached with choose_menu
-        var nextID = 1
-        while !queue.isEmpty, elements.count < limit {
-            let (element, depth) = queue.removeFirst()
-            visitedElementCount += 1
-            let role = Self.string(element, kAXRoleAttribute) ?? ""
-            if Self.worthShowing(element, role: role) {
-                elements[nextID] = element
-                let label = Self.label(element)
-                labels[nextID] = label
-                lines.append("[\(nextID)] \(Self.describe(element))")
-                nextID += 1
-            }
-            guard depth < 30, let children = Self.attribute(element, kAXChildrenAttribute) as? [AXUIElement] else { continue }
-            queue.append(contentsOf: children.prefix(200).map { ($0, depth + 1) })
+        // menus are reached with choose_menu
+        let walk = Self.observe(window ?? root, limit: limit)
+        for (index, seen) in walk.found.enumerated() {
+            elements[index + 1] = seen.element
+            labels[index + 1] = seen.label
+            lines.append("[\(index + 1)] \(seen.line)")
         }
+        let visitedElementCount = walk.visited
         if elements.count >= limit { lines.append("(more elements not shown; ask for max_elements up to 400, or look at a smaller area after scrolling)") }
         lookedAt = app.processIdentifier
         guard !elements.isEmpty else {
@@ -749,7 +756,42 @@ final class MacOperator {
         NSWorkspace.shared.runningApplications.first { $0.localizedName?.caseInsensitiveCompare(name) == ComparisonResult.orderedSame }
     }
 
-    private static func worthShowing(_ element: AXUIElement, role: String) -> Bool {
+    /// One element a look found: what the model reads about it and where it is.
+    struct Observed {
+        let element: AXUIElement
+        let role: String
+        let label: String
+        /// CG global, top-left origin.
+        let frame: CGRect?
+        let line: String
+    }
+
+    /// The elements worth showing under `start`, breadth first, numbered in this order (id = index + 1).
+    /// Pure AX reads, safe off the main thread. With a deadline each call waits at most 50 ms and the
+    /// walk stops when time is up; `finished` says whether it saw everything it would have.
+    nonisolated static func observe(_ start: AXUIElement, limit: Int, until deadline: Date? = nil) -> (found: [Observed], visited: Int, finished: Bool) {
+        var found: [Observed] = []
+        var visited = 0
+        var queue: [(AXUIElement, Int)] = [(start, 0)]
+        while !queue.isEmpty, found.count < limit {
+            if let deadline, Date() >= deadline { return (found, visited, false) }
+            let (element, depth) = queue.removeFirst()
+            if deadline != nil { AXUIElementSetMessagingTimeout(element, 0.05) }
+            visited += 1
+            let role = Self.string(element, kAXRoleAttribute) ?? ""
+            if Self.worthShowing(element, role: role) {
+                let frame = Self.frame(element)
+                let label = Self.label(element)
+                found.append(Observed(element: element, role: role, label: label, frame: frame,
+                                      line: describe(element, role: role, label: label, frame: frame)))
+            }
+            guard depth < 30, let children = Self.attribute(element, kAXChildrenAttribute) as? [AXUIElement] else { continue }
+            queue.append(contentsOf: children.prefix(200).map { ($0, depth + 1) })
+        }
+        return (found, visited, true)
+    }
+
+    nonisolated private static func worthShowing(_ element: AXUIElement, role: String) -> Bool {
         let interesting: Set<String> = ["AXButton", "AXCheckBox", "AXRadioButton", "AXPopUpButton", "AXMenuButton", "AXTextField",
                                         "AXTextArea", "AXComboBox", "AXLink", "AXTab", "AXSlider", "AXCell", "AXMenuItem",
                                         "AXStaticText", "AXHeading", "AXImage", "AXRow", "AXDisclosureTriangle", "AXIncrementor",
@@ -759,7 +801,7 @@ final class MacOperator {
         return true
     }
 
-    static func label(_ element: AXUIElement) -> String {
+    nonisolated static func label(_ element: AXUIElement) -> String {
         for key in [kAXTitleAttribute, kAXDescriptionAttribute, "AXPlaceholderValue", kAXHelpAttribute, "AXIdentifier"] {
             if let text = string(element, key), !text.isEmpty { return String(text.prefix(80)) }
         }
@@ -767,16 +809,18 @@ final class MacOperator {
         return ""
     }
 
-    private static func describe(_ element: AXUIElement) -> String {
-        let role = (string(element, kAXRoleAttribute) ?? "?").replacingOccurrences(of: "AX", with: "")
-        var text = role
-        let label = label(element)
+    nonisolated private static func describe(_ element: AXUIElement) -> String {
+        describe(element, role: string(element, kAXRoleAttribute) ?? "?", label: label(element), frame: frame(element))
+    }
+
+    nonisolated private static func describe(_ element: AXUIElement, role: String, label: String, frame: CGRect?) -> String {
+        var text = role.isEmpty ? "?" : role.replacingOccurrences(of: "AX", with: "")
         if !label.isEmpty { text += " \"\(label)\"" }
         if let value = string(element, kAXValueAttribute), !value.isEmpty, value != label {
             text += " = \"\(value.prefix(60))\(value.count > 60 ? "…" : "")\""
         }
         if (attribute(element, kAXEnabledAttribute) as? Bool) == false { text += " (disabled)" }
-        if let frame = frame(element) { text += " @\(Int(frame.minX)),\(Int(frame.minY)) \(Int(frame.width))×\(Int(frame.height))" }
+        if let frame { text += " @\(Int(frame.minX)),\(Int(frame.minY)) \(Int(frame.width))×\(Int(frame.height))" }
         return text
     }
 

@@ -236,13 +236,13 @@ enum CookieSpeedTests {
         precondition(CookieImageSize.processed(width: 1075, height: 1520) == (924, 1307))
         precondition(CookieImageSize.processed(width: 1920, height: 1080) == (1456, 819))
         precondition(CookieImageSize.processed(width: 800, height: 600) == (800, 600), "an image that fits is unchanged")
-        // A 14" MacBook Pro (1512×982 pt, Retina): its own aspect, nothing stretched, under the cap.
+        // A 14" MacBook Pro (1512×982 pt, Retina): its own aspect, nothing stretched, as large as the token cap allows.
         let laptop = CookieImageSize.screenshot(displayWidth: 1512, displayHeight: 982, backingScale: 2)
-        precondition(laptop == (1280, 831) && CookieImageSize.tokens(width: 1280, height: 831) <= CookieImageSize.maxTokens)
-        precondition(CookieImageSize.screenshot(displayWidth: 3840, displayHeight: 1080, backingScale: 1) == (1280, 360))
+        precondition(laptop == (1372, 891) && CookieImageSize.tokens(width: 1372, height: 891) <= CookieImageSize.maxTokens, "\(laptop)")
+        precondition(CookieImageSize.screenshot(displayWidth: 3840, displayHeight: 1080, backingScale: 1) == (1568, 441), "the native long edge when the budget allows")
         precondition(CookieImageSize.screenshot(displayWidth: 1024, displayHeight: 768, backingScale: 1) == (1024, 768), "never up-scaled")
         let portrait = CookieImageSize.screenshot(displayWidth: 1080, displayHeight: 1920, backingScale: 1)
-        precondition(portrait == (720, 1280), "\(portrait)")
+        precondition(portrait == (819, 1456), "\(portrait)")
         for size in [laptop, portrait, CookieImageSize.screenshot(displayWidth: 2560, displayHeight: 1440, backingScale: 2)] {
             precondition(CookieImageSize.processed(width: size.width, height: size.height) == size, "already what the model reads")
         }

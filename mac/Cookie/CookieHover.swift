@@ -169,7 +169,7 @@ struct CookieHoverReading {
     }
 
     /// Card numbers, IBANs and keys never leave the Mac, as in screenshots (Privacy → hide secrets).
-    private static func hidingSecrets(_ text: String) -> String {
+    static func hidingSecrets(_ text: String) -> String {
         guard UserDefaults.standard.object(forKey: Redactor.hideSecretsKey) as? Bool ?? true else { return text }
         let hidden = NSMutableString(string: text)
         var replacedFrom = hidden.length
