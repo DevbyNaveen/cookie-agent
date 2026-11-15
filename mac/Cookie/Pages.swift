@@ -27,7 +27,7 @@ struct DictionaryView: View {
             if adding { addRow }
             if words.isEmpty {
                 EmptyState(icon: "BookOpenText", title: query.isEmpty ? "No words yet" : "Nothing matches “\(query)”",
-                           message: tab == .learned ? "Words you fix by hand after dictating show up here, for you to add."
+                           message: tab == .learned ? "Older pending suggestions appear here. Clear name corrections are added to Yours on this Mac."
                                                     : "Add the names and terms you say often.")
             } else {
                 ListBox(items: words) { WordRow(word: $0) }

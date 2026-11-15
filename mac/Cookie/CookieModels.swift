@@ -166,6 +166,16 @@ enum CookieThreadStore {
         return threads
     }
 
+    /// Read for an explicit history search without migrating, rewriting, or deleting stored conversations.
+    static func loadForSearch() throws -> [CookieThread] {
+        if FileManager.default.fileExists(atPath: ChatVault.encryptedFile.path) {
+            let sealed = try Data(contentsOf: ChatVault.encryptedFile)
+            return try decode(ChatVault.open(sealed))
+        }
+        guard FileManager.default.fileExists(atPath: ChatVault.legacyPlaintextFile.path) else { return [] }
+        return try decode(Data(contentsOf: ChatVault.legacyPlaintextFile))
+    }
+
     static func save(_ threads: [CookieThread]) {
         guard !ChatVault.isWithheld(ChatVault.encryptedFile) else { return }
         do {
