@@ -128,6 +128,7 @@ The compact composer swaps its typing controls for `CookieVoiceMedallion` during
 | `CookieWeeklyShareCard.swift` | ~115 | Compact weekly summary and locally rendered shareable PNG card. |
 | `CookieApprentice.swift` | ~950 | Opt-in listen-only structural event history (controls by label, rows/links/text by role only, Option-typing as a placeholder), off-main Accessibility reads, debounced owner-only seven-day archive, detached repeated-session miner with junk and sub-pattern filtering, notch offer with Later snooze, stoppable Noticing pill, Clear history, and a daily proof row kept to the real count. |
 | `CookieRelay.swift` | ~1040 | Preview-first text-only teammate hand-off, SensitiveText masking, per-install Ed25519 identity with trust-on-first-use (six-digit-group codes, verified / not verified / key-changed states, explicit confirm), Enkeon plan write, and `.cookierelay` open/pick-up into a fenced untrusted chat note. |
+| `CookieUpdater.swift` | ~680 | Self-update from GitHub releases: `latest.json` 30 s after launch and every 6 h, semantic version compare, Ed25519 signature over version/build/SHA-256 (CryptoKit, embedded public key), streamed SHA-256, ditto unzip, `SecStaticCode` validity + same-team requirement, notch "ready · Restart to update", busy deferral, Applications-only install plan, detached swap script with health mark and rollback, Proof rows (destination GitHub). Releases: `scripts/release.sh`, installer `scripts/install.sh`, key tool `scripts/update-key.swift`. |
 | `CookieScreenMemory.swift` | ~125 | OCR of what Cookie looked at, kept a day, the `recall_screen` tool. |
 | `CookieMarks.swift` | ~250 | DRAW tag bodies into marks (with their spoken offset), the per-display resolver with AX snapping; `readSeconds` marks a reading-pen line. |
 | `CookieReadingPen.swift` | ~270 | READ tags: the words found in the app's text (AX value + bounds per line) or the screenshot (Vision), the nearest match to the pointer, one timed underline per line; `Folded` matching. |
@@ -190,6 +191,11 @@ The compact composer swaps its typing controls for `CookieVoiceMedallion` during
 # harness (--features bedrock) itself; build the helpers first or they are left out
 # (README.md, "Build"): cookie-tools, cookie-recorder, scripts/bundle-python.sh.
 ./build.sh
+
+# Universal (arm64 + x86_64) build, as releases ship; then a dry-run release
+# (README.md, "Distribution"): --publish is the only thing that uploads.
+./build.sh --universal
+scripts/release.sh 0.2.0
 
 # Run the native checks
 python3 scripts/check_cookie_interactions.py

@@ -55,6 +55,71 @@ hoc, so macOS asks for its permissions again after each rebuild; set
 `COOKIE_HARNESS_BIN`, `COOKIE_TOOLS_BIN`, `COOKIE_RECORDER_BIN` and
 `COOKIE_SENSE_BIN` use binaries you built elsewhere.
 
+## Distribution
+
+Anyone on macOS 15 (Sequoia) or later, on Apple silicon or Intel, installs
+Cookie with one line in Terminal:
+
+```sh
+curl -fsSL https://github.com/DevbyNaveen/cookie-agent/releases/latest/download/install.sh | sh
+```
+
+It checks the macOS version, downloads the latest release over HTTPS, checks
+its SHA-256 and that the app is validly signed by Cookie's team, quits a
+running Cookie, installs into `/Applications` (`~/Applications` when that
+isn't writable; never sudo) and opens it. Running it again reinstalls in place.
+
+From then on Cookie updates itself: 30 s after launch and every 6 hours it
+reads the release's `latest.json`, and takes a new version only when its
+Ed25519 signature matches the key built into the app, the download matches the
+signed SHA-256 and the new app is signed by the same team. The notch then says
+"Cookie 0.2.0 is ready · Restart to update" (Settings → About has the version,
+the last check and the button). Restart waits until no dictation, task,
+conversation or recording is running, swaps the app in place and keeps the old
+one until the new one has run for 20 s; if it doesn't come up, the old one is
+put back and that build isn't offered again.
+
+Why no Developer ID or Sparkle: files downloaded by curl or URLSession get no
+quarantine flag, so Gatekeeper never stops them, and signing every build with
+the same Apple Development identity keeps macOS's permission grants across
+updates.
+
+**Cutting a release** (from `mac/`, on a clean, pushed commit):
+
+```sh
+scripts/release.sh 0.2.0 --notes "What changed"            # dry run: builds universal, packages, prints the upload plan
+scripts/release.sh 0.2.0 --notes "What changed" --publish  # then creates GitHub release v0.2.0 with the four files
+```
+
+`./build.sh --universal` (which the release runs) builds every binary for
+arm64 and x86_64 and lipos them, so the app runs natively on both;
+`COOKIE_VERSION` and `COOKIE_BUILD` set its version (the build number defaults
+to the commit count). It needs `rustup target add x86_64-apple-darwin` and
+Rosetta (the Intel Python is installed and import-checked under it). The
+release refuses a dirty tree, an existing tag, a version not newer than the
+latest, a commit not on GitHub, and an app not signed by team `3Z97R7N3SR`.
+It writes `build/release/v<version>/`: `Cookie.zip`, `Cookie.zip.sha256`,
+`latest.json` and `install.sh`.
+
+On Intel Macs, Pen (enkeon-complete) runs on the CPU, without Metal, and
+cookie-sense needs macOS 26, so on Sequoia Cookie reads the screen and
+transcribes in its own process, as it does on any Mac without the helper.
+
+**Key custody.** Updates are signed with the Ed25519 key in
+`~/.cookie-release/update-ed25519.key` (0600, never in git); its public half is
+`CookieUpdater.publicKeyBase64`. Back the file up somewhere safe: if it is
+lost, installed copies refuse every later update and everyone has to run the
+install line again. A new key (`swift scripts/update-key.swift keygen …`) needs
+a new public key in the app, and only copies installed after that trust it.
+
+**The certificate.** Releases are signed with the "Apple Development"
+certificate of team `3Z97R7N3SR`, which expires each year (this one on
+17 February 2027); renew it in Xcode or developer.apple.com before then. Every
+build is time-stamped, so installed copies keep working after it expires, but
+the renewed certificate may change the signing requirement macOS remembers, so
+after the first update signed with it macOS may ask for each permission once
+more. The team stays the same, so updates keep installing.
+
 ## Checks
 
 ```sh
