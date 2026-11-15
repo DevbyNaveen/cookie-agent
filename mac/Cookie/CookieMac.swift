@@ -396,15 +396,21 @@ final class MacOperator {
         let result: (String, Bool)
         switch name {
         case "press": result = press(args)
-        case "set_value": result = setValue(args)
-        case "type_text": result = typeText(args)
-        case "replace_selection": result = await replaceSelection(args)
+        // Text and script writes leave a receipt (CookieTimeMachine): before and after, or a copy of the document.
+        case "set_value": result = await Self.withReceipt(name, app: target, target: Self.int(args["id"]).flatMap { labels[$0] } ?? "a field",
+                                                          field: element(args)) { setValue(args) }
+        case "type_text": result = await Self.withReceipt(name, app: target, target: "the focused field", field: Self.focusedElement()) { typeText(args) }
+        case "replace_selection": result = await Self.withReceipt(name, app: target, target: "the selected text",
+                                                                  field: selectionDestination?.element) { await replaceSelection(args) }
         case "key": result = key(args)
         case "scroll": result = scroll(args)
         case "drag": result = await drag(args)
         case "choose_menu": result = chooseMenu(args)
         case "click_at": result = clickAt(args)
-        case "run_script": result = runScript(args)
+        case "run_script":
+            // A script that won't pass the vet never runs, so it needs no copy.
+            result = MacSafety.vetScript(app: target ?? "", script: args["script"] as? String ?? "") != nil ? runScript(args)
+                : Self.withSnapshot(name, app: target, document: target.flatMap(Self.frontDocument)) { runScript(args) }
         default: result = ("Cookie has no tool named \(name).", true)
         }
         log(name, app: target, element: Self.int(args["id"]).flatMap { labels[$0] }, ok: !result.1)

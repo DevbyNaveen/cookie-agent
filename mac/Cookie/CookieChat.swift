@@ -456,6 +456,7 @@ extension HarnessAction {
         if let mac = MacOperator.shared.question(for: self) { return mac }
         if let handoff = CookieHandoff.question(for: self) { return handoff }
         if let routine = CookieRoutineWords.question(for: self) { return routine }
+        if let receipt = CookieTimeMachineTool.question(for: self) { return receipt }
         switch openTarget {
         case .settings?: return "Open System Settings?"
         case .app(let url)?: return "Open \(url.deletingPathExtension().lastPathComponent)?"
@@ -466,6 +467,7 @@ extension HarnessAction {
 
     var consequence: String {
         if tool == "workspace" { return "Saves a local draft in this conversation. Nothing is published or sent." }
+        if tool == CookieTimeMachineTool.tool.name { return "Only if it still reads what Cookie wrote. A document's current version is kept first." }
         if tool == "start_task" { return "One yes covers this task in these apps. Sending, paying or deleting still asks. Esc stops it." }
         if tool == CookieRoutineWords.tool.name {
             if let agent = CookieRoutineWords.namedCookie { return "\(agent.name) does this job at those times on this Mac; it shows on your Board, where you can remove it." }

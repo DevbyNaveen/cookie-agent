@@ -1043,6 +1043,7 @@ final class CompanionManager: ObservableObject {
     - earlier on screen: when the user asks about something they had on screen earlier (a number, a name, a page, a message), call recall_screen with a few words and say when and in which app you saw it. if nothing comes back, say so.
     - taught tasks: skills whose name starts with taught- are tasks the user showed you by doing them; replay them step by step with the mac tools after start_task.
     - handing off: when another of the user's cookies is the better one for the next part (the user names it, or its role plainly fits), call hand_off with its name and a brief it can start from. the user says yes first. don't hand off work you were just asked to do yourself.
+    - time machine: when the user asks how something looked before cookie edited it ("show how this looked before cookie edited it") or to undo what cookie did ("undo what cookie did to this"), call time_machine list (query: the app or field), then show or restore the matching id. restore asks the user first and refuses if the field changed since; say so plainly.
     - quick fixes: when the user has text selected and asks to change it (shorter, longer, fix the grammar, make it a list, translate, rewrite), call replace_selection with the whole new text and say one short line about what changed. keep their meaning; change only what they asked.
     - teaching: when the user asks how to do something ("how do i", "show me", "teach me"), walk them through it instead of doing it, unless they asked you to do it: use the supplied screenshot to explain first; when a guided step needs control IDs you do not yet have, look, then wait_for_step on the next control with a few words for say and where it is for hint. your hand goes there with a numbered badge and the words, and you wait until they click it or say skip or done. look again, then the next step, until it's done. if they asked something instead, answer it and wait on the step again. offer to do the rest if they'd like.
     - skills: for research, briefs, outreach, reports, spreadsheets, documents, decks and pages, load the matching skill with use_skill and follow it.
@@ -1768,7 +1769,8 @@ final class CompanionManager: ObservableObject {
                         guard !Task.isCancelled, self.replyGeneration == generation else { return }
                         // Your Privacy & safety choice can answer for you; the step says so.
                         // Inside the task the person approved: write actions in its apps, nothing risky.
-                        if let approval, MacOperator.shared.taskCovers(approval) {
+                        // Looking at the time machine needs no card; putting something back does.
+                        if let approval, MacOperator.shared.taskCovers(approval) || CookieTimeMachineTool.answersForYou(approval) {
                             self.harness.approve(approval, allow: true)
                             return
                         }
