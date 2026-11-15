@@ -193,7 +193,10 @@ enum CookieCanvasPayload {
 /// What the person said that runs the canvas rather than adds to it. Anchored, so a sentence that
 /// merely mentions moving or deleting something ("we should move faster") is just an idea.
 enum CookieCanvasCommand: Equatable {
-    case start, stop, pause, resume, undo, deck, save
+    case start, stop, pause, resume, undo
+    /// `named`: the words said "canvas" ("turn the canvas into slides"), so they're the canvas's even
+    /// once it stopped; a bare "make it a deck" or "save this" is only while it listens on screen.
+    case deck(named: Bool), save(named: Bool)
     /// Applied by the model, marked as an edit.
     case edit(String)
 
@@ -207,7 +210,9 @@ enum CookieCanvasCommand: Equatable {
         }
         let canvas = #"(?:the |this |my |a |new |a new )*(?:voice )?canvas"#
         if matches(#"(?:start|open|begin|create|make)(?: up)? "# + canvas) || matches(#"new canvas"#)
-            || matches(#"(?:let's|let us|lets)? ?(?:map|sketch|lay|draw|think) (?:this|it|that|things|these ideas|this idea|it all) (?:out|through)(?: on (?:a|the) canvas)?"#) {
+            || matches(#"(?:let's|let us|lets)? ?(?:map|sketch|lay|draw) (?:this|it|that|things|these ideas|this idea|it all) out(?: on (?:a|the) canvas)?"#)
+            // "Let's think this through" alone is a conversation, not a microphone left open.
+            || matches(#"(?:let's|let us|lets)? ?think (?:this|it|that|things|these ideas|this idea|it all) through on (?:a|the) canvas"#) {
             return .start
         }
         if matches(#"(?:stop|end|close|finish|exit|quit|turn off)(?: the| this| my)? (?:voice )?canvas(?: now)?"#)
@@ -217,11 +222,12 @@ enum CookieCanvasCommand: Equatable {
         if matches(#"pause(?: the| this| my)? (?:voice )?canvas"#) { return .pause }
         if matches(#"(?:resume|continue|unpause|restart)(?: the| this| my)? (?:voice )?canvas"#) { return .resume }
         if matches(#"(?:undo|undo that|undo it|undo the last (?:change|one|thing)|go back|take that back|scratch that)"#) { return .undo }
+        let named = sentence.contains("canvas")
         if matches(#"(?:make|turn|build|create|export|convert) (?:it|this|that|the canvas|this canvas|the map|this map) (?:into |to )?(?:a )?(?:slide )?(?:deck|slides|presentation|powerpoint)"#)
             || matches(#"(?:make|build|create) (?:a )?(?:slide )?(?:deck|presentation|slides) (?:from|of|out of) (?:it|this|that|the canvas|this canvas)"#) {
-            return .deck
+            return .deck(named: named)
         }
-        if matches(#"(?:save|keep)(?: the| this| my)? canvas"#) || matches(#"(?:save|keep) (?:this|it)"#) { return .save }
+        if matches(#"(?:save|keep)(?: the| this| my)? canvas"#) || matches(#"(?:save|keep) (?:this|it)"#) { return .save(named: named) }
 
         // Edits: short, and starting with the verb.
         guard sentence.split(separator: " ").count <= maxEditWords else { return nil }
@@ -620,6 +626,8 @@ final class CookieCanvas: ObservableObject {
     /// A pause this long ends a segment, and sends it.
     static let pause: TimeInterval = 1.2
     static let quietLimit: TimeInterval = 3 * 60
+    /// Paused for quiet this long, the canvas stops: the microphone isn't held open for a session left behind.
+    static let quietStop: TimeInterval = 10 * 60
     static let modelDeadline: Double = 30
     static let maxUndo = 30
     static let maxFailures = 3
@@ -673,6 +681,7 @@ final class CookieCanvas: ObservableObject {
     private var pendingSince: Date?
     private var lastSpeech: Date?
     private var yieldedSince: Date?
+    private var quietSince: Date?
     private var undoStack: [Snapshot] = []
     private var addedOrder: [String] = []
     private var failures = 0
@@ -701,12 +710,22 @@ final class CookieCanvas: ObservableObject {
     /// A canvas exists to save or turn into a deck.
     var hasCanvas: Bool { phase != .idle }
 
+    /// Listening, and the workspace is showing it: a bare "make it a deck" can only mean this.
+    private var listeningOnScreen: Bool {
+        guard ownsMicrophone, let thread, let environment else { return false }
+        let session = environment.store.session(thread)
+        return session.showing && session.artifactID == artifactID
+    }
+
     /// Whether a spoken or typed command is the canvas's to take; the rest goes to the model as ever.
+    /// "Undo", "scratch that", "delete that" are the canvas's only while it holds the microphone:
+    /// paused or stopped, they belong to whatever the person is doing now.
     func accepts(_ command: CookieCanvasCommand) -> Bool {
         switch command {
         case .start: return true
-        case .stop, .pause, .resume, .undo, .edit: return isOn
-        case .deck, .save: return hasCanvas
+        case .stop, .pause, .resume: return isOn
+        case .undo, .edit: return ownsMicrophone
+        case .deck(let named), .save(let named): return named ? hasCanvas : listeningOnScreen
         }
     }
 
@@ -834,7 +853,10 @@ final class CookieCanvas: ObservableObject {
         yieldedSince = nil
         if reason == .asked { flush() }
         updateIndicator()
-        if reason == .quiet { flash("Canvas paused after three quiet minutes · say resume canvas", failed: false) }
+        if reason == .quiet {
+            quietSince = environment?.now()
+            flash("Canvas paused after three quiet minutes · say resume canvas", failed: false)
+        }
     }
 
     func resume() {
@@ -914,6 +936,8 @@ final class CookieCanvas: ObservableObject {
         if case .paused(let reason) = phase {
             switch reason {
             case .password where !environment.secureInput(): resume()
+            case .quiet:
+                if let quietSince, now.timeIntervalSince(quietSince) >= Self.quietStop { stop() }
             case .yielded:
                 if environment.microphoneFree() {
                     if yieldedSince == nil { yieldedSince = now }
@@ -1082,7 +1106,7 @@ final class CookieCanvas: ObservableObject {
         let characters = speech.count + edits.reduce(0) { $0 + $1.count }
         proof.record(.sent, feature: Self.feature,
                      summary: "\(characters) \(characters == 1 ? "character" : "characters") of what you said, with the canvas so far",
-                     destination: model.name)
+                     destination: model.name, payload: .words, count: characters)
         if ownsMicrophone { phase = .updating }
         updateIndicator()
         let base = version, session = self.session
@@ -1533,7 +1557,7 @@ final class CookieCanvasIndicator {
     private var state: CookieCanvasIndicatorState?
     var islandOpen = false { didSet { update() } }
 
-    init(canvas: CookieCanvas = .shared, layers: CookieLayers = .shared, open: @escaping () -> Void) {
+    init(canvas: CookieCanvas = .shared, open: @escaping () -> Void) {
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         panel.isFloatingPanel = true
         panel.level = CookieWindowLevel.notch
@@ -1550,22 +1574,13 @@ final class CookieCanvasIndicator {
             self.update()
         }.store(in: &cancellables)
         // Below the layer's pill when both are on.
-        layers.$indicator.map { $0 != nil }.removeDuplicates().receive(on: RunLoop.main)
+        CookieNotchStack.shared.$showing.map { $0.contains(.layer) }.removeDuplicates().receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.update() }.store(in: &cancellables)
     }
 
     private func update() {
-        guard state != nil, !islandOpen, let view = panel.contentView,
-              let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main else {
-            panel.orderOut(nil)
-            return
-        }
-        let size = view.fittingSize
-        let top = (screen.safeAreaInsets.top > 0 ? screen.safeAreaInsets.top : NSStatusBar.system.thickness)
-            + (CookieLayers.shared.indicator != nil ? CookieLayerIndicator.height + 4 : 0)
-        panel.setFrame(NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - top - size.height - 4,
-                              width: size.width, height: size.height), display: true)
-        panel.orderFrontRegardless()
+        let size = state != nil && !islandOpen ? panel.contentView?.fittingSize : nil
+        CookieNotchStack.shared.place(.canvas, panel: panel, size: size)
     }
 }
 

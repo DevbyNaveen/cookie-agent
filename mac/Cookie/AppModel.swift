@@ -78,7 +78,7 @@ final class AppModel: ObservableObject {
         styles = UserDefaults.standard.dictionary(forKey: Self.stylesKey) as? [String: String] ?? [:]
         dictation.onRecord = { [weak self] record in
             self?.history.add(record)
-            if record.outcome == .inserted { CookieTimeMachine.shared.recordDictation(app: record.app) }
+            if record.outcome == .inserted { CookieTimeMachine.shared.recordDictation(app: record.app, inserted: record.text) }
         }
         UserDefaults.standard.register(defaults: [Self.completeKey: true, Self.completeMemoryKey: true,
                                                   Self.phrasesKey: true, Self.proofreadKey: true])

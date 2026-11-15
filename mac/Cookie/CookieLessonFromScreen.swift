@@ -4,8 +4,9 @@
 //
 //  Explain anything as a live 3D lesson. Point at something (an error, a
 //  balance sheet, a pump diagram, a molecule) and say "show me this in 3D",
-//  "explain this visually", "make a model of this", "break this down" or
-//  "walk me through this": Cookie takes one redacted picture of what is
+//  "explain this visually" or "make a model of this" (only words that ask for
+//  a visual: "break it down" and "walk me through this" stay the guided
+//  teaching they always were): Cookie takes one redacted picture of what is
 //  pointed at (the circled area, else the part of the front window around
 //  the pointer, else that window), and asks the model for exactly one visual
 //  built from it: a SCENE for a physical thing, a CARD for an abstract one,
@@ -46,7 +47,7 @@ enum CookieLessonLook: Equatable {
 struct CookieLessonEnvironment {
     var frontApp: @MainActor () -> CookieLayerTarget?
     /// The app's front window, AppKit global; nil when it has none.
-    var windowFrame: @MainActor (pid_t) -> CGRect?
+    var windowFrame: @MainActor (pid_t) async -> CGRect?
     /// The display a rectangle (or a point, as a zero-size one) is on.
     var displayFrame: @MainActor (CGRect) -> CGRect?
     /// AppKit global.
@@ -84,15 +85,12 @@ enum CookieLessonFromScreen {
 
     // MARK: Routing
 
+    /// Only words that ask for a visual. "Break it down" and "walk me through this" are guided teaching
+    /// (wait_for_step) and plain answers, as they always were: they never take a picture on their own.
     private static let phrases = [
         "in 3d", "in 3-d", "in three d", "3d model", "3d version", "visually", "visual explanation", "as a model",
-        "model of this", "model of that", "model of it", "model of these", "model out of", "break this down",
-        "break that down", "break it down", "break these down", "walk me through this", "walk me through that",
-        "walk me through it", "walk me through these",
+        "a model of this", "a model of that", "a model of it", "a model of these", "model out of",
     ]
-    /// "Break it down" and "walk me through it" with a model up are about that model, not the screen.
-    private static let followUpPhrases = ["break this down", "break that down", "break it down", "break these down",
-                                          "walk me through this", "walk me through that", "walk me through it", "walk me through these"]
 
     static func normalised(_ text: String) -> String {
         text.lowercased().replacingOccurrences(of: "[^\\p{L}\\p{N}'-]+", with: " ", options: .regularExpression)
@@ -117,8 +115,6 @@ enum CookieLessonFromScreen {
                        visualShowing: Bool) -> CookieLessonSource? {
         guard asks(text) else { return nil }
         if circled { return .circle }
-        let words = " " + normalised(text) + " "
-        if visualShowing && followUpPhrases.contains(where: { words.contains(" " + $0 + " ") }) { return nil }
         guard refersToScreen(text) else { return nil }
         if screenGesture { return spoken ? .pointer : .window }
         return selection ? .selection : nil
@@ -157,7 +153,7 @@ enum CookieLessonFromScreen {
         guard environment.screenAllowed() else { return .refused("Screen access is off") }
         guard let target = environment.frontApp() else { return .refused("There's no app in front to look at") }
         if let reason = environment.refusal(target) { return .refused(reason) }
-        let window = environment.windowFrame(target.pid)
+        let window = await environment.windowFrame(target.pid)
         let pointer = environment.pointer()
         let display = environment.displayFrame(window ?? CGRect(origin: pointer, size: .zero))
         let rect: CGRect? = source == .pointer

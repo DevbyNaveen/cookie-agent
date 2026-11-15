@@ -206,6 +206,8 @@ final class HarnessClient {
         let onStep: (String) -> Void
         let onApproval: (HarnessApproval?) -> Void
         let workspaceThreadID: UUID?
+        /// Where this run's words go, for Proof.
+        let model: String
         let continuation: CheckedContinuation<String, Error>
     }
 
@@ -233,7 +235,7 @@ final class HarnessClient {
     /// Runs one question. Throws HarnessFailure with words for the person,
     /// or CancellationError when the caller's task was cancelled.
     func run(model: String, input text: String, instructions: String, images: [HarnessRequest.Image],
-             history: [HarnessRequest.Turn], workspaceThreadID: UUID? = nil, backgroundProject: Bool = false,
+             history: [HarnessRequest.Turn], workspaceThreadID: UUID? = nil, backgroundProject: Bool = false, unattended: Bool = false,
              onText: @escaping (String) -> Void,
              onStep: @escaping (String) -> Void,
              onApproval: @escaping (HarnessApproval?) -> Void,
@@ -244,15 +246,24 @@ final class HarnessClient {
         runCounter += 1
         let request = HarnessRequest.Run(
             id: "cookie-\(runCounter)", model: model, input: text, instructions: instructions,
-            // open, and the Mac tools: acting needs a task the person approved.
-            tools: (backgroundProject ? [] : [CookieOpen.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieRoutineWords.tool, CookieLayerTool.tool, CookieTimeMachineTool.tool] + MacOperator.tools) + (workspaceThreadID == nil ? [] : [CookieWorkspaceTool.tool]),
+            tools: Self.tools(backgroundProject: backgroundProject, unattended: unattended, workspace: workspaceThreadID != nil),
             images: images,
             history: history,
             // On: left out, so the helper uses ENKEON_API_KEY from its environment.
             enkeon: enkeonKey == nil ? false : nil
         )
         return try await start(id: request.id, line: HarnessWire.encode(request),
-                               onText: onText, onStep: onStep, onApproval: onApproval, onToolStarted: onToolStarted, workspaceThreadID: workspaceThreadID)
+                               onText: onText, onStep: onStep, onApproval: onApproval, onToolStarted: onToolStarted, workspaceThreadID: workspaceThreadID, model: model)
+    }
+
+    /// What a run may call: open, and the Mac tools (acting needs a task the person approved). A
+    /// routine running unattended has no time machine (nobody is there to say yes to a restore).
+    /// There is no layer tool: a layer reads the window and sends it for ten minutes, so only the
+    /// person's own words start one, never a page or a screen the model read.
+    static func tools(backgroundProject: Bool, unattended: Bool, workspace: Bool) -> [HarnessRequest.Tool] {
+        let mac = [CookieOpen.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieRoutineWords.tool]
+            + (unattended ? [] : [CookieTimeMachineTool.tool]) + MacOperator.tools
+        return (backgroundProject ? [] : mac) + (workspace ? [CookieWorkspaceTool.tool] : [])
     }
 
     /// A run is coming (the talk key went down): the helper is started if it isn't, with the
@@ -281,19 +292,19 @@ final class HarnessClient {
         let request = HarnessRequest.Ask(id: "cookie-\(runCounter)", model: model, input: text,
                                          instructions: instructions, images: images)
         return try await start(id: request.id, line: HarnessWire.encode(request),
-                               onText: onText, onStep: { _ in }, onApproval: { _ in })
+                               onText: onText, onStep: { _ in }, onApproval: { _ in }, model: model)
     }
 
     private func start(id: String, line: Data,
                        onText: @escaping (String) -> Void,
                        onStep: @escaping (String) -> Void,
                        onApproval: @escaping (HarnessApproval?) -> Void,
-                       onToolStarted: @escaping () -> Void = {}, workspaceThreadID: UUID? = nil) async throws -> String {
+                       onToolStarted: @escaping () -> Void = {}, workspaceThreadID: UUID? = nil, model: String) async throws -> String {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 cancel() // one run at a time: an older one still going ends here
                 active = ActiveRun(id: id, onText: onText, onToolStarted: onToolStarted, onStep: onStep,
-                                   onApproval: onApproval, workspaceThreadID: workspaceThreadID, continuation: continuation)
+                                   onApproval: onApproval, workspaceThreadID: workspaceThreadID, model: model, continuation: continuation)
                 if Task.isCancelled { cancel(); return }
                 if helperBusy { queued = line } else { send(line); helperBusy = true }
             }
@@ -470,11 +481,14 @@ final class HarnessClient {
                 let name = event.detail?.name ?? "a tool"
                 // A connected-app action may be parked on Enkeon for the person's yes.
                 if name == "connector_call" { CookieAppApprovals.shared.watch() }
+                // The model saving to Enkeon is a memory write like any other: what kind, never the words.
+                if name == "remember" {
+                    CookieProof.shared.record(.remembered, feature: "memory", summary: "a note your model saved", destination: "Enkeon")
+                }
                 let plain = ["recall": "Looked in Enkeon", "remember": "Saving to Enkeon", "web_search": "Searching the web",
                              "fetch_page": "Reading a page", "fetch_pages": "Reading pages", "check_quote": "Checking a quote",
                              "connector_actions": "Looking at your connected apps", "connector_call": "Using a connected app",
-                             "use_skill": "Opening a skill", "look": "Looking at the app", "time_machine": "Looking at what Cookie changed",
-                             "screen_layer": "Drawing a layer on the window"]
+                             "use_skill": "Opening a skill", "look": "Looking at the app", "time_machine": "Looking at what Cookie changed"]
                 run.onStep(plain[name] ?? "Using \(name.replacingOccurrences(of: "_", with: " "))")
             case "usage":
                 if let usage = event.usage {
@@ -512,6 +526,7 @@ final class HarnessClient {
             if name == CookieScreenMemory.tool.name {
                 Task { @MainActor in
                     let answer = CookieScreenMemory.shared.answer(args["query"] as? String ?? "")
+                    CookieProof.shared.recordText(answer.count, of: "what Cookie read off your screen earlier", feature: "screen memory", model: run.model)
                     run.onStep("Remembering what was on screen")
                     self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: answer, is_error: false)))
                 }
@@ -529,14 +544,6 @@ final class HarnessClient {
                 Task { @MainActor in
                     let result = await CookieTimeMachineTool.perform(args)
                     if !result.1 { run.onStep(result.0.split(separator: "\n").first.map(String.init) ?? "Looked at the time machine") }
-                    self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.0, is_error: result.1)))
-                }
-                return
-            }
-            if name == CookieLayerTool.tool.name {
-                Task { @MainActor in
-                    let result = CookieLayerTool.perform(args)
-                    if !result.1 { run.onStep(result.0.split(separator: ".").first.map(String.init) ?? "Drew a layer") }
                     self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.0, is_error: result.1)))
                 }
                 return

@@ -409,8 +409,9 @@ final class MacOperator {
         case "click_at": result = clickAt(args)
         case "run_script":
             // A script that won't pass the vet never runs, so it needs no copy.
-            result = MacSafety.vetScript(app: target ?? "", script: args["script"] as? String ?? "") != nil ? runScript(args)
-                : Self.withSnapshot(name, app: target, document: target.flatMap(Self.frontDocument)) { runScript(args) }
+            // The script and its snapshot both drive `target`, so the copy is of the app the script tells.
+            if MacSafety.vetScript(app: target ?? "", script: args["script"] as? String ?? "") != nil { result = runScript(args, app: target ?? "") }
+            else { result = await Self.withSnapshot(name, app: target, document: target.flatMap(Self.frontDocument)) { runScript(args, app: target ?? "") } }
         default: result = ("Cookie has no tool named \(name).", true)
         }
         log(name, app: target, element: Self.int(args["id"]).flatMap { labels[$0] }, ok: !result.1)
@@ -830,8 +831,7 @@ final class MacOperator {
         return CookieReadingPen.bounds(field, CFRange(location: selection.location, length: 1)).map { CGPoint(x: $0.minX, y: $0.midY) }
     }
 
-    private func runScript(_ args: [String: Any]) -> (String, Bool) {
-        let app = args["app"] as? String ?? ""
+    private func runScript(_ args: [String: Any], app: String) -> (String, Bool) {
         let source = args["script"] as? String ?? ""
         if let why = MacSafety.vetScript(app: app, script: source) { return (why, true) }
         guard let script = NSAppleScript(source: source) else { return ("That script doesn't compile.", true) }

@@ -27,6 +27,41 @@ struct CookieReceipt: Codable, Identifiable, Equatable {
     /// Cookie's copy of it, under snapshots/<id>/.
     var snapshot: String?
     var restorable: Bool
+    /// Files: the document's size and time just after Cookie's change, to tell later edits. Absent on older receipts.
+    var afterStamp: CookieFileStamp? = nil
+    /// Files: the copy's size, so pruning never walks a package.
+    var snapshotBytes: Int? = nil
+    /// Text: a formatted field (Mail, Notes, Pages): its words are copied back for the person, never written over it.
+    var richText: Bool? = nil
+}
+
+/// A document's size and newest modified time; a package (a folder: .rtfd, iWork) counts everything in it.
+struct CookieFileStamp: Codable, Equatable {
+    var size: Int
+    var modified: Date
+
+    static func of(_ file: URL) -> CookieFileStamp? {
+        let manager = FileManager.default
+        guard let attributes = try? manager.attributesOfItem(atPath: file.path),
+              var modified = attributes[.modificationDate] as? Date else { return nil }
+        guard attributes[.type] as? FileAttributeType == .typeDirectory else {
+            return (attributes[.size] as? Int).map { CookieFileStamp(size: $0, modified: modified) }
+        }
+        var size = 0
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]
+        for case let item as URL in manager.enumerator(at: file, includingPropertiesForKeys: keys) ?? .init() {
+            guard let values = try? item.resourceValues(forKeys: Set(keys)) else { continue }
+            if values.isRegularFile == true { size += values.fileSize ?? 0 }
+            if let date = values.contentModificationDate, date > modified { modified = date }
+        }
+        return CookieFileStamp(size: size, modified: modified)
+    }
+
+    /// The same document as then: same size, same time (to the millisecond, as the ledger keeps it).
+    func matches(_ other: CookieFileStamp?) -> Bool {
+        guard let other else { return false }
+        return size == other.size && abs(modified.timeIntervalSince(other.modified)) < 0.001
+    }
 }
 
 @MainActor
@@ -43,6 +78,8 @@ final class CookieTimeMachine: ObservableObject {
     struct Field {
         let read: () -> String?
         let write: (String) -> Bool
+        /// Formatted text: writing the words back would drop its bold, links and pictures.
+        var rich = false
     }
 
     /// Newest first.
@@ -54,6 +91,11 @@ final class CookieTimeMachine: ObservableObject {
     let maxSnapshotBytes: Int
     /// The exact words (unmasked) and the field, so a restore writes back what was really there; never on disk.
     private var live: [UUID: (field: Field, before: String, after: String)] = [:]
+    /// Where a formatted field's old words go instead (the checks catch them).
+    var copyText: (String) -> Void = { text in
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
 
     init(folder: URL?, proof: CookieProof, maxFileBytes: Int = 50 << 20, maxSnapshotBytes: Int = 1 << 30) {
         self.folder = folder
@@ -82,27 +124,44 @@ final class CookieTimeMachine: ObservableObject {
 
     /// A field Cookie changed. Only the masked, bounded words are kept on disk.
     @discardableResult
-    func recordText(tool: String, app: String, target: String, before: String?, after: String?, field: Field?) -> CookieReceipt {
+    func recordText(tool: String, app: String, target: String, before: String?, after: String?, field: Field?,
+                    summary: String? = nil) -> CookieReceipt {
         let id = UUID()
         let restorable = field != nil && before != nil && after != nil
             && before!.count <= Self.maxText && after!.count <= Self.maxText
         if restorable, let field, let before, let after { live[id] = (field, before, after) }
         let receipt = CookieReceipt(id: id, date: Date(), app: app, tool: tool, target: target,
                                     before: before.map(Self.mask), after: after.map(Self.mask),
-                                    file: nil, snapshot: nil, restorable: restorable)
-        add(receipt, summary: "kept a before and after of \(Self.plain(tool))")
+                                    file: nil, snapshot: nil, restorable: restorable, richText: field?.rich == true ? true : nil)
+        add(receipt, summary: summary ?? "kept a before and after of \(Self.plain(tool))")
         return receipt
     }
 
     /// Dictation went in. The kit owns the field and its own "scratch that" undo, so this receipt
-    /// only shows what the field reads now; the before is unknown and it isn't restorable here.
+    /// keeps only the words dictation typed (masked), not the field around them; it isn't restorable here.
     // ponytail: EnkeonVoiceKit keeps its TextDestination internal; expose before/after there if dictation receipts need restore.
-    func recordDictation(app: String) {
-        guard AXIsProcessTrusted(), !IsSecureEventInputEnabled(), !CaptureGuard.focusedElementIsSecure(),
-              let front = NSWorkspace.shared.frontmostApplication, front.bundleIdentifier != Bundle.main.bundleIdentifier,
-              !MacSafety.blocked(bundleID: front.bundleIdentifier, category: MacOperator.category(front)) else { return }
-        let after = MacOperator.focusedElement().flatMap { MacOperator.string($0, kAXValueAttribute) }
-        recordText(tool: "dictation", app: app, target: "the focused field", before: nil, after: after, field: nil)
+    func recordDictation(app: String, inserted: String, allowed: Bool? = nil) {
+        guard !inserted.isEmpty, allowed ?? Self.dictationMayBeKept() else { return }
+        recordText(tool: "dictation", app: app, target: "dictated words", before: nil, after: inserted, field: nil,
+                   summary: "noted the words dictation typed")
+    }
+
+    /// Not into a password, a blocked app or Cookie itself.
+    private static func dictationMayBeKept() -> Bool {
+        guard !IsSecureEventInputEnabled(), !CaptureGuard.focusedElementIsSecure(),
+              let front = NSWorkspace.shared.frontmostApplication, front.bundleIdentifier != Bundle.main.bundleIdentifier else { return false }
+        return !MacSafety.blocked(bundleID: front.bundleIdentifier, category: MacOperator.category(front))
+    }
+
+    /// A field whose text carries formatting: anything but a plain text field that offers attributed text.
+    nonisolated static func isRich(role: String?, parameterized: [String]) -> Bool {
+        role != (kAXTextFieldRole as String) && parameterized.contains("AXAttributedStringForRange")
+    }
+
+    nonisolated static func isRich(_ element: AXUIElement) -> Bool {
+        var names: CFArray?
+        guard AXUIElementCopyParameterizedAttributeNames(element, &names) == .success else { return false }
+        return isRich(role: MacOperator.string(element, kAXRoleAttribute), parameterized: (names as? [String]) ?? [])
     }
 
     /// No secrets, at most 20 KB.
@@ -114,45 +173,51 @@ final class CookieTimeMachine: ObservableObject {
 
     // MARK: Files
 
-    /// A copy of the document before a script runs. Never throws: a copy that can't be made
-    /// still leaves a receipt that says the before is unknown.
+    /// A copy of the document before a script runs, made off the main actor; the caller waits for it,
+    /// so the script never runs before the copy it was promised. Never throws: a copy that can't be
+    /// made (or a document over the cap, a package counted whole) leaves a receipt saying the before is unknown.
     @discardableResult
-    func snapshotBefore(_ file: URL?, tool: String, app: String) -> CookieReceipt {
+    func snapshotBefore(_ file: URL?, tool: String, app: String) async -> CookieReceipt {
         let id = UUID()
         var receipt = CookieReceipt(id: id, date: Date(), app: app, tool: tool, target: file?.lastPathComponent ?? "the front document",
                                     before: nil, after: nil, file: file?.path, snapshot: nil, restorable: false)
-        if let file, let size = Self.size(file), size <= maxFileBytes, let snapshots {
+        if let file, let snapshots {
             let folder = snapshots.appendingPathComponent(id.uuidString)
             let copy = folder.appendingPathComponent(file.lastPathComponent)
-            do {
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                try FileManager.default.copyItem(at: file, to: copy)
+            let limit = maxFileBytes
+            let stamp = try? await Task.detached(priority: .userInitiated) { () throws -> CookieFileStamp? in
+                guard let stamp = CookieFileStamp.of(file), stamp.size <= limit else { return nil }
+                do {
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    try FileManager.default.copyItem(at: file, to: copy)
+                } catch {
+                    try? FileManager.default.removeItem(at: folder)
+                    throw error
+                }
+                return stamp
+            }.value
+            if let stamp {
                 receipt.snapshot = copy.path
-                receipt.before = Self.describe(file)
+                receipt.snapshotBytes = stamp.size
+                receipt.before = Self.describe(stamp)
                 receipt.restorable = true
-            } catch {
-                try? FileManager.default.removeItem(at: folder)
             }
         }
         add(receipt, summary: "kept a copy of a document before \(Self.plain(tool))")
         return receipt
     }
 
-    /// After the script: the document's size and time now.
+    /// After the script: the document's size and time now, kept to tell edits made after Cookie's.
     func finishSnapshot(_ id: UUID) {
         guard let index = receipts.firstIndex(where: { $0.id == id }), let path = receipts[index].file else { return }
-        receipts[index].after = Self.describe(URL(fileURLWithPath: path))
+        let stamp = CookieFileStamp.of(URL(fileURLWithPath: path))
+        receipts[index].after = stamp.map(Self.describe)
+        receipts[index].afterStamp = stamp
         save()
     }
 
-    static func describe(_ file: URL) -> String? {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: file.path),
-              let size = attributes[.size] as? Int, let modified = attributes[.modificationDate] as? Date else { return nil }
-        return ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file) + " · modified " + time.string(from: modified)
-    }
-
-    private static func size(_ file: URL) -> Int? {
-        (try? FileManager.default.attributesOfItem(atPath: file.path))?[.size] as? Int
+    static func describe(_ stamp: CookieFileStamp) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(stamp.size), countStyle: .file) + " · modified " + time.string(from: stamp.modified)
     }
 
     // MARK: Restore
@@ -165,16 +230,29 @@ final class CookieTimeMachine: ObservableObject {
     /// The approval's words. Nothing is put back without a yes to these.
     static func question(for receipt: CookieReceipt) -> String {
         let when = time.string(from: receipt.date)
-        if receipt.file != nil { return "Put \(receipt.target) back to \(when)? The version there now is kept first." }
+        if let path = receipt.file {
+            if let after = receipt.afterStamp, !after.matches(CookieFileStamp.of(URL(fileURLWithPath: path))) {
+                return "\(receipt.target) was edited after Cookie's change; restoring replaces those edits — they'll be kept as a snapshot. Put it back to \(when)?"
+            }
+            return "Put \(receipt.target) back to \(when)? The version there now is kept first."
+        }
+        if receipt.richText == true {
+            return "Copy how \(receipt.target) in \(receipt.app) read at \(when)? It has formatting Cookie can't write back, so you paste the words yourself."
+        }
         return "Put \(receipt.target) in \(receipt.app) back to how it read at \(when)?"
     }
 
     /// Called only after the person said yes.
     func restore(_ id: UUID) async -> (message: String, success: Bool) {
         guard let receipt = receipts.first(where: { $0.id == id }) else { return ("Cookie has no receipt like that.", false) }
-        if receipt.file != nil { return restoreFile(receipt) }
+        if receipt.file != nil { return await restoreFile(receipt) }
         guard let (field, before, after) = live[id] else {
             return ("Cookie can't put this one back: the before wasn't known, or Cookie restarted since.", false)
+        }
+        // Formatted text: writing the words back would strip it. The old words go on the clipboard instead.
+        if field.rich {
+            copyText(before)
+            return ("Copied how \(receipt.target) read at \(Self.time.string(from: receipt.date)). Paste it where you want it; the field is untouched.", true)
         }
         // The same rule as undoing a dictation: only if the field still holds exactly what Cookie wrote.
         guard field.read() == after else { return ("The field changed after Cookie wrote it. I left your newer edits untouched.", false) }
@@ -190,18 +268,20 @@ final class CookieTimeMachine: ObservableObject {
         return ("The app didn't confirm the restore. Check the field before trying again.", false)
     }
 
-    private func restoreFile(_ receipt: CookieReceipt) -> (message: String, success: Bool) {
+    private func restoreFile(_ receipt: CookieReceipt) async -> (message: String, success: Bool) {
         guard let path = receipt.file, let snapshot = receipt.snapshot, canRestore(receipt) else {
             return ("Cookie has no copy of \(receipt.target) from then.", false)
         }
         let file = URL(fileURLWithPath: path)
         // Staged first: keeping the current version may prune the oldest snapshots, this one included.
         let staged = file.deletingLastPathComponent().appendingPathComponent(".cookie-restore-\(UUID().uuidString)-\(file.lastPathComponent)")
-        do { try FileManager.default.copyItem(at: URL(fileURLWithPath: snapshot), to: staged) } catch {
+        do {
+            try await Task.detached(priority: .userInitiated) { try FileManager.default.copyItem(at: URL(fileURLWithPath: snapshot), to: staged) }.value
+        } catch {
             return ("Couldn't put \(receipt.target) back: \(error.localizedDescription)", false)
         }
-        // The version there now becomes its own receipt first, so this can be undone too.
-        let current = snapshotBefore(file, tool: "restore", app: receipt.app)
+        // The version there now becomes its own receipt first, so this can be undone too (and edits made after Cookie's are kept).
+        let current = await snapshotBefore(file, tool: "restore", app: receipt.app)
         guard current.snapshot != nil else {
             try? FileManager.default.removeItem(at: staged)
             return ("Cookie couldn't keep the version of \(receipt.target) there now, so it left it alone.", false)
@@ -229,10 +309,14 @@ final class CookieTimeMachine: ObservableObject {
         for receipt in receipts where receipt.date < cutoff { dropSnapshot(receipt) }
         receipts.removeAll { $0.date < cutoff }
         live = live.filter { id, _ in receipts.contains { $0.id == id } }
-        var total = receipts.compactMap(\.snapshot).compactMap { Self.size(URL(fileURLWithPath: $0)) }.reduce(0, +)
+        func bytes(_ receipt: CookieReceipt) -> Int {
+            guard let snapshot = receipt.snapshot else { return 0 }
+            return receipt.snapshotBytes ?? CookieFileStamp.of(URL(fileURLWithPath: snapshot))?.size ?? 0
+        }
+        var total = receipts.map(bytes).reduce(0, +)
         for index in receipts.indices.reversed() where total > maxSnapshotBytes {
-            guard let snapshot = receipts[index].snapshot else { continue }
-            total -= Self.size(URL(fileURLWithPath: snapshot)) ?? 0
+            guard receipts[index].snapshot != nil else { continue }
+            total -= bytes(receipts[index])
             dropSnapshot(receipts[index])
             receipts[index].snapshot = nil
             receipts[index].restorable = false
@@ -304,13 +388,15 @@ extension MacOperator {
                             machine: CookieTimeMachine = .shared,
                             read: @escaping (AXUIElement) -> String? = { MacOperator.string($0, kAXValueAttribute) },
                             write: @escaping (AXUIElement, String) -> Bool = { AXUIElementSetAttributeValue($0, kAXValueAttribute as CFString, $1 as CFString) == .success },
+                            rich: (AXUIElement) -> Bool = { CookieTimeMachine.isRich($0) },
                             act: () async -> (String, Bool)) async -> (String, Bool) {
         let before = field.flatMap(read)
+        let formatted = field.map(rich) ?? false
         let result = await act()
         guard !result.1 else { return result }
         let after = field.flatMap(read)
         machine.recordText(tool: tool, app: app ?? "the app", target: target, before: before, after: after,
-                           field: field.map { element in .init(read: { read(element) }, write: { write(element, $0) }) })
+                           field: field.map { element in .init(read: { read(element) }, write: { write(element, $0) }, rich: formatted) })
         return result
     }
 
@@ -329,8 +415,8 @@ extension MacOperator {
 
     /// run_script with a copy of the front document kept first.
     static func withSnapshot(_ tool: String, app: String?, document: URL?, machine: CookieTimeMachine = .shared,
-                             act: () -> (String, Bool)) -> (String, Bool) {
-        let receipt = machine.snapshotBefore(document, tool: tool, app: app ?? "the app")
+                             act: () -> (String, Bool)) async -> (String, Bool) {
+        let receipt = await machine.snapshotBefore(document, tool: tool, app: app ?? "the app")
         let result = act()
         machine.finishSnapshot(receipt.id)
         return result
@@ -365,7 +451,9 @@ enum CookieTimeMachineTool {
         guard let receipt = machine.receipt(args["id"] as? String ?? "") else { return ("Give an id from list.", true) }
         switch action {
         case "show":
-            proof.record(.sent, feature: "time machine", app: receipt.app, summary: "a receipt's before and after", destination: "the model")
+            let characters = (receipt.before?.count ?? 0) + (receipt.after?.count ?? 0)
+            proof.record(.sent, feature: "time machine", app: receipt.app, summary: "a receipt's before and after",
+                         destination: "the model", payload: .words, count: max(1, characters))
             return ("\(receipt.target) in \(receipt.app), \(CookieTimeMachine.time.string(from: receipt.date))\nbefore: \(receipt.before ?? "unknown")\nafter: \(receipt.after ?? "unknown")", false)
         case "restore":
             let result = await machine.restore(receipt.id)

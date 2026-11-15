@@ -76,6 +76,30 @@ enum CookieProofTests {
                           model: "anthropic:claude-sonnet-4-6", feature: "hover")
         precondition(hooked.entries[0].kind == .sent && hooked.entries[0].destination == "anthropic:claude-sonnet-4-6"
                      && hooked.entries[0].bytes == 300, "a sent picture names the model and its size")
+        // The pill names what went: words aren't pictures.
+        let words = CookieProof(file: nil)
+        words.record(.sent, feature: "screen layer", app: "Safari", summary: "12 lines of the window as text, no picture",
+                     destination: "test:model", bytes: 400, payload: .lines, count: 12)
+        precondition(CookieProof.meterText(words.entries) == "Sent 12 lines", "\(CookieProof.meterText(words.entries) ?? "nil")")
+        words.record(.sent, feature: "memory cursor", summary: "a person to look up", destination: "Enkeon", payload: .name, count: 1)
+        words.recordText(230, of: "the text you had selected", feature: "question", model: "test:model")
+        words.recordText(0, of: "nothing", feature: "hover", model: "test:model")
+        precondition(CookieProof.meterText(words.entries) == "Sent 12 lines · a name · 230 characters", "\(CookieProof.meterText(words.entries) ?? "nil")")
+        precondition(words.entries.count == 3 && words.entries[0].summary == "230 characters of the text you had selected"
+                     && words.entries[0].payload == .words, "text sent is counted, never quoted; nothing sent, no row")
+        // Rows from before payloads were kept still read (as pictures, which is all they were).
+        let legacy = #"[{"id":"\#(UUID().uuidString)","date":\#(Date().timeIntervalSinceReferenceDate),"kind":"sent","feature":"hover","summary":"an attached picture","hidden":0}]"#
+        let legacyFile = folder.appendingPathComponent("legacy.json")
+        try? Data(legacy.utf8).write(to: legacyFile)
+        precondition(CookieProof.meterText(CookieProof(file: legacyFile).entries) == "Sent 1 picture", "old rows decode")
+        // What the model saves and what text goes up are proof too.
+        let harness = (try? String(contentsOfFile: "Cookie/HarnessClient.swift", encoding: .utf8)) ?? ""
+        precondition(harness.contains("record(.remembered") && harness.contains("CookieScreenMemory.shared.answer") && harness.contains("recordText("),
+                     "the model's remember and recall_screen's words are proof")
+        let manager = (try? String(contentsOfFile: "Cookie/CompanionManager.swift", encoding: .utf8)) ?? ""
+        let hover = (try? String(contentsOfFile: "Cookie/CookieHover.swift", encoding: .utf8)) ?? ""
+        precondition(manager.contains("recordText(selection.text.count") && hover.contains("recordText(reading.context.count"),
+                     "selected text and hover's words are proof")
         print("8 proof checks passed.")
     }
 }

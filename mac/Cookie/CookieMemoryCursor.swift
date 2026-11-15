@@ -229,7 +229,7 @@ final class CookieMemoryCursor {
         guard isOn else { return nil }
         if let kept = cache[entity.key], now().timeIntervalSince(kept.at) < Self.cacheFor { return kept.card }
         proof.record(.sent, feature: "memory cursor", summary: "a \(entity.kind.rawValue) to look up",
-                     destination: "Enkeon", bytes: entity.text.utf8.count)
+                     destination: "Enkeon", bytes: entity.text.utf8.count, payload: .name, count: 1)
         let lookup = self.lookup, query = entity.text
         // A timeout or an error isn't kept: the next hover asks again.
         guard let answer = await withDeadline(seconds: Self.timeout, { try await lookup(query) }) else { return nil }

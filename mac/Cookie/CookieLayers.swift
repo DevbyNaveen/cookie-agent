@@ -62,12 +62,18 @@ enum CookieLayerLens: String, CaseIterable, Equatable {
 }
 
 /// What the person said that starts or stops a layer. Only commands: a sentence that merely
-/// mentions translating ("how do I translate this page in Safari?") goes to the model as ever.
+/// mentions translating ("how do I translate this page in Safari?") goes to the model as ever,
+/// and so does anything said with text selected ("translate this email" then edits the selection).
 enum CookieLayerCommand: Equatable {
     case start(CookieLayerLens, language: String?)
     case stop
 
-    static func parse(_ text: String) -> Self? {
+    static func parse(_ text: String, selection: Bool = false) -> Self? {
+        let command = command(in: text)
+        return selection && command != .stop ? nil : command
+    }
+
+    private static func command(in text: String) -> Self? {
         var words = text.lowercased().replacingOccurrences(of: "’", with: "'")
             .components(separatedBy: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",.!?;:\"")))
             .filter { !$0.isEmpty }.joined(separator: " ")
@@ -104,7 +110,7 @@ enum CookieLayerCommand: Equatable {
             let language = found.count > 1 && !found[1].isEmpty ? found[1] : nil
             return .start(.translate, language: language.map(CookieLayerLanguage.named))
         }
-        if matches(#"(?:check|review|read|go through|look over|scan)(?: this| the| my| that)? (?:contract|agreement|terms|terms and conditions|fine print|lease|offer|policy|document|page)(?: for (?:me|risks|anything risky|red flags))?"#) != nil
+        if matches(#"(?:check|review|go through|look over)(?: this| the| my| that)? (?:contract|agreement|terms|terms and conditions|fine print|lease|offer|policy|document|page)(?: for (?:me|risks|anything risky|red flags))?"#) != nil
             || matches(#"(?:is there |are there )?(?:anything (?:risky|unusual|odd|to worry about|i should worry about|i should watch out for)|any red flags|something risky)(?: here| in (?:this|the|my) (?:contract|document|page)| on (?:this|the|my) (?:screen|page|window))?"#) != nil
             || matches(#"what's risky (?:here|on (?:this|the|my) (?:screen|page|window))"#) != nil {
             return .start(.review, language: nil)
@@ -528,6 +534,79 @@ enum CookieLayerStop: Equatable {
     }
 }
 
+/// A read of another app's window that timed out (a busy app) waits before the next: 0.5 s,
+/// doubling to 8 s, back to none once it answers.
+struct CookieAXBackoff: Equatable {
+    static let first: TimeInterval = 0.5
+    static let longest: TimeInterval = 8
+    private(set) var until: Date?
+    private(set) var step: TimeInterval = 0
+
+    func waiting(_ now: Date) -> Bool { until.map { now < $0 } ?? false }
+
+    mutating func timedOut(_ now: Date) {
+        step = step == 0 ? Self.first : min(step * 2, Self.longest)
+        until = now.addingTimeInterval(step)
+    }
+
+    mutating func answered() {
+        step = 0
+        until = nil
+    }
+}
+
+/// The front window's frame for the layer and the lesson: the AX calls run off the main actor (a slow
+/// app can't stutter Cookie), two of them (the window, then its place, size and minimised together),
+/// each with a 0.2 s timeout. While a timed-out app backs off, the last frame it gave stands.
+@MainActor
+final class CookieWindowFrames {
+    static let shared = CookieWindowFrames()
+    private var last: (pid: pid_t, frame: CGRect?)?
+    private var backoff = CookieAXBackoff()
+
+    /// AppKit global; nil when the app has no window (or a minimised one).
+    func frame(_ pid: pid_t) async -> CGRect? {
+        if let last, last.pid == pid, backoff.waiting(Date()) { return last.frame }
+        let read = await Task.detached(priority: .userInitiated) { Self.read(pid) }.value
+        if read.timedOut {
+            backoff.timedOut(Date())
+            return last?.pid == pid ? last?.frame : nil
+        }
+        backoff.answered()
+        let mainHeight = NSScreen.screens.first?.frame.height ?? 0
+        let frame = read.frame.map { CGRect(x: $0.minX, y: mainHeight - $0.maxY, width: $0.width, height: $0.height) }
+        last = (pid, frame)
+        return frame
+    }
+
+    /// CG global (top-left origin).
+    nonisolated static func read(_ pid: pid_t) -> (frame: CGRect?, timedOut: Bool) {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.2)
+        var value: AnyObject?
+        var error = AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &value)
+        if error != .success && error != .cannotComplete {
+            error = AXUIElementCopyAttributeValue(app, kAXMainWindowAttribute as CFString, &value)
+        }
+        if error == .cannotComplete { return (nil, true) }
+        guard error == .success, let raw = value, CFGetTypeID(raw) == AXUIElementGetTypeID() else { return (nil, false) }
+        let window = raw as! AXUIElement
+        AXUIElementSetMessagingTimeout(window, 0.2)
+        var values: CFArray?
+        let names = [kAXMinimizedAttribute, kAXPositionAttribute, kAXSizeAttribute] as CFArray
+        let multiple = AXUIElementCopyMultipleAttributeValues(window, names, AXCopyMultipleAttributeOptions(rawValue: 0), &values)
+        if multiple == .cannotComplete { return (nil, true) }
+        guard multiple == .success, let list = values as [AnyObject]?, list.count == 3 else { return (nil, false) }
+        if (list[0] as? Bool) == true { return (nil, false) }
+        var point = CGPoint.zero, extent = CGSize.zero
+        guard CFGetTypeID(list[1]) == AXValueGetTypeID(), CFGetTypeID(list[2]) == AXValueGetTypeID(),
+              AXValueGetValue(list[1] as! AXValue, .cgPoint, &point), AXValueGetValue(list[2] as! AXValue, .cgSize, &extent) else {
+            return (nil, false)
+        }
+        return (CGRect(origin: point, size: extent), false)
+    }
+}
+
 /// The app whose window gets the layer.
 struct CookieLayerTarget: Equatable {
     let pid: pid_t
@@ -540,8 +619,8 @@ struct CookieLayerTarget: Equatable {
 struct CookieLayerEnvironment {
     /// The app in front, or the last one before Cookie's own window came forward.
     var frontApp: @MainActor () -> CookieLayerTarget?
-    /// That app's front window, AppKit global; nil when it has none.
-    var windowFrame: @MainActor (pid_t) -> CGRect?
+    /// That app's front window, AppKit global; nil when it has none. Read off the main actor.
+    var windowFrame: @MainActor (pid_t) async -> CGRect?
     /// The display a window is on.
     var displayFrame: @MainActor (CGRect) -> CGRect?
     /// Why Cookie must not look now (blocked app, password field, secure input), or nil.
@@ -574,17 +653,7 @@ extension CookieLayerEnvironment {
                 return CookieLayerTarget(pid: app.processIdentifier, app: app.localizedName ?? "this app",
                                          bundleID: app.bundleIdentifier, category: MacOperator.category(app))
             },
-            windowFrame: { pid in
-                let app = AXUIElementCreateApplication(pid)
-                AXUIElementSetMessagingTimeout(app, 0.2)
-                guard let raw = MacOperator.attribute(app, kAXFocusedWindowAttribute) ?? MacOperator.attribute(app, kAXMainWindowAttribute),
-                      CFGetTypeID(raw) == AXUIElementGetTypeID() else { return nil }
-                let window = raw as! AXUIElement
-                if (MacOperator.attribute(window, kAXMinimizedAttribute) as? Bool) == true { return nil }
-                guard let frame = MacOperator.frame(window) else { return nil }
-                let mainHeight = NSScreen.screens.first?.frame.height ?? 0
-                return CGRect(x: frame.minX, y: mainHeight - frame.maxY, width: frame.width, height: frame.height)
-            },
+            windowFrame: { pid in await CookieWindowFrames.shared.frame(pid) },
             displayFrame: { window in
                 let centre = CGPoint(x: window.midX, y: window.midY)
                 return (NSScreen.screens.first { $0.frame.contains(centre) }
@@ -708,6 +777,8 @@ final class CookieLayers: ObservableObject {
     private var batcher = CookieLayerBatcher()
     private var upload: Task<Void, Never>?
     private var refreshing = false
+    /// A window-frame read for `tick` is out; the next tick doesn't start another.
+    private var following = false
     private var nextRefreshAt = Date.distantPast
     private var failures = 0
     private var lastSaw: Date?
@@ -737,7 +808,7 @@ final class CookieLayers: ObservableObject {
 
     // MARK: Commands
 
-    /// A voice command or the model's tool: what happened, in a line for the chat.
+    /// A voice or typed command: what happened, in a line for the chat.
     @discardableResult
     func perform(_ command: CookieLayerCommand) -> String {
         switch command {
@@ -768,7 +839,8 @@ final class CookieLayers: ObservableObject {
         let failure: CookieLayerProblem? = {
             guard environment.screenAllowed() else { return .noScreenPermission }
             guard environment.accessibility() else { return .noAccessibility }
-            guard let target = environment.frontApp(), environment.windowFrame(target.pid) != nil else { return .noWindow }
+            // The window itself is found by the first read (off the main actor): none ends it as .noWindow.
+            guard let target = environment.frontApp() else { return .noWindow }
             if let refusal = environment.refusal(target) { return .refused(refusal) }
             if let missing = model.missing { return .modelUnavailable(missing) }
             if lens == .owed && !environment.signedIn() { return .notSignedIn }
@@ -856,7 +928,9 @@ final class CookieLayers: ObservableObject {
         defer { if generation == self.generation { refreshing = false } }
         let now = environment.now()
 
-        let frame = environment.windowFrame(session.target.pid)
+        let frame = await environment.windowFrame(session.target.pid)
+        guard generation == self.generation else { return }
+        if phase == .starting, frame == nil { return stop(.failed(.noWindow)) }
         if let reason = CookieLayerStop.check(startedAt: session.startedAt, now: now, targetPID: session.target.pid,
                                               frontPID: environment.frontApp()?.pid, ownPID: ProcessInfo.processInfo.processIdentifier,
                                               windowFound: frame != nil) {
@@ -1015,7 +1089,7 @@ final class CookieLayers: ObservableObject {
                 let entity = CookieEntity(kind: .person, text: unit.text)
                 var sources = CookieOwed.boardSources(for: entity, items: environment.board(), now: environment.now())
                 proof.record(.sent, feature: "screen layer", app: session.target.app, summary: "a name to look up",
-                             destination: "Enkeon", bytes: unit.text.utf8.count)
+                             destination: "Enkeon", bytes: unit.text.utf8.count, payload: .name, count: 1)
                 let recall = environment.recall
                 if let answer = await withDeadline(seconds: Self.recallDeadline, { try await recall("what I promised or owe \(unit.text)") }) {
                     sources += CookieOwed.enkeonSources(answer, about: entity)
@@ -1045,7 +1119,7 @@ final class CookieLayers: ObservableObject {
             ? "\(count) \(count == 1 ? "name" : "names") on screen with your Board and memory notes, as text"
             : "\(count) \(count == 1 ? "line" : "lines") of the window as text, no picture"
         proof.record(.sent, feature: "screen layer", app: session.target.app, summary: summary,
-                     destination: model.name, bytes: input.text.utf8.count)
+                     destination: model.name, bytes: input.text.utf8.count, payload: session.lens == .owed ? .name : .lines, count: count)
 
         let ask = environment.ask, instructions = CookieLayerPayload.instructions(session.lens, language: session.language)
         guard let reply = await withDeadline(seconds: Self.modelDeadline, { try await ask(model.name, input.text, instructions) }) else {
@@ -1075,21 +1149,36 @@ final class CookieLayers: ObservableObject {
         guard isOn, let session else { return }
         let now = environment.now()
         if now.timeIntervalSince(session.startedAt) >= CookieLayerStop.maxDuration { return stop(.timeLimit) }
-        if phase == .active, paused == nil, let old = windowFrame, let frame = environment.windowFrame(session.target.pid) {
-            if frame.size == old.size, frame.origin != old.origin, environment.displayFrame(frame) == displayFrame {
-                let dx = frame.minX - old.minX, dy = frame.minY - old.minY
-                for index in anchors.indices { anchors[index].rect = anchors[index].rect.offsetBy(dx: dx, dy: dy) }
-                captureRect = captureRect.offsetBy(dx: dx, dy: dy)
-                windowFrame = frame
-                rebuildMarks()
-                nextRefreshAt = min(nextRefreshAt, now.addingTimeInterval(Self.settleDelay))
-            } else if frame != old {
-                settle(now)
+        if !following, phase == .active, paused == nil, windowFrame != nil {
+            following = true
+            let generation = self.generation
+            Task {
+                await self.follow(generation: generation)
+                self.following = false
             }
         }
         if !refreshing, now >= nextRefreshAt {
             nextRefreshAt = now.addingTimeInterval(Self.cadence)
             Task { await self.refresh() }
+        }
+    }
+
+    /// Where the window is now (read off the main actor): moved, the layer moves with it; resized or
+    /// scrolled, it fades until the next read.
+    private func follow(generation: Int) async {
+        guard let session else { return }
+        let frame = await environment.windowFrame(session.target.pid)
+        guard generation == self.generation, isOn, phase == .active, paused == nil, let old = windowFrame, let frame else { return }
+        let now = environment.now()
+        if frame.size == old.size, frame.origin != old.origin, environment.displayFrame(frame) == displayFrame {
+            let dx = frame.minX - old.minX, dy = frame.minY - old.minY
+            for index in anchors.indices { anchors[index].rect = anchors[index].rect.offsetBy(dx: dx, dy: dy) }
+            captureRect = captureRect.offsetBy(dx: dx, dy: dy)
+            windowFrame = frame
+            rebuildMarks()
+            nextRefreshAt = min(nextRefreshAt, now.addingTimeInterval(Self.settleDelay))
+        } else if frame != old {
+            settle(now)
         }
     }
 
@@ -1248,28 +1337,6 @@ extension CookieLayerProblem {
         let message: String
         init(_ message: String) { self.message = message }
         var errorDescription: String? { message }
-    }
-}
-
-// MARK: - The model's tool
-
-enum CookieLayerTool {
-    static let tool = HarnessRequest.Tool(
-        name: "screen_layer",
-        description: "Draws a live layer over the front window that follows it as it scrolls: translate (each line's translation laid over it), review (risky clauses, deadlines, money and auto-renewals underlined with a short reason), owed (a badge beside each name the person owes a reply or a promise, from their Board and Enkeon). Only when the person asks for one. lens stop ends it. Cookie reads the window's text itself; you don't need a screenshot.",
-        effect: "read",
-        schema: .init(properties: ["lens": .init(description: "translate, review, owed or stop"),
-                                   "language": .init(description: "translate only: the language the person named, else leave it out (their Mac's language is used).")],
-                      required: ["lens"]),
-        parallel_safe: false)
-
-    @MainActor static func perform(_ args: [String: Any], layers: CookieLayers = .shared) -> (String, Bool) {
-        let lens = (args["lens"] as? String ?? "").lowercased().trimmingCharacters(in: .whitespaces)
-        if lens == "stop" { return (layers.perform(.stop), false) }
-        guard let chosen = CookieLayerLens(rawValue: lens) else { return ("lens is translate, review, owed or stop.", true) }
-        let language = (args["language"] as? String).map { $0.trimmingCharacters(in: .whitespaces) }.flatMap { $0.isEmpty ? nil : $0 }
-        let message = layers.perform(.start(chosen, language: language.map(CookieLayerLanguage.named)))
-        return (message, !layers.isOn)
     }
 }
 
@@ -1452,6 +1519,7 @@ final class CookieLayerIndicator {
     private var cancellable: AnyCancellable?
     private var state: CookieLayerIndicatorState?
     var islandOpen = false { didSet { update() } }
+    // ponytail: the layer is the top slot, so it never moves for the others; no stack subscription.
 
     init(layers: CookieLayers = .shared) {
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
@@ -1476,16 +1544,8 @@ final class CookieLayerIndicator {
     var isShowing: Bool { state != nil && !islandOpen }
 
     private func update() {
-        guard state != nil, !islandOpen, let view = panel.contentView,
-              let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main else {
-            panel.orderOut(nil)
-            return
-        }
-        let size = view.fittingSize
-        let top = screen.safeAreaInsets.top > 0 ? screen.safeAreaInsets.top : NSStatusBar.system.thickness
-        panel.setFrame(NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - top - size.height - 4,
-                              width: size.width, height: size.height), display: true)
-        panel.orderFrontRegardless()
+        let size = state != nil && !islandOpen ? panel.contentView?.fittingSize : nil
+        CookieNotchStack.shared.place(.layer, panel: panel, size: size)
     }
 }
 

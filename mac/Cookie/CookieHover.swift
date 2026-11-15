@@ -308,6 +308,7 @@ final class CookieHoverExplainer: ObservableObject {
             }
             guard !Task.isCancelled else { return }
             let input = "what is this, and what does it do here? UNTRUSTED what the pointer rests on, read from the app: «\(reading.context)»"
+            CookieProof.shared.recordText(reading.context.count, of: "what the pointer rests on", feature: "hover", model: model)
             do {
                 let reply = try await self.harness.ask(model: model, input: input, instructions: Self.instructions,
                                                        images: images, feature: "hover") { [weak self] text in

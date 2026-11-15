@@ -112,10 +112,18 @@ enum CookieLayersTests {
             ("what's risky about skydiving", nil),
             ("check the weather", nil),
             ("who do I owe money to in this spreadsheet and why", nil),
+            // Reading and scanning are ordinary requests ("read this page" to me), never a review layer.
+            ("read this page", nil),
+            ("Read the document", nil),
+            ("scan this contract", nil),
+            ("review the contract", .start(.review, language: nil)),
         ]
         for (phrase, expected) in phrases {
             check(CookieLayerCommand.parse(phrase) == expected, "\(phrase) → \(String(describing: CookieLayerCommand.parse(phrase)))")
         }
+        check(CookieLayerCommand.parse("translate this email", selection: true) == nil
+              && CookieLayerCommand.parse("translate this email") == .start(.translate, language: nil)
+              && CookieLayerCommand.parse("stop the layer", selection: true) == .stop, "with text selected, no layer starts (the edit does)")
         check(CookieLayerLanguage.preferred(["lv-LV"]) == "Latvian" && CookieLayerLanguage.preferred(["de"]) == "German"
               && CookieLayerLanguage.preferred([]) == "English", "the Mac's first language when none is named")
         check(CookieLayerLanguage.named("klingon") == "Klingon", "a language it doesn't know is kept as said")
@@ -238,7 +246,10 @@ enum CookieLayersTests {
         refused.signedIn = false
         check(refusing.start(.owed) == .notSignedIn && refusing.start(.translate) == nil, "Owed needs Enkeon; the others don't")
         refused.frame = nil
-        check(refusing.start(.translate) == .noWindow && refusing.phase == .idle, "no window, and the earlier lens was replaced")
+        check(refusing.start(.translate) == nil, "the earlier lens is replaced")
+        await refusing.refresh()
+        await drain()
+        check(refusing.problem == .noWindow && refusing.phase == .idle && refusing.lastStop == .failed(.noWindow), "no window: its first read says so")
         refused.frame = CGRect(x: 100, y: 100, width: 800, height: 600)
         refused.lines = []
         check(refusing.start(.translate) == nil, "starts")
@@ -293,9 +304,11 @@ enum CookieLayersTests {
         let placed = layers.marks[0].rect
         fake.frame = fake.frame?.offsetBy(dx: 50, dy: -20)
         layers.tick()
+        await drain()
         check(layers.marks[0].rect == placed.offsetBy(dx: 50, dy: -20) && !layers.settling, "moved with the window")
         fake.frame = CGRect(x: 150, y: 80, width: 700, height: 600)
         layers.tick()
+        await drain()
         check(layers.settling, "fades while resizing")
         fake.clock.addTimeInterval(1)
         await layers.refresh()
@@ -309,14 +322,12 @@ enum CookieLayersTests {
         await layers.refresh()
         check(layers.paused == nil && layers.marks.count == 1, "back once it's over")
 
-        // The model's tool reaches the same controller; a new lens replaces the old one cleanly.
-        check(CookieLayerTool.tool.name == "screen_layer" && CookieLayerTool.tool.effect == "read"
-              && CookieLayerTool.perform(["lens": "sideways"], layers: layers).1, "the tool knows its lenses")
+        // A new lens replaces the old one cleanly.
         fake.lines = [line("This agreement renews automatically each year", y: 0.5), line("Fees are listed below", y: 0.4)]
         fake.reply = answering(["This agreement renews automatically each year": "renews automatically"], kind: "flag",
                                note: "Auto-renews yearly unless you cancel in time")
-        let toolStart = CookieLayerTool.perform(["lens": "review"], layers: layers)
-        check(!toolStart.1 && layers.lens == .review && layers.phase == .starting && layers.marks.isEmpty, "replaced: \(toolStart.0)")
+        let toolStart = layers.perform(.start(.review, language: nil))
+        check(layers.isOn && layers.lens == .review && layers.phase == .starting && layers.marks.isEmpty, "replaced: \(toolStart)")
         fake.clock.addTimeInterval(10)
         await layers.refresh()
         await layers.finishUpload()
@@ -333,6 +344,8 @@ enum CookieLayersTests {
         await drain()
         check(layers.phase == .idle && layers.lens == nil, "stopped")
         _ = layers.start(.translate)
+        await layers.refresh()
+        fake.clock.addTimeInterval(5)
         fake.frame = nil
         await layers.refresh()
         check(layers.lastStop == .windowClosed, "window closed")
@@ -392,11 +405,34 @@ enum CookieLayersTests {
         func source(_ name: String) -> String { (try? String(contentsOfFile: "Cookie/\(name)", encoding: .utf8)) ?? "" }
         check(source("OverlayWindow.swift").contains("CookieLayerView(marks: layers.marks"), "drawn in every display's overlay")
         let manager = source("CompanionManager.swift")
-        check(manager.contains("CookieLayerCommand.parse(transcript)") && manager.contains("CookieLayers.shared.perform(command)")
-              && manager.contains("CookieLayers.shared.showOverlay =") && manager.contains("call screen_layer"), "voice and prompt")
+        check(manager.contains("CookieLayerCommand.parse(transcript, selection: selectionAtPress != nil)") && manager.contains("CookieLayers.shared.perform(command)")
+              && manager.contains("CookieLayers.shared.showOverlay ="), "voice starts it, never with text selected")
+        // Only the person's words start a layer: the model can't (a fetched page could ask it to read the screen for ten minutes).
         let harness = source("HarnessClient.swift")
-        check(harness.contains("CookieLayerTool.tool, ") && harness.contains("CookieLayerTool.perform(args)"), "the model's tool is offered and dispatched")
+        check(!harness.contains("CookieLayerTool") && !harness.contains("screen_layer") && !manager.contains("screen_layer")
+              && !source("CookieLayers.swift").contains("screen_layer"), "the model has no layer tool")
+        check(source("CookieBackgroundRuns.swift").contains("unattended: true"), "a routine's run says it's unattended")
         check(source("NotchIsland.swift").contains("CookieLayerIndicator()"), "the notch pill")
+        // The window's frame is read off the main actor, with a back-off when the app is slow to answer.
+        check(source("CookieLayers.swift").contains("windowFrame: { pid in await CookieWindowFrames.shared.frame(pid) }"), "AX off the main actor")
+        // The three pills under the notch share one stack.
+        check(["CookieLayers.swift", "CookieCanvas.swift", "CookieProof.swift"].allSatisfy { source($0).contains("CookieNotchStack.shared.place(") },
+              "one stack for the notch pills")
+        var backoff = CookieAXBackoff()
+        let slowAt = Date(timeIntervalSince1970: 0)
+        backoff.timedOut(slowAt)
+        check(backoff.waiting(slowAt.addingTimeInterval(0.4)) && !backoff.waiting(slowAt.addingTimeInterval(0.6)), "a slow app waits half a second")
+        backoff.timedOut(slowAt)
+        backoff.timedOut(slowAt)
+        check(backoff.step == 2, "then longer each time")
+        for _ in 0..<10 { backoff.timedOut(slowAt) }
+        check(backoff.step == CookieAXBackoff.longest, "never longer than 8 s")
+        backoff.answered()
+        check(!backoff.waiting(slowAt) && backoff.step == 0, "an answer clears it")
+        let all: Set<CookieNotchStack.Slot> = [.layer, .canvas, .proof]
+        check(CookieNotchStack.offset(.layer, showing: all) == 0 && CookieNotchStack.offset(.canvas, showing: all) == 26
+              && CookieNotchStack.offset(.proof, showing: all) == 52 && CookieNotchStack.offset(.proof, showing: [.proof]) == 0
+              && CookieNotchStack.offset(.proof, showing: [.layer, .proof]) == 26, "each pill a row lower than the ones above it")
 
         print("\(checks) layer checks passed.")
     }

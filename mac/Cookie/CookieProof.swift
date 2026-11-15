@@ -17,6 +17,8 @@ final class CookieProof: ObservableObject {
     static let shared = CookieProof(file: defaultFile, screenMemory: .shared)
 
     enum Kind: String, Codable { case saw, sent, redacted, acted, remembered }
+    /// What a `.sent` row carried, so the pill says "lines" for lines and "a picture" only for one.
+    enum Payload: String, Codable { case screen, picture, lines, name, words }
 
     struct Entry: Codable, Identifiable, Equatable {
         var id: UUID
@@ -28,6 +30,10 @@ final class CookieProof: ObservableObject {
         var destination: String?
         var bytes: Int?
         var hidden: Int
+        /// Left out of rows written before payloads were kept: those read as pictures, as they were.
+        var payload: Payload? = nil
+        /// How many: lines, names or characters, as the payload counts them.
+        var count: Int? = nil
     }
 
     static let keep: TimeInterval = 7 * 24 * 3600
@@ -54,9 +60,10 @@ final class CookieProof: ObservableObject {
     }
 
     func record(_ kind: Kind, feature: String, app: String? = nil, summary: String,
-                destination: String? = nil, bytes: Int? = nil, hidden: Int = 0) {
+                destination: String? = nil, bytes: Int? = nil, hidden: Int = 0, payload: Payload? = nil, count: Int? = nil) {
         let entry = Entry(id: UUID(), date: Date(), kind: kind, feature: feature, app: app,
-                          summary: Self.clean(summary), destination: destination, bytes: bytes, hidden: hidden)
+                          summary: Self.clean(summary), destination: destination, bytes: bytes, hidden: hidden,
+                          payload: payload, count: count)
         entries.insert(entry, at: 0)
         prune()
         save()
@@ -67,8 +74,17 @@ final class CookieProof: ObservableObject {
         for image in images {
             record(.sent, feature: feature, app: image.source == "screen" ? Self.frontApp : nil,
                    summary: image.source == "screen" ? Self.screenSummary : "an attached picture", destination: model,
-                   bytes: Data(base64Encoded: image.data)?.count ?? image.data.count * 3 / 4)
+                   bytes: Data(base64Encoded: image.data)?.count ?? image.data.count * 3 / 4,
+                   payload: image.source == "screen" ? .screen : .picture)
         }
+    }
+
+    /// Words going to the model (a selection, what the pointer rests on, what Cookie read earlier):
+    /// how many characters and what kind, never the words.
+    func recordText(_ characters: Int, of what: String, feature: String, app: String? = nil, model: String) {
+        guard characters > 0 else { return }
+        record(.sent, feature: feature, app: app, summary: "\(characters) \(characters == 1 ? "character" : "characters") of \(what)",
+               destination: model, bytes: characters, payload: .words, count: characters)
     }
 
     /// One row gone, and the copy Cookie kept of it here (the words it read off that screen).
@@ -101,8 +117,19 @@ final class CookieProof: ObservableObject {
         guard !sent.isEmpty else { return nil }
         // ponytail: hidden counts the last minute's redactions, since a circled area may be sent a while after it was checked.
         let hidden = entries.filter { $0.kind == .redacted && now.timeIntervalSince($0.date) < 60 }.reduce(0) { $0 + $1.hidden }
-        let noun = sent.allSatisfy { $0.summary == screenSummary } ? "screen" : "picture"
-        return "Sent \(sent.count) \(noun)\(sent.count == 1 ? "" : "s")" + (hidden > 0 ? " · \(hidden) hidden" : "")
+        let parts = [Payload.screen, .picture, .lines, .name, .words].compactMap { payload -> String? in
+            let rows = sent.filter { ($0.payload ?? ($0.summary == screenSummary ? .screen : .picture)) == payload }
+            guard !rows.isEmpty else { return nil }
+            let total = payload == .screen || payload == .picture ? rows.count : rows.reduce(0) { $0 + max(1, $1.count ?? 1) }
+            switch payload {
+            case .screen: return "\(total) \(total == 1 ? "screen" : "screens")"
+            case .picture: return "\(total) \(total == 1 ? "picture" : "pictures")"
+            case .lines: return "\(total) \(total == 1 ? "line" : "lines")"
+            case .name: return total == 1 ? "a name" : "\(total) names"
+            case .words: return "\(total) \(total == 1 ? "character" : "characters")"
+            }
+        }
+        return "Sent " + parts.joined(separator: " · ") + (hidden > 0 ? " · \(hidden) hidden" : "")
     }
 
     static let screenSummary = "a picture of the screen"
@@ -154,6 +181,45 @@ final class CookieProof: ObservableObject {
     }
 }
 
+// MARK: - Notch pills
+
+/// The small pills under the notch, one stack: a live layer first (Esc to stop it), then the canvas,
+/// then Proof's meter. Each pill says whether it's showing; each takes the next free place down, and
+/// moves up the moment one above it goes, so no two are ever drawn over each other.
+@MainActor
+final class CookieNotchStack: ObservableObject {
+    enum Slot: Int, Comparable, CaseIterable {
+        case layer, canvas, proof
+        static func < (a: Slot, b: Slot) -> Bool { a.rawValue < b.rawValue }
+    }
+
+    static let shared = CookieNotchStack()
+    static let pill: CGFloat = 22
+    static let gap: CGFloat = 4
+
+    @Published private(set) var showing: Set<Slot> = []
+
+    /// How far below the notch a slot sits, given what's showing.
+    static func offset(_ slot: Slot, showing: Set<Slot>) -> CGFloat {
+        CGFloat(showing.filter { $0 < slot }.count) * (pill + gap)
+    }
+
+    /// Puts the panel in its place (or hides it when `size` is nil) and says so to the others.
+    func place(_ slot: Slot, panel: NSPanel, size: CGSize?) {
+        guard let size, let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main else {
+            if showing.contains(slot) { showing.remove(slot) }
+            panel.orderOut(nil)
+            return
+        }
+        if !showing.contains(slot) { showing.insert(slot) }
+        let top = (screen.safeAreaInsets.top > 0 ? screen.safeAreaInsets.top : NSStatusBar.system.thickness)
+            + Self.offset(slot, showing: showing)
+        panel.setFrame(NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - top - size.height - 4,
+                              width: size.width, height: size.height), display: true)
+        panel.orderFrontRegardless()
+    }
+}
+
 // MARK: - Notch meter
 
 /// The pill under the notch while something was sent in the last 10 s. Its own small panel, so
@@ -164,6 +230,7 @@ final class CookieProofMeter {
     private var text: String?
     private var timer: Timer?
     private var cancellable: AnyCancellable?
+    private var stacked: AnyCancellable?
     var islandOpen = false { didSet { update() } }
 
     init(proof: CookieProof = .shared, open: @escaping () -> Void) {
@@ -179,6 +246,9 @@ final class CookieProofMeter {
         cancellable = proof.$entries.receive(on: RunLoop.main).sink { [weak self] entries in
             self?.refresh(entries, open: open)
         }
+        // Moves when a pill above it comes or goes.
+        stacked = CookieNotchStack.shared.$showing.map { $0.subtracting([.proof]) }
+            .removeDuplicates().receive(on: RunLoop.main).sink { [weak self] _ in self?.update() }
     }
 
     /// The pill's words from the ledger, checked again each second until the last send is 10 s old.
@@ -197,19 +267,8 @@ final class CookieProofMeter {
     }
 
     private func update() {
-        guard text != nil, !islandOpen, let view = panel.contentView,
-              let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main else {
-            panel.orderOut(nil)
-            return
-        }
-        let size = view.fittingSize
-        let top = screen.safeAreaInsets.top > 0 ? screen.safeAreaInsets.top : NSStatusBar.system.thickness
-            // Below the layer's pill when a live screen layer is on.
-            + (CookieLayers.shared.indicator != nil ? CookieLayerIndicator.height + 4 : 0)
-            + (CookieCanvas.shared.indicator != nil ? CookieCanvasIndicator.height + 4 : 0)
-        panel.setFrame(NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - top - size.height - 4,
-                              width: size.width, height: size.height), display: true)
-        panel.orderFrontRegardless()
+        let size = text != nil && !islandOpen ? panel.contentView?.fittingSize : nil
+        CookieNotchStack.shared.place(.proof, panel: panel, size: size)
     }
 }
 

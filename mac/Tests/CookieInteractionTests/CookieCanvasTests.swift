@@ -200,8 +200,9 @@ enum CookieCanvasTests {
         check(CookieCanvasCommand.parse("Stop canvas.") == .stop && CookieCanvasCommand.parse("end the canvas") == .stop, "stop canvas stops")
         check(CookieCanvasCommand.parse("pause the canvas") == .pause && CookieCanvasCommand.parse("resume canvas") == .resume, "pause and resume")
         check(CookieCanvasCommand.parse("undo") == .undo && CookieCanvasCommand.parse("scratch that") == .undo, "undo")
-        check(CookieCanvasCommand.parse("make it a deck") == .deck && CookieCanvasCommand.parse("turn this into slides") == .deck, "make it a deck")
-        check(CookieCanvasCommand.parse("save canvas") == .save, "save canvas")
+        check(CookieCanvasCommand.parse("make it a deck") == .deck(named: false) && CookieCanvasCommand.parse("turn this into slides") == .deck(named: false)
+              && CookieCanvasCommand.parse("turn the canvas into slides") == .deck(named: true), "make it a deck")
+        check(CookieCanvasCommand.parse("save canvas") == .save(named: true) && CookieCanvasCommand.parse("save this") == .save(named: false), "save canvas")
         for edit in ["move pricing under strategy", "delete that", "remove the free tier", "rename pricing to price plans",
                      "connect onboarding to retention", "merge ads and seo"] {
             check(CookieCanvasCommand.parse(edit) == .edit(edit), "\"\(edit)\" is an edit")
@@ -209,7 +210,7 @@ enum CookieCanvasTests {
         for idea in ["we should move faster on pricing", "I want to delete the old plan", "move fast and break things",
                      "don't delete that", "undo the damage the last launch did", "the deck is ready", "how do I start a canvas in Figma",
                      "move the launch to march because the team needs more time to test the onboarding flow properly",
-                     "pricing is the hardest part"] {
+                     "pricing is the hardest part", "let's think this through", "let's think it through"] {
             check(CookieCanvasCommand.parse(idea) == nil, "\"\(idea)\" is an idea, not a command")
         }
 
@@ -283,6 +284,13 @@ enum CookieCanvasTests {
         check(fake.store.session(fake.thread).showing && fake.store.session(fake.thread).artifactID == canvas.artifactID, "the workspace shows it")
         check(canvas.indicator?.text == "Canvas · listening · 0 ideas", "the notch says it's listening")
         check(canvas.accepts(.undo) && canvas.accepts(.edit("delete that")), "with a canvas on, its commands are its")
+        check(canvas.accepts(CookieCanvasCommand.parse("make it a deck")!) && canvas.accepts(CookieCanvasCommand.parse("save this")!),
+              "listening and on screen, a bare \"make it a deck\" is the canvas's")
+        // Paused, the microphone isn't the canvas's: "undo" and "delete that" are someone else's words.
+        canvas.pause(.asked)
+        check(!canvas.accepts(.undo) && !canvas.accepts(.edit("delete that")) && canvas.accepts(.resume) && canvas.accepts(.stop),
+              "paused, only the canvas's own commands are its")
+        canvas.resume()
 
         // A pause ends what was said, and it goes up with the canvas.
         fake.reply = { _, _ in canvasJSON([("pricing", "Pricing tiers", "Strategy"), ("teams", "Team plan", "Strategy")]) }
@@ -408,7 +416,7 @@ enum CookieCanvasTests {
         check(canvas.phase == .listening, "it listens again once the microphone is free")
 
         // "Make it a deck": the normal run, paused meanwhile, and where the file landed.
-        check(canvas.perform(.deck).hasPrefix("Making a deck"), "make it a deck starts")
+        check(canvas.perform(.deck(named: true)).hasPrefix("Making a deck"), "make it a deck starts")
         await drain()
         check(fake.decks.count == 1 && fake.decks[0].request.contains("make_deck") && fake.decks[0].shown == "Make a deck from my canvas “Launch plan”",
               "the deck goes through the normal run with make_deck")
@@ -423,7 +431,10 @@ enum CookieCanvasTests {
         check(canvas.save().hasPrefix("Saved “Launch plan”") && artifact()?.current.summary == "Saved: Launch plan", "save keeps a named version")
         await say(canvas, fake, "stop canvas")
         check(canvas.phase == .stopped && !fake.recording && canvas.hasCanvas && !canvas.isOn, "stop canvas ends listening and keeps the canvas")
-        check(canvas.accepts(.deck) && !canvas.accepts(.undo), "a stopped canvas can still become a deck")
+        check(canvas.accepts(.deck(named: true)) && !canvas.accepts(.undo), "a stopped canvas can still become a deck")
+        check(canvas.accepts(CookieCanvasCommand.parse("turn the canvas into slides")!) && canvas.accepts(CookieCanvasCommand.parse("save the canvas")!)
+              && !canvas.accepts(CookieCanvasCommand.parse("turn this into slides")!) && !canvas.accepts(CookieCanvasCommand.parse("save this")!)
+              && !canvas.accepts(CookieCanvasCommand.parse("scratch that")!), "stopped, only words that name the canvas reach it")
         let afterStop = fake.asked.count
         await run(canvas, fake, seconds: 2, saying: "hello")
         check(fake.asked.count == afterStop && fake.starts > 0 && !fake.recording, "nothing is heard after stop")
@@ -464,6 +475,12 @@ enum CookieCanvasTests {
         quiet.clock = quiet.clock.addingTimeInterval(181)
         still.tick()
         check(still.phase == .paused(.quiet), "three quiet minutes pause it")
+        quiet.clock = quiet.clock.addingTimeInterval(CookieCanvas.quietStop - 1)
+        still.tick()
+        check(still.phase == .paused(.quiet), "a quiet pause waits a while")
+        quiet.clock = quiet.clock.addingTimeInterval(2)
+        still.tick()
+        check(still.phase == .stopped && still.hasCanvas, "ten quiet minutes later it stops, keeping the canvas")
 
         // Wiring: a canvas started like the console button does, with fake speech and model, is a drawn diagram.
         let wired = Fake()
