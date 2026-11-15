@@ -10,15 +10,23 @@ struct HomeView: View {
     private let gap: CGFloat = 6
 
     var body: some View {
-        VStack(spacing: 10) {
-            if !model.isSetUp { SetupSteps().frame(maxWidth: .infinity, alignment: .leading).card() }
-            metrics.rise(0.05)
-            words.frame(maxWidth: .infinity, maxHeight: .infinity).rise(0.1)
+        let summary = model.history.weeklySummary()
+        GeometryReader { geometry in
+            let compact = CookieWeeklyCardPresentation.isCompact(availableHeight: geometry.size.height)
+            VStack(spacing: 10) {
+                if !model.isSetUp { SetupSteps().frame(maxWidth: .infinity, alignment: .leading).card() }
+                metrics.rise(0.05)
+                if summary.dictations > 0 {
+                    CookieWeeklyShareCard(summary: summary, compact: compact)
+                        .frame(height: compact ? CookieWeeklyCardPresentation.compactHeight : CookieWeeklyCardPresentation.expandedHeight)
+                }
+                words.frame(maxWidth: .infinity, maxHeight: .infinity).rise(0.1)
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 14)
+            .padding(.bottom, 18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .padding(.horizontal, 22)
-        .padding(.top, 14)
-        .padding(.bottom, 18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     // MARK: Numbers

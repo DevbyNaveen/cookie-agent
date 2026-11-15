@@ -1,6 +1,27 @@
 import EnkeonVoiceKit
 import Foundation
 
+struct CookieWeeklySummary: Equatable {
+    let weekStarting: Date
+    let words: Int
+    let dictations: Int
+    let activeDays: Int
+    let averageWordsPerMinute: Int?
+
+    static func calculate(records: [DictationRecord], now: Date = Date(), calendar: Calendar = .current) -> Self {
+        let interval = calendar.dateInterval(of: .weekOfYear, for: now)
+            ?? DateInterval(start: calendar.startOfDay(for: now), duration: 7 * 86_400)
+        let kept = records.filter { $0.outcome != .undone && $0.date >= interval.start && $0.date < interval.end }
+        let words = kept.reduce(0) { $0 + $1.wordCount }
+        let timed = kept.filter { $0.durationSeconds >= 1 }
+        let seconds = timed.reduce(0) { $0 + $1.durationSeconds }
+        let wordsPerMinute = seconds > 0 ? Int((Double(timed.reduce(0) { $0 + $1.wordCount }) * 60 / seconds).rounded()) : nil
+        let activeDays = Set(kept.map { calendar.startOfDay(for: $0.date) }).count
+        return Self(weekStarting: interval.start, words: words, dictations: kept.count,
+                    activeDays: activeDays, averageWordsPerMinute: wordsPerMinute)
+    }
+}
+
 /// Every finished dictation, on this Mac only: ~/Library/Application Support/Enkeon/history.json.
 /// Turned off in Settings, nothing is written and what was kept is deleted.
 @MainActor
@@ -32,6 +53,7 @@ final class HistoryStore: ObservableObject {
 
     func add(_ record: DictationRecord) {
         guard isEnabled else { return }
+        records.removeAll { $0.id == record.id }
         records.insert(record, at: 0)
         if records.count > Self.limit { records.removeLast(records.count - Self.limit) }
         save()
@@ -98,6 +120,11 @@ final class HistoryStore: ObservableObject {
     var notesThisWeek: Int {
         let since = Date().addingTimeInterval(-7 * 86_400)
         return records.filter { $0.outcome == .remembered && $0.date >= since }.count
+    }
+
+    /// A calendar-week summary from this Mac's kept dictation history. It makes no typing-time claim.
+    func weeklySummary(now: Date = Date(), calendar: Calendar = .current) -> CookieWeeklySummary {
+        CookieWeeklySummary.calculate(records: records, now: now, calendar: calendar)
     }
 
     private func perDay(_ days: Int, _ value: (DictationRecord) -> Double) -> [Double] {
