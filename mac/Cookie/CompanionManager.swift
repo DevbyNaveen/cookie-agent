@@ -2139,6 +2139,10 @@ final class CompanionManager: ObservableObject {
                     streamDisplayTask?.cancel(); streamDisplayTask = nil
                     streamingText = ""
                 }
+                // Full access: no "Show my screen" button, Cookie just looks and answers again.
+                if reply.wantsScreen == true && CookieFullAccess.isOn {
+                    Task { @MainActor in self.showScreenForLastRequest() }
+                }
 
                 CookieWorkspaceStore.shared.setSession(threadID) { state in
                     state.activity = String(Self.visibleReply(spokenText).prefix(1500))
