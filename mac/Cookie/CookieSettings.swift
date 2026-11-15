@@ -734,6 +734,7 @@ private struct PrivacyPage: View {
     @ObservedObject private var apprentice = CookieApprentice.shared
     @State private var confirmClearApprentice = false
     @AppStorage(Redactor.hideSecretsKey) private var hideSecrets = true
+    @AppStorage(CookieFullAccess.key) private var fullAccess = false
     @AppStorage(Redactor.blurFacesKey) private var blurFaces = true
     @AppStorage(ChatLock.enabledKey) private var requireTouchID = false
     @AppStorage(CaptureGuard.userBlockedKey) private var userBlockedRaw = ""
@@ -775,6 +776,16 @@ private struct PrivacyPage: View {
                 }) {
                     CookieMenuLabel(title: "Add", symbol: "plus")
                 }
+            }
+        }
+
+        SettingsGroup(label: "Full access") {
+            SettingsRow(title: "Never ask, just do it",
+                        caption: fullAccess
+                            ? "On. Cookie opens, types, clicks, sends and deletes without a card, in your Mac and your connected apps. Everything it does is listed in Privacy Proof."
+                            : "Off. Cookie shows a card before it opens, types, sends or deletes. Turn on to let it act straight away.",
+                        symbol: "bolt.fill", tint: CK.accent, divider: false) {
+                SettingsSwitch(title: "Full access", isOn: $fullAccess)
             }
         }
 

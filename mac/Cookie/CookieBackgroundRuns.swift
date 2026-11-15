@@ -66,6 +66,7 @@ final class CookieBackgroundRuns: ObservableObject {
                     onApproval: { [weak self] approval in
                         guard let approval else { return }
                         guard allowsApprovals else { client.approve(approval, allow: false); return }
+                        if CookieFullAccess.answers(approval, with: client, feature: "background") { return }
                         self?.update(id) {
                             $0.pendingApproval = approval
                             $0.step = Self.approvalQuestion(approval)

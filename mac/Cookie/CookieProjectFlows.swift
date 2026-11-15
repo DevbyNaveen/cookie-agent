@@ -83,6 +83,7 @@ final class CookieProjectJobs: ObservableObject {
                     }, onApproval: { approval in
                         guard self?.generations[thread] == generation else { return }
                         if let approval, approval.actions.allSatisfy({ $0.tool == "workspace" }) { client.approve(approval, allow: true) }
+                        else if CookieFullAccess.answers(approval, with: client, feature: "project") {}
                         else {
                             self?.approvals[thread] = approval
                             store.setSession(thread) { $0.jobState = approval == nil ? "Running" : "Needs your decision" }

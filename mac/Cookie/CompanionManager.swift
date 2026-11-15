@@ -2034,6 +2034,10 @@ final class CompanionManager: ObservableObject {
                     },
                     onApproval: { approval in
                         guard !Task.isCancelled, self.replyGeneration == generation else { return }
+                        if CookieFullAccess.answers(approval, with: self.harness, feature: "question") {
+                            steps.append(CookieStep(title: "Allowed (Full access)", seconds: 0))
+                            return
+                        }
                         // Your Privacy & safety choice can answer for you; the step says so.
                         // Inside the task the person approved: write actions in its apps, nothing risky.
                         // Looking at the time machine needs no card; putting something back does.

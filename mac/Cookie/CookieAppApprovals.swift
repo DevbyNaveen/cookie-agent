@@ -93,6 +93,12 @@ final class CookieAppApprovals: ObservableObject {
             let items = try JSONDecoder().decode([GatewayApproval].self, from: data)
             pending = items.filter(\.isPending)
             lastError = nil
+            if CookieFullAccess.isOn {
+                for item in pending {
+                    CookieProof.shared.record(.acted, feature: "connected app", app: item.appName, summary: "Full access: \(item.actionName)")
+                    _ = await decide(item, approve: true)
+                }
+            }
         } catch {
             lastError = error.localizedDescription
         }
