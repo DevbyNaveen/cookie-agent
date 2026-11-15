@@ -50,7 +50,7 @@ final class CookieSceneStage: ObservableObject {
     private(set) var spinning: Bool
     /// Radians a second while spinning; "faster" and "slower" move it within `spinRates`.
     private(set) var spinRate = CookieSceneStage.defaultSpinRate
-    private(set) var turn = simd_quatf(angle: -0.5, axis: [0, 1, 0])
+    private(set) var turn = CookieSceneCamera.turn
     /// A spoken turn in progress: where it started, how far it goes, how long it has run.
     private var yawTurn: (base: simd_quatf, degrees: Float, elapsed: Float)?
     /// Every label shows at once ("label everything"), past the usual six.
@@ -64,7 +64,7 @@ final class CookieSceneStage: ObservableObject {
     private var initialExplosionStarted = false
     private var explosionTask: Task<Void, Never>?
 
-    private static let fieldOfView: Float = 34
+    private static let fieldOfView = CookieSceneCamera.fieldOfView
     static let defaultSpinRate: Float = 0.35
     static let spinRates: ClosedRange<Float> = 0.1...1.6
     /// Each "faster" or "slower" multiplies or divides the rate by this.
@@ -247,7 +247,7 @@ final class CookieSceneStage: ObservableObject {
             zoom = 1
             yawTurn = nil
             spinRate = Self.defaultSpinRate
-            turn = simd_quatf(angle: -0.5, axis: [0, 1, 0])
+            turn = CookieSceneCamera.turn
             root.orientation = turn
             placeCamera()
             pauseTeaching()
@@ -319,12 +319,10 @@ final class CookieSceneStage: ObservableObject {
         onInteract()
     }
 
-    /// Far enough back that the scene's bounding ball fits the view's height, a little from above.
+    /// Far enough back that the scene's bounding ball fits the view's height, a little from above
+    /// (`CookieSceneCamera`, which the build check sees through too).
     private func placeCamera() {
-        let half = Self.fieldOfView / 2 * .pi / 180
-        let radius = max(0.05, scene.parts.map { simd_length(scene.place(of: $0, exploded: exploded)) + $0.reach }.max() ?? 0.05)
-        let distance = radius / sin(half) * 1.12 / zoom
-        camera.look(at: .zero, from: simd_normalize(SIMD3<Float>(0, 0.32, 1)) * distance, relativeTo: nil)
+        camera.look(at: .zero, from: CookieSceneCamera.eye(radius: CookieSceneCamera.radius(scene, exploded: exploded), zoom: zoom), relativeTo: nil)
     }
 
     /// One frame's motion: a spoken turn in progress, else the spin.
@@ -444,7 +442,7 @@ struct CookieSceneView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    static let sceneSize = CGSize(width: 520, height: 360)
+    static let sceneSize = CookieSceneCamera.viewport
 
     private var paper: Color { CookieCardView.paper(colorScheme) }
     private var inkText: Color { CookieCardView.inkText(colorScheme) }

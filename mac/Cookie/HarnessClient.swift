@@ -226,6 +226,8 @@ final class HarnessClient {
     /// Said with the next reply when the helper had to be started again.
     private(set) var restartNote: String?
     private var runCounter = 0
+    /// The 3D models `build_model` made this run, shown by the reply's [SCENE:#id].
+    let models = CookieModelShelf()
 
     init() {
         // A write to a helper that just died must fail, not kill Cookie.
@@ -244,6 +246,7 @@ final class HarnessClient {
         try ensureRunning(environment: CookieModelSettings.helperEnvironment(model: model, enkeonKey: enkeonKey))
         CookieProof.shared.recordSent(images, model: model, feature: feature)
         runCounter += 1
+        models.beginRun()
         let request = HarnessRequest.Run(
             id: "cookie-\(runCounter)", model: model, input: text, instructions: instructions,
             tools: Self.tools(backgroundProject: backgroundProject, unattended: unattended, workspace: workspaceThreadID != nil),
@@ -261,7 +264,7 @@ final class HarnessClient {
     /// There is no layer tool: a layer reads the window and sends it for ten minutes, so only the
     /// person's own words start one, never a page or a screen the model read.
     static func tools(backgroundProject: Bool, unattended: Bool, workspace: Bool) -> [HarnessRequest.Tool] {
-        let mac = [CookieOpen.tool, CookieOpenFile.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieHistorySearch.tool, CookieDecisionRecall.tool, CookieRoutineWords.tool]
+        let mac = [CookieOpen.tool, CookieOpenFile.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieHistorySearch.tool, CookieDecisionRecall.tool, CookieRoutineWords.tool, CookieModelShelf.tool]
             + (unattended ? [] : [CookieTimeMachineTool.tool]) + MacOperator.tools
         return (backgroundProject ? [] : mac) + (workspace ? [CookieWorkspaceTool.tool] : [])
     }
@@ -488,7 +491,7 @@ final class HarnessClient {
                 let plain = ["recall": "Looked in Enkeon", "remember": "Saving to Enkeon", "web_search": "Searching the web",
                              "fetch_page": "Reading a page", "fetch_pages": "Reading pages", "check_quote": "Checking a quote",
                              "connector_actions": "Looking at your connected apps", "connector_call": "Using a connected app",
-                             "use_skill": "Opening a skill", "look": "Looking at the app", "time_machine": "Looking at what Cookie changed",
+                             "use_skill": "Opening a skill", "build_model": "Building a model", "look": "Looking at the app", "time_machine": "Looking at what Cookie changed",
                              "ghost_look": "Reading a background app with Accessibility", "ghost_press": "Pressing an observed background control",
                              "ghost_set_value": "Updating an observed background value", "ghost_take_screen": "Waiting for screen approval"]
                 run.onStep(plain[name] ?? "Using \(name.replacingOccurrences(of: "_", with: " "))")
@@ -521,6 +524,14 @@ final class HarnessClient {
                     if !result.isError, let first = result.output.split(separator: "\n").first {
                         run.onStep(first.hasSuffix(".") ? String(first.dropLast()) : String(first))
                     }
+                    self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.output, is_error: result.isError)))
+                }
+                return
+            }
+            if name == CookieModelShelf.tool.name {
+                Task { @MainActor in
+                    let result = await self.models.build(args)
+                    run.onStep(result.isError ? "Couldn't build the model" : "Built a model and checked how it looks")
                     self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.output, is_error: result.isError)))
                 }
                 return

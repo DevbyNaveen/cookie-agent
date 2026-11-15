@@ -1088,10 +1088,10 @@ final class CompanionManager: ObservableObject {
     for example: "a request goes through three hops [CARD {"kind":"flow","title":"where a request goes","nodes":[{"id":"b","label":"browser"},{"id":"g","label":"gateway"},{"id":"e","label":"engine"}],"edges":[{"from":"b","to":"g"},{"from":"g","to":"e"}]}] your browser hands it to the gateway, which checks who you are and passes it to the engine."
 
     3d models:
-    only for a physical thing whose shape matters (how an engine is laid out, what sits inside a pump, how gears mesh), build a desktop model from machine parts, floating directly over the desktop without a card background: [SCENE {json}] inline at the word where it should appear. its labels appear one by one as you say the sentence after the tag, so that sentence names the labelled parts in the order you listed them. the user can turn it and zoom. Cookie's pointer tracks the currently named part, which lights up; keep labels short, name each exactly in parts order, and use a cutaway or exploded layout when that makes internal parts visible. avoid continuous spin while explaining. a model or a card, never both, usually neither; never for ideas, numbers or anything on the screen. shape:
+    only for a physical thing whose shape matters (how an engine is laid out, what sits inside a pump, how gears mesh), build a desktop model from machine parts, floating directly over the desktop without a card background. build it first with build_model (scene: the json below); it answers with the id, what it repaired, errors naming the part and field it couldn't build, and a render check from the camera the person will see: each part's box on the view, what hides behind what, what is sealed inside an opaque part, labels that collide. read that; if errors or issues matter, fix them and build once more (two rebuilds at most, then use what you have). then put its show tag [SCENE:#id] at the word where it should appear. (an inline [SCENE {json}] still shows, unchecked.) its labels appear one by one as you say the sentence after the tag, so that sentence names the labelled parts in the order you listed them. the user can turn it and zoom. Cookie's pointer tracks the currently named part, which lights up; keep labels short, name each exactly in parts order, and use a cutaway or exploded layout when that makes internal parts visible. avoid continuous spin while explaining. a model or a card, never both, usually neither; never for ideas, numbers or anything on the screen. shape:
     {"title":"...","parts":[{"id":"a","label":"...","shape":"gear","radius":0.3,"teeth":24,"position":[0,0,0],"rotation":[0,0,0],"color":"brass","finish":"polished","cut":false,"group":"..."}],"explode":true,"spin":false}
     pick the shape that is the real part and set its numbers by name (metres, each within ten; leave out any you don't need): box width,height,depth,corner · sphere radius · cylinder, cone radius,height · capsule radius,height · torus radius,tube · tube radius,inner,length (casings, ducts, sleeves) · gear radius,thickness,teeth,bore · bevelGear the same plus cone · rack length,height,thickness,teeth · shaft radius,length,steps [[radius,length]…] · bearing radius,inner,width · bladeRing tip,hub,thickness,blades,twist (fans, compressors, turbines) · propeller radius,blades,pitch,hub · spring radius,length,wire,coils · pipe points [[x,y,z]…],radius,bend · piston radius,height · crank throw,radius,thickness · rod length,radius,small,thickness · valve radius,length,stem · wheel radius,width,hub,spokes · screw radius,length,pitch,head · arrow length,radius · lathe profile [[radius,y]…] spun round y · extrude outline [[x,y]…],depth,holes [[[x,y]…]] · sweep path [[x,y,z]…] with radius, or width and height for a flat bar. round parts stand along y (gears, wheels and blade rings turn about y; rotation [0,0,90] lays them along x); extrude outlines lie in x–y with depth along z. up to 64 parts, ids unique; rotation in degrees; colors amber, cream, graphite, sky, mint, rose, steel, glass, copper, brass, rubber, plastic-white, carbon; finish matte, satin or polished; label optional, a few words, only on parts you'll name; cut makes a part see-through to show what's inside; group joins parts that move and explode together (a spool, a gear train); explode pulls the parts apart as the model appears; spin turns it slowly. Cookie repairs small slips and notes what it fixed; a part it can't read is left out and the user is told.
-    for example: "a jet engine is a row of stages in a tube [SCENE {"title":"inside a jet engine","parts":[{"id":"case","shape":"tube","radius":0.62,"inner":0.58,"length":2.4,"rotation":[0,0,90],"color":"steel","cut":true},{"id":"fan","label":"fan","shape":"bladeRing","tip":0.56,"hub":0.14,"thickness":0.12,"blades":18,"twist":35,"position":[-1,0,0],"rotation":[0,0,90],"color":"graphite","group":"spool"},{"id":"comp","label":"compressor","shape":"bladeRing","tip":0.42,"hub":0.2,"thickness":0.07,"blades":30,"twist":15,"position":[-0.55,0,0],"rotation":[0,0,90],"color":"sky","group":"spool"},{"id":"burn","label":"combustor","shape":"tube","radius":0.36,"inner":0.24,"length":0.5,"rotation":[0,0,90],"color":"amber"},{"id":"turb","label":"turbine","shape":"bladeRing","tip":0.36,"hub":0.17,"thickness":0.09,"blades":24,"twist":20,"position":[0.45,0,0],"rotation":[0,0,90],"color":"copper","finish":"polished","group":"spool"},{"id":"shaft","shape":"shaft","radius":0.04,"length":1.6,"position":[-0.25,0,0],"rotation":[0,0,90],"color":"steel","group":"spool"},{"id":"nozzle","label":"nozzle","shape":"cone","radius":0.32,"height":0.45,"position":[0.88,0,0],"rotation":[0,0,-90],"color":"graphite","finish":"matte"}]}] air comes in through the fan, the compressor squeezes it, it burns in the combustor, spins the turbine, and leaves through the nozzle."
+    for example: build_model with scene {"title":"inside a jet engine","parts":[{"id":"case","shape":"tube","radius":0.62,"inner":0.58,"length":2.4,"rotation":[0,0,90],"color":"steel","cut":true},{"id":"fan","label":"fan","shape":"bladeRing","tip":0.56,"hub":0.14,"thickness":0.12,"blades":18,"twist":35,"position":[-1,0,0],"rotation":[0,0,90],"color":"graphite","group":"spool"},{"id":"comp","label":"compressor","shape":"bladeRing","tip":0.42,"hub":0.2,"thickness":0.07,"blades":30,"twist":15,"position":[-0.55,0,0],"rotation":[0,0,90],"color":"sky","group":"spool"},{"id":"burn","label":"combustor","shape":"tube","radius":0.36,"inner":0.24,"length":0.5,"rotation":[0,0,90],"color":"amber"},{"id":"turb","label":"turbine","shape":"bladeRing","tip":0.36,"hub":0.17,"thickness":0.09,"blades":24,"twist":20,"position":[0.45,0,0],"rotation":[0,0,90],"color":"copper","finish":"polished","group":"spool"},{"id":"shaft","shape":"shaft","radius":0.04,"length":1.6,"position":[-0.25,0,0],"rotation":[0,0,90],"color":"steel","group":"spool"},{"id":"nozzle","label":"nozzle","shape":"cone","radius":0.32,"height":0.45,"position":[0.88,0,0],"rotation":[0,0,-90],"color":"graphite","finish":"matte"}]} answers "id":"inside-a-jet-engine" with nothing to fix, and the reply says "a jet engine is a row of stages in a tube [SCENE:#inside-a-jet-engine] air comes in through the fan, the compressor squeezes it, it burns in the combustor, spins the turbine, and leaves through the nozzle."
 
     follow-ups:
     when there's a natural next thing the user might ask you to do, put up to two short suggestions at the end, each as [NEXT:a few words in the user's voice], for example [NEXT:show me the shortcut]. skip them when nothing obvious follows. they are shown as buttons, never spoken.
@@ -1215,6 +1215,14 @@ final class CompanionManager: ObservableObject {
     /// The reply drew a card or scene and none of it could be shown.
     static func pictureFailed(_ tags: [CookieReplyTag], shown: Bool) -> Bool {
         !shown && tags.contains { $0.kind == "CARD" || $0.kind == "SCENE" }
+    }
+
+    /// The one line said when the reply's picture can't be shown: a model that couldn't be built (an id
+    /// nobody built, a scene that can't be read) says so even when a card took its place.
+    static func pictureFailureNote(_ tags: [CookieReplyTag], scene: Bool, cards: Bool) -> String? {
+        if !scene, tags.contains(where: { $0.kind == "SCENE" }) { return "I couldn't build that model." }
+        guard pictureFailed(tags, shown: scene || cards) else { return nil }
+        return "The picture for this didn't come through, so the explanation above is text only. Ask me to build it in the workspace to try again."
     }
 
 
@@ -1900,7 +1908,7 @@ final class CompanionManager: ObservableObject {
                         else { change() }
                     }
                     if speakReply {
-                        if let scene = tags.compactMap(CookieScene.init(tag:)).first {
+                        if let scene = tags.lazy.compactMap(self.harness.models.scene).first {
                             self.cardPresenter.dismiss()
                             self.showOverlayForDrawing()
                             self.scenePresenter.prepare(scene, clock: self.speechClock)
@@ -2085,7 +2093,8 @@ final class CompanionManager: ObservableObject {
                 // A card that doesn't fit the catalog is dropped here; the words still go out.
                 // A scene is the reply's one picture: with one, cards are left out (they'd share the spot).
                 let visualTags = requestMode == .work || requestMode == .edit ? [] : tagged.tags
-                let scene = visualTags.lazy.compactMap(CookieScene.init(tag:)).first
+                // [SCENE:#id] is a model build_model made this run; [SCENE {json}] is read where it stands.
+                let scene = visualTags.lazy.compactMap(harness.models.scene).first
                 let cards = scene != nil ? [] : visualTags.compactMap(CookieCard.init(tag:))
                 if scene != nil { cardPresenter.dismiss(); showOverlayForDrawing() }
                 else if !cards.isEmpty { scenePresenter.dismiss(); showOverlayForDrawing() }
@@ -2100,11 +2109,11 @@ final class CompanionManager: ObservableObject {
                 // Only a picture the model actually drew and Cookie couldn't show is a failure; a question
                 // that merely mentions a diagram, or an answer that chose words, is not.
                 // A model shown without a part it couldn't build says so, never silently.
-                if let note = CookieScene.leftOutNote(visualTags.lazy.compactMap(CookieScene.read(tag:)).first { $0.scene != nil }) {
+                if let note = CookieScene.leftOutNote(visualTags.lazy.compactMap(harness.models.reading).first { $0.scene != nil }) {
                     spokenText += "\n\n" + note
                 }
-                if Self.pictureFailed(visualTags, shown: !cards.isEmpty || scene != nil) {
-                    spokenText += "\n\nThe picture for this didn't come through, so the explanation above is text only. Ask me to build it in the workspace to try again."
+                if let note = Self.pictureFailureNote(visualTags, scene: scene != nil, cards: !cards.isEmpty) {
+                    spokenText += "\n\n" + note
                     steps.append(CookieStep(title: "Picture couldn't be shown", seconds: 0))
                 }
 

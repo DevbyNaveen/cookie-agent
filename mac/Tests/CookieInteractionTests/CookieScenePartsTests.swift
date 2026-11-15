@@ -267,9 +267,8 @@ enum CookieScenePartsTests {
     private static func prompts() {
         // The voice prompt's example is what the model copies: it must read with nothing to repair.
         let prompt = CompanionManager.companionVoiceResponseSystemPrompt
-        let example = prompt.components(separatedBy: "\n").first { $0.contains("[SCENE {\"title\":\"inside a jet engine\"") }!
-        let tag = CookieReplyTags.split(example).tags.first { $0.kind == "SCENE" }!
-        let engine = CookieScene.read(tag: tag)!
+        let example = prompt.components(separatedBy: "\n").first { $0.contains("build_model with scene {\"title\":\"inside a jet engine\"") }!
+        let engine = CookieScene.read(CookieBuildModelTests.exampleScene(example))
         check(engine.errors.isEmpty && engine.repairs.isEmpty, "the jet engine example reads cleanly: \(engine.errors) \(engine.repairs)")
         let parts = engine.scene!.parts
         check(parts.filter { $0.shape == .bladeRing }.count == 3 && parts.contains { $0.shape == .tube && $0.cut } && engine.scene!.members(of: "fan").count == 4,
