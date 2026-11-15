@@ -196,6 +196,35 @@ struct MacScreen {
 }
 
 @MainActor
+enum CookieAXActionPolicy {
+    static let modelGuidance = "- application tools: prefer run_script for excel, word, powerpoint, numbers, keynote and pages. for canvas apps, use click_at only after the latest look found no AX controls and only with that look's screenshot, inside the approved start_task. press and set_value use IDs from the latest look only."
+
+    static func mustReadAXBefore(_ action: String) -> Bool {
+        action == "press" || action == "set_value"
+    }
+
+    static func permitsForegroundAction(lookedAtPID: pid_t?, frontmostPID: pid_t?, observedElementCount: Int) -> Bool {
+        guard let lookedAtPID, let frontmostPID else { return false }
+        return lookedAtPID == frontmostPID && observedElementCount > 0
+    }
+
+    static func permitsCanvasClick(lookedAtPID: pid_t?, frontmostPID: pid_t?,
+                                   observedElementCount: Int, screenshotCount: Int) -> Bool {
+        guard let lookedAtPID, let frontmostPID else { return false }
+        return lookedAtPID == frontmostPID && observedElementCount == 0 && screenshotCount > 0
+    }
+
+    static func containsObservedElement(_ id: Int, elementIDs: Set<Int>) -> Bool { elementIDs.contains(id) }
+    static func permitsBackgroundAction(targetPID: pid_t?, frontmostPID: pid_t?, approved: Bool, observedElementCount: Int) -> Bool {
+        guard let targetPID, let frontmostPID else { return false }
+        return approved && targetPID != frontmostPID && observedElementCount > 0
+    }
+    static func screenDuration(_ seconds: Int) -> Int { min(15, max(1, seconds)) }
+    static func canTakeScreen(isApproved: Bool) -> Bool { isApproved }
+    static func screenQuestion(seconds: Int) -> String { "Can I take the screen for ~\(screenDuration(seconds)) seconds?" }
+}
+
+@MainActor
 final class MacOperator {
     static let shared = MacOperator()
 
@@ -251,7 +280,7 @@ final class MacOperator {
         return [
             // `outbound` so the harness always asks: the person approves the plan once.
             tool("start_task", "outbound",
-                 "Before acting on the screen, show the person your plan in plain words and the apps you will act in; they approve once. Required before press, set_value, type_text, key, scroll, drag, choose_menu, click_at or run_script. Inside the approved task, actions in those apps run without asking again; anything that sends, pays, deletes or publishes still asks.",
+                 "Before acting on the screen, show the person your plan in plain words and the apps you will act in; they approve once. Required before press, set_value, type_text, replace_selection, key, scroll, drag, choose_menu, click_at or run_script. Inside the approved task, actions in those apps run without asking again; anything that sends, pays, deletes or publishes still asks.",
                  ["plan": "What you will do, step by step, in plain words the person can check.",
                   "apps": "The apps you will act in, comma-separated, as their names appear (e.g. \"Microsoft Excel, Finder\")."], ["plan", "apps"]),
             tool("finish_task", "read", "End the approved task when the work is done, with a one-line summary of what you did.",
@@ -358,6 +387,12 @@ final class MacOperator {
         if name == "finish_task" { return finishTask(args) }
         if name == "look" { return look(args) }
 
+        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        if CookieAXActionPolicy.mustReadAXBefore(name),
+           !CookieAXActionPolicy.permitsForegroundAction(lookedAtPID: lookedAt, frontmostPID: frontPID,
+                                                          observedElementCount: elements.count) {
+            return ("Read the frontmost app's Accessibility tree first. Cookie uses press and set_value only on controls it found.", true)
+        }
         // Everything below touches the screen.
         guard AXIsProcessTrusted() else {
             return ("Cookie needs Accessibility access to act (System Settings → Privacy & Security → Accessibility). Ask the person to turn it on.", true)
@@ -479,6 +514,9 @@ final class MacOperator {
             app = NSWorkspace.shared.frontmostApplication
         }
         guard let app else { return ("That app isn't running.", true) }
+        guard app.processIdentifier == NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+            return ("Bring \(app.localizedName ?? "that app") to the front for a normal look, or use Ghost Mode for a background app.", true)
+        }
         if MacSafety.blocked(bundleID: app.bundleIdentifier, category: Self.category(app)) {
             return ("Cookie never reads \(app.localizedName ?? "this app").", true)
         }
@@ -488,8 +526,9 @@ final class MacOperator {
         AXUIElementSetAttributeValue(root, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         elements = [:]
         labels = [:]
-        lookedAt = app.processIdentifier
+        lookedAt = nil
 
+        var visitedElementCount = 0
         var lines = ["App: \(app.localizedName ?? "?")"]
         let window = Self.attribute(root, kAXFocusedWindowAttribute) as! AXUIElement?
         if let window, let title = Self.string(window, kAXTitleAttribute), !title.isEmpty { lines.append("Window: \(title)") }
@@ -501,6 +540,7 @@ final class MacOperator {
         var nextID = 1
         while !queue.isEmpty, elements.count < limit {
             let (element, depth) = queue.removeFirst()
+            visitedElementCount += 1
             let role = Self.string(element, kAXRoleAttribute) ?? ""
             if Self.worthShowing(element, role: role) {
                 elements[nextID] = element
@@ -513,7 +553,13 @@ final class MacOperator {
             queue.append(contentsOf: children.prefix(200).map { ($0, depth + 1) })
         }
         if elements.count >= limit { lines.append("(more elements not shown; ask for max_elements up to 400, or look at a smaller area after scrolling)") }
-        if elements.isEmpty { lines.append("(no accessible elements: this app may draw on a canvas; use click_at with the screenshot)") }
+        lookedAt = app.processIdentifier
+        guard !elements.isEmpty else {
+            let message = visitedElementCount == 0
+                ? "This app exposes no Accessibility tree; Cookie can't act on its controls."
+                : "The Accessibility tree exposed no usable controls; Cookie can't act on this app."
+            return ("\(lines.joined(separator: "\n"))\n\(message) For a canvas, click_at can click the current screenshot inside the approved task.", false)
+        }
         return (lines.joined(separator: "\n"), false)
     }
 
@@ -753,8 +799,23 @@ final class MacOperator {
 
     private func clickAt(_ args: [String: Any]) -> (String, Bool) {
         guard !screens.isEmpty else { return ("There's no screenshot in this run to click on. Ask the person to share their screen.", true) }
-        guard let point = clickPoint(args) else { return ("Give x and y in screenshot pixels.", true) }
-        return Self.click(at: point) ? ("Clicked.", false) : ("Couldn't click there.", true)
+        guard lookedAt == NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+            return ("Look at the current front app before using click_at.", true)
+        }
+        guard let point = clickPoint(args) else { return ("That screenshot point is invalid.", true) }
+        if let observed = elements.first(where: { Self.frame($0.value)?.contains(point) == true })?.value {
+            guard AXUIElementPerformAction(observed, kAXPressAction as CFString) == .success else {
+                return ("The observed control does not support AXPress. Cookie did not click the screen.", true)
+            }
+            return ("Pressed the observed control at that point.", false)
+        }
+        guard CookieAXActionPolicy.permitsCanvasClick(lookedAtPID: lookedAt,
+                                                       frontmostPID: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+                                                       observedElementCount: elements.count, screenshotCount: screens.count),
+              Self.click(at: point) else {
+            return ("That point is not inside an observed control. Canvas clicks require a current look with no AX controls and an approved task.", true)
+        }
+        return ("Clicked the visible canvas point inside the approved task.", false)
     }
 
     /// A click_at point in CG global coordinates: its screenshot pixels, on the screenshot it names
