@@ -246,6 +246,37 @@ final class TextInsertion {
         return ("Pasted into \(destination.app) without sending. This editor cannot confirm its text; check the insertion. Use the app's Undo if needed.", true)
     }
 
+    struct CorrectionTarget {
+        let text: String
+        let app: String
+    }
+
+    /// Only exposes a prior insertion while its exact text and focused field are still verified.
+    func correctionTarget() -> CorrectionTarget? {
+        guard let receipt else { return nil }
+        let original = receipt.destination
+        let current = TextDestination(element: original.element, pid: original.pid, app: original.app,
+                                      value: receipt.after,
+                                      range: CFRange(location: original.range.location, length: receipt.inserted.utf16.count))
+        guard current.unchanged(requireSelection: false) else { return nil }
+        return CorrectionTarget(text: receipt.inserted, app: original.app)
+    }
+
+    /// Replaces only the verified inserted span. The new receipt lets “scratch that” restore its prior text.
+    func replaceLastInsertion(with correctedText: String, expectedOriginal: String) async -> (message: String, success: Bool) {
+        guard let receipt, receipt.inserted == expectedOriginal else {
+            return ("The last dictation is no longer available to correct. Nothing changed.", false)
+        }
+        let original = receipt.destination
+        let current = TextDestination(element: original.element, pid: original.pid, app: original.app,
+                                      value: receipt.after,
+                                      range: CFRange(location: original.range.location, length: receipt.inserted.utf16.count))
+        guard !Task.isCancelled, current.unchanged(requireSelection: false) else {
+            return ("That field changed after Cookie dictated. Nothing was replaced.", false)
+        }
+        return await insert(correctedText, into: current)
+    }
+
     func undo() async -> (message: String, success: Bool) {
         guard let receipt else { return ("There is no verified dictation to undo.", false) }
         let original = receipt.destination

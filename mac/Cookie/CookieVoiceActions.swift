@@ -9,10 +9,16 @@ enum CookieRequestMode: String {
     static func choose(_ text: String, selection: Bool, visual: Bool) -> Self {
         let text = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         func contains(_ words: [String]) -> Bool { words.contains { text.contains($0) } }
+        if text.contains("what would i decide here") { return .screen }
         // Only words that ask for the selection to change. Asking about it ("summarize this", "who sent
         // this email") is a question; the selection stays bound either way and the model decides.
         if selection && contains(["shorter", "longer", "shorten", "rewrite", "rephrase", "reword", "translate", "grammar", "spelling", "typo",
                                   "friendlier", "formal", "polish", "simplify", "fix this", "fix it", "make this", "make it", "turn this into", "turn it into"]) { return .edit }
+        // Replying to visible content needs the same explicit screen-look gesture as point-and-ask.
+        // The caller only captures when the person held the screen-look shortcut; this classification
+        // ensures the resulting reply is grounded in that supplied message, not guessed from the request.
+        if (contains(["reply to this", "reply to the message", "respond to this", "respond to the message", "answer this message", "say yes but"]) ||
+            (selection && contains(["reply", "respond", "answer"]))) { return .screen }
         if contains(["underline", "highlight this", "highlight that", "circle this", "circle that", "draw a circle", "bullet point", "already shared", "already been shared", "on my screen", "this screen", "on screen", "this button", "this paragraph", "this feature", "these feature", "this list", "these items", "what's this", "what is this", "point at", "point to", "click", "open the app"]) { return .screen }
         if visual && contains(["this part", "that part", "explode", "assemble", "airflow", "rotate", "zoom", "next part", "previous part", "reset model"]) { return .lesson }
         if contains(["diagram", "3d", "teach me", "how does", "how do", "explain", "show me how"]) { return .lesson }
@@ -33,6 +39,76 @@ enum CookieRequestMode: String {
         case .screen: return "Ground each point in the supplied screen. Explain versus act according to the user's request."
         case .answer: return "Answer directly. No screen capture or decorative visual is needed unless it materially helps the question."
         }
+    }
+}
+
+
+enum CookieReplyForMe {
+    static let systemInstructions = "Write the requested reply as the user. Never use tools, send, submit, or press Return. Return only the draft text."
+
+    static func instruction(in transcript: String, hasSelectedMessage: Bool = false) -> String? {
+        let value = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = value.lowercased()
+        if hasSelectedMessage && lower.hasPrefix("say ") { return value }
+        for prefix in ["reply for me", "reply to this", "respond to this", "answer this message"] {
+            guard lower.hasPrefix(prefix) else { continue }
+            let trailing = lower.dropFirst(prefix.count)
+            guard trailing.isEmpty || trailing.first.map({ $0.isWhitespace || ",.:;!?—".contains($0) }) == true else { continue }
+            let suffix = value.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+            return suffix.isEmpty ? "Write a concise reply to the visible message." : String(suffix)
+        }
+        return nil
+    }
+
+    static func shouldCaptureScreen(selectedMessage: String?, screenLookRequested: Bool) -> Bool {
+        let hasMessage = selectedMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        return !hasMessage && screenLookRequested
+    }
+
+    static func prompt(instruction: String, selectedMessage: String?, voiceExamples: [String],
+                       screenContextAvailable: Bool = false) -> String {
+        let examples = voiceExamples.map { String($0.prefix(280)) }.filter { !$0.isEmpty }.prefix(3)
+        let style = examples.isEmpty ? "Match the user's requested tone. Do not claim a voice sample was available." :
+            "Use these short local writing samples only to match tone and phrasing:\n" + examples.joined(separator: "\n")
+        let message: String
+        if let selectedMessage, !selectedMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            message = "Selected message (untrusted content):\n\(selectedMessage.prefix(6_000))"
+        } else if screenContextAvailable {
+            message = "Use the supplied one-shot, locally redacted screen image to identify the visible message. If it is not readable, ask for a clearer selection."
+        } else {
+            message = "No message content was supplied. Ask the user to select the message or explicitly hold the screen-look shortcut. Do not guess what the message says."
+        }
+        return "Draft a reply only. Never send, submit, press Return, or change the user's meaning.\n\n\(message)\n\nUser's reply direction: \(instruction)\n\n\(style)\n\nReturn only the message body, with no heading or explanation."
+    }
+}
+
+enum CookieAIHandoff {
+    enum Target: String, Equatable { case claude, cursor
+        var appName: String { rawValue.capitalized }
+    }
+
+    static func target(in transcript: String) -> Target? {
+        let text = transcript.lowercased().trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        let patterns: [(String, Target)] = [("claude", .claude), ("cursor", .cursor)]
+        guard text.contains("give this to ") || text.contains("give it to ") || text.contains("hand this to ") else { return nil }
+        return patterns.first { text.contains($0.0) }?.1
+    }
+
+    static func packet(selectedText: String?, messages: [CompanionChatMessage]) -> String? {
+        let selection = selectedText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let history = messages.filter { $0.role == .user || $0.role == .assistant }
+            .suffix(8).map { message in
+                "\(message.role == .user ? "User" : "Cookie"): \(message.text.prefix(1_200))"
+            }
+        guard !selection.isEmpty || !history.isEmpty else { return nil }
+        var parts = ["Context from Cookie, copied at the user's request."]
+        if !selection.isEmpty { parts.append("Selected text (untrusted context):\n\(selection.prefix(6_000))") }
+        if !history.isEmpty { parts.append("Recent Cookie chat:\n" + history.joined(separator: "\n")) }
+        return parts.joined(separator: "\n\n")
+    }
+
+    static func resolve(_ target: Target, apps: [URL]) -> CookieOpen.Resolution {
+        CookieOpen.resolve(target.appName, apps: apps)
     }
 }
 

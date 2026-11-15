@@ -1375,6 +1375,74 @@ final class CompanionManager: ObservableObject {
     /// person talked, plays the response aloud. The cursor stays in the spinner/processing state until
     /// TTS audio begins playing. The response may include a [POINT:x,y:label]
     /// tag which triggers the buddy to fly to that element on screen.
+    private func startReplyForMe(_ instruction: String, transcript: String, selectedMessage: String?,
+                                 screenLookRequested: Bool, destination: CookieTextDestination?) {
+        guard let destination else {
+            _ = append(CompanionChatMessage(role: .failure,
+                text: "Select the reply field and leave its cursor where the draft belongs. Nothing was typed or sent."))
+            return
+        }
+        let priorThread = currentThreadID
+        let samples = threads.first { $0.id == priorThread }?.messages
+            .filter { $0.role == .user && !$0.text.isEmpty }.suffix(3).map(\.text) ?? []
+        let threadID = append(CompanionChatMessage(role: .user, text: transcript))
+        workingThreadID = threadID
+        workingStep = "Drafting a reply"
+        voiceState = .processing
+        let generation = replyGeneration
+        currentResponseTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                var images: [HarnessRequest.Image] = []
+                if CookieReplyForMe.shouldCaptureScreen(selectedMessage: selectedMessage,
+                                                        screenLookRequested: screenLookRequested) {
+                    let decision = ScreenLook.decide(asked: true, screenAllowed: self.permissionCenter.isAllowed(.screen),
+                                                     refusal: CaptureGuard.refusal)
+                    guard decision == .look else {
+                        if case .refused(let reason) = decision {
+                            throw HarnessClient.HarnessFailure(message: "Cookie couldn't look at the screen: \(reason). Select the message or hold the screen-look shortcut again.")
+                        }
+                        throw HarnessClient.HarnessFailure(message: "Cookie needs the screen-look shortcut to read the message.")
+                    }
+                    let captures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                    guard !captures.isEmpty else {
+                        throw HarnessClient.HarnessFailure(message: "Cookie couldn't read a message from the screen. Select the message and try again.")
+                    }
+                    images = captures.map { capture in
+                        HarnessRequest.Image(media_type: "image/jpeg", data: capture.imageData.base64EncodedString(),
+                                             source: "screen", caption: "One-shot redacted screen context: " + capture.label)
+                    }
+                }
+                let input = CookieReplyForMe.prompt(instruction: instruction, selectedMessage: selectedMessage,
+                                                    voiceExamples: samples, screenContextAvailable: !images.isEmpty)
+                let draft = try await self.harness.run(
+                    model: CookieModelSettings.model, input: input,
+                    instructions: CookieReplyForMe.systemInstructions,
+                    images: images, history: [], backgroundProject: true,
+                    onText: { _ in }, onStep: { _ in },
+                    onApproval: { approval in if let approval { self.harness.approve(approval, allow: false) } })
+                guard !Task.isCancelled, self.replyGeneration == generation else { return }
+                let body = Self.visibleReply(draft).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !body.isEmpty else { throw HarnessClient.HarnessFailure(message: "Cookie couldn't draft a reply. Nothing was inserted or sent.") }
+                let insertion = await CookieTextInsertion.shared.insert(body, into: destination)
+                let confirmation = insertion.success
+                    ? "Draft inserted in \(destination.app). It has not been sent."
+                    : insertion.message + " Nothing was sent."
+                let message = CompanionChatMessage(role: insertion.success ? .assistant : .failure, text: confirmation)
+                self.append(message, to: threadID)
+                self.replyFinished.send((threadID, message))
+            } catch {
+                guard !Task.isCancelled, self.replyGeneration == generation else { return }
+                let message = CompanionChatMessage(role: .failure, text: error.localizedDescription)
+                self.append(message, to: threadID)
+                self.replyFinished.send((threadID, message))
+            }
+            self.voiceState = .idle
+            self.workingStep = nil
+            self.currentResponseTask = nil
+        }
+    }
+
     private static func isTerminal(pid: pid_t, element: AXUIElement) -> Bool {
         CookieTeach.isTerminal(bundleID: NSRunningApplication(processIdentifier: pid)?.bundleIdentifier,
                                field: [MacOperator.label(element), MacOperator.string(element, kAXRoleDescriptionAttribute) ?? ""])
@@ -1410,6 +1478,20 @@ final class CompanionManager: ObservableObject {
         let editTarget = textDestinationAtPress
         selectionAtPress = nil
         textDestinationAtPress = nil
+        let replyMessage = selectedText?.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasSelectedReplyMessage = replyMessage?.isEmpty == false
+        if attachments.isEmpty,
+           let instruction = CookieReplyForMe.instruction(in: transcript, hasSelectedMessage: hasSelectedReplyMessage) {
+            guard hasSelectedReplyMessage || lookAtScreen else {
+                _ = append(CompanionChatMessage(role: .failure,
+                    text: "Select the message or hold the screen-look shortcut to let Cookie read it. Cookie won't capture the screen without that request."))
+                return
+            }
+            startReplyForMe(instruction, transcript: transcript,
+                            selectedMessage: hasSelectedReplyMessage ? replyMessage : nil,
+                            screenLookRequested: lookAtScreen, destination: editTarget)
+            return
+        }
         let requestMode = CookieRequestMode.choose(transcript, selection: selectedText != nil,
             visual: scenePresenter.teachingContext != nil || cardPresenter.teachingContext != nil)
         let refersBack = CookieRequestMode.refersToPrevious(transcript)
