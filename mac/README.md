@@ -61,7 +61,7 @@ Anyone on macOS 15 (Sequoia) or later, on Apple silicon or Intel, installs
 Cookie with one line in Terminal:
 
 ```sh
-curl -fsSL https://github.com/DevbyNaveen/cookie-agent/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/DevbyNaveen/cookie-agent/releases/download/cookie-mac/install.sh | sh
 ```
 
 It checks the macOS version, downloads the latest release over HTTPS, checks
@@ -88,8 +88,14 @@ updates.
 
 ```sh
 scripts/release.sh 0.2.0 --notes "What changed"            # dry run: builds universal, packages, prints the upload plan
-scripts/release.sh 0.2.0 --notes "What changed" --publish  # then creates GitHub release v0.2.0 with the four files
+scripts/release.sh 0.2.0 --notes "What changed" --publish  # then publishes it on GitHub
 ```
+
+Publishing creates the versioned release `mac-v0.2.0` (never marked latest, and
+outside the `v*` tags the cookie CLI's workflow releases from) and replaces the
+four files of the rolling `cookie-mac` release, the Mac channel the installer
+and the app read. `latest.json` there points at the archive under
+`mac-v<version>`, which never changes, so a download in flight never does.
 
 `./build.sh --universal` (which the release runs) builds every binary for
 arm64 and x86_64 and lipos them, so the app runs natively on both;
@@ -98,7 +104,7 @@ to the commit count). It needs `rustup target add x86_64-apple-darwin` and
 Rosetta (the Intel Python is installed and import-checked under it). The
 release refuses a dirty tree, an existing tag, a version not newer than the
 latest, a commit not on GitHub, and an app not signed by team `3Z97R7N3SR`.
-It writes `build/release/v<version>/`: `Cookie.zip`, `Cookie.zip.sha256`,
+It writes `build/release/mac-v<version>/`: `Cookie.zip`, `Cookie.zip.sha256`,
 `latest.json` and `install.sh`.
 
 On Intel Macs, Pen (enkeon-complete) runs on the CPU, without Metal, and

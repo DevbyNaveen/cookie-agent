@@ -24,7 +24,7 @@ enum CookieUpdaterTests {
         let releaseKey = Curve25519.Signing.PrivateKey()
         let strangerKey = Curve25519.Signing.PrivateKey()
         func manifest(version: String = "0.2.0", build: Int = 5, sha256: String, key: Curve25519.Signing.PrivateKey = releaseKey,
-                      url: String = "https://github.com/DevbyNaveen/cookie-agent/releases/download/v0.2.0/Cookie.zip",
+                      url: String = "https://github.com/DevbyNaveen/cookie-agent/releases/download/mac-v0.2.0/Cookie.zip",
                       minimum: String = "15.0", signedVersion: String? = nil) -> CookieUpdateManifest {
             let signature = try! key.signature(for: CookieUpdateVerifier.signedMessage(version: signedVersion ?? version, build: build, sha256: sha256))
             return CookieUpdateManifest(version: version, build: build, url: url, sha256: sha256, signature: signature.base64EncodedString(),
@@ -36,6 +36,8 @@ enum CookieUpdaterTests {
         // latest.json: round-trips; refused for another host, plain http, a path escape, a bad hash or signature, a missing field.
         let good = manifest(sha256: zeros)
         check((try? CookieUpdateManifest.parse(json(good))) == good, "a release parses")
+        check(CookieUpdater.latestURL.absoluteString == "https://github.com/DevbyNaveen/cookie-agent/releases/download/cookie-mac/latest.json",
+              "the Mac channel, never releases/latest (the cookie CLI's v* releases claim that)")
         for url in ["https://evil.example/DevbyNaveen/cookie-agent/releases/download/v0.2.0/Cookie.zip",
                     "http://github.com/DevbyNaveen/cookie-agent/releases/download/v0.2.0/Cookie.zip",
                     "https://github.com/someone/else/releases/download/v0.2.0/Cookie.zip",

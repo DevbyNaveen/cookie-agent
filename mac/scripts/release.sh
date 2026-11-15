@@ -1,9 +1,12 @@
 #!/bin/sh
 # Cut a Cookie for Mac release. A dry run unless --publish is given: nothing leaves this Mac.
 #
-#   scripts/release.sh 0.2.0                      build + package into build/release/v0.2.0, print the upload plan
+#   scripts/release.sh 0.2.0                      build + package into build/release/mac-v0.2.0, print the upload plan
 #   scripts/release.sh 0.2.0 --notes "…"          release notes (latest.json, the notch notice and the release page)
-#   scripts/release.sh 0.2.0 --publish            the same, then GitHub release v0.2.0 on DevbyNaveen/cookie-agent
+#   scripts/release.sh 0.2.0 --publish            the same, then publish it on DevbyNaveen/cookie-agent:
+#       mac-v0.2.0   the versioned release (never "latest"; outside the cookie CLI workflow's v* tags)
+#       cookie-mac   the rolling Mac channel: its four files are replaced, and install.sh and the app read
+#                    latest.json from it; that latest.json points at mac-v0.2.0's Cookie.zip, which never changes
 #   scripts/release.sh 0.2.0 --skip-build         package the build/Cookie.app already there (dry runs only)
 #
 # What it makes: Cookie.zip (ditto, universal, signed by the team), Cookie.zip.sha256, latest.json
@@ -22,6 +25,8 @@ set -eu
 cd "$(dirname "$0")/.."
 MAC="$(pwd)"
 REPO="DevbyNaveen/cookie-agent"
+CHANNEL="cookie-mac"
+CHANNEL_URL="https://github.com/$REPO/releases/download/$CHANNEL"
 
 fail() { printf 'release: %s\n' "$*" >&2; exit 1; }
 
@@ -39,7 +44,7 @@ done
 [ -n "$VERSION" ] || fail "usage: scripts/release.sh <version> [--notes \"…\"] [--publish] [--skip-build]"
 echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || fail "version must be like 0.2.0, not $VERSION"
 if [ -n "$PUBLISH" ] && [ -n "$SKIP_BUILD" ]; then fail "--publish always builds; drop --skip-build"; fi
-TAG="v$VERSION"
+TAG="mac-v$VERSION"
 NOTES="${NOTES:-Cookie $VERSION}"
 BUILD="${COOKIE_BUILD:-$(git rev-list --count HEAD)}"
 TEAM_ID="${COOKIE_TEAM_ID:-3Z97R7N3SR}"
@@ -65,10 +70,17 @@ if [ -n "$PUBLISH" ]; then
   [ -z "$(git ls-remote --tags origin "refs/tags/$TAG")" ] || fail "tag $TAG already exists on GitHub"
   gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 && fail "release $TAG already exists"
   gh api "repos/$REPO/commits/$COMMIT" >/dev/null 2>&1 || fail "commit $COMMIT isn't on GitHub yet; push it first"
-  LATEST="$(gh release view --repo "$REPO" --json tagName --jq .tagName 2>/dev/null || true)"
-  if [ -n "$LATEST" ]; then
-    newest="$(printf '%s\n%s\n' "${LATEST#v}" "$VERSION" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
-    [ "$newest" = "$VERSION" ] && [ "${LATEST#v}" != "$VERSION" ] || fail "$VERSION isn't newer than the published $LATEST; installed apps would ignore it"
+  # Newer than what the channel serves now (nothing yet on the first publish).
+  CURRENT=""
+  if curl -fsSL --proto '=https' -o "$MAC/build/channel-latest.json" "$CHANNEL_URL/latest.json" 2>/dev/null; then
+    CURRENT="$(plutil -extract version raw -o - "$MAC/build/channel-latest.json")" || fail "the channel's latest.json is unreadable"
+  fi
+  rm -f "$MAC/build/channel-latest.json"
+  if [ -n "$CURRENT" ]; then
+    newest="$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+    if [ "$newest" != "$VERSION" ] || [ "$CURRENT" = "$VERSION" ]; then
+      fail "$VERSION isn't newer than $CURRENT, which $CHANNEL serves; installed apps would ignore it"
+    fi
   fi
 elif [ -n "$(git status --porcelain)" ]; then
   echo "note: uncommitted changes; fine for a dry run, --publish will refuse"
@@ -131,17 +143,16 @@ echo ""
 echo "Cookie $VERSION (build $BUILD) from $COMMIT, signed by team $TEAM_ID"
 echo "$(grep -c . "$OUT/archs.txt") Mach-O files, all x86_64 + arm64 ($OUT/archs.txt)"
 echo ""
-echo "Upload to GitHub release $TAG on $REPO (marked latest):"
+echo "Upload to $REPO: the versioned release $TAG (not marked latest), then the same files to the $CHANNEL channel:"
 for file in Cookie.zip latest.json install.sh Cookie.zip.sha256; do
   printf '  %-18s %8s  sha256 %s\n' "$file" "$(du -h "$OUT/$file" | cut -f1 | tr -d ' ')" "$(shasum -a 256 "$OUT/$file" | cut -c1-16)…"
 done
 echo ""
-echo "  gh release create $TAG --repo $REPO --target $COMMIT --title \"Cookie $VERSION\" --notes \"…\" --latest \\"
-echo "    $OUT/{Cookie.zip,latest.json,install.sh,Cookie.zip.sha256}"
+echo "  gh release create $TAG --repo $REPO --target $COMMIT --title \"Cookie $VERSION\" --notes \"…\" --latest=false <the four files>"
+echo "  gh release upload $CHANNEL --repo $REPO --clobber <the four files>"
+echo "    (first time: gh release create $CHANNEL --target $COMMIT --title \"Cookie for Mac — latest\" --latest=false <the four files>)"
 echo ""
-echo "Then: curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | sh"
-echo "Note: creating tag $TAG also starts .github/workflows/release.yml (tags v*), which builds the cookie CLI"
-echo "      archives and attaches them to this same release."
+echo "Then: curl -fsSL $CHANNEL_URL/install.sh | sh"
 
 if [ -z "$PUBLISH" ]; then
   echo ""
@@ -149,9 +160,21 @@ if [ -z "$PUBLISH" ]; then
   exit 0
 fi
 
-gh release create "$TAG" --repo "$REPO" --target "$COMMIT" --title "Cookie $VERSION" --notes "$NOTES" --latest \
-  "$OUT/Cookie.zip" "$OUT/latest.json" "$OUT/install.sh" "$OUT/Cookie.zip.sha256"
-# What users will actually get: the public latest.json must be this one.
-curl -fsSL "https://github.com/$REPO/releases/latest/download/latest.json" | cmp -s - "$OUT/latest.json" ||
-  fail "published, but releases/latest/download/latest.json isn't this release's yet; check the release page"
-echo "Published $TAG."
+FILES="$OUT/Cookie.zip $OUT/latest.json $OUT/install.sh $OUT/Cookie.zip.sha256"
+# 1. The versioned release first, so latest.json's url exists before anything points at it.
+# shellcheck disable=SC2086
+gh release create "$TAG" --repo "$REPO" --target "$COMMIT" --title "Cookie $VERSION" --notes "$NOTES" --latest=false $FILES
+curl -fsSLI "$URL" >/dev/null || fail "$TAG is published, but $URL doesn't download; the channel is unchanged"
+# 2. The channel: created once, then its files replaced on every release.
+if gh release view "$CHANNEL" --repo "$REPO" >/dev/null 2>&1; then
+  # shellcheck disable=SC2086
+  gh release upload "$CHANNEL" --repo "$REPO" --clobber $FILES
+else
+  # shellcheck disable=SC2086
+  gh release create "$CHANNEL" --repo "$REPO" --target "$COMMIT" --title "Cookie for Mac — latest" \
+    --notes "Cookie for Mac's update channel: install with curl -fsSL $CHANNEL_URL/install.sh | sh" --latest=false $FILES
+fi
+# What users will actually get: the channel's latest.json must be this one.
+curl -fsSL "$CHANNEL_URL/latest.json" | cmp -s - "$OUT/latest.json" ||
+  fail "published, but $CHANNEL_URL/latest.json isn't this release's yet; check the release page"
+echo "Published $TAG and updated $CHANNEL."

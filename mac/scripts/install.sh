@@ -1,7 +1,7 @@
 #!/bin/sh
-# Install Cookie for Mac from the latest GitHub release of DevbyNaveen/cookie-agent:
+# Install Cookie for Mac from the cookie-mac channel release of DevbyNaveen/cookie-agent:
 #
-#   curl -fsSL https://github.com/DevbyNaveen/cookie-agent/releases/latest/download/install.sh | sh
+#   curl -fsSL https://github.com/DevbyNaveen/cookie-agent/releases/download/cookie-mac/install.sh | sh
 #
 # It reads the release's latest.json, downloads Cookie.zip over HTTPS, checks it against the
 # release's SHA-256, checks the app's code signature and signing team, quits a running Cookie,
@@ -18,7 +18,7 @@
 set -eu
 
 REPO="DevbyNaveen/cookie-agent"
-LATEST="https://github.com/$REPO/releases/latest/download/latest.json"
+LATEST="https://github.com/$REPO/releases/download/cookie-mac/latest.json"
 DOWNLOADS="https://github.com/$REPO/releases/download/"
 TEAM_ID="${COOKIE_TEAM_ID:-@COOKIE_TEAM_ID@}"
 MINIMUM_MACOS="15.0"

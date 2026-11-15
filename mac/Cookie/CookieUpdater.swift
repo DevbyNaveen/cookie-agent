@@ -92,7 +92,8 @@ struct CookieUpdateManifest: Codable, Equatable {
     let notes: String
     let publishedAt: String
 
-    /// Archives come only from this repository's releases (GitHub then redirects to its file host).
+    /// Archives come only from this repository's releases (the versioned `mac-v<version>` one, which never
+    /// changes under a download; GitHub then redirects to its file host).
     static let downloadPrefix = "https://github.com/DevbyNaveen/cookie-agent/releases/download/"
     static let maximumSize = 64 * 1024
 
@@ -340,7 +341,9 @@ final class CookieUpdater: ObservableObject {
     /// The release key's public half (scripts/update-key.swift; the private half is in ~/.cookie-release).
     /// Changing it means every installed Cookie refuses every later update until reinstalled.
     static let publicKeyBase64 = "PY3mG5lNM2MAdk5Pfn20nxcqjNSs128N3Vp/jee66mw="
-    static let latestURL = URL(string: "https://github.com/DevbyNaveen/cookie-agent/releases/latest/download/latest.json")!
+    /// The Mac channel: a fixed `cookie-mac` release whose files scripts/release.sh replaces on every publish.
+    /// Never `releases/latest`, which the cookie CLI's own `v*` releases also claim.
+    static let latestURL = URL(string: "https://github.com/DevbyNaveen/cookie-agent/releases/download/cookie-mac/latest.json")!
     static let defaultFolder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Cookie/Updates")
     static let lastCheckedKey = "CookieUpdater.lastChecked"
