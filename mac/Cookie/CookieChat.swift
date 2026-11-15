@@ -26,6 +26,19 @@ struct CookieChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let recentTitle = CookieRecentGreeting.title(in: companionManager.threads) {
+                HStack {
+                    Text("Back on \(recentTitle)?")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(CK.secondary)
+                        .lineLimit(1)
+                        .accessibilityLabel("Back on \(recentTitle)")
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+            }
             if companionManager.chatMessages.isEmpty && !companionManager.isWorking {
                 GreetingView(mood: companionManager.voiceState.cookieMood, agent: companionManager.currentAgent)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
