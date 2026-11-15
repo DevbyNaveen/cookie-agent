@@ -298,7 +298,10 @@ final class CookieTimeMachine: ObservableObject {
 
     private func add(_ receipt: CookieReceipt, summary: String) {
         receipts.insert(receipt, at: 0)
-        proof.record(.acted, feature: "time machine", app: receipt.app, summary: summary)
+        // A Mac tool's own row (MacOperator.log) is the proof of that action; its receipt doesn't add a second.
+        if !MacOperator.names.contains(receipt.tool) {
+            proof.record(.acted, feature: "time machine", app: receipt.app, summary: summary)
+        }
         prune()
         save()
     }

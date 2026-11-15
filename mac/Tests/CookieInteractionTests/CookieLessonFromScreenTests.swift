@@ -70,6 +70,13 @@ enum CookieLessonFromScreenTests {
         check(CookieRequestMode.choose("What does this part do?", selection: false, visual: true) == .lesson, "follow-up stays a lesson")
         check(CookieRequestMode.choose("spin it slower and tell me why", selection: false, visual: true) == .lesson, "longer spin request goes to the model as a lesson")
 
+        // "Faster" and "turn it" are the model's only while it's open and was just used.
+        check(CookieLessonIdle.inUse(collapsed: false, idle: 5) && !CookieLessonIdle.inUse(collapsed: true, idle: 5)
+              && !CookieLessonIdle.inUse(collapsed: false, idle: CookieLessonIdle.collapseAfter), "folded or left alone, a model takes no commands")
+        let manager = (try? String(contentsOfFile: "Cookie/CompanionManager.swift", encoding: .utf8)) ?? ""
+        check(manager.contains("scenePresenter.inUse, let command = CookieLessonVoice.command(transcript)")
+              && manager.contains("visual: scenePresenter.inUse || cardPresenter.inUse"), "the voice path asks whether it's in use")
+
         // MARK: Commands
         let bodies: [(String, CookieVisualCommand?)] = [
             ("explode", .explode), ("show-all", .showAll), ("zoom-out", .zoomOut), ("rotate-left", .rotate(degrees: -45)),

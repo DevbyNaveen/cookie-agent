@@ -23,6 +23,7 @@ enum CookieLayersTests {
         var recall: (String) -> String = { _ in #"{"hits":[]}"# }
         var board: [WorkItem] = []
         var image: CGImage = CookieLayersTests.picture(white: true)
+        var idled = 0
 
         var environment: CookieLayerEnvironment {
             CookieLayerEnvironment(
@@ -47,7 +48,8 @@ enum CookieLayersTests {
                 board: { [unowned self] in self.board },
                 now: { [unowned self] in self.clock },
                 hideSecrets: { true },
-                language: { "English" })
+                language: { "English" },
+                idle: { [unowned self] in self.idled += 1 })
         }
     }
 
@@ -355,6 +357,7 @@ enum CookieLayersTests {
         fake.clock.addTimeInterval(CookieLayerStop.maxDuration)
         layers.tick()
         check(layers.lastStop == .timeLimit, "ten minutes")
+        check(fake.idled > 0, "a layer that stops lets its model helper go")
         await drain()
         _ = layers.perform(.start(.translate, language: "German"))
         check(layers.indicator?.text.contains("German") == true && layers.perform(.stop) == "Layer off." && layers.lastStop == .asked
@@ -429,6 +432,23 @@ enum CookieLayersTests {
         check(backoff.step == CookieAXBackoff.longest, "never longer than 8 s")
         backoff.answered()
         check(!backoff.waiting(slowAt) && backoff.step == 0, "an answer clears it")
+        // Esc: only the newest surface, once per press, and not while another app's sheet or full screen wants it.
+        let escape = CookieEscape()
+        escape.push(.layer)
+        escape.push(.canvas)
+        check(!escape.claims(.layer, at: 1, local: false, frontUsesEscape: { false }), "the older layer isn't Esc's")
+        check(escape.claims(.canvas, at: 1, local: false, frontUsesEscape: { false }), "the newest, the canvas, is")
+        escape.pop(.canvas)
+        check(!escape.claims(.layer, at: 1, local: false, frontUsesEscape: { false }), "the same press doesn't stop the next one too")
+        check(!escape.claims(.layer, at: 2, local: false, frontUsesEscape: { true }), "a dialog or full screen in front keeps its Esc")
+        check(escape.claims(.layer, at: 3, local: true, frontUsesEscape: { true }), "Esc in Cookie's own window is Cookie's")
+        escape.push(.scene)
+        escape.push(.layer)
+        check(escape.stack == [.scene, .layer], "pushed again, a surface becomes the newest")
+        check(["CookieLayers.swift", "CookieCanvas.swift", "CookieLessonFromScreen.swift", "CookieSceneView.swift", "CookieCardView.swift"]
+            .allSatisfy { source($0).contains("CookieEscape.shared.claims(") }, "every Esc-able surface asks the stack")
+        check(source("CookieLayers.swift").contains("idle: { harness.shutdown() }") && source("CookieCanvas.swift").contains("idle: { harness.shutdown() }"),
+              "the layer's and canvas's helpers shut down when they're done")
         let all: Set<CookieNotchStack.Slot> = [.layer, .canvas, .proof]
         check(CookieNotchStack.offset(.layer, showing: all) == 0 && CookieNotchStack.offset(.canvas, showing: all) == 26
               && CookieNotchStack.offset(.proof, showing: all) == 52 && CookieNotchStack.offset(.proof, showing: [.proof]) == 0

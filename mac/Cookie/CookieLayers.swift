@@ -607,6 +607,52 @@ final class CookieWindowFrames {
     }
 }
 
+/// Esc stops one Cookie surface: the newest of a live layer, a canvas, a lesson being built and a
+/// lesson's model (one stack, newest last), so closing a dialog doesn't end all of them at once.
+/// Pressed in another app, it's that app's when it's plainly using Esc itself: a sheet or dialog in
+/// front, or a full-screen window (leaving full-screen video). The notch pill stays an explicit stop.
+@MainActor
+final class CookieEscape {
+    enum Surface: Hashable { case layer, canvas, lessonStatus, scene, card }
+
+    static let shared = CookieEscape()
+    private(set) var stack: [Surface] = []
+    /// The key press already spent on a surface; the others' monitors see the same one.
+    private var handled: TimeInterval?
+
+    func push(_ surface: Surface) {
+        stack.removeAll { $0 == surface }
+        stack.append(surface)
+    }
+
+    func pop(_ surface: Surface) { stack.removeAll { $0 == surface } }
+
+    /// Whether this Esc (its event time) is `surface`'s to act on. At most one surface claims a press.
+    func claims(_ surface: Surface, at timestamp: TimeInterval, local: Bool,
+                frontUsesEscape: () -> Bool = CookieEscape.frontUsesEscape) -> Bool {
+        guard stack.last == surface, timestamp != handled else { return false }
+        if !local && frontUsesEscape() { return false }
+        handled = timestamp
+        return true
+    }
+
+    /// The front app (not Cookie) has a sheet, a dialog or a modal window in front, or is full screen.
+    static func frontUsesEscape() -> Bool {
+        guard let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier != getpid() else { return false }
+        let app = AXUIElementCreateApplication(front.processIdentifier)
+        AXUIElementSetMessagingTimeout(app, 0.1)
+        guard let raw = MacOperator.attribute(app, kAXFocusedWindowAttribute), CFGetTypeID(raw) == AXUIElementGetTypeID() else { return false }
+        let window = raw as! AXUIElement
+        if (MacOperator.attribute(window, "AXFullScreen") as? Bool) == true || (MacOperator.attribute(window, kAXModalAttribute) as? Bool) == true {
+            return true
+        }
+        if let subrole = MacOperator.string(window, kAXSubroleAttribute),
+           [kAXDialogSubrole, kAXSystemDialogSubrole].map({ $0 as String }).contains(subrole) { return true }
+        let children = MacOperator.attribute(window, kAXChildrenAttribute) as? [AXUIElement] ?? []
+        return children.contains { MacOperator.string($0, kAXRoleAttribute) == (kAXSheetRole as String) }
+    }
+}
+
 /// The app whose window gets the layer.
 struct CookieLayerTarget: Equatable {
     let pid: pid_t
@@ -640,6 +686,8 @@ struct CookieLayerEnvironment {
     var now: () -> Date
     var hideSecrets: () -> Bool
     var language: () -> String
+    /// The layer is off: its model helper needn't stay running (it starts again with the next layer).
+    var idle: @MainActor () -> Void = {}
 }
 
 extension CookieLayerEnvironment {
@@ -678,7 +726,8 @@ extension CookieLayerEnvironment {
             board: { WorkStore.shared.items },
             now: { Date() },
             hideSecrets: { UserDefaults.standard.object(forKey: Redactor.hideSecretsKey) as? Bool ?? true },
-            language: { CookieLayerLanguage.preferred() }
+            language: { CookieLayerLanguage.preferred() },
+            idle: { harness.shutdown() }
         )
     }
 }
@@ -863,6 +912,7 @@ final class CookieLayers: ObservableObject {
         nextRefreshAt = .distantPast
         updateIndicator()
         if live {
+            CookieEscape.shared.push(.layer)
             showOverlay()
             watch()
             NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
@@ -877,6 +927,8 @@ final class CookieLayers: ObservableObject {
         phase = .stopping
         generation += 1
         lastStop = reason
+        CookieEscape.shared.pop(.layer)
+        environment.idle()
         if case .failed(let problem) = reason { self.problem = problem }
         upload?.cancel()
         upload = nil
@@ -1196,17 +1248,20 @@ final class CookieLayers: ObservableObject {
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
-        let keys: (NSEvent) -> Void = { [weak self] event in
+        let keys: (NSEvent, Bool) -> Void = { [weak self] event, local in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                if CookieLayerStop.isStopKey(keyCode: event.keyCode, modifiers: event.modifierFlags) { return self.stop(.asked) }
+                if CookieLayerStop.isStopKey(keyCode: event.keyCode, modifiers: event.modifierFlags) {
+                    if CookieEscape.shared.claims(.layer, at: event.timestamp, local: local) { self.stop(.asked) }
+                    return
+                }
                 // Arrows, space, page keys and typing can move the page: look again soon.
                 self.nextRefreshAt = min(self.nextRefreshAt, self.environment.now().addingTimeInterval(0.6))
             }
         }
-        if let global = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: keys) { monitors.append(global) }
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { keys($0, false) }) { monitors.append(global) }
         if let local = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { event in
-            keys(event)
+            keys(event, true)
             return event
         }) { monitors.append(local) }
         if let scroll = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel, handler: { [weak self] _ in

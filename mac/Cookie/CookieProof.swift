@@ -32,12 +32,17 @@ final class CookieProof: ObservableObject {
         var hidden: Int
         /// Left out of rows written before payloads were kept: those read as pictures, as they were.
         var payload: Payload? = nil
-        /// How many: lines, names or characters, as the payload counts them.
+        /// How many: lines, names or characters, as the payload counts them; for `.saw`, how many looks
+        /// the row stands for (looks by the same feature at the same app within a minute share one row).
         var count: Int? = nil
     }
 
     static let keep: TimeInterval = 7 * 24 * 3600
-    static let maxEntries = 2_000
+    /// A week at two rows a minute, around the clock: looks share a row a minute and each action
+    /// writes one, so the cap is never what ends the week.
+    static let maxEntries = 7 * 24 * 60 * 2
+    /// Rows are written to disk this long after the last change, together, off the main actor.
+    static let saveDelay: TimeInterval = 1
     /// How long the notch pill stays after something was sent.
     static let meterSeconds: TimeInterval = 10
     static let defaultFile = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -48,6 +53,10 @@ final class CookieProof: ObservableObject {
     /// nil keeps the ledger in memory only (checks).
     private let file: URL?
     private weak var screenMemory: CookieScreenMemory?
+    private var saveScheduled = false
+    private var quitting: Any?
+    /// One write at a time, in order, never on the main thread.
+    private static let writer = DispatchQueue(label: "cookie.proof.write", qos: .utility)
 
     init(file: URL?, screenMemory: CookieScreenMemory? = nil) {
         self.file = file
@@ -57,10 +66,25 @@ final class CookieProof: ObservableObject {
             entries = saved.sorted { $0.date > $1.date }
             prune()
         }
+        if file != nil {
+            quitting = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.flush() }
+            }
+        }
     }
 
     func record(_ kind: Kind, feature: String, app: String? = nil, summary: String,
                 destination: String? = nil, bytes: Int? = nil, hidden: Int = 0, payload: Payload? = nil, count: Int? = nil) {
+        let now = Date()
+        // Another look by the same feature at the same app within the minute: one row, counted.
+        if kind == .saw, let index = entries.prefix(while: { now.timeIntervalSince($0.date) < 60 })
+            .firstIndex(where: { $0.kind == .saw && $0.feature == feature && $0.app == app }) {
+            entries[index].count = (entries[index].count ?? 1) + 1
+            if let bytes { entries[index].bytes = (entries[index].bytes ?? 0) + bytes }
+            entries[index].hidden += hidden
+            save()
+            return
+        }
         let entry = Entry(id: UUID(), date: Date(), kind: kind, feature: feature, app: app,
                           summary: Self.clean(summary), destination: destination, bytes: bytes, hidden: hidden,
                           payload: payload, count: count)
@@ -108,7 +132,7 @@ final class CookieProof: ObservableObject {
 
     func lastMinute(now: Date) -> (sent: Int, saw: Int) {
         let recent = entries.filter { now.timeIntervalSince($0.date) < 60 }
-        return (recent.filter { $0.kind == .sent }.count, recent.filter { $0.kind == .saw }.count)
+        return (recent.filter { $0.kind == .sent }.count, recent.filter { $0.kind == .saw }.reduce(0) { $0 + ($1.count ?? 1) })
     }
 
     /// The notch pill's words, or nil when nothing was sent in the last 10 s.
@@ -152,10 +176,32 @@ final class CookieProof: ObservableObject {
         if entries.count > Self.maxEntries { entries.removeLast(entries.count - Self.maxEntries) }
     }
 
-    /// Written whole, owner-only, renamed into place so a crash never leaves half a file.
-    // ponytail: the whole ledger per write (≤2,000 small rows); append-only when it shows up in a profile.
+    /// Changes are written a second after the last one, together; quitting writes at once.
     private func save() {
+        guard file != nil, !saveScheduled else { return }
+        saveScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.saveDelay) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.saveScheduled else { return }
+                self.write(wait: false)
+            }
+        }
+    }
+
+    /// Writes what's waiting now, and waits for it (the checks, and quitting).
+    func flush() { write(wait: true) }
+
+    private func write(wait: Bool) {
+        saveScheduled = false
         guard let file else { return }
+        let entries = self.entries
+        Self.writer.async { Self.write(entries, to: file) }
+        if wait { Self.writer.sync {} }
+    }
+
+    /// Written whole, owner-only, renamed into place so a crash never leaves half a file. Off the main thread.
+    // ponytail: the whole ledger per write, at most one a second; append-only when it shows up in a profile.
+    nonisolated private static func write(_ entries: [Entry], to file: URL) {
         do {
             let folder = file.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -324,6 +370,7 @@ struct CookieProofSection: View {
         var parts = [Self.time.string(from: entry.date), entry.feature]
         if let app = entry.app { parts.append(app) }
         if let destination = entry.destination { parts.append("to \(destination)") }
+        if entry.kind == .saw, let looks = entry.count, looks > 1 { parts.append("\(looks) looks") }
         if entry.hidden > 0 { parts.append("\(entry.hidden) hidden") }
         if let bytes = entry.bytes { parts.append(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)) }
         if entry.kind == .sent { parts.append("can't be recalled from the provider") }

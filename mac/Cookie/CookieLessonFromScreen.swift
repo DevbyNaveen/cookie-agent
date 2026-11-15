@@ -364,6 +364,7 @@ final class CookieLessonStatus: ObservableObject {
         phase = nil
         monitors.forEach(NSEvent.removeMonitor)
         monitors = []
+        CookieEscape.shared.pop(.lessonStatus)
         guard let panel else { return }
         self.panel = nil
         NSAnimationContext.runAnimationGroup({ context in
@@ -413,6 +414,7 @@ final class CookieLessonStatus: ObservableObject {
         }
         panel = newPanel
         installMonitors()
+        CookieEscape.shared.push(.lessonStatus)
     }
 
     /// The failure card is taller than the building one; it grows downward from the same top edge.
@@ -432,12 +434,15 @@ final class CookieLessonStatus: ObservableObject {
         }
         if let moved = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved, handler: follow) { monitors.append(moved) }
         if let moved = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved, handler: { follow($0); return $0 }) { monitors.append(moved) }
-        let escape: (NSEvent) -> Void = { [weak self] event in
+        let escape: (NSEvent, Bool) -> Void = { [weak self] event, local in
             guard event.keyCode == 53, event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return }
-            MainActor.assumeIsolated { self?.close() }
+            MainActor.assumeIsolated {
+                guard CookieEscape.shared.claims(.lessonStatus, at: event.timestamp, local: local) else { return }
+                self?.close()
+            }
         }
-        if let keys = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: escape) { monitors.append(keys) }
-        if let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { escape($0); return $0 }) { monitors.append(keys) }
+        if let keys = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { escape($0, false) }) { monitors.append(keys) }
+        if let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { escape($0, true); return $0 }) { monitors.append(keys) }
     }
 }
 

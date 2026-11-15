@@ -1475,8 +1475,8 @@ final class CompanionManager: ObservableObject {
             scheduleTransientHideIfNeeded()
             return
         }
-        // "Rotate left", "spin faster", "label everything" with a model up: straight to it, no model round trip.
-        if attachments.isEmpty, scenePresenter.isShowing, let command = CookieLessonVoice.command(transcript),
+        // "Rotate left", "spin faster", "label everything" with a model open and in use: straight to it, no model round trip.
+        if attachments.isEmpty, scenePresenter.inUse, let command = CookieLessonVoice.command(transcript),
            let note = scenePresenter.perform(spoken: command) {
             currentResponseTask?.cancel()
             currentResponseTask = nil
@@ -1501,7 +1501,8 @@ final class CompanionManager: ObservableObject {
         // "Show me this in 3D" while pointing: one redacted look at what's pointed at, and a lesson.
         let lessonSource = CookieLessonFromScreen.source(transcript, selection: selectedText != nil, circled: regionCaptureTask != nil,
                                                          screenGesture: lookAtScreen, spoken: speakReply, visualShowing: visualShowing)
-        let requestMode = lessonSource != nil ? .lesson : CookieRequestMode.choose(transcript, selection: selectedText != nil, visual: visualShowing)
+        let requestMode = lessonSource != nil ? .lesson : CookieRequestMode.choose(transcript, selection: selectedText != nil,
+                                                                                                       visual: scenePresenter.inUse || cardPresenter.inUse)
         let refersBack = CookieRequestMode.refersToPrevious(transcript)
         let activeScreenContext = currentThreadID == screenContextThread && Date().timeIntervalSince(screenContextDate) < 180 && (frontAppAtPress.bundleID == screenContextApp || frontAppAtPress.bundleID == Bundle.main.bundleIdentifier)
         let hasWorkspaceTarget = !CookieWorkspaceStore.shared.session(currentThreadID).selection.isEmpty

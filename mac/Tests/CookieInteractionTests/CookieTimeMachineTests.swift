@@ -36,7 +36,9 @@ enum CookieTimeMachineTests {
         let typed = machine.receipts[0].after ?? ""
         check(!typed.contains("sk-ant") && typed.contains("•••") && typed.count <= CookieTimeMachine.maxText + 1, "masked and bounded")
         check(!machine.receipts[0].restorable, "a bounded field isn't restorable")
-        check(proof.entries.count == 2 && proof.entries.allSatisfy { $0.kind == .acted && $0.feature == "time machine" }
+        check(proof.entries.isEmpty, "a Mac tool's receipt adds no row (the action's own row is its proof)")
+        machine.recordText(tool: "restore", app: "Notes", target: "Title", before: "Final", after: "Draft", field: nil)
+        check(proof.entries.count == 1 && proof.entries.allSatisfy { $0.kind == .acted && $0.feature == "time machine" }
               && !proof.entries.contains { $0.summary.contains("Final") || $0.summary.contains("Draft") }, "proof rows carry no content")
         var old = machine.receipts[1]
         old.id = UUID()

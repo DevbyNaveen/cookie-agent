@@ -16,6 +16,9 @@ enum CookieProofTests {
         proof.record(.sent, feature: "screen look", app: "Safari", summary: CookieProof.screenSummary, destination: "anthropic:claude-sonnet-4-6", bytes: 900)
         proof.record(.saw, feature: "hover", app: "Mail", summary: "an area of the screen")
         precondition(proof.entries.map(\.feature) == ["hover", "screen look", "screen look"], "newest first")
+        // Written a second later, together, off the main thread; flush writes now (as quitting does).
+        precondition(!FileManager.default.fileExists(atPath: file.path), "not written on the main thread per row")
+        proof.flush()
         let mode = (try? FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int) ?? 0
         precondition(mode == 0o600, "the ledger is owner-only: \(String(mode, radix: 8))")
         precondition(CookieProof(file: file).entries == proof.entries, "persists and reads back")
@@ -37,6 +40,7 @@ enum CookieProofTests {
         memory.add(ScreenMemoryEntry(date: Date(), app: "Notes", text: "words read off the Notes window"))
         let mailLook = proof.entries.first { $0.app == "Mail" }!
         proof.forget(mailLook.id)
+        proof.flush()
         precondition(!proof.entries.contains { $0.id == mailLook.id })
         precondition(memory.entries.map(\.app) == ["Notes"], "\(memory.entries.map(\.app))")
         precondition(CookieProof(file: file).entries == proof.entries, "a forgotten row is gone from disk")
@@ -47,7 +51,7 @@ enum CookieProofTests {
         var old = yesterday
         old.id = UUID()
         old.date = Date().addingTimeInterval(-8 * 24 * 3600)
-        var many = (0..<2_005).map { index -> CookieProof.Entry in
+        var many = (0..<CookieProof.maxEntries + 5).map { index -> CookieProof.Entry in
             var entry = yesterday
             entry.id = UUID()
             entry.date = Date().addingTimeInterval(-26 * 3600 - Double(index))
@@ -62,6 +66,19 @@ enum CookieProofTests {
         reloaded.record(.saw, feature: "screen look", summary: "the screen")
         reloaded.forgetToday()
         precondition(reloaded.today.isEmpty && reloaded.entries.count == CookieProof.maxEntries - 1, "only today is forgotten")
+
+        // A heavy day still fits the week: repeated looks share a row a minute, counted.
+        precondition(CookieProof.maxEntries >= 7 * 24 * 60 * 2, "a week at two rows a minute fits")
+        let busy = CookieProof(file: nil)
+        for _ in 0..<5 { busy.record(.saw, feature: "pointing", app: "Safari", summary: "an area of the screen", bytes: 10) }
+        busy.record(.saw, feature: "pointing", app: "Mail", summary: "an area of the screen")
+        precondition(busy.entries.count == 2 && busy.entries[1].count == 5 && busy.entries[1].bytes == 50
+                     && busy.lastMinute == (sent: 0, saw: 6), "five looks at Safari are one row: \(busy.entries.map(\.count))")
+        // One action, one row: the time machine's receipt for a Mac tool doesn't add a second.
+        let acted = CookieProof(file: nil)
+        acted.record(.acted, feature: "Mac action", app: "Notes", summary: "set_value")
+        CookieTimeMachine(folder: nil, proof: acted).recordText(tool: "set_value", app: "Notes", target: "Title", before: "a", after: "b", field: nil)
+        precondition(acted.entries.count == 1, "one .acted row per action")
 
         // The hooks write to it: a Mac action, a look with hidden items, pictures sent to a model.
         let hooked = CookieProof(file: nil)

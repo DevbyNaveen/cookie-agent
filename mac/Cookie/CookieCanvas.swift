@@ -550,6 +550,8 @@ struct CookieCanvasEnvironment {
     var note: @MainActor (String) -> Void
     var now: () -> Date
     var hideSecrets: () -> Bool
+    /// The canvas stopped and its last update landed: its model helper needn't stay running.
+    var idle: @MainActor () -> Void = {}
 }
 
 extension CookieCanvasEnvironment {
@@ -587,7 +589,8 @@ extension CookieCanvasEnvironment {
             fileExists: { FileManager.default.fileExists(atPath: $0) },
             note: { [weak companion] text in companion?.appendCanvasNote(text) },
             now: { Date() },
-            hideSecrets: { UserDefaults.standard.object(forKey: Redactor.hideSecretsKey) as? Bool ?? true })
+            hideSecrets: { UserDefaults.standard.object(forKey: Redactor.hideSecretsKey) as? Bool ?? true },
+            idle: { harness.shutdown() })
     }
 }
 
@@ -826,6 +829,7 @@ final class CookieCanvas: ObservableObject {
         environment.store.setSession(thread) { $0.artifactID = self.artifactID; $0.showing = true }
         updateIndicator()
         if live {
+            CookieEscape.shared.push(.canvas)
             watch()
             NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
                                  userInfo: [.announcement: "Canvas listening. Escape to stop.", .priority: NSAccessibilityPriorityLevel.high.rawValue])
@@ -836,11 +840,14 @@ final class CookieCanvas: ObservableObject {
     /// Ends listening. The canvas stays, and an update already on its way still lands.
     func stop() {
         guard isOn else { return }
+        CookieEscape.shared.pop(.canvas)
         endSegment()
         unwatch()
         pending = Batch()
         pendingSince = nil
         phase = .stopped
+        // An update on its way still lands; the helper goes after it.
+        if upload == nil { environment?.idle() }
         let count = canvas.nodes.count
         flash(count == 0 ? "Canvas off" : "Canvas off · \(count) \(count == 1 ? "idea" : "ideas") kept in the workspace", failed: false)
     }
@@ -1130,6 +1137,7 @@ final class CookieCanvas: ObservableObject {
             if phase == .updating { phase = .listening }
             updateIndicator()
             flush()
+            if phase == .stopped, upload == nil { environment?.idle() }
         }
         guard hasCanvas else { return }
         guard let reply else {
@@ -1238,15 +1246,16 @@ final class CookieCanvas: ObservableObject {
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
-        let escape: (NSEvent) -> Void = { [weak self] event in
+        let escape: (NSEvent, Bool) -> Void = { [weak self] event, local in
             MainActor.assumeIsolated {
-                guard let self, self.isOn, CookieLayerStop.isStopKey(keyCode: event.keyCode, modifiers: event.modifierFlags) else { return }
+                guard let self, self.isOn, CookieLayerStop.isStopKey(keyCode: event.keyCode, modifiers: event.modifierFlags),
+                      CookieEscape.shared.claims(.canvas, at: event.timestamp, local: local) else { return }
                 self.stop()
             }
         }
-        if let global = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: escape) { monitors.append(global) }
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { escape($0, false) }) { monitors.append(global) }
         if let local = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { event in
-            escape(event)
+            escape(event, true)
             return event
         }) { monitors.append(local) }
     }

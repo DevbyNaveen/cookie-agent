@@ -607,16 +607,22 @@ final class CookieScenePresenter {
     static func teachingContext(_ stage: CookieSceneStage) -> String {
         "Visible 3D model: \(stage.scene.title). Selected: \(stage.selectedPart ?? "none"). Exploded: \(stage.exploded). Spinning: \(stage.spinning). Labels: \(stage.labelsHidden ? "hidden" : "shown"). Parts: " + stage.scene.labelled.map { "\($0.id)=\($0.label ?? $0.id)" }.joined(separator: "; ")
     }
-    /// A model is up (shown or folded), so spoken commands like "rotate left" are its.
+    /// A model is up (shown or folded).
     var isShowing: Bool { stage != nil }
+    /// Open and used just now (`CookieLessonIdle.inUse`): spoken commands like "faster" are its.
+    var inUse: Bool { stage.map { CookieLessonIdle.inUse(collapsed: $0.collapsed, idle: Date().timeIntervalSince(lastActive)) } ?? false }
     /// Called when a scene appears, so whatever stood in for it ("Building your model…") can go.
     var onShow: (() -> Void)?
-    /// A lesson the person asked for from their screen closes on Esc wherever the pointer is.
-    var escapeAnywhere = false
+    /// A lesson the person asked for from their screen closes on Esc wherever the pointer is
+    /// (when it's the newest Cookie surface: `CookieEscape`).
+    var escapeAnywhere = false {
+        didSet { escapeAnywhere ? CookieEscape.shared.push(.scene) : CookieEscape.shared.pop(.scene) }
+    }
     func pauseTeaching() { cancelSchedules(); stage?.pauseTeaching() }
     @discardableResult func apply(_ command: CookieVisualCommand) -> Bool {
         guard let stage else { return false }
         stage.apply(command)
+        lastActive = Date()
         return true
     }
     @discardableResult func focus(_ id: String) -> Bool {
@@ -790,7 +796,8 @@ final class CookieScenePresenter {
         let escape: (NSEvent, Bool) -> Void = { [weak self] event, local in
             MainActor.assumeIsolated {
                 guard event.keyCode == 53, let self else { return }
-                if local || self.escapeAnywhere || self.cardRect.contains(NSEvent.mouseLocation) { self.dismiss() }
+                let anywhere = self.escapeAnywhere ? CookieEscape.shared.claims(.scene, at: event.timestamp, local: local) : local
+                if anywhere || self.cardRect.contains(NSEvent.mouseLocation) { self.dismiss() }
             }
         }
         if let keys = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { escape($0, false) }) { monitors.append(keys) }

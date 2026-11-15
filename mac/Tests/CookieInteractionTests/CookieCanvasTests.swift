@@ -38,6 +38,7 @@ enum CookieCanvasTests {
         var phaseDuringDeck: CookieCanvas.Phase?
         weak var canvas: CookieCanvas?
         var notes: [String] = []
+        var idled = 0
         let store = CookieWorkspaceStore(persistent: false)
         let thread = UUID()
 
@@ -97,7 +98,8 @@ enum CookieCanvasTests {
                 fileExists: { [unowned self] in self.written.contains($0) },
                 note: { [unowned self] in self.notes.append($0) },
                 now: { [unowned self] in self.clock },
-                hideSecrets: { true })
+                hideSecrets: { true },
+                idle: { [unowned self] in self.idled += 1 })
         }
 
         func release() {
@@ -431,6 +433,7 @@ enum CookieCanvasTests {
         check(canvas.save().hasPrefix("Saved “Launch plan”") && artifact()?.current.summary == "Saved: Launch plan", "save keeps a named version")
         await say(canvas, fake, "stop canvas")
         check(canvas.phase == .stopped && !fake.recording && canvas.hasCanvas && !canvas.isOn, "stop canvas ends listening and keeps the canvas")
+        check(fake.idled == 1, "stopped with nothing on its way, its model helper goes")
         check(canvas.accepts(.deck(named: true)) && !canvas.accepts(.undo), "a stopped canvas can still become a deck")
         check(canvas.accepts(CookieCanvasCommand.parse("turn the canvas into slides")!) && canvas.accepts(CookieCanvasCommand.parse("save the canvas")!)
               && !canvas.accepts(CookieCanvasCommand.parse("turn this into slides")!) && !canvas.accepts(CookieCanvasCommand.parse("save this")!)
