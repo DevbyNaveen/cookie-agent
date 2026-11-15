@@ -90,6 +90,7 @@ final class NotchPanelManager {
     private var transitionGeneration = 0
     private var agentDock: CookieAgentDock?
     private var proofMeter: CookieProofMeter?
+    private var layerIndicator: CookieLayerIndicator?
     private lazy var windowController = CookieWindowController(companionManager: companionManager, navigation: navigation)
 
     init(companionManager: CompanionManager) {
@@ -119,6 +120,8 @@ final class NotchPanelManager {
         agentDock = CookieAgentDock()
         // The "Sent 1 screen" pill under the notch; it opens Settings → Privacy → Proof.
         proofMeter = CookieProofMeter { [weak self] in self?.showHome(settingsPage: .privacy) }
+        // "Layer · Translate · Esc to stop" while a live screen layer is on; a click stops it.
+        layerIndicator = CookieLayerIndicator()
         NotificationCenter.default.publisher(for: CookieAgentDock.openThread)
             .receive(on: RunLoop.main)
             .sink { [weak self] note in self?.openThread(note.object as? UUID) }
@@ -298,6 +301,7 @@ final class NotchPanelManager {
         cancelHoverIntent()
         agentDock?.hidden = state == .home
         proofMeter?.islandOpen = state != .closed
+        layerIndicator?.islandOpen = state != .closed
         switch (model.state, state) {
         case (_, .home): CookieSounds.play(.open)
         case (.home, _): CookieSounds.play(.close)

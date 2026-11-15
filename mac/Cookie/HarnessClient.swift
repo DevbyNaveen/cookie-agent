@@ -245,7 +245,7 @@ final class HarnessClient {
         let request = HarnessRequest.Run(
             id: "cookie-\(runCounter)", model: model, input: text, instructions: instructions,
             // open, and the Mac tools: acting needs a task the person approved.
-            tools: (backgroundProject ? [] : [CookieOpen.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieRoutineWords.tool, CookieTimeMachineTool.tool] + MacOperator.tools) + (workspaceThreadID == nil ? [] : [CookieWorkspaceTool.tool]),
+            tools: (backgroundProject ? [] : [CookieOpen.tool, CookieHandoff.tool, CookieScreenMemory.tool, CookieRoutineWords.tool, CookieLayerTool.tool, CookieTimeMachineTool.tool] + MacOperator.tools) + (workspaceThreadID == nil ? [] : [CookieWorkspaceTool.tool]),
             images: images,
             history: history,
             // On: left out, so the helper uses ENKEON_API_KEY from its environment.
@@ -473,7 +473,8 @@ final class HarnessClient {
                 let plain = ["recall": "Looked in Enkeon", "remember": "Saving to Enkeon", "web_search": "Searching the web",
                              "fetch_page": "Reading a page", "fetch_pages": "Reading pages", "check_quote": "Checking a quote",
                              "connector_actions": "Looking at your connected apps", "connector_call": "Using a connected app",
-                             "use_skill": "Opening a skill", "look": "Looking at the app", "time_machine": "Looking at what Cookie changed"]
+                             "use_skill": "Opening a skill", "look": "Looking at the app", "time_machine": "Looking at what Cookie changed",
+                             "screen_layer": "Drawing a layer on the window"]
                 run.onStep(plain[name] ?? "Using \(name.replacingOccurrences(of: "_", with: " "))")
             case "usage":
                 if let usage = event.usage {
@@ -528,6 +529,14 @@ final class HarnessClient {
                 Task { @MainActor in
                     let result = await CookieTimeMachineTool.perform(args)
                     if !result.1 { run.onStep(result.0.split(separator: "\n").first.map(String.init) ?? "Looked at the time machine") }
+                    self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.0, is_error: result.1)))
+                }
+                return
+            }
+            if name == CookieLayerTool.tool.name {
+                Task { @MainActor in
+                    let result = CookieLayerTool.perform(args)
+                    if !result.1 { run.onStep(result.0.split(separator: ".").first.map(String.init) ?? "Drew a layer") }
                     self.send(HarnessWire.encode(HarnessRequest.ToolResult(id: id, output: result.0, is_error: result.1)))
                 }
                 return

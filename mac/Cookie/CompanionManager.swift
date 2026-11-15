@@ -436,6 +436,9 @@ final class CompanionManager: ObservableObject {
             guard let self, self.voiceState == .idle else { return }
             self.stopSpeaking()
         }
+        // Live screen layers draw in the overlay; when one ends the overlay may go.
+        CookieLayers.shared.showOverlay = { [weak self] in self?.showOverlayForDrawing() }
+        CookieLayers.shared.ended = { [weak self] in self?.scheduleTransientHideIfNeeded() }
         CookieBackgroundRuns.shared.companionManager = self
         CookieBackgroundRuns.shared.startScheduler()
         CookieHandoff.currentAgentName = { [weak self] in
@@ -1044,6 +1047,7 @@ final class CompanionManager: ObservableObject {
     - taught tasks: skills whose name starts with taught- are tasks the user showed you by doing them; replay them step by step with the mac tools after start_task.
     - handing off: when another of the user's cookies is the better one for the next part (the user names it, or its role plainly fits), call hand_off with its name and a brief it can start from. the user says yes first. don't hand off work you were just asked to do yourself.
     - time machine: when the user asks how something looked before cookie edited it ("show how this looked before cookie edited it") or to undo what cookie did ("undo what cookie did to this"), call time_machine list (query: the app or field), then show or restore the matching id. restore asks the user first and refuses if the field changed since; say so plainly.
+    - screen layers: when the user asks to translate the page, screen or window, to check a contract or whether anything on screen is risky, or who they owe a reply, call screen_layer with lens translate, review or owed (language only when they named one); lens stop ends it. cookie reads the window itself and draws the layer; say one short line, don't describe the screen.
     - quick fixes: when the user has text selected and asks to change it (shorter, longer, fix the grammar, make it a list, translate, rewrite), call replace_selection with the whole new text and say one short line about what changed. keep their meaning; change only what they asked.
     - teaching: when the user asks how to do something ("how do i", "show me", "teach me"), walk them through it instead of doing it, unless they asked you to do it: use the supplied screenshot to explain first; when a guided step needs control IDs you do not yet have, look, then wait_for_step on the next control with a few words for say and where it is for hint. your hand goes there with a numbered badge and the words, and you wait until they click it or say skip or done. look again, then the next step, until it's done. if they asked something instead, answer it and wait on the step again. offer to do the rest if they'd like.
     - skills: for research, briefs, outreach, reports, spreadsheets, documents, decks and pages, load the matching skill with use_skill and follow it.
@@ -1400,6 +1404,19 @@ final class CompanionManager: ObservableObject {
             textDestinationAtPress = nil
             let status = recorder.problem ?? (recorder.isTeaching ? (recorder.isPaused ? "Task recording paused." : "Recording your demonstration. Say stop teaching when finished, then review and save.") : "Task recording is stopped.")
             _ = append(CompanionChatMessage(role: .note, text: status))
+            scheduleTransientHideIfNeeded()
+            return
+        }
+        // "Translate this page", "check this contract", "who do I owe a reply?", "stop the layer".
+        if attachments.isEmpty, let command = CookieLayerCommand.parse(transcript) {
+            currentResponseTask?.cancel()
+            currentResponseTask = nil
+            elevenLabsTTSClient.stopPlayback()
+            voiceState = .idle
+            workingStep = nil
+            selectionAtPress = nil
+            textDestinationAtPress = nil
+            _ = append(CompanionChatMessage(role: .note, text: CookieLayers.shared.perform(command)))
             scheduleTransientHideIfNeeded()
             return
         }
@@ -1958,7 +1975,7 @@ final class CompanionManager: ObservableObject {
             // Wait for pointing animation to finish (location is cleared
             // when the buddy flies back to the cursor), and for the drawings to be dismissed.
             while detectedElementScreenLocation != nil || !marks.isEmpty || spotlight != nil || guideStep != nil
-                    || CookieHoverExplainer.shared.explanation != nil {
+                    || CookieHoverExplainer.shared.explanation != nil || CookieLayers.shared.phase != .idle {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }

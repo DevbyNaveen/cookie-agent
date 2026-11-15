@@ -737,6 +737,7 @@ struct CookieInteractionCheckRunner {
             await CookieDictationHostTests.run()
             await CookieTimeMachineTests.run()
             await CookieMemoryCursorTests.run()
+            await CookieLayersTests.run()
             setupChecksFinished = true
         }
         let deadline = Date().addingTimeInterval(60)
