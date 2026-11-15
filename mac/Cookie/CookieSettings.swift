@@ -797,6 +797,8 @@ private struct PrivacyPage: View {
             Text("Every noticed step and suggestion on this Mac is removed. Skills you already saved stay. This can't be undone.")
         }
 
+        CookieRelayTrustSettings()
+
         SettingsGroup(label: "What Cookie saw") {
             SettingsRow(title: "Remember the words on screen for a day", caption: "Text Cookie read when it looked, after the same hiding as the picture, sealed on this Mac. So you can ask about something you saw an hour ago.", symbol: "eye", tint: CK.accent) {
                 SettingsSwitch(title: "Remember the words on screen", isOn: $screenMemory)

@@ -466,6 +466,9 @@ final class NotchPanelManager {
                     withAnimation(CK.quick) { self.navigation.showsWorkComposer = false }
                 } else if self.navigation.preview != nil {
                     withAnimation(CK.spring) { self.navigation.preview = nil }
+                } else if self.model.state == .home, self.navigation.settingsPage == nil, self.navigation.agentPage == nil,
+                          !ChatLock.shared.isLocked, CookieRelay.shared.handleEscape() {
+                    // A relay screen closes first; the next Esc closes the island.
                 } else {
                     self.setState(.closed)
                 }
