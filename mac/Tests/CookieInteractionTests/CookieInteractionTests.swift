@@ -728,13 +728,14 @@ struct CookieInteractionCheckRunner {
         CookieTeachScheduleTests.run()
         CookieAXActionTests.run()
         CookieGhostModeTests.run()
-        CookieDictationCorrectionTests.run()
+        CookieMemoryHandshakePlanTests.run()
+        CookieWorkspaceTests.run()
         CookieWeeklyCardTests.run()
+        CookieDictationCorrectionTests.run()
         CookieHistoryFeatureTests.run()
         CookieReplyForMeTests.run()
         CookieAIHandoffTests.run()
         CookieRecentGreetingTests.run()
-        CookieWorkspaceTests.run()
         var setupChecksFinished = false
         Task { @MainActor in
             await checks.testScreenCaptureGivesUpAtItsDeadline()

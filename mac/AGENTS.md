@@ -122,6 +122,10 @@ The compact composer swaps its typing controls for `CookieVoiceMedallion` during
 | `CookieWriting.swift` | ~105 | Write grants per app, typed-draft record, correction summaries. |
 | `CookieBackgroundRuns.swift` | ~175 | Up to three background Cookies (routines, watchers, hand-offs, meeting follow-ups), the scheduler, the `hand_off` tool. |
 | `CookieTeach.swift` | ~230 | Teach by doing: event-tap recorder, SKILL.md writer, merged skills folder. |
+| `CookieDecisionRecall.swift` | ~95 | Enkeon-only, dated and sourced recall of stored decisions; no-decision fallback. |
+| `CookieMeetingBrief.swift` | ~80 | Source-backed T−2 minute calendar brief from attendees, matching meeting transcripts, Board promises, linked work and Enkeon recall. |
+| `CookieRecentGreeting.swift` | ~15 | Names the latest local Cookie thread in the chat console greeting. |
+| `CookieWeeklyShareCard.swift` | ~115 | Compact weekly summary and locally rendered shareable PNG card. |
 | `CookieScreenMemory.swift` | ~125 | OCR of what Cookie looked at, kept a day, the `recall_screen` tool. |
 | `CookieMarks.swift` | ~250 | DRAW tag bodies into marks (with their spoken offset), the per-display resolver with AX snapping; `readSeconds` marks a reading-pen line. |
 | `CookieReadingPen.swift` | ~270 | READ tags: the words found in the app's text (AX value + bounds per line) or the screenshot (Vision), the nearest match to the pointer, one timed underline per line; `Folded` matching. |
