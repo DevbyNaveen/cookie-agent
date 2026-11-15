@@ -342,6 +342,11 @@ enum CookieVisualCommand: Equatable {
     case labels(shown: Bool)
     /// A card with states moves to stage n (1 is the first): its pictures morph to that one.
     case state(Int)
+    /// A sim card runs or holds still; `set` moves one of its parameters (and starts it again).
+    case run, pause
+    case set(parameter: String, value: Double)
+    /// An equation's part lights up (as [TEACH:id] does).
+    case highlight(String)
 
     /// One "rotate left" or "rotate right".
     static let rotateStep: Float = 45
@@ -372,6 +377,17 @@ enum CookieVisualCommand: Equatable {
         case "stop-spin": self = .spin(.stop)
         case "label-all": self = .labels(shown: true)
         case "hide-labels": self = .labels(shown: false)
+        case "run": self = .run
+        case "pause": self = .pause
+        case _ where body.hasPrefix("set:"):
+            // set:<parameter>:<value>, the value a finite number.
+            let parts = body.dropFirst(4).split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2, !parts[0].isEmpty, let value = Double(parts[1]), value.isFinite else { return nil }
+            self = .set(parameter: parts[0], value: value)
+        case _ where body.hasPrefix("highlight:"):
+            let id = body.dropFirst(10).trimmingCharacters(in: .whitespaces)
+            guard !id.isEmpty else { return nil }
+            self = .highlight(id)
         case _ where body.hasPrefix("state:"):
             guard let number = Int(body.dropFirst(6).trimmingCharacters(in: .whitespaces)),
                   (1...CookieCard.maxStates).contains(number) else { return nil }

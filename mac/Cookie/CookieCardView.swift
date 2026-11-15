@@ -7,7 +7,10 @@
 //  as the marks (`CookieInk`) for its rules, rings, boxes, arrows and chart
 //  lines. Each element fades up and its ink draws on when its beat comes;
 //  a card with states morphs from one to the next (same id moves, the rest
-//  fade). Reduce Motion shows each state whole, without the morph.
+//  fade). An equation's parts fade up and light on their beats; a simulation
+//  runs on the display link while it is open and on screen. Reduce Motion
+//  shows each state whole, without the morph, and a simulation's
+//  representative frame with its trail.
 //  `CookieCardPresenter` floats it beside the notch or beside what the
 //  reply's marks point at, click-through except its controls, one card at a
 //  time.
@@ -21,7 +24,11 @@ import SwiftUI
 final class CookieCardReveal: ObservableObject {
     let card: CookieCard
     let teachingOwner = UUID()
-    @Published var collapsed = false
+    @Published var collapsed = false { didSet { sim?.hidden = collapsed || occluded } }
+    /// The panel is covered or off screen, so a simulation has nobody to run for.
+    var occluded = false { didSet { sim?.hidden = collapsed || occluded } }
+    /// A sim card's running model.
+    let sim: CookieSimRunner?
     @Published private(set) var activeNode: String?
     private(set) var selectedNode: String?
     /// Which of the card's states is showing (0 is the first).
@@ -63,13 +70,14 @@ final class CookieCardReveal: ObservableObject {
         CookieHand.shared.stopTeaching(owner: teachingOwner)
     }
     @Published private(set) var elements: [CookieCard.Element]
-    @Published private(set) var shown = 0
+    @Published private(set) var shown = 0 { didSet { sim?.shown = isShown(.value) } }
     private var target = 0
     private var stagger: Task<Void, Never>?
 
     init(card: CookieCard) {
         self.card = card
         self.elements = card.elements
+        if case .sim(let sim) = card.content { self.sim = CookieSimRunner(sim) } else { self.sim = nil }
     }
 
     func isShown(_ element: CookieCard.Element) -> Bool {
@@ -114,6 +122,7 @@ final class CookieCardReveal: ObservableObject {
         elements = CookieCard.elements(of: content)
         target = elements.count
         shown = elements.count
+        if case .sim(let next) = content { sim?.load(next) }
         if let selectedNode, !nodes.contains(where: { $0.id == selectedNode }) {
             self.selectedNode = nil
             activeNode = nil
@@ -129,6 +138,7 @@ final class CookieCardReveal: ObservableObject {
         pauseTeaching()
         stagger?.cancel()
         stagger = nil
+        sim?.stop()
     }
 }
 
@@ -145,6 +155,9 @@ struct CookieCardInk: Shape {
         case polyline([CGPoint])
         /// A smooth line through the points with an open head at the last one.
         case curvedArrow([CGPoint])
+        /// One steady pass through the points, straight between them with sharp corners (a
+        /// fraction bar, a root sign, a bracket): no wobble, only the pen's taper.
+        case stroke([CGPoint])
     }
 
     let figures: [Figure]
@@ -204,6 +217,15 @@ struct CookieCardInk: Shape {
                 let a = place(from), b = place(to)
                 passes(rough.line(a, b), firstOnly: true)
                 head(at: b, angle: atan2(b.y - a.y, b.x - a.x))
+            case .stroke(let points):
+                let placed = points.map(place)
+                guard placed.count >= 2 else { continue }
+                var dense = [placed[0]]
+                for (a, b) in zip(placed, placed.dropFirst()) {
+                    let steps = max(1, Int(hypot(b.x - a.x, b.y - a.y) / 2))
+                    dense += (1...steps).map { CGPoint(x: a.x + (b.x - a.x) * CGFloat($0) / CGFloat(steps), y: a.y + (b.y - a.y) * CGFloat($0) / CGFloat(steps)) }
+                }
+                strokes.append(CookieInkStroke(dense, size: pen, seed: seed &+ UInt32(truncatingIfNeeded: strokes.count) &+ 1))
             case .polyline(let points), .curvedArrow(let points):
                 let placed = points.map(place)
                 guard placed.count >= 2 else { continue }
@@ -369,6 +391,8 @@ struct CookieCardView: View {
         case .tree: return max(280, Self.treeCanvasSize(card).width + 36)
         case .cycle: return Self.cycleSize.width + 36
         case .chart: return Self.chartSize.width + 36
+        case .equation: return min(560, max(320, Self.equationFrame(card).width + 12 + 36))
+        case .sim: return CookieSim.canvas.width + 36
         case .layers: return 340
         default: return 320
         }
@@ -482,6 +506,15 @@ struct CookieCardView: View {
         case .chart(let chart):
             titleView(chart.title)
             chartView(chart)
+        case .equation(let equation):
+            titleView(equation.title)
+            equationView(equation)
+        case .sim(let sim):
+            titleView(sim.title)
+            if let runner = reveal.sim {
+                CookieSimPanel(runner: runner, shown: reveal.isShown(.value), controlsShown: reveal.isShown(.caption),
+                               ink: ink, inkText: inkText, quietText: quietText, second: seriesInks[1])
+            }
         }
     }
 
@@ -1029,6 +1062,106 @@ struct CookieCardView: View {
         .appear(reveal.isShown(.axes), reduceMotion)
     }
 
+    // MARK: Equation
+
+    /// Room for every state's equation, so a morph never clips: the widest, and the tallest above
+    /// and below a baseline they share.
+    static func equationFrame(_ card: CookieCard) -> (width: CGFloat, ascent: CGFloat, descent: CGFloat) {
+        card.states.reduce((CGFloat(0), CGFloat(0), CGFloat(0))) { frame, content in
+            guard case .equation(let equation) = content, let layout = equation.layout else { return frame }
+            return (max(frame.0, layout.width), max(frame.1, layout.ascent), max(frame.2, layout.descent))
+        }
+    }
+
+    private static let mathPad: CGFloat = 6
+
+    @ViewBuilder
+    private func equationView(_ equation: CookieCard.Equation) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let layout = equation.layout {
+                equationCanvas(equation, layout)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(equation.spoken)
+            } else {
+                // Outside what Cookie typesets: the source, plainly, never broken glyphs.
+                Text(equation.tex)
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundStyle(inkText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(inkText.opacity(0.05)))
+                    .appear(reveal.isShown(.value), reduceMotion)
+                    .accessibilityLabel("Equation, as written: " + equation.tex)
+            }
+            if let caption = equation.caption {
+                Text(caption)
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundStyle(quietText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .appear(reveal.isShown(.caption), reduceMotion)
+            }
+        }
+    }
+
+    private func equationCanvas(_ equation: CookieCard.Equation, _ layout: CookieMath.Layout) -> some View {
+        let frame = Self.equationFrame(card), pad = Self.mathPad
+        let size = CGSize(width: frame.width + 2 * pad, height: frame.ascent + frame.descent + 2 * pad)
+        let dx = pad + (frame.width - layout.width) / 2, baseline = pad + frame.ascent
+        // The part being explained glows; a state may name one to light.
+        let lit = reveal.activeNode ?? equation.highlight
+        return ZStack(alignment: .topLeading) {
+            if let lit, let box = layout.terms[lit], reveal.isShown(.node(lit)) {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(ink.opacity(0.14))
+                    .frame(width: box.width + 8, height: box.height + 6)
+                    .position(x: dx + box.midX, y: baseline + box.midY)
+                    .transition(.opacity)
+            }
+            ForEach(layout.pieces, id: \.key) { piece in
+                let element: CookieCard.Element = piece.term.map { .node($0) } ?? .value
+                mathPiece(piece, lit: piece.term != nil && piece.term == lit, shown: reveal.isShown(element), dx: dx, baseline: baseline)
+                    .transition(.opacity)
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .background(GeometryReader { proxy in
+            // The hand points just under each part.
+            let origin = proxy.frame(in: .named("teachingPaper")).origin
+            Color.clear.preference(key: CookieDiagramAnchors.self, value: layout.terms.mapValues { box in
+                CGPoint(x: origin.x + dx + box.midX, y: origin.y + baseline + box.maxY + 3)
+            })
+        })
+    }
+
+    /// One mark of the equation where the layout put it: glyphs filled, rules and grown brackets inked on.
+    @ViewBuilder
+    private func mathPiece(_ piece: CookieMath.Piece, lit: Bool, shown: Bool, dx: CGFloat, baseline: CGFloat) -> some View {
+        let box = piece.bounds
+        let colour = lit ? ink : inkText
+        switch piece.shape {
+        case .glyphs(let text, let size, let italic):
+            if let glyph = try? CookieMath.glyph(text, size: size, italic: italic) {
+                CookieGlyphShape(outline: Path(glyph.path), corner: glyph.bounds.origin)
+                    .fill(colour)
+                    .frame(width: max(1, box.width), height: max(1, box.height))
+                    .position(x: dx + box.midX, y: baseline + box.midY)
+                    .appear(shown, reduceMotion)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: lit)
+            }
+        case .stroke(let points, let smooth, let pen):
+            let unit = points.map { CGPoint(x: ($0.x + piece.origin.x - box.minX) / max(1, box.width), y: ($0.y + piece.origin.y - box.minY) / max(1, box.height)) }
+            CookieCardInk(figures: [smooth ? .polyline(unit) : .stroke(unit)], seed: CookieCardInk.seed(piece.key), pen: pen,
+                          progress: shown ? 1 : 0, roughness: 0.12)
+                .fill(colour)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.4), value: shown)
+                .frame(width: max(1, box.width), height: max(1, box.height))
+                .position(x: dx + box.midX, y: baseline + box.midY)
+                .allowsHitTesting(false)
+        }
+    }
+
     // MARK: Ink helper
 
     /// Ink for one element: drawn on when the element shows (whole, under Reduce Motion). `key`
@@ -1040,6 +1173,117 @@ struct CookieCardView: View {
             .fill(ink)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: shown)
             .allowsHitTesting(false)
+    }
+}
+
+/// A glyph outline from `CookieMath`, drawn with its ink's corner at the frame's corner.
+struct CookieGlyphShape: Shape {
+    let outline: Path
+    let corner: CGPoint
+    func path(in rect: CGRect) -> Path {
+        outline.offsetBy(dx: rect.minX - corner.x, dy: rect.minY - corner.y)
+    }
+}
+
+/// A sim card's moving picture, what it reads now, and its controls: run or pause, start again, and
+/// a slider per parameter the model chose (dragging one starts the run again with the new value).
+struct CookieSimPanel: View {
+    @ObservedObject var runner: CookieSimRunner
+    let shown: Bool
+    let controlsShown: Bool
+    let ink: Color, inkText: Color, quietText: Color, second: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private func colour(_ tone: CookieSim.Drawing.Tone) -> Color {
+        switch tone {
+        case .ink: return ink
+        case .text: return inkText
+        case .quiet: return inkText.opacity(0.34)
+        case .second: return second
+        }
+    }
+
+    var body: some View {
+        let size = CookieSim.canvas
+        _ = runner.frame
+        let drawing = runner.simulation.draw(in: size)
+        let readouts = runner.readouts
+        return VStack(alignment: .leading, spacing: 8) {
+            Canvas { context, size in
+                let rect = CGRect(origin: .zero, size: size)
+                for stroke in drawing.strokes where stroke.points.count > 1 {
+                    if stroke.plain {
+                        var path = Path()
+                        path.addLines(stroke.points)
+                        context.stroke(path, with: .color(colour(stroke.tone)), style: StrokeStyle(lineWidth: stroke.pen, lineCap: .round, lineJoin: .round))
+                    } else {
+                        let unit = stroke.points.map { CGPoint(x: $0.x / size.width, y: $0.y / size.height) }
+                        let ink = CookieCardInk(figures: [stroke.smooth ? .polyline(unit) : .stroke(unit)], seed: CookieCardInk.seed(stroke.key),
+                                                pen: stroke.pen, progress: 1, roughness: 0.2)
+                        context.fill(ink.path(in: rect), with: .color(colour(stroke.tone)))
+                    }
+                }
+                for dot in drawing.dots {
+                    context.fill(Path(ellipseIn: CGRect(x: dot.center.x - dot.radius, y: dot.center.y - dot.radius, width: 2 * dot.radius, height: 2 * dot.radius)),
+                                 with: .color(colour(dot.tone)))
+                }
+                for label in drawing.labels {
+                    context.draw(Text(label.text).font(.system(size: 9.5, weight: .medium, design: .rounded)).foregroundColor(colour(label.tone)),
+                                 at: label.at, anchor: UnitPoint(x: label.anchor.x, y: label.anchor.y))
+                }
+            }
+            .frame(width: size.width, height: size.height)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("A simulation of \(runner.model.noun). " + readouts.map(\.line).joined(separator: ", "))
+            .appear(shown, reduceMotion)
+            Text(readouts.map(\.line).joined(separator: "  ·  "))
+                .font(.system(size: 11, weight: .medium, design: .rounded)).monospacedDigit()
+                .foregroundStyle(inkText)
+                .fixedSize(horizontal: false, vertical: true)
+                .appear(shown, reduceMotion)
+            VStack(alignment: .leading, spacing: 6) {
+                if runner.live {
+                    HStack(spacing: 14) {
+                        Button { runner.running && !runner.settled ? runner.pause() : runner.run() } label: {
+                            Label(runner.running && !runner.settled ? "Pause" : "Run", systemImage: runner.running && !runner.settled ? "pause.fill" : "play.fill")
+                        }
+                        Button { runner.restart() } label: { Label("Start again", systemImage: "arrow.counterclockwise") }
+                    }
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(quietText)
+                    .buttonStyle(.plain).pointerCursor()
+                }
+                ForEach(runner.sim.sliders, id: \.param) { slider in
+                    sliderRow(slider)
+                }
+            }
+            .appear(controlsShown, reduceMotion)
+        }
+    }
+
+    private func sliderRow(_ slider: CookieCard.Sim.Slider) -> some View {
+        let value = runner.values[slider.param] ?? slider.minimum
+        let shown = CookieCard.format(value) + (slider.unit.isEmpty ? "" : " " + slider.unit)
+        return HStack(spacing: 8) {
+            Text(slider.label)
+                .font(.system(size: 11, weight: .medium, design: .rounded)).foregroundStyle(inkText)
+                .lineLimit(1).frame(width: 78, alignment: .leading)
+            Group {
+                if slider.whole {
+                    Slider(value: Binding(get: { runner.values[slider.param] ?? slider.minimum }, set: { runner.set(slider.param, $0) }),
+                           in: slider.minimum...slider.maximum, step: 1)
+                } else {
+                    Slider(value: Binding(get: { runner.values[slider.param] ?? slider.minimum }, set: { runner.set(slider.param, $0) }),
+                           in: slider.minimum...slider.maximum)
+                }
+            }
+            .controlSize(.small)
+            .tint(ink)
+            .accessibilityLabel(slider.label)
+            .accessibilityValue(shown)
+            Text(shown)
+                .font(.system(size: 10.5, weight: .medium, design: .rounded)).monospacedDigit()
+                .foregroundStyle(quietText).frame(width: 64, alignment: .trailing)
+        }
     }
 }
 
@@ -1090,6 +1334,7 @@ final class CookieCardPresenter {
     private var schedules: [CookieSpeechClock.Scheduled] = []
     private weak var clock: CookieSpeechClock?
     private var monitors: [Any] = []
+    private var occlusion: Any?
     private var fadeTimer: Task<Void, Never>?
     private var lastActive = Date()
 
@@ -1101,6 +1346,15 @@ final class CookieCardPresenter {
         if !nodes.isEmpty {
             return "Visible teaching diagram: \(CookieCard.summary(reveal.content)).\(stage) Selected: \(reveal.selectedNode ?? "none"). Objects: "
                 + nodes.map { "\($0.id)=\($0.label)" }.joined(separator: "; ")
+        }
+        if case .sim = reveal.content, let sim = reveal.sim {
+            let model = sim.model
+            let settings = model.params.map { "\($0.id) = \(CookieCard.format(sim.values[$0.id] ?? $0.value))\($0.unit.isEmpty ? "" : " " + $0.unit)" }
+            let sliders = sim.sim.sliders.map { "\($0.param) \(CookieCard.format($0.minimum))–\(CookieCard.format($0.maximum))" }
+            return "Visible simulation: \(sim.sim.title), \(model.noun).\(stage) Now: " + sim.readouts.map(\.line).joined(separator: "; ")
+                + ". \(sim.running && !sim.settled ? "Running" : sim.settled ? "Finished" : "Paused"). Parameters: " + settings.joined(separator: ", ")
+                + (sliders.isEmpty ? "" : ". Sliders: " + sliders.joined(separator: ", "))
+                + ". [VISUAL:run], [VISUAL:pause], [VISUAL:reset] and [VISUAL:set:<parameter>:<value>] change it."
         }
         if case .chart(let chart) = reveal.content, !chart.sliders.isEmpty {
             let values = chart.sliders.map { "\($0.label) = \(CookieCard.format(reveal.sliderValue($0)))\($0.unit.map { " " + $0 } ?? "")" }
@@ -1123,13 +1377,28 @@ final class CookieCardPresenter {
             lastActive = Date()
             return reveal.show(state: number - 1)
         }
+        if let sim = reveal.sim {
+            switch command {
+            case .run: sim.run()
+            case .pause: sim.pause()
+            case .reset: sim.restart()
+            case .set(let parameter, let value): guard sim.set(parameter, value) else { return false }
+            default: break
+            }
+            if [.run, .pause, .reset].contains(command) || { if case .set = command { return true }; return false }() {
+                lastActive = Date()
+                return true
+            }
+        }
+        if case .highlight(let id) = command { return focus(id) }
         guard command == .next || command == .previous, !reveal.nodes.isEmpty else { return false }
         reveal.advance(command == .next)
         return true
     }
     @discardableResult func focus(_ id: String) -> Bool {
-        guard let reveal, reveal.nodes.contains(where: { $0.id == id }) else { return false }
-        reveal.focus(id)
+        // [VISUAL:highlight:…] arrives lowercased; an exact id wins, then one that differs only in case.
+        guard let reveal, let node = reveal.nodes.first(where: { $0.id == id }) ?? reveal.nodes.first(where: { $0.id.lowercased() == id.lowercased() }) else { return false }
+        reveal.focus(node.id)
         return true
     }
 
@@ -1195,6 +1464,8 @@ final class CookieCardPresenter {
         monitors = []
         reveal?.stop()
         reveal = nil
+        if let occlusion { NotificationCenter.default.removeObserver(occlusion) }
+        occlusion = nil
         if let panel { fadeOut(panel) }
         panel = nil
         escapeAnywhere = false
@@ -1279,6 +1550,19 @@ final class CookieCardPresenter {
         reveal?.stop()
         panel = newPanel
         reveal = cardReveal
+        // A simulation runs only while this panel is really showing, at its screen's rate.
+        if let sim = cardReveal.sim {
+            sim.screen = newPanel.screen ?? NSScreen.main
+            sim.live = !reduceMotion
+            if let occlusion { NotificationCenter.default.removeObserver(occlusion) }
+            occlusion = NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: newPanel, queue: .main) { [weak newPanel, weak cardReveal] _ in
+                MainActor.assumeIsolated {
+                    guard let panel = newPanel else { return }
+                    cardReveal?.occluded = !panel.occlusionState.contains(.visible)
+                    sim.screen = panel.screen ?? sim.screen
+                }
+            }
+        }
         installMonitors()
         restartFadeTimer()
         // The card is drawn, so VoiceOver hears what it holds.

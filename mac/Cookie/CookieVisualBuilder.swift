@@ -19,7 +19,7 @@ import SwiftUI
 enum CookieVisualBuilder {
     static let tool = HarnessRequest.Tool(
         name: "build_visual",
-        description: "Check a paper card before showing it. Give the card JSON (same shapes as [CARD {json}], including states, chart, layers, cycle, tree). Returns {ok, id, repairs, errors, snapshot, layout}: repairs Cookie made, field-level errors to fix (then call again, at most twice more this turn), and layout, a text description of the off-screen render (snapshot is null: results here are text only). When ok, show it in your reply with [CARD:#id] at the word where it should appear. Draws only; nothing leaves the Mac.",
+        description: "Check a paper card before showing it. Give the card JSON (same shapes as [CARD {json}], including states, chart, layers, cycle, tree, equation and sim). Returns {ok, id, repairs, errors, snapshot, layout}: repairs Cookie made, field-level errors to fix (then call again, at most twice more this turn), and layout, a text description of the off-screen render (snapshot is null: results here are text only). When ok, show it in your reply with [CARD:#id] at the word where it should appear. Draws only; nothing leaves the Mac.",
         effect: "read",
         schema: .init(properties: [
             "card": .init(description: "The card as a JSON object written as a string, e.g. {\"kind\":\"cycle\",\"title\":\"…\",\"steps\":[…]}."),
@@ -195,6 +195,25 @@ enum CookieVisualBuilder {
                 + series.joined(separator: "; ") + "."
                 + (sliders.isEmpty ? "" : " Sliders: " + sliders.joined(separator: "; ") + ".")
                 + (chart.source.map { " Source shown: \($0)." } ?? " No source shown.")
+        case .equation(let equation):
+            guard let layout = equation.layout else {
+                return "Equation shown as its source text (outside the typeset subset; see repairs)."
+            }
+            let parts = equation.terms.compactMap { term in
+                layout.terms[term.id].map { "\(term.id) \"\(term.words)\"\(term.say.map { " on \"\($0)\"" } ?? " spread over the sentence") at x \(Int($0.minX))–\(Int($0.maxX))" }
+            }
+            return "Equation typeset \(Int(layout.width.rounded()))×\(Int(layout.size.height.rounded())) pt, read as \"\(equation.spoken)\". Parts left to right: "
+                + (parts.isEmpty ? "none (it shows whole)" : parts.joined(separator: "; ")) + "."
+                + (equation.highlight.map { " Lit: \($0)." } ?? "")
+        case .sim(let sim):
+            guard let model = CookieSim.models[sim.model] else { return "" }
+            // The values at the representative moment the render shows (the run starts from the beginning).
+            let runner = CookieSimRunner(sim)
+            let settings = model.params.map { "\($0.id) \(CookieCard.format(sim.values[$0.id] ?? $0.value))\($0.unit.isEmpty ? "" : " " + $0.unit)" }
+            let sliders = sim.sliders.map { "\($0.param) \(CookieCard.format($0.minimum))–\(CookieCard.format($0.maximum))" }
+            return "Simulation of \(model.noun) (\(model.id)), \(sim.running ? "runs as it appears" : "waits for [VISUAL:run]"). Parameters: " + settings.joined(separator: ", ") + ". "
+                + "Values to quote: " + runner.readouts.map(\.line).joined(separator: "; ") + "."
+                + (sliders.isEmpty ? " No sliders." : " Sliders: " + sliders.joined(separator: ", ") + ".")
         default:
             return "\(CookieCard.elements(of: content).count) elements: " + CookieCard.summary(content) + "."
         }

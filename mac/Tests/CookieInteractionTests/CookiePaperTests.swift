@@ -136,24 +136,25 @@ enum CookiePaperTests {
         check(prompt.contains("build_visual") && prompt.contains("[CARD:#id]") && prompt.contains("[VISUAL:state:n]") && prompt.contains("never made up"),
               "the voice prompt teaches checking, showing by id, stages and honest numbers")
 
-        if let at = CommandLine.arguments.firstIndex(of: "--render-paper"), at + 1 < CommandLine.arguments.count {
-            // Each new kind, whole, light and dark, as PNGs in the given folder: for eyes, not for checks.
-            let folder = URL(fileURLWithPath: CommandLine.arguments[at + 1])
-            let cards: [(String, CookieCard, Int)] = [("cycle", cycle, 0), ("tree", tree, 0), ("layers", layers, 0),
-                                                      ("chart", chartReading.card!, 0), ("bars", bars.card!, 0),
-                                                      ("flow-1", staged, 0), ("flow-2", staged, 1)]
-            for (name, card, state) in cards {
-                for scheme in [ColorScheme.light, .dark] {
-                    let shown = CookieCardReveal(card: card)
-                    shown.show(state: state)
-                    shown.reveal(through: shown.elements.count - 1, instant: true)
-                    let renderer = ImageRenderer(content: CookieCardView(reveal: shown, onClose: {}).environment(\.colorScheme, scheme))
-                    renderer.scale = 2
-                    let data = NSBitmapImageRep(cgImage: renderer.cgImage!).representation(using: .png, properties: [:])!
-                    try! data.write(to: folder.appendingPathComponent("\(name)-\(scheme == .dark ? "dark" : "light").png"))
-                }
+        render([("cycle", cycle, 0), ("tree", tree, 0), ("layers", layers, 0), ("chart", chartReading.card!, 0), ("bars", bars.card!, 0),
+                ("flow-1", staged, 0), ("flow-2", staged, 1)])
+        print("\(count) paper checks passed.")
+    }
+
+    /// With `--render-paper <folder>`: each card whole, light and dark, as PNGs there. For eyes, not for checks.
+    static func render(_ cards: [(String, CookieCard, Int)]) {
+        guard let at = CommandLine.arguments.firstIndex(of: "--render-paper"), at + 1 < CommandLine.arguments.count else { return }
+        let folder = URL(fileURLWithPath: CommandLine.arguments[at + 1])
+        for (name, card, state) in cards {
+            for scheme in [ColorScheme.light, .dark] {
+                let shown = CookieCardReveal(card: card)
+                shown.show(state: state)
+                shown.reveal(through: shown.elements.count - 1, instant: true)
+                let renderer = ImageRenderer(content: CookieCardView(reveal: shown, onClose: {}).environment(\.colorScheme, scheme))
+                renderer.scale = 2
+                let data = NSBitmapImageRep(cgImage: renderer.cgImage!).representation(using: .png, properties: [:])!
+                try! data.write(to: folder.appendingPathComponent("\(name)-\(scheme == .dark ? "dark" : "light").png"))
             }
         }
-        print("\(count) paper checks passed.")
     }
 }

@@ -249,7 +249,7 @@ final class CookieSceneStage: ObservableObject {
             root.orientation = turn
             placeCamera()
             pauseTeaching()
-        case .rotate, .spin, .labels, .state: break
+        case .rotate, .spin, .labels, .state, .run, .pause, .set, .highlight: break
         }
         onInteract()
     }
@@ -620,8 +620,11 @@ final class CookieScenePresenter {
     }
     func pauseTeaching() { cancelSchedules(); stage?.pauseTeaching() }
     @discardableResult func apply(_ command: CookieVisualCommand) -> Bool {
-        // Stages belong to cards; a model has none.
-        if case .state = command { return false }
+        // Stages, sims and equation parts belong to cards; a model has none.
+        switch command {
+        case .state, .run, .pause, .set, .highlight: return false
+        default: break
+        }
         guard let stage else { return false }
         stage.apply(command)
         lastActive = Date()

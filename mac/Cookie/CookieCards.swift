@@ -5,7 +5,8 @@
 //  Explainer cards: a small closed catalog of pictures Cookie can put beside
 //  what it says — a timeline, steps, a flow of boxes and arrows, a list, a
 //  comparison, one big number, a chart of given numbers, a stack of layers,
-//  a cycle and a tree. The model writes one inline as [CARD {json}] at the
+//  a cycle, a tree, an equation (typeset by `CookieMath`) and a simulation
+//  from the vetted library (`CookieSim`). The model writes one inline as [CARD {json}] at the
 //  word where it belongs, or builds it first with the `build_visual` tool and
 //  shows it as [CARD:#id]. Either way the JSON is read here into exact Swift
 //  types, forgivingly: what's clearly meant is repaired (text too long is
@@ -81,6 +82,45 @@ struct CookieCard: Equatable {
         static let samples = 40
     }
 
+    /// An equation typeset from TeX. Its parts (\id{name}{…}, or each side of every = and +
+    /// when none are named) appear one by one and light up on beats.
+    struct Equation: Equatable {
+        struct Term: Equatable {
+            let id: String
+            /// The words the voice says it with, so it appears on them; nil spreads it over the sentence.
+            let say: String?
+            /// How it is read aloud from the math itself.
+            let words: String
+        }
+        let title: String
+        let tex: String
+        /// Every part, left to right.
+        let terms: [Term]
+        let highlight: String?
+        let caption: String?
+        /// Nil when the TeX is outside what Cookie typesets: the source is shown as written.
+        let layout: CookieMath.Layout?
+        let spoken: String
+    }
+
+    /// A simulation from the vetted library: the model picks it and sets numbers, Swift runs it.
+    struct Sim: Equatable {
+        struct Slider: Equatable {
+            let param: String
+            let label: String
+            let unit: String
+            let minimum: Double
+            let maximum: Double
+            let whole: Bool
+        }
+        let title: String
+        let model: String
+        /// Every parameter, each inside the model's range.
+        let values: [String: Double]
+        let sliders: [Slider]
+        let running: Bool
+    }
+
     enum Content: Equatable {
         case timeline(title: String, events: [Event])
         case steps(title: String, steps: [String])
@@ -96,8 +136,8 @@ struct CookieCard: Equatable {
         case cycle(title: String, steps: [Node])
         /// One root, breadth first; every other node names its parent.
         case tree(title: String, nodes: [Node])
-        // `equation` and `sim` join here: a case, its entry in `fields` (and `morphing`), a reader
-        // in `CookieCardReader.content`, its elements and its view.
+        case equation(Equation)
+        case sim(Sim)
     }
 
     /// One thing that appears on its own beat.
@@ -205,6 +245,14 @@ struct CookieCard: Equatable {
             return [.title] + nodes.indices.flatMap { index in
                 index == 0 ? [Element.node(nodes[0].id)] : [Element.node(nodes[index].id), .edge(index)]
             }
+        case .equation(let equation):
+            // What belongs to no part first (an = sign, the bars), then each part left to right.
+            guard let layout = equation.layout else { return [.title, .value] + (equation.caption == nil ? [] : [.caption]) }
+            let loose = layout.pieces.contains { $0.term == nil }
+            return [.title] + (loose ? [.value] : []) + equation.terms.map { Element.node($0.id) } + (equation.caption == nil ? [] : [.caption])
+        case .sim:
+            // The picture (which starts it moving), then its readouts and controls.
+            return [.title, .value, .caption]
         }
     }
 
@@ -212,6 +260,7 @@ struct CookieCard: Equatable {
     static func nodes(of content: Content) -> [Node] {
         switch content {
         case .flow(_, let nodes, _, _, _), .layers(_, let nodes), .cycle(_, let nodes), .tree(_, let nodes): return nodes
+        case .equation(let equation): return equation.terms.map { Node(id: $0.id, label: $0.say ?? $0.words) }
         default: return []
         }
     }
@@ -250,6 +299,12 @@ struct CookieCard: Equatable {
             let axes = [chart.xLabel.map { "across, \($0)" }, "up, \(chart.yLabel)"].compactMap { $0 }.joined(separator: "; ")
             return ([chart.title, "A \(chart.style.rawValue) chart, \(axes)"] + what + [chart.source.map { "Source: \($0)" }].compactMap { $0 })
                 .joined(separator: ". ")
+        case .equation(let equation):
+            return [equation.title, equation.spoken, equation.caption].compactMap { $0 }.joined(separator: ". ")
+        case .sim(let sim):
+            guard let model = CookieSim.models[sim.model] else { return sim.title }
+            let settings = model.params.map { "\($0.label) \(Self.format(sim.values[$0.id] ?? $0.value))\($0.unit.isEmpty ? "" : " " + $0.unit)" }
+            return "\(sim.title). A simulation of \(model.noun): " + settings.joined(separator: ", ")
         }
     }
 
@@ -267,6 +322,7 @@ struct CookieCard: Equatable {
     /// evenly over the sentence after it (to that sentence's end, or the next card's tag). Named
     /// objects (nodes, layers, steps of a cycle) come on their own words.
     func revealOffsets(in spoken: String, nextCardOffset: Int?) -> [Int] {
+        if case .equation(let equation) = content { return equationOffsets(equation, in: spoken, nextCardOffset: nextCardOffset) }
         let named = nodes
         guard !named.isEmpty else {
             return Self.beats(elements.count, from: offset, in: spoken, until: nextCardOffset)
@@ -276,6 +332,26 @@ struct CookieCard: Equatable {
         var last = offset
         return elements.map { element in
             if case .node(let id) = element { last = max(last, positions[id] ?? last) }
+            return last
+        }
+    }
+
+    /// An equation's parts: its frame at the tag, each named part on the first place its words are said
+    /// after the tag, the rest spread over the sentence; never earlier than the part before it.
+    private func equationOffsets(_ equation: Equation, in spoken: String, nextCardOffset: Int?) -> [Int] {
+        let even = Self.beats(elements.count, from: offset, in: spoken, until: nextCardOffset)
+        let text = spoken as NSString
+        let start = min(max(0, offset), text.length)
+        var last = offset
+        return elements.enumerated().map { index, element in
+            // The frame (the = sign, the bars) comes with the title; parts on their words or spread.
+            var at = element == .value ? offset : even[index]
+            if case .node(let id) = element, let say = equation.terms.first(where: { $0.id == id })?.say {
+                let pattern = "(?<![\\p{L}\\p{N}])" + NSRegularExpression.escapedPattern(for: say) + "(?![\\p{L}\\p{N}])"
+                let match = text.range(of: pattern, options: [.caseInsensitive, .regularExpression], range: NSRange(location: start, length: text.length - start))
+                if match.location != NSNotFound { at = match.location }
+            }
+            last = max(last, at)
             return last
         }
     }
@@ -439,18 +515,22 @@ extension CookieCard {
             "layers": ["title", "layers"],
             "cycle": ["title", "steps"],
             "tree": ["title", "nodes"],
+            "equation": ["title", "tex", "terms", "highlight", "caption"],
+            "sim": ["title", "model", "params", "sliders", "running"],
         ]
         return own.mapValues { $0.union(shared) }
     }()
 
     /// Kinds whose elements have ids, so a state can move them; the others can't morph.
-    static let morphing: Set<String> = ["flow", "chart", "layers", "cycle", "tree"]
+    static let morphing: Set<String> = ["flow", "chart", "layers", "cycle", "tree", "equation", "sim"]
 
     /// Names a model reaches for that mean one of the kinds.
     static let kindAliases: [String: String] = [
         "diagram": "flow", "process": "flow", "graph": "chart", "plot": "chart", "bar": "chart", "line": "chart",
         "stack": "layers", "architecture": "layers", "loop": "cycle", "hierarchy": "tree", "bullets": "list",
         "checklist": "steps", "comparison": "compare", "stat": "number", "events": "timeline",
+        "math": "equation", "formula": "equation", "latex": "equation", "tex": "equation",
+        "simulation": "sim", "physics": "sim", "model": "sim",
     ]
 
     /// Reads card JSON forgivingly (Global rule 2): the card, every repair, and the errors that stop it.
@@ -517,7 +597,12 @@ private struct CookieCardReader {
             for key in state.keys.sorted() where key != "at" && (!allowed.contains(key) || key == "kind" || key == "states" || key == "id") {
                 repairs.append("\(path).\(key): not something a state can change, ignored")
             }
-            for (key, value) in state where key != "at" && allowed.contains(key) && !["kind", "states", "id"].contains(key) { merged[key] = value }
+            for (key, value) in state where key != "at" && allowed.contains(key) && !["kind", "states", "id"].contains(key) {
+                // A sim state's params change only the ones it names; the rest stay as they were.
+                if key == "params", let old = merged[key] as? [String: Any], let new = value as? [String: Any] {
+                    merged[key] = old.merging(new) { _, newer in newer }
+                } else { merged[key] = value }
+            }
             // A state's own trouble drops that state, not the card.
             var inner = CookieCardReader()
             guard let content = inner.content(kind, merged, path: path + ".") else {
@@ -702,6 +787,10 @@ private struct CookieCardReader {
             result = tree(object, path: path)
         case "chart":
             result = chart(object, path: path).map(Card.Content.chart)
+        case "equation":
+            result = equation(object, path: path).map(Card.Content.equation)
+        case "sim":
+            result = sim(object, path: path).map(Card.Content.sim)
         default:
             return nil
         }
@@ -928,6 +1017,131 @@ private struct CookieCardReader {
         chart.xRange = Self.nice(xs.min() ?? 0, xs.max() ?? 1, pad: style == .scatter ? 0.05 : 0, round: style != .bar)
         chart.yRange = Self.nice(ys.min() ?? 0, ys.max() ?? 1, pad: 0.06, round: true)
         return chart
+    }
+
+    /// An equation: the TeX typeset here, so what can't be drawn is known now (and shown as written,
+    /// a repair, not an error); terms name the words each part is said with.
+    private mutating func equation(_ object: [String: Any], path: String) -> Card.Equation? {
+        let title = text(object["title"], path + "title", limit: Card.titleLength)
+        var raw = object["tex"]
+        if raw == nil {
+            for alias in ["latex", "math", "formula", "equation"] where object[alias] != nil {
+                raw = object[alias]
+                repairs.append("\(path)tex: read \(alias) as tex")
+                break
+            }
+        }
+        guard let tex = (raw as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !tex.isEmpty else {
+            errors.append("\(path)tex: required, the equation in TeX, e.g. \"F = \\\\id{m}{m}\\\\id{a}{a}\"")
+            return nil
+        }
+        let caption = text(object["caption"], path + "caption", limit: Card.lineLength, required: false)
+        guard let title else { return nil }
+        let typeset = CookieMath.typeset(tex)
+        repairs += typeset.repairs.map { path + $0 }
+        if let failure = typeset.failure { repairs.append("\(path)tex: \(failure), so it is shown as written") }
+        // Words for each part, from `terms`: [{id, say}] or {id: say}.
+        var said: [String: String] = [:]
+        if let list = object["terms"] as? [Any] {
+            for (index, entry) in list.enumerated() {
+                let field = "\(path)terms[\(index)]"
+                guard let item = entry as? [String: Any], let id = item["id"].flatMap({ self.id($0, field + ".id") }) else {
+                    repairs.append("\(field): should be {id, say}, left out")
+                    continue
+                }
+                if let say = text(item["say"] ?? item["label"] ?? item["words"], field + ".say", limit: Card.shortLength, required: false) { said[id] = say }
+            }
+        } else if let map = object["terms"] as? [String: Any] {
+            for key in map.keys.sorted() {
+                if let say = text(map[key], "\(path)terms.\(key)", limit: Card.shortLength, required: false) { said[key] = say }
+            }
+        } else if object["terms"] != nil { repairs.append("\(path)terms: should be a list of {id, say}, ignored") }
+        let order = typeset.layout?.order ?? []
+        for id in said.keys.sorted() where !order.contains(id) {
+            repairs.append("\(path)terms: \(id) isn't a part of the equation (mark one with \\id{\(id)}{…}), ignored")
+        }
+        var highlight = text(object["highlight"], path + "highlight", limit: Card.shortLength, required: false)
+        if let wanted = highlight, !order.contains(wanted) {
+            repairs.append("\(path)highlight: \(wanted) isn't a part of the equation, ignored")
+            highlight = nil
+        }
+        let terms = order.map { Card.Equation.Term(id: $0, say: said[$0], words: typeset.termWords[$0] ?? $0) }
+        return Card.Equation(title: title, tex: tex, terms: terms, highlight: highlight, caption: caption,
+                             layout: typeset.layout, spoken: typeset.failure == nil ? typeset.spoken : tex)
+    }
+
+    /// A simulation: one of the library's models, its numbers kept in the model's range, up to four
+    /// sliders on its parameters.
+    private mutating func sim(_ object: [String: Any], path: String) -> Card.Sim? {
+        let title = text(object["title"], path + "title", limit: Card.titleLength)
+        let names = CookieSim.models.keys.sorted().joined(separator: ", ")
+        guard var name = (object["model"] as? String)?.trimmingCharacters(in: .whitespaces).lowercased(), !name.isEmpty else {
+            errors.append("\(path)model: required, one of \(names)")
+            return nil
+        }
+        if CookieSim.models[name] == nil, let alias = CookieSim.aliases[name] {
+            repairs.append("\(path)model: read \"\(name)\" as \"\(alias)\"")
+            name = alias
+        }
+        guard let model = CookieSim.models[name] else {
+            errors.append("\(path)model: \"\(name)\" isn't in the library; use one of \(names)")
+            return nil
+        }
+        var values = model.defaults
+        if let params = object["params"] as? [String: Any] {
+            for key in params.keys.sorted() {
+                let field = "\(path)params.\(key)"
+                guard let param = model.param(key) else {
+                    repairs.append("\(field): \(model.id) has no such parameter (it has \(model.params.map(\.id).joined(separator: ", "))), ignored")
+                    continue
+                }
+                if param.id != key.lowercased() { repairs.append("\(field): read as \(param.id)") }
+                var given = number(params[key])
+                if given == nil, param.id == "compounding", (params[key] as? String)?.lowercased() == "continuous" { given = 0 }
+                guard let given else { repairs.append("\(field): not a number, kept \(Card.format(param.value))"); continue }
+                let kept = param.clamp(given)
+                if kept != given { repairs.append("\(field): brought inside \(Card.format(param.range.lowerBound))–\(Card.format(param.range.upperBound)) \(param.unit)".trimmingCharacters(in: .whitespaces)) }
+                values[param.id] = kept
+            }
+        } else if object["params"] != nil { repairs.append("\(path)params: should be an object of numbers, ignored") }
+        var sliders: [Card.Sim.Slider] = []
+        if let raw = object["sliders"] {
+            let list = (raw as? [Any]) ?? []
+            if !(raw is [Any]) { repairs.append("\(path)sliders: should be a list, ignored") }
+            if list.count > Card.maxSliders { repairs.append("\(path)sliders: kept the first \(Card.maxSliders) of \(list.count)") }
+            for (index, entry) in list.prefix(Card.maxSliders).enumerated() {
+                let field = "\(path)sliders[\(index)]"
+                let item = entry as? [String: Any]
+                let written = (entry as? String) ?? (item?["param"] ?? item?["id"]) as? String
+                guard let written, let param = model.param(written) else {
+                    repairs.append("\(field): \(model.id) has no parameter \"\((entry as? String) ?? (item?["param"] as? String) ?? "?")\", left off")
+                    continue
+                }
+                guard !sliders.contains(where: { $0.param == param.id }) else { repairs.append("\(field): repeats \(param.id), left off"); continue }
+                var low = number(item?["minimum"] ?? item?["min"]) ?? param.range.lowerBound
+                var high = number(item?["maximum"] ?? item?["max"]) ?? param.range.upperBound
+                if low > high { swap(&low, &high); repairs.append("\(field): minimum and maximum were swapped") }
+                let clampedLow = max(param.range.lowerBound, low), clampedHigh = min(param.range.upperBound, high)
+                if clampedLow != low || clampedHigh != high { repairs.append("\(field): kept inside \(param.id)'s safe range \(Card.format(param.range.lowerBound))–\(Card.format(param.range.upperBound))") }
+                guard clampedHigh > clampedLow else { repairs.append("\(field): no range left to slide over, left off"); continue }
+                let label = text(item?["label"], field + ".label", limit: 20, required: false) ?? param.label
+                if let value = values[param.id], value < clampedLow || value > clampedHigh {
+                    values[param.id] = min(clampedHigh, max(clampedLow, value))
+                    repairs.append("\(field): \(param.id) brought inside the slider's range")
+                }
+                sliders.append(.init(param: param.id, label: label, unit: param.unit, minimum: clampedLow, maximum: clampedHigh, whole: param.whole))
+            }
+        }
+        var running = true
+        if let flag = object["running"] {
+            if let bool = flag as? Bool { running = bool }
+            else if let word = (flag as? String)?.lowercased(), ["true", "false", "run", "pause", "paused"].contains(word) {
+                running = word == "true" || word == "run"
+                repairs.append("\(path)running: read \"\(word)\" as \(running)")
+            } else { repairs.append("\(path)running: should be true or false, kept true") }
+        }
+        guard let title else { return nil }
+        return Card.Sim(title: title, model: model.id, values: values, sliders: sliders, running: running)
     }
 
     /// A formula the sheet engine can read, starting with "=": a bare `x` is B1, and only the
