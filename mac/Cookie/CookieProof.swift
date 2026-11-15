@@ -206,6 +206,7 @@ final class CookieProofMeter {
         let top = screen.safeAreaInsets.top > 0 ? screen.safeAreaInsets.top : NSStatusBar.system.thickness
             // Below the layer's pill when a live screen layer is on.
             + (CookieLayers.shared.indicator != nil ? CookieLayerIndicator.height + 4 : 0)
+            + (CookieCanvas.shared.indicator != nil ? CookieCanvasIndicator.height + 4 : 0)
         panel.setFrame(NSRect(x: screen.frame.midX - size.width / 2, y: screen.frame.maxY - top - size.height - 4,
                               width: size.width, height: size.height), display: true)
         panel.orderFrontRegardless()

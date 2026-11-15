@@ -447,6 +447,8 @@ final class CompanionManager: ObservableObject {
         // Live screen layers draw in the overlay; when one ends the overlay may go.
         CookieLayers.shared.showOverlay = { [weak self] in self?.showOverlayForDrawing() }
         CookieLayers.shared.ended = { [weak self] in self?.scheduleTransientHideIfNeeded() }
+        // The voice canvas listens through this same dictation and runs its deck through this chat.
+        CookieCanvas.shared.environment = .live(companion: self, harness: HarnessClient())
         CookieBackgroundRuns.shared.companionManager = self
         CookieBackgroundRuns.shared.startScheduler()
         CookieHandoff.currentAgentName = { [weak self] in
@@ -677,6 +679,8 @@ final class CompanionManager: ObservableObject {
                 // manages that state directly until streaming finishes.
                 // A guided step waiting on the person is the exception: its answer is spoken.
                 guard self.currentResponseTask == nil || self.isWaitingOnPerson, !self.elevenLabsTTSClient.isActive else { return }
+                // A voice canvas listening isn't a turn: no listening sound or face each segment.
+                guard !CookieCanvas.shared.ownsMicrophone else { return }
 
                 if isFinalizing {
                     self.voiceState = .processing
@@ -746,6 +750,8 @@ final class CompanionManager: ObservableObject {
     func toggleConversationMode() {
         if isConversationMode { cancelCurrentInteraction(); return }
         guard !showOnboardingVideo, !isSetupPresented, transcriptInterceptor == nil else { return }
+        // A conversation takes the microphone from a listening canvas; it listens again after.
+        if CookieCanvas.shared.ownsMicrophone { CookieCanvas.shared.pause(.yielded) }
         cancelCurrentInteraction()
         buddyDictationManager.lastErrorMessage = nil
         isConversationMode = true
@@ -855,6 +861,8 @@ final class CompanionManager: ObservableObject {
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition, circling: Bool = true) {
         switch transition {
         case .pressed:
+            // The talk shortcut during a voice canvas: Cookie hears this turn; the canvas listens again after.
+            if CookieCanvas.shared.ownsMicrophone && !isConversationMode { CookieCanvas.shared.pause(.yielded) }
             guard !buddyDictationManager.isDictationInProgress else { return }
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo, !isSetupPresented else { return }
@@ -1253,6 +1261,31 @@ final class CompanionManager: ObservableObject {
 
     var isWorking: Bool { !isWaitingOnPerson && (workingStep != nil || voiceState == .processing) }
 
+    // MARK: - Voice canvas
+
+    /// No turn, reply, voice or conversation wants the microphone: a canvas that stepped aside may listen.
+    var canvasMayListen: Bool {
+        !isConversationMode && currentResponseTask == nil && !elevenLabsTTSClient.isActive && pendingApproval == nil
+            && !buddyDictationManager.isDictationInProgress && pendingKeyboardShortcutStartTask == nil
+    }
+
+    /// "Make it a deck": one normal run in this chat, so make_deck asks before it writes. Returns when
+    /// the run has ended (written, refused or failed), or after ten minutes.
+    func runCanvasDeck(_ request: String, shown: String) async {
+        if let thread = CookieCanvas.shared.thread, currentThreadID != thread { selectThread(thread) }
+        sendToModel(transcript: request, shown: shown, lookAtScreen: false, speakReply: false)
+        let deadline = Date().addingTimeInterval(600)
+        while currentResponseTask != nil && Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(250))
+            if Task.isCancelled { return }
+        }
+    }
+
+    /// A line from the canvas in its chat.
+    func appendCanvasNote(_ text: String) {
+        append(CompanionChatMessage(role: .note, text: text), to: CookieCanvas.shared.thread ?? currentThreadID)
+    }
+
     // MARK: - Threads
 
     @discardableResult
@@ -1394,7 +1427,7 @@ final class CompanionManager: ObservableObject {
                                field: [MacOperator.label(element), MacOperator.string(element, kAXRoleDescriptionAttribute) ?? ""])
     }
 
-    private func sendToModel(transcript: String, attachments: [CookieAttachment] = [], lookAtScreen: Bool, speakReply: Bool) {
+    private func sendToModel(transcript: String, shown: String? = nil, attachments: [CookieAttachment] = [], lookAtScreen: Bool, speakReply: Bool) {
         if attachments.isEmpty, let command = CookieTeachingCommand.parse(transcript) {
             currentResponseTask?.cancel()
             currentResponseTask = nil
@@ -1426,6 +1459,20 @@ final class CompanionManager: ObservableObject {
             selectionAtPress = nil
             textDestinationAtPress = nil
             _ = append(CompanionChatMessage(role: .note, text: CookieLayers.shared.perform(command)))
+            scheduleTransientHideIfNeeded()
+            return
+        }
+        // "Start a canvas", "let's map this out"; with one on, "stop canvas", "undo", "make it a deck", "move X under Y".
+        if attachments.isEmpty, shown == nil, let command = CookieCanvasCommand.parse(transcript), CookieCanvas.shared.accepts(command) {
+            currentResponseTask?.cancel()
+            currentResponseTask = nil
+            elevenLabsTTSClient.stopPlayback()
+            voiceState = .idle
+            workingStep = nil
+            selectionAtPress = nil
+            textDestinationAtPress = nil
+            if command == .start { _ = ensureWorkspaceThread() }
+            _ = append(CompanionChatMessage(role: .note, text: CookieCanvas.shared.perform(command)))
             scheduleTransientHideIfNeeded()
             return
         }
@@ -1468,7 +1515,7 @@ final class CompanionManager: ObservableObject {
         clearMarks()
         cardPresenter.pauseTeaching()
         scenePresenter.pauseTeaching()
-        let threadID = append(CompanionChatMessage(role: .user, text: transcript, attachments: attachments))
+        let threadID = append(CompanionChatMessage(role: .user, text: shown ?? transcript, attachments: attachments))
         workingThreadID = threadID
         workingHistory = []
         CookieSounds.play(.send)

@@ -91,6 +91,7 @@ final class NotchPanelManager {
     private var agentDock: CookieAgentDock?
     private var proofMeter: CookieProofMeter?
     private var layerIndicator: CookieLayerIndicator?
+    private var canvasIndicator: CookieCanvasIndicator?
     private lazy var windowController = CookieWindowController(companionManager: companionManager, navigation: navigation)
 
     init(companionManager: CompanionManager) {
@@ -122,6 +123,8 @@ final class NotchPanelManager {
         proofMeter = CookieProofMeter { [weak self] in self?.showHome(settingsPage: .privacy) }
         // "Layer · Translate · Esc to stop" while a live screen layer is on; a click stops it.
         layerIndicator = CookieLayerIndicator()
+        // "Canvas · listening · 7 ideas" while a voice canvas is on; a click opens it in its chat's workspace.
+        canvasIndicator = CookieCanvasIndicator { [weak self] in self?.openCanvas() }
         NotificationCenter.default.publisher(for: CookieAgentDock.openThread)
             .receive(on: RunLoop.main)
             .sink { [weak self] note in self?.openThread(note.object as? UUID) }
@@ -302,6 +305,7 @@ final class NotchPanelManager {
         agentDock?.hidden = state == .home
         proofMeter?.islandOpen = state != .closed
         layerIndicator?.islandOpen = state != .closed
+        canvasIndicator?.islandOpen = state != .closed
         switch (model.state, state) {
         case (_, .home): CookieSounds.play(.open)
         case (.home, _): CookieSounds.play(.close)
@@ -341,6 +345,19 @@ final class NotchPanelManager {
         navigation.agentPage = nil
         navigation.section = .chats
         setState(.home)
+    }
+
+    private func openCanvas() {
+        let canvas = CookieCanvas.shared
+        guard let thread = canvas.thread else { return }
+        CookieWorkspaceStore.shared.setSession(thread) { $0.artifactID = canvas.artifactID; $0.showing = true }
+        if windowController.isFrontmost {
+            companionManager.selectThread(thread)
+            navigation.section = .chats
+            windowController.show()
+        } else {
+            openThread(thread)
+        }
     }
 
     private func popOut() {
