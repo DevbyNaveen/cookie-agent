@@ -569,6 +569,10 @@ final class CookieCardPresenter {
         }
         return "Visible card: " + reveal.card.spokenSummary
     }
+    /// Called when a card appears, so whatever stood in for it ("Building your model…") can go.
+    var onShow: (() -> Void)?
+    /// A lesson the person asked for from their screen closes on Esc wherever the pointer is.
+    var escapeAnywhere = false
     func pauseTeaching() { cancelSchedules(); reveal?.pauseTeaching() }
     @discardableResult func apply(_ command: CookieVisualCommand) -> Bool {
         guard let reveal, command == .next || command == .previous else { return false }
@@ -633,6 +637,7 @@ final class CookieCardPresenter {
         reveal = nil
         if let panel { fadeOut(panel) }
         panel = nil
+        escapeAnywhere = false
     }
 
     /// Where the reply's marks are, as one rectangle on the first mark's display (AppKit global).
@@ -662,6 +667,7 @@ final class CookieCardPresenter {
 
     @discardableResult
     private func show(_ card: CookieCard, near region: (rect: CGRect, display: CGRect)?) -> CookieCardReveal {
+        onShow?()
         if let reveal, reveal.card == card { return reveal }
         let cardReveal = CookieCardReveal(card: card)
         let hosting = CookieCardHostingView(rootView: CookieCardView(reveal: cardReveal, onClose: { [weak self] in self?.dismiss() }))
@@ -793,7 +799,7 @@ final class CookieCardPresenter {
         let escape: (NSEvent, Bool) -> Void = { [weak self] event, local in
             MainActor.assumeIsolated {
                 guard event.keyCode == 53, let self, let panel = self.panel else { return }
-                if local || panel.frame.contains(NSEvent.mouseLocation) { self.dismiss() }
+                if local || self.escapeAnywhere || panel.frame.contains(NSEvent.mouseLocation) { self.dismiss() }
             }
         }
         if let keys = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { escape($0, false) }) { monitors.append(keys) }

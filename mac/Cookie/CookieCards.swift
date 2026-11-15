@@ -156,7 +156,7 @@ struct CookieCard: Equatable {
     }
 
     /// The fields each kind may carry; any other field drops the card.
-    private static let fields: [String: Set<String>] = [
+    static let fields: [String: Set<String>] = [
         "timeline": ["kind", "title", "events"],
         "steps": ["kind", "title", "steps"],
         "flow": ["kind", "title", "nodes", "edges"],
