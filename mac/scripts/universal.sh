@@ -59,12 +59,15 @@ for triple in aarch64-apple-darwin x86_64-apple-darwin; do
   (cd .. && cargo build --release --bin cookie --features bedrock --target "$triple")
   (cd cookie-tools && cargo build --release --target "$triple")
   (cd cookie-recorder && cargo build --release --target "$triple")
-  for name in cookie cookie-tools cookie-recorder; do cp "$CARGO_TARGET_DIR/$triple/release/$name" "$U/$arch/$name"; done
+  # The core goes in as cookie-core: macOS names ignore case, so a file "cookie" here is the same file
+  # as the SwiftPM app "Cookie" below, and the app would overwrite the core (exit 11 on every message).
+  cp "$CARGO_TARGET_DIR/$triple/release/cookie" "$U/$arch/cookie-core"
+  for name in cookie-tools cookie-recorder; do cp "$CARGO_TARGET_DIR/$triple/release/$name" "$U/$arch/$name"; done
   disk "rust-$arch-built"
   # The arch's objects, and the host build scripts that made them, go before the next arch.
   rm -rf "${CARGO_TARGET_DIR:?}/$triple" "${CARGO_TARGET_DIR:?}/release"
 done
-for name in cookie cookie-tools cookie-recorder; do lipo_pair "$name"; done
+for name in cookie-core cookie-tools cookie-recorder; do lipo_pair "$name"; done
 
 # swift_pair <package-dir> <product> <sdk>: SwiftPM once per triple, then the per-arch build folders go.
 swift_pair() {

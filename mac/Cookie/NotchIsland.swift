@@ -561,7 +561,8 @@ final class NotchPanelManager {
     }
 
     private func updateMousePassThrough(at location: NSPoint) {
-        let isVisible = model.hasNotch || model.state != .closed || companionManager.voiceState != .idle
+        // Always reachable: on a Mac without a notch the closed island is a small pill at the top centre.
+        let isVisible = true
         let inside = !companionManager.isSetupPresented && isVisible && islandRect(model.state).contains(location)
         if panel.ignoresMouseEvents == inside { panel.ignoresMouseEvents = !inside }
     }
@@ -714,7 +715,6 @@ struct NotchIslandView: View {
             }
             .shadow(color: .black.opacity(state == .home ? 0.22 : 0), radius: 10, y: 5)
             .padding(.top, model.layout.topInset(for: state))
-            .opacity(!model.hasNotch && state == .closed && !voiceActive ? 0 : 1)
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

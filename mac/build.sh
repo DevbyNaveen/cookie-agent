@@ -30,7 +30,7 @@ if [ -n "$UNIVERSAL" ]; then
   # them, unless you set one yourself (it must be universal too: the check at the end says so).
   scripts/universal.sh
   UB=build/universal/bin
-  COOKIE_HARNESS_BIN="${COOKIE_HARNESS_BIN:-$UB/cookie}"
+  COOKIE_HARNESS_BIN="${COOKIE_HARNESS_BIN:-$UB/cookie-core}"
   COOKIE_TOOLS_BIN="${COOKIE_TOOLS_BIN:-$UB/cookie-tools}"
   COOKIE_RECORDER_BIN="${COOKIE_RECORDER_BIN:-$UB/cookie-recorder}"
   COOKIE_SENSE_BIN="${COOKIE_SENSE_BIN:-$UB/cookie-sense}"
@@ -88,6 +88,11 @@ $P -c "Add :CFBundleExecutable string Cookie" -c "Add :CFBundleIdentifier string
 # entitlements) before the app seals it. Contents/Helpers is Apple's place for
 # helper executables that aren't the app's main one.
 cp "$HARNESS" "$APP/Contents/Helpers/cookie"
+# The core, not the app: on a case-insensitive disk a stray "Cookie" app binary can sit where the core
+# should be, and then every message ends "helper stopped (exit 11)".
+if strings "$APP/Contents/Helpers/cookie" | grep -q "Cookie: Starting"; then
+  echo "error: Helpers/cookie is the Cookie app, not the core ($HARNESS)" >&2; exit 1
+fi
 codesign --force --options runtime $TIMESTAMP --identifier com.enkeon.cookie.harness --sign "$SIGN_ID" "$APP/Contents/Helpers/cookie"
 # Files: cookie-tools (spreadsheets, documents, pages, CSV), a signed helper like the harness.
 [ -n "$COOKIE_TOOLS_BIN" ] || (cd cookie-tools && cargo build --release)
