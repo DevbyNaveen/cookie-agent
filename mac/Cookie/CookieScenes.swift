@@ -18,8 +18,10 @@
 //  error, named by part and field so the model can fix it. A part with an
 //  error is left out and says so; nothing is dropped silently.
 //
-//  The scene appears at its tag, and each labelled part's label follows,
-//  one by one, over the sentence after it.
+//  The scene appears at its tag. Its beats (`CookieSceneBeats`) then move
+//  the camera, the light, the hand, the labels and the motion together at the
+//  words each names; a scene without beats shows each labelled part's label,
+//  one by one, over the sentence after the tag.
 //
 
 import Foundation
@@ -138,8 +140,10 @@ struct CookieScene: Equatable {
     let drives: [Drive]
     let links: [Link]
     let flows: [Flow]
-    /// The machine starts working as it appears (else on [VISUAL:run]).
+    /// The machine starts working as it appears (else on [VISUAL:run] or a beat's run).
     let run: Bool
+    /// The explanation's timeline, in order: what happens at which spoken words (`CookieSceneBeats`).
+    let beats: [Beat]
     /// UTF-16 offset in the spoken text where the tag sat (`CookieSpeechClock` units).
     var offset = 0
     /// Where each grouped part's group sits (the middle of its members): a group explodes as one.
@@ -163,7 +167,7 @@ struct CookieScene: Equatable {
     }
 
     init(title: String, parts: [Part], explode: Bool, spin: Bool, offset: Int = 0,
-         joints: [Joint] = [], drives: [Drive] = [], links: [Link] = [], flows: [Flow] = [], run: Bool = false) {
+         joints: [Joint] = [], drives: [Drive] = [], links: [Link] = [], flows: [Flow] = [], run: Bool = false, beats: [Beat] = []) {
         self.title = title
         self.parts = parts
         self.explode = explode
@@ -174,6 +178,7 @@ struct CookieScene: Equatable {
         self.links = links
         self.flows = flows
         self.run = run
+        self.beats = beats
         var members: [String: [SIMD3<Float>]] = [:]
         for part in parts { if let group = part.group { members[group, default: []].append(part.position) } }
         groupCentres = members.mapValues { $0.reduce(.zero, +) / Float($0.count) }
@@ -211,8 +216,8 @@ struct CookieScene: Equatable {
         ([title] + labelled.compactMap(\.label)).joined(separator: ". ")
     }
 
-    /// Where on the speech clock each beat falls: the scene (and its title) at the tag, then each
-    /// label, spread over the sentence after it.
+    /// Without beats, where on the speech clock the reveal falls: the scene (and its title) at the
+    /// tag, then each label, spread over the sentence after it.
     func revealOffsets(in spoken: String) -> [Int] {
         CookieCard.namedBeats(labelled.compactMap(\.label), from: offset, in: spoken)
     }
@@ -359,7 +364,7 @@ struct CookieScene: Equatable {
         let errors: [String]
     }
 
-    static let sceneFields: Set<String> = ["title", "parts", "explode", "spin", "run", "joints", "drives", "links", "flows"]
+    static let sceneFields: Set<String> = ["title", "parts", "explode", "spin", "run", "joints", "drives", "links", "flows", "beats"]
     static let baseFields: Set<String> = ["id", "label", "shape", "size", "position", "rotation", "color", "colour", "finish", "cut", "group"]
     static let aliasFields: Set<String> = ["diameter", "outer", "module", "section", "holes"]
     /// Every field a part may carry, across all shapes.
@@ -380,13 +385,17 @@ struct CookieScene: Equatable {
         return reading.errors.count > 6 ? shown + "; and \(reading.errors.count - 6) more" : shown
     }
 
-    /// One short line for the person when a model was shown without some of its parts, naming the
-    /// first problem; nil when the model is whole (or wasn't shown: that has its own line).
+    /// One short line for the person when a model was shown without some of its parts (or of its
+    /// walkthrough's steps), naming the first problem; nil when the model is whole (or wasn't shown:
+    /// that has its own line).
     static func leftOutNote(_ reading: Reading?) -> String? {
-        guard let reading, reading.scene != nil, let first = reading.errors.first else { return nil }
+        guard let reading, reading.scene != nil, !reading.errors.isEmpty else { return nil }
         let more = reading.errors.count > 1 ? " (and \(reading.errors.count - 1) more)" : ""
-        return "Part of the model couldn't be built, so it's missing: \(first)\(more)."
+        if let first = reading.errors.first(where: { !isBeatError($0) }) { return "Part of the model couldn't be built, so it's missing: \(first)\(more)." }
+        return "One of the model's steps couldn't be followed: \(reading.errors[0])\(more)."
     }
+
+    static func isBeatError(_ error: String) -> Bool { error.hasPrefix("beats[") || error.hasPrefix("scene.beats") }
 
     /// The reading of a SCENE tag, or nil when the tag isn't one.
     static func read(tag: CookieReplyTag) -> Reading? {
@@ -476,10 +485,12 @@ struct SceneReader {
         }
         guard !parts.isEmpty else { errors.append("scene: no part could be built, so there is nothing to show"); return nil }
         let motion = motion(fields, parts: parts)
+        let moving = Scene(title: "", parts: parts, explode: false, spin: false, joints: motion.joints, drives: motion.drives,
+                           links: motion.links, flows: motion.flows)
         return Scene(title: title, parts: parts, explode: flag(fields["explode"], at: "scene.explode"),
                      spin: flag(fields["spin"], at: "scene.spin"), offset: offset,
                      joints: motion.joints, drives: motion.drives, links: motion.links, flows: motion.flows,
-                     run: flag(fields["run"], at: "scene.run"))
+                     run: flag(fields["run"], at: "scene.run"), beats: readBeats(fields["beats"], moving))
     }
 
     // MARK: Parts

@@ -14,6 +14,8 @@
 //  and isolate fades the rest back instead of hiding it.
 //  `CookieScenePresenter` floats it like a card: one at a time, beside the
 //  notch or the marks, click-through except while the pointer is over it.
+//  `CookieSceneDirector` runs the scene's beats on the speech clock, each once,
+//  in order, as the voice reaches its words.
 //
 //  The scene sits on the paper whether or not RealityView draws its own
 //  background: the view's background style is the paper, and the card is
@@ -47,8 +49,11 @@ final class CookieSceneStage: ObservableObject {
     private var markers: [String: [ModelEntity]] = [:]
     private var flowPaths: [String: CookieFlowPath] = [:]
 
-    /// How many labels are showing, in `scene.labelled` order.
-    @Published private(set) var shownLabels = 0
+    /// The labelled parts whose labels are showing (a beat may show any of them, in any order).
+    @Published private(set) var shownLabelIDs: Set<String> = []
+    var shownLabels: Int { shownLabelIDs.count }
+    /// The showing labels' parts, in `scene.labelled` order (which keeps each on its rail).
+    var shownLabelled: [CookieScene.Part] { scene.labelled.filter { shownLabelIDs.contains($0.id) } }
     /// Each shown label's part, projected onto the view (view points, top-left origin).
     @Published private(set) var anchors: [String: CGPoint] = [:]
     /// The scene's centre on the view; labels lean away from it.
@@ -189,7 +194,7 @@ final class CookieSceneStage: ObservableObject {
     /// shows the first n labels. `all` shows everything at once.
     func reveal(through beat: Int, all: Bool) {
         let count = all ? scene.labelled.count : min(scene.labelled.count, beat)
-        if count > shownLabels { shownLabels = count }
+        shownLabelIDs.formUnion(scene.labelled.prefix(count).map(\.id))
         if !all, count > 0 { focus(scene.labelled[count - 1].id) }
         guard scene.explode, !initialExplosionStarted else { return }
         initialExplosionStarted = true
@@ -223,7 +228,7 @@ final class CookieSceneStage: ObservableObject {
         selectedPart = id
         if isolated != nil { isolated?.formUnion(members) }
         spinning = false
-        if let index = scene.labelled.firstIndex(where: { $0.id == id }) { shownLabels = max(shownLabels, index + 1) }
+        if scene.labelled.contains(where: { $0.id == id }) { shownLabelIDs.insert(id) }
         highlighted = members
         refreshMaterials()
         if hand, let anchor = anchors[id] { onFocus(anchor) }
@@ -236,18 +241,43 @@ final class CookieSceneStage: ObservableObject {
         let members = scene.parts(named: resolved)
         guard let first = members.first else { return }
         light(members.first { $0.label != nil }?.id ?? first.id, members: Set(members.map(\.id)), hand: true)
+        // Mid-explosion (a beat that explodes, then focuses) the camera aims where the parts are going.
+        let pose = scene.moves ? CookieSceneMotion.pose(scene, turns: currentTurns) : [:]
+        func at(_ part: CookieScene.Part) -> SIMD3<Float> {
+            explosion == nil ? parts[part.id]?.position ?? scene.place(of: part, exploded: exploded)
+                : CookieSceneMotion.placed(scene, part, pose: pose, explosion: exploded ? 1 : 0).position
+        }
         var low = SIMD3<Float>(repeating: .greatestFiniteMagnitude), high = -low
         for part in members {
-            let at = parts[part.id]?.position ?? scene.place(of: part, exploded: exploded)
-            low = simd_min(low, at - part.reach)
-            high = simd_max(high, at + part.reach)
+            low = simd_min(low, at(part) - part.reach)
+            high = simd_max(high, at(part) + part.reach)
         }
         let centre = (low + high) / 2
-        let radius = members.map { simd_length((parts[$0.id]?.position ?? .zero) - centre) + $0.reach }.max() ?? 0.1
+        let radius = members.map { simd_length(at($0) - centre) + $0.reach }.max() ?? 0.1
         let overview = overviewDistance
         rig.frame(centre, turn: turn, distance: min(overview, max(overview * 0.3, CookieSceneCameraRig.distance(radius: radius))),
                   instantly: reduceMotion)
         updateCamera()
+    }
+
+    /// One beat of the scene's timeline: its actions in order, so the camera, the light, the hand,
+    /// the labels and the motion all move on together from the same words.
+    func perform(_ beat: CookieScene.Beat) {
+        for action in beat.actions {
+            switch action {
+            case .command(let command):
+                apply(command)
+            case .isolate(let name):
+                let members = scene.parts(named: name)
+                guard let first = members.first else { continue }
+                light(members.first { $0.label != nil }?.id ?? first.id, members: Set(members.map(\.id)), hand: true)
+                isolated = Set(members.map(\.id))
+                onInteract()
+            case .label(let name):
+                shownLabelIDs.formUnion(scene.parts(named: name).filter { $0.label != nil }.map(\.id))
+                onInteract()
+            }
+        }
     }
 
     func pauseTeaching() {
@@ -285,7 +315,7 @@ final class CookieSceneStage: ObservableObject {
         case .labels(let shown):
             labelsHidden = !shown
             allLabels = shown
-            if shown { shownLabels = scene.labelled.count }
+            if shown { shownLabelIDs = Set(scene.labelled.map(\.id)) }
             onInteract()
             return
         case .rotate(let degrees):
@@ -313,6 +343,9 @@ final class CookieSceneStage: ObservableObject {
         case .flow(let id, let on):
             guard let flow = Self.match(id, in: scene.flows.map(\.id)) else { return }
             if on { flowsOn.insert(flow) } else { flowsOn.remove(flow) }
+            // Re-lay the route: Reduce Motion's still arrows are placed only then, and a flow that
+            // started hidden never was.
+            pathsDirty = true
             updateFlows()
             onInteract()
             return
@@ -511,14 +544,14 @@ final class CookieSceneStage: ObservableObject {
 
     private func frame(_ seconds: Float, project: (SIMD3<Float>) -> CGPoint?) {
         step(seconds)
-        if handFollows, let activePart, let entity = parts[activePart], scene.labelled.prefix(shownLabels).allSatisfy({ $0.id != activePart }),
+        if handFollows, let activePart, let entity = parts[activePart], !shownLabelIDs.contains(activePart),
            let point = project(entity.position(relativeTo: nil)) {
             // A part without a showing label (a focus on a group, an unlabelled part): the hand still follows it.
             onFocus(point)
         }
-        guard shownLabels > 0 else { return }
+        guard !shownLabelIDs.isEmpty else { return }
         var points: [String: CGPoint] = [:]
-        for part in scene.labelled.prefix(shownLabels) where !isFaded(part.id) {
+        for part in shownLabelled where !isFaded(part.id) {
             if let entity = parts[part.id], entity.isEnabled, let point = project(entity.position(relativeTo: nil)) { points[part.id] = point }
         }
         let centre = project(.zero)
@@ -900,7 +933,7 @@ private struct CookieSceneLabels: View {
     let reduceMotion: Bool
 
     var body: some View {
-        let available = stage.labelsHidden ? [] : Array(stage.scene.labelled.prefix(stage.shownLabels))
+        let available = stage.labelsHidden ? [] : stage.shownLabelled
         let recent = Array(available.filter { $0.id != stage.activePart }.suffix(stage.activePart == nil ? 6 : 5))
         let visible = available.count <= 6 || stage.allLabels ? available : available.filter { part in recent.contains(where: { $0.id == part.id }) || part.id == stage.activePart }
         let shown = Array(visible.enumerated())
@@ -938,7 +971,7 @@ private struct CookieSceneLabels: View {
             }
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: stage.shownLabels)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: stage.shownLabelIDs)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: stage.labelsHidden)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: stage.allLabels)
     }
@@ -979,7 +1012,9 @@ final class CookieScenePresenter {
     private var fadeTimer: Task<Void, Never>?
     private var lastActive = Date()
 
-    var teachingContext: String? { stage.map(Self.teachingContext) }
+    var teachingContext: String? {
+        stage.map { Self.teachingContext($0) + (director.notes.isEmpty ? "" : ". Beats whose words you didn't say, placed evenly: " + director.notes.joined(separator: "; ")) }
+    }
     static func teachingContext(_ stage: CookieSceneStage) -> String {
         "Visible 3D model: \(stage.scene.title). Selected: \(stage.selectedPart ?? "none"). Exploded: \(stage.exploded). Spinning: \(stage.spinning). Labels: \(stage.labelsHidden ? "hidden" : "shown"). Parts: " + stage.scene.labelled.map { "\($0.id)=\($0.label ?? $0.id)" }.joined(separator: "; ")
             + (stage.scene.hasMotion ? ". Motion: \(stage.playing ? (stage.slowMotion ? "slow motion" : "running") : "stopped")" : "")
@@ -1013,20 +1048,43 @@ final class CookieScenePresenter {
 
     private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
+    /// Runs the scene's beats at their words.
+    let director = CookieSceneDirector()
+
+    /// A streamed reply's scene, as its tag arrives: it appears when the voice reaches the tag, and its
+    /// beats go on the clock from the words streamed by then (the rest when the reply is whole).
     func prepare(_ scene: CookieScene, clock: CookieSpeechClock) {
         cancelSchedules()
         CookieMeshResources.warm(scene)
         self.clock = clock
-        schedules.append(clock.schedule(atOffset: scene.offset) { [weak self] in
-            _ = self?.show(scene, near: nil)
-        })
+        director.reset()
+        if scene.beats.isEmpty {
+            schedules.append(clock.schedule(atOffset: scene.offset) { [weak self] in
+                _ = self?.show(scene, near: nil)
+            })
+        } else {
+            scheduleShow(scene, near: nil, clock: clock)
+        }
     }
 
-    /// Puts the scene on the speech clock: it appears at its tag and its labels follow the sentence
-    /// after it. Call from `onPlaybackStarted`.
+    /// Puts the scene on the speech clock: it appears at its tag; then its beats run at their words,
+    /// or (without beats) its labels follow the sentence after it. Call once the reply is whole.
     func schedule(_ scene: CookieScene, spoken: String, near region: (rect: CGRect, display: CGRect)?, clock: CookieSpeechClock) {
-        cancelSchedules()
         CookieMeshResources.warm(scene)
+        if !scene.beats.isEmpty {
+            if let stage, stage.scene == scene, self.clock === clock {
+                director.finish(spoken: spoken)
+                director.schedule(scene, on: stage, clock: clock)
+            } else {
+                cancelSchedules()
+                self.clock = clock
+                director.reset()
+                director.finish(spoken: spoken)
+                scheduleShow(scene, near: region, clock: clock)
+            }
+            return
+        }
+        cancelSchedules()
         self.clock = clock
         let offsets = scene.revealOffsets(in: spoken)
         var shown: CookieSceneStage?
@@ -1041,10 +1099,24 @@ final class CookieScenePresenter {
         }
     }
 
-    /// A scene that isn't spoken (a typed answer): all of it now.
+    /// The scene at its tag (and, with beats, the explosion it starts with); then its beats.
+    private func scheduleShow(_ scene: CookieScene, near region: (rect: CGRect, display: CGRect)?, clock: CookieSpeechClock) {
+        schedules.append(clock.schedule(atOffset: scene.offset) { [weak self] in
+            guard let self else { return }
+            let stage = self.show(scene, near: region)
+            stage.reveal(through: 0, all: false)
+            self.director.schedule(scene, on: stage, clock: clock)
+            self.restartFadeTimer()
+        })
+    }
+
+    /// A scene that isn't spoken (a typed answer): all of it now, its beats played through to their end state.
     func showNow(_ scene: CookieScene, near region: (rect: CGRect, display: CGRect)?) {
         cancelSchedules()
-        show(scene, near: region).reveal(through: scene.labelled.count, all: true)
+        director.reset()
+        let shown = show(scene, near: region)
+        shown.reveal(through: scene.labelled.count, all: true)
+        scene.beats.forEach(shown.perform)
         restartFadeTimer()
     }
 
@@ -1058,6 +1130,7 @@ final class CookieScenePresenter {
         if let panel { fadeOut(panel, stage: stage) }
         panel = nil
         stage = nil
+        director.reset()
         escapeAnywhere = false
     }
 
@@ -1066,6 +1139,7 @@ final class CookieScenePresenter {
     private func cancelSchedules() {
         if let clock { schedules.forEach(clock.cancel) }
         schedules = []
+        director.cancel()
     }
 
     @discardableResult
@@ -1074,6 +1148,7 @@ final class CookieScenePresenter {
         if let stage, stage.scene == scene { return stage }
         let newStage = CookieSceneStage(scene: scene, reduceMotion: reduceMotion)
         newStage.onInteract = { [weak self] in self?.restartFadeTimer() }
+        director.onBeat = { [weak self] in self?.restartFadeTimer() }
         let hosting = CookieSceneHostingView(rootView: CookieSceneView(stage: newStage, onClose: { [weak self] in self?.dismiss() }))
         let newPanel = CookieCardPanel(contentRect: CookieCardPresenter.frame(for: hosting.fittingSize, near: region))
         newPanel.contentView = hosting
@@ -1183,6 +1258,58 @@ final class CookieScenePresenter {
         }
         if let keys = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { escape($0, false) }) { monitors.append(keys) }
         if let keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { escape($0, true); return $0 }) { monitors.append(keys) }
+    }
+}
+
+/// A scene's beats on the speech clock, for the stage showing it. Each beat runs once, in order,
+/// when the voice reaches its words. Until the reply is whole only beats whose place is already
+/// certain (found in the words streamed so far, or between two found) wait on the clock; the rest
+/// go on when `finish` gives the whole reply. An interruption (`cancel`, or the clock stopping)
+/// leaves the model as the last beat left it.
+@MainActor
+final class CookieSceneDirector {
+    private var schedules: [CookieSpeechClock.Scheduled] = []
+    private weak var clock: CookieSpeechClock?
+    /// How many beats have run.
+    private(set) var ran = 0
+    private var spoken: String?
+    /// Beats whose words weren't in the reply, placed evenly; the next turn hears about them.
+    private(set) var notes: [String] = []
+    /// After each beat (the presenter keeps the model up).
+    var onBeat: () -> Void = {}
+
+    /// A new scene: nothing run, nothing known.
+    func reset() {
+        cancel()
+        ran = 0
+        spoken = nil
+        notes = []
+    }
+
+    /// The whole reply's spoken words.
+    func finish(spoken: String) { self.spoken = spoken }
+
+    /// Puts every beat not yet run on the clock, against the whole reply when it's known and the
+    /// words the voice has so far otherwise.
+    func schedule(_ scene: CookieScene, on stage: CookieSceneStage, clock: CookieSpeechClock) {
+        cancel()
+        self.clock = clock
+        let timeline = scene.timeline(in: spoken ?? clock.text)
+        let known = spoken != nil ? scene.beats.count : (timeline.found.lastIndex(of: true).map { $0 + 1 } ?? 0)
+        if spoken != nil { notes = timeline.notes }
+        for index in min(ran, known)..<known {
+            schedules.append(clock.schedule(atOffset: timeline.offsets[index]) { [weak self, weak stage] in
+                guard let self, let stage, stage.scene == scene, index == self.ran else { return }
+                self.ran += 1
+                stage.perform(scene.beats[index])
+                self.onBeat()
+            })
+        }
+    }
+
+    func cancel() {
+        if let clock { schedules.forEach(clock.cancel) }
+        schedules = []
     }
 }
 

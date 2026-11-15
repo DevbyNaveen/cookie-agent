@@ -10,7 +10,9 @@
 //  part, whether labels collide or their leader lines cross, and how the model
 //  fills the frame; and for a machine that works, a sampled cycle of its motion
 //  (gears that don't touch, a piston that leaves its cylinder, parts that run
-//  out of view). The reply then shows it with [SCENE:#id] at its word.
+//  out of view); and for a scene with beats, the beats played through in order
+//  (any that do nothing, any focus on a part hidden then). The reply then shows
+//  it with [SCENE:#id] at its word.
 //
 //  The check goes back as words, not a picture: a tool result reaching the
 //  harness is text only (serve.rs `tool_result.output`), so a PNG would have
@@ -61,7 +63,7 @@ final class CookieModelShelf {
 
     static let tool = HarnessRequest.Tool(
         name: "build_model",
-        description: "Build a 3D model before showing it. scene: the SCENE JSON ({\"title\",\"parts\",\"explode\",\"spin\"}, and for a machine that works \"joints\",\"drives\",\"links\",\"flows\",\"run\"; the same fields as an inline [SCENE {json}]). id: optional; leave it out and the id comes from the title, so a rebuild with the same title replaces the model. Answers {ok, id, show, repairs, errors, issues, render, snapshot, rebuilds_left}: show is the tag to put in the reply at the word where the model should appear ([SCENE:#id]); repairs are what Cookie fixed for you; errors name the part and field that couldn't be built (that part is left out); render reports, from the camera the person sees, each part's box on the 520×360 view, what hides behind what, what is sealed inside an opaque part, label collisions and framing, assembled and exploded, and for a model that moves, motion: what each joint does, whether driven gears touch at the teeth's ratio, whether a piston stays in its cylinder over a whole crank turn, whether moving parts stay in view; issues is the short list worth fixing. Fix errors and issues once and call again if they matter; at most \(buildsPerTurn) calls a turn.",
+        description: "Build a 3D model before showing it. scene: the SCENE JSON ({\"title\",\"parts\",\"explode\",\"spin\"}, and for a machine that works \"joints\",\"drives\",\"links\",\"flows\",\"run\", and for a planned explanation \"beats\"; the same fields as an inline [SCENE {json}]). id: optional; leave it out and the id comes from the title, so a rebuild with the same title replaces the model. Answers {ok, id, show, repairs, errors, issues, render, snapshot, rebuilds_left}: show is the tag to put in the reply at the word where the model should appear ([SCENE:#id]); repairs are what Cookie fixed for you; errors name the part and field that couldn't be built (that part is left out); render reports, from the camera the person sees, each part's box on the 520×360 view, what hides behind what, what is sealed inside an opaque part, label collisions and framing, assembled and exploded, and for a model that moves, motion: what each joint does, whether driven gears touch at the teeth's ratio, whether a piston stays in its cylinder over a whole crank turn, whether moving parts stay in view, and beats: each beat in order with its actions (its words are matched to what you say when the reply is spoken); issues is the short list worth fixing, including beat actions that do nothing at that moment and focuses on a part hidden then. Fix errors and issues once and call again if they matter; at most \(buildsPerTurn) calls a turn.",
         effect: "read",
         schema: .init(properties: [
             "scene": .init(description: "the scene as a JSON object encoded as a string"),
@@ -144,6 +146,7 @@ final class CookieModelShelf {
         var render: [String: Any] = ["view": check.view, "assembled": check.assembled.lines]
         if let exploded = check.exploded { render["exploded"] = exploded.lines }
         if let motion = check.motion { render["motion"] = motion.lines }
+        if let beats = check.beats { render["beats"] = beats.lines }
         return (Self.json([
             "ok": true, "id": id, "show": "[SCENE:#\(id)]",
             "repairs": reading.repairs, "errors": reading.errors,
@@ -181,10 +184,13 @@ enum CookieSceneCheck {
         /// What moves and whether it works: gears that touch, a piston that stays in its cylinder,
         /// parts that stay in view over a whole cycle. Nil for a model that doesn't move.
         var motion: View? = nil
+        /// The beats played through: what each does, which do nothing, which focus a hidden part.
+        /// Nil for a model without beats.
+        var beats: View? = nil
         /// What's worth fixing, from every view, without repeats.
         var issues: [String] {
             var seen = Set<String>()
-            return (assembled.issues + (exploded?.issues ?? []) + (motion?.issues ?? [])).filter { seen.insert($0).inserted }
+            return (assembled.issues + (exploded?.issues ?? []) + (motion?.issues ?? []) + (beats?.issues ?? [])).filter { seen.insert($0).inserted }
         }
     }
 
@@ -217,7 +223,8 @@ enum CookieSceneCheck {
         let view = "\(Int(size.width))×\(Int(size.height)) pt view, x right and y down from the top-left; the model turned \(yaw)° to the left, seen from \(pitch)° above"
         return Report(view: view, assembled: check(scene, exploded: false, until: deadline),
                       exploded: scene.explode ? check(scene, exploded: true, until: deadline) : nil,
-                      motion: scene.hasMotion ? motion(scene, until: deadline) : nil)
+                      motion: scene.hasMotion ? motion(scene, until: deadline) : nil,
+                      beats: scene.beats.isEmpty ? nil : beats(scene, until: deadline))
     }
 
     /// The pose the person first sees: every joint unturned, every link solved.
@@ -508,14 +515,14 @@ enum CookieSceneCheck {
         let paths = scene.flows.map { CookieSceneMotion.path(scene, $0, explosion: 0) }
         let counts = CookieSceneMotion.beadCounts(scene, lengths: paths.map(\.length))
         for (index, flow) in scene.flows.enumerated() {
-            view.lines.append("flow \(flow.id): \(flow.through.joined(separator: " → "))\(flow.loop ? " and round again" : ""), \(f(paths[index].length)) long, \(counts[index]) beads at \(f(flow.speed)) a second\(flow.on ? "" : ", off until [VISUAL:flow:\(flow.id):on]"); an illustration of the route, not a simulation")
+            view.lines.append("flow \(flow.id): \(flow.through.joined(separator: " → "))\(flow.loop ? " and round again" : ""), \(f(paths[index].length)) long, \(counts[index]) beads at \(f(flow.speed)) a second\(flow.on ? "" : ", off until a flow:\(flow.id):on beat or [VISUAL:flow:\(flow.id):on]"); an illustration of the route, not a simulation")
         }
         return view
     }
 
     /// b fits inside a's own shape, not just its box: a tube or bearing has a bore, an extrude may have holes,
     /// a pipe or sweep is a path; those don't seal what sits in them.
-    private static func encloses(_ a: Placed, _ b: Placed) -> Bool {
+    static func encloses(_ a: Placed, _ b: Placed) -> Bool {
         switch a.part.shape {
         case .tube, .bearing, .torus, .pipe, .sweep, .spring, .wheel, .bladeRing, .propeller, .rack, .arrow, .crank, .rod: return false
         case .gear, .bevelGear: return a.part.form["bore"] <= 0

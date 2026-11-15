@@ -308,6 +308,8 @@ enum CookieSceneMotionTests {
         check(still.placement(of: "fan")!.orientation == pose && still.motionTime == 0, "with Reduce Motion the machine holds its pose")
         let representative = CookieSceneMotion.placed(scene, scene.parts[1], pose: CookieSceneMotion.pose(scene, turns: CookieSceneMotion.representative(scene)), explosion: 0)
         check(abs(simd_dot(pose.vector, representative.orientation.vector)) > 0.9999, "a sixth of a turn round, not its built pose")
+        check(still.markerPositions("air").isEmpty, "the example's air starts hidden, for its first beat to show")
+        still.apply(.flow("air", on: true))
         let arrows = still.markerPositions("air")
         check(arrows.count >= 3 && arrows.count <= 10 && still.flowLayer.children.count == arrows.count, "the flow is still arrows along its route: \(arrows.count)")
         still.step(1)
@@ -320,6 +322,7 @@ enum CookieSceneMotionTests {
 
         let moving = CookieSceneStage(scene: scene, reduceMotion: false)
         moving.apply(.run)
+        moving.apply(.flow("air", on: true))
         let first = moving.markerPositions("air")
         moving.step(0.1)
         check(first.count > 10 && first.count <= CookieScene.maxBeadsPerFlow && moving.markerPositions("air") != first, "with motion the beads run along it")
@@ -369,16 +372,14 @@ enum CookieSceneMotionTests {
         check(prompt.contains("Cookie doesn't simulate airflow, fluids or forces") && prompt.contains("[VISUAL:flow:id:on]") && prompt.contains("[VISUAL:view:side]"),
               "the prompt says flows are illustrations and lists the new verbs")
 
-        // The reply's [VISUAL:run] drives the model built for it.
-        let reply = String(jetLine[jetLine.range(of: "the reply says \"")!.upperBound...].dropLast())
-        let tags = CookieReplyTags.split(reply).tags
+        // Its beats drive the model built for it (on the speech clock: CookieSceneBeatsTests).
         let stage = CookieSceneStage(scene: scene, reduceMotion: false)
         let fan = stage.placement(of: "fan")!.orientation
-        for command in tags.compactMap(CookieVisualCommand.init(tag:)) { stage.apply(command) }
+        scene.beats.forEach(stage.perform)
         stage.step(0.2)
         check(stage.playing && abs(simd_dot(stage.placement(of: "fan")!.orientation.vector, fan.vector)) < 0.999
               && close(stage.placement(of: "fan")!.position, CookieSceneMotion.placed(scene, scene.parts[1], pose: [:], explosion: 0).position, 1e-3),
-              "its [VISUAL:run] spins the fan in place")
+              "its run beat spins the fan in place")
         check(CookieScenePresenter.teachingContext(stage).contains("Motion: running") && CookieScenePresenter.teachingContext(stage).contains("Flows: air on"),
               "and the follow-up knows it's running")
         stage.release()

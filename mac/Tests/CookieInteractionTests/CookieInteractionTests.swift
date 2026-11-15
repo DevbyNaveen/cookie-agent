@@ -756,6 +756,7 @@ struct CookieInteractionCheckRunner {
             await CookieScenePartsTests.run()
             await CookieBuildModelTests.run()
             await CookieSceneMotionTests.run()
+            await CookieSceneBeatsTests.run()
             await CookieCanvasTests.run()
             await CookieUpdaterTests.run()
             setupChecksFinished = true
