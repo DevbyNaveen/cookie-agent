@@ -53,13 +53,26 @@ final class CookieProof: ObservableObject {
         }
     }
 
+    @discardableResult
     func record(_ kind: Kind, feature: String, app: String? = nil, summary: String,
-                destination: String? = nil, bytes: Int? = nil, hidden: Int = 0) {
+                destination: String? = nil, bytes: Int? = nil, hidden: Int = 0) -> UUID {
         let entry = Entry(id: UUID(), date: Date(), kind: kind, feature: feature, app: app,
                           summary: Self.clean(summary), destination: destination, bytes: bytes, hidden: hidden)
         entries.insert(entry, at: 0)
         prune()
         save()
+        return entry.id
+    }
+
+    /// A running row (a day's count) gets its final words; false when it has aged out or was forgotten.
+    @discardableResult
+    func revise(_ id: UUID, summary: String) -> Bool {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return false }
+        let cleaned = Self.clean(summary)
+        guard entries[index].summary != cleaned else { return true }
+        entries[index].summary = cleaned
+        save()
+        return true
     }
 
     /// Pictures going to the model: one `.sent` row each, with its size and the model it goes to.

@@ -39,8 +39,14 @@ struct NotchNotice: Equatable {
 
 @MainActor
 final class NotchModel: ObservableObject {
-    @Published var state: NotchState = .closed
-    @Published var notice: NotchNotice?
+    @Published var state: NotchState = .closed {
+        didSet { if oldValue == .notice, state != .notice, let notice { noticeLeft?(notice) } }
+    }
+    @Published var notice: NotchNotice? {
+        didSet { if state == .notice, let oldValue, oldValue != notice { noticeLeft?(oldValue) } }
+    }
+    /// A notice left the screen, however it went (button, click away, Esc, replaced, display change).
+    var noticeLeft: (@MainActor (NotchNotice) -> Void)?
     @Published var threadCount = 0
     let notchSize: CGSize
     let hasNotch: Bool
@@ -98,6 +104,7 @@ final class NotchPanelManager {
         self.companionManager = companionManager
         screen = Self.notchScreen()
         model = Self.makeModel(for: screen)
+        model.noticeLeft = Self.noticeLeft
         panel = NotchPanel(
             contentRect: NSRect(origin: .zero, size: model.layout.panelSize),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -247,6 +254,11 @@ final class NotchPanelManager {
         NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main ?? NSScreen.screens[0]
     }
 
+    /// An apprentice offer whose notice is gone no longer blocks the next one.
+    private static func noticeLeft(_ notice: NotchNotice) {
+        if let id = notice.apprenticePatternID { CookieApprentice.shared.noticeLeft(id) }
+    }
+
     private static func makeModel(for screen: NSScreen) -> NotchModel {
         let availableSize = CGSize(width: screen.frame.width - 24,
                                    height: screen.frame.maxY - screen.visibleFrame.minY - 16)
@@ -289,7 +301,9 @@ final class NotchPanelManager {
         noticeTimer?.invalidate()
         transitionGeneration += 1
         screen = Self.notchScreen()
+        if model.state == .notice { model.state = .closed }
         model = Self.makeModel(for: screen)
+        model.noticeLeft = Self.noticeLeft
         mountContent()
         model.state = state == .notice ? .closed : state
         if model.state == .home { panel.makeKey() }

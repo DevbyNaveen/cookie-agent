@@ -122,7 +122,7 @@ The compact composer swaps its typing controls for `CookieVoiceMedallion` during
 | `CookieWriting.swift` | ~105 | Write grants per app, typed-draft record, correction summaries. |
 | `CookieBackgroundRuns.swift` | ~175 | Up to three background Cookies (routines, watchers, hand-offs, meeting follow-ups), the scheduler, the `hand_off` tool. |
 | `CookieTeach.swift` | ~230 | Teach by doing: event-tap recorder, SKILL.md writer, merged skills folder. |
-| `CookieApprentice.swift` | ~580 | Opt-in listen-only structural event history, seven-day local retention, repeated-session miner, notch offer, and daily proof. |
+| `CookieApprentice.swift` | ~950 | Opt-in listen-only structural event history (controls by label, rows/links/text by role only, Option-typing as a placeholder), off-main Accessibility reads, debounced owner-only seven-day archive, detached repeated-session miner with junk and sub-pattern filtering, notch offer with Later snooze, stoppable Noticing pill, Clear history, and a daily proof row kept to the real count. |
 | `CookieRelay.swift` | ~715 | Preview-first text-only teammate hand-off, SensitiveText masking, Keychain HMAC plus integrity signature, Enkeon plan write, and `.cookierelay` open/pick-up flow. |
 | `CookieScreenMemory.swift` | ~125 | OCR of what Cookie looked at, kept a day, the `recall_screen` tool. |
 | `CookieMarks.swift` | ~250 | DRAW tag bodies into marks (with their spoken offset), the per-display resolver with AX snapping; `readSeconds` marks a reading-pen line. |
