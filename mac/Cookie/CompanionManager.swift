@@ -1152,7 +1152,11 @@ final class CompanionManager: ObservableObject {
 
     /// A chat for a run that isn't the one in front of the person. Never becomes the current chat.
     func startBackgroundThread(agentID: UUID, userText: String) -> UUID {
-        let thread = CookieThread(id: UUID(), messages: [CompanionChatMessage(role: .user, text: userText)], agentID: agentID)
+        startBackgroundThread(agentID: agentID, messages: [CompanionChatMessage(role: .user, text: userText)])
+    }
+
+    func startBackgroundThread(agentID: UUID, messages: [CompanionChatMessage]) -> UUID {
+        let thread = CookieThread(id: UUID(), messages: messages, agentID: agentID)
         threads.insert(thread, at: 0)
         CookieThreadStore.save(threads)
         return thread.id
@@ -1427,6 +1431,25 @@ final class CompanionManager: ObservableObject {
     }
 
     private func sendToModel(transcript: String, shown: String? = nil, attachments: [CookieAttachment] = [], lookAtScreen: Bool, speakReply: Bool) {
+        if attachments.isEmpty, speakReply, let relayRequest = CookieRelayVoiceCommand.parse(transcript) {
+            currentResponseTask?.cancel()
+            currentResponseTask = nil
+            elevenLabsTTSClient.stopPlayback()
+            let linkedWork = WorkStore.shared.items.first { $0.threadID == currentThreadID }
+            let source = CookieRelay.Source(messages: currentThread?.messages ?? [],
+                                            selectedText: selectionAtPress?.text, work: linkedWork)
+            selectionAtPress = nil
+            textDestinationAtPress = nil
+            voiceState = .idle
+            workingStep = nil
+            if CookieRelay.shared.prepare(relayRequest, source: source) {
+                _ = append(CompanionChatMessage(role: .note, text: "Review the relay for \(relayRequest.recipient) before sharing. Nothing has been sent."))
+            } else {
+                _ = append(CompanionChatMessage(role: .failure, text: "Cookie couldn't prepare that relay. Check the teammate name and try again."))
+            }
+            scheduleTransientHideIfNeeded()
+            return
+        }
         if attachments.isEmpty, let command = CookieTeachingCommand.parse(transcript) {
             currentResponseTask?.cancel()
             currentResponseTask = nil
