@@ -16,12 +16,20 @@ public enum Corrections {
     /// Words the person put in place of what was typed, that look like names or terms (a capital or a digit).
     /// Only same-length edits are read: a rewritten sentence says nothing about a misheard word.
     public static func learned(typed: String, edited: String) -> [String] {
+        learned(typed: typed, edited: edited) { word in
+            NSSpellChecker.shared.checkSpelling(of: word, startingAt: 0).location != NSNotFound
+        }
+    }
+
+    /// Pure candidate filter so name learning can be checked without depending on the Mac's language dictionary.
+    public static func learned(typed: String, edited: String, isMisspelled: (String) -> Bool) -> [String] {
         let before = words(typed), after = words(edited)
         guard before.count == after.count, before != after else { return [] }
         var found: [String] = []
-        for (old, new) in zip(before, after) where old.lowercased() != new.lowercased() || old != new {
+        for (old, new) in zip(before, after) where old.caseInsensitiveCompare(new) != .orderedSame {
             let looksLikeATerm = new.contains(where: { $0.isUppercase || $0.isNumber })
-            guard looksLikeATerm, new.count >= 2, new.count <= 40, !found.contains(new) else { continue }
+            guard looksLikeATerm, new.count >= 2, new.count <= 40, !found.contains(new),
+                  isMisspelled(new) else { continue }
             found.append(new)
         }
         // A whole sentence re-cased is a style change, not a misheard word.

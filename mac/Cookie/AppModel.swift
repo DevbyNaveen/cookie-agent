@@ -153,9 +153,12 @@ final class AppModel: ObservableObject {
             self.practiceText = self.practiceText.isEmpty ? text : self.practiceText + " " + text
         }
         dictation.onLearned = { [weak self] terms in
-            guard let self else { return }
-            let known = Set(self.vocabularyTerms.map { $0.lowercased() } + self.learned.map { $0.lowercased() })
-            self.setLearned(self.learned + terms.filter { !known.contains($0.lowercased()) })
+            guard let self else { return nil }
+            let known = Set(self.vocabularyTerms.map { $0.lowercased() } + self.enkeonTerms.map { $0.lowercased() })
+            let newTerms = terms.filter { !known.contains($0.lowercased()) }
+            guard !newTerms.isEmpty else { return nil }
+            for term in newTerms { self.addTerm(term) }
+            return "Got it, \(newTerms.joined(separator: ", "))."
         }
         dictation.expand = { [weak self] transcript in
             guard let self, let request = self.snippets.request(in: transcript) else { return nil }

@@ -22,6 +22,15 @@ public enum DictationText {
     static func isUndo(_ text: String) -> Bool {
         ["scratch that", "undo that", "undo dictation"].contains(text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters)))
     }
+
+    /// Recognizes only a short, explicit correction command; other speech remains literal dictation.
+    public static func correctionInstruction(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = #"(?is)^\s*(?:no|actually|correction)\b(?:[,.:;!?]\s*|\s+)(?:make it|change it to|change that to|replace it with|replace that with|have it say)\s+\S.*$"#
+        guard trimmed.utf16.count <= 500,
+              trimmed.range(of: pattern, options: .regularExpression) != nil else { return nil }
+        return "Apply this correction to the previous dictation: \(trimmed). Preserve all other wording."
+    }
     /// `terminal`: the destination runs what it's given, so a line break would be Return. Enkeon never
     /// sends Return; spoken line breaks become spaces there.
     static func clean(_ text: String, terminal: Bool = false, vocabulary: [String] = vocabulary) -> String {

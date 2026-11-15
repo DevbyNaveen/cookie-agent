@@ -45,6 +45,20 @@ public struct DictationRecord: Codable, Identifiable, Equatable, Sendable {
 }
 
 @MainActor
+public enum DictationCorrectionHistory {
+    public static func restoreAfterUndo(_ original: DictationRecord?) -> DictationRecord? {
+        original
+    }
+
+    public static func correctedRecord(_ original: DictationRecord?, text: String, app: String,
+                                       bundleID: String?, duration: Double) -> DictationRecord {
+        DictationRecord(id: original?.id ?? UUID(), date: original?.date ?? Date(), app: app, text: text,
+                        outcome: .inserted, durationSeconds: original?.durationSeconds ?? duration,
+                        bundleID: original?.bundleID ?? bundleID, heard: original?.heard, cleanup: original?.cleanup)
+    }
+}
+
+@MainActor
 public final class DictationController: ObservableObject {
     public enum Phase: Equatable {
         case idle
@@ -100,7 +114,7 @@ public final class DictationController: ObservableObject {
     }
 
     /// Terms the person fixed by hand after an insertion ("Halverson" → "Halvorsen"), to offer for the dictionary.
-    public var onLearned: (([String]) -> Void)?
+    public var onLearned: (([String]) -> String?)?
     private var learnTask: Task<Void, Never>?
 
     /// Asked with the words as heard; nil when they don't ask for a snippet or a memory.
@@ -128,6 +142,8 @@ public final class DictationController: ObservableObject {
     public let shortcuts = GlobalPushToTalkShortcutMonitor()
     private var cancellables: Set<AnyCancellable> = []
     private var interaction = UUID()
+    private var lastInsertionRecord: DictationRecord?
+    private var recordBeforeCorrection: DictationRecord?
     private var startTask: Task<Void, Never>?
     private var resultTask: Task<Void, Never>?
     private var clearTask: Task<Void, Never>?
@@ -410,6 +426,38 @@ public final class DictationController: ObservableObject {
                                   selection: capturedSelection, app: app, bundle: bundle, duration: duration, id: id)
                 return
             }
+            if let instruction = DictationText.correctionInstruction(transcript),
+               let target = TextInsertion.shared.correctionTarget() {
+                do {
+                    guard let correctedText = try await editSelection?(target.text, instruction, target.app) else {
+                        show("Cookie couldn't prepare that correction. Your existing text is unchanged.", success: false)
+                        return
+                    }
+                    guard !Task.isCancelled, interaction == id else { return }
+                    guard !correctedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                          correctedText != target.text else {
+                        show("No change was needed. Your existing text is unchanged.", success: false)
+                        return
+                    }
+                    let correction = await TextInsertion.shared.replaceLastInsertion(with: correctedText, expectedOriginal: target.text)
+                    guard !Task.isCancelled, interaction == id else { return }
+                    if correction.success {
+                        if recordBeforeCorrection == nil { recordBeforeCorrection = lastInsertionRecord }
+                        let previous = lastInsertionRecord
+                        let correctedRecord = DictationCorrectionHistory.correctedRecord(
+                            previous, text: correctedText, app: target.app, bundleID: bundle, duration: duration)
+                        lastInsertionRecord = correctedRecord
+                        lastResultText = correctedText
+                        onRecord?(correctedRecord)
+                    } else {
+                        recoveryText = correctedText
+                    }
+                    show(correction.message, success: correction.success)
+                } catch {
+                    show("Cookie couldn't prepare that correction: \(error.localizedDescription)", success: false)
+                }
+                return
+            }
             let undo = DictationText.isUndo(transcript)
             var inserted = transcript
             var tidied = Tidied(text: transcript, heard: nil, note: nil)
@@ -446,6 +494,21 @@ public final class DictationController: ObservableObject {
                 outcome: undo && result.success ? .undone : (result.success ? .inserted : .kept),
                 note: result.success && !undo ? nil : result.message, durationSeconds: duration)
             record.heard = tidied.heard; record.cleanup = tidied.note; record.bundleID = bundle
+            if undo && result.success {
+                if let previous = recordBeforeCorrection {
+                    record = DictationCorrectionHistory.restoreAfterUndo(previous) ?? record
+                    lastInsertionRecord = DictationCorrectionHistory.restoreAfterUndo(previous)
+                    recordBeforeCorrection = nil
+                } else if let previous = lastInsertionRecord {
+                    record = DictationRecord(id: previous.id, date: Date(), app: previous.app, text: previous.text,
+                                             outcome: .undone, note: result.message, durationSeconds: duration,
+                                             bundleID: previous.bundleID, heard: previous.heard, cleanup: previous.cleanup)
+                    lastInsertionRecord = nil
+                }
+            } else if !undo && result.success {
+                lastInsertionRecord = record
+                recordBeforeCorrection = nil
+            }
             onRecord?(record)
             show(result.message, success: result.success)
         }
@@ -647,8 +710,8 @@ public final class DictationController: ObservableObject {
         learnTask?.cancel()
         learnTask = Task { [weak self] in
             let terms = await Corrections.watch(target, typed: typed)
-            guard !Task.isCancelled, !terms.isEmpty else { return }
-            self?.onLearned?(terms)
+            guard let self, !Task.isCancelled, !terms.isEmpty else { return }
+            if let message = self.onLearned?(terms) { self.show(message, success: true) }
         }
     }
 
