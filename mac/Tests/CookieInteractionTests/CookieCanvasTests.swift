@@ -504,6 +504,18 @@ enum CookieCanvasTests {
         renderer.scale = 1
         check(renderer.cgImage.map { $0.width == 577 && $0.height == 440 } == true, "the board draws at the console's size")
 
+        // A workspace diagram whose model packed boxes close together still lays out with no overlap, order kept.
+        let packed = [("meal", 0.10, 0.2), ("sugar", 0.22, 0.2), ("liver", 0.34, 0.2), ("sleep", 0.22, 0.5), ("fat", 0.34, 0.5), ("same", 0.34, 0.51)]
+            .map { CookieArtifact.Node(id: $0.0, label: $0.0, x: $0.1, y: $0.2) }
+        let laid = CookieDiagramLayout.place(packed)
+        check(laid.cells["meal"]! == (0, 0) && laid.cells["sugar"]! == (1, 0) && laid.cells["liver"]! == (2, 0), "close x values still read left to right")
+        check(laid.cells["sleep"]! == (1, 1) && laid.cells["fat"]! == (2, 1) && laid.cells["same"]! == (3, 1), "a box landing on another moves right")
+        check(Set(laid.cells.values.map { [$0.column, $0.row] }).count == packed.count && laid.columns == 4 && laid.rows == 2, "no two boxes share a cell")
+        let tight = CookieDiagramLayout.box(cell: CGSize(width: 150, height: 120))
+        check(tight.width <= 150 - 36 && tight.height <= 120 - 28, "boxes leave room for the arrows between them")
+        let end = CookieDiagramLayout.border(.zero, toward: CGPoint(x: 200, y: 0), box: CGSize(width: 100, height: 50))
+        check(end == CGPoint(x: 54, y: 0), "an arrow starts just outside its box")
+
         print("\(checks) canvas checks passed.")
     }
 }

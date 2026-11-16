@@ -320,11 +320,6 @@ struct CookieWorkspaceView: View {
         if let problem = canvas.start(thread: thread) { error = problem.message }
     }
     private func saveScroll() { store.setSession(thread) { $0.scrollY = max(0, scrollOffset.y); $0.scrollX = max(0, scrollOffset.x) } }
-    private static func connectorEnd(_ origin: CGPoint, toward target: CGPoint) -> CGPoint {
-        let dx = target.x - origin.x, dy = target.y - origin.y
-        let factor = min(0.5, min(72 / max(0.001, abs(dx)), 34 / max(0.001, abs(dy))))
-        return CGPoint(x: origin.x + dx * factor, y: origin.y + dy * factor)
-    }
     private func lessonContent(_ artifact: CookieArtifact) -> CookieArtifact.Content {
         var content = artifact.current.content
         if lessonRevision == artifact.current.id {
@@ -362,22 +357,37 @@ struct CookieWorkspaceView: View {
         }
         GeometryReader { geometry in
             let nodes = artifact.current.content.nodes
-            let width = max(1, geometry.size.width - 150), height = max(1, geometry.size.height - 90)
+            let placement = CookieDiagramLayout.place(nodes)
+            let cell = CGSize(width: geometry.size.width / CGFloat(placement.columns), height: geometry.size.height / CGFloat(placement.rows))
+            let box = CookieDiagramLayout.box(cell: cell)
+            let centre = { (id: String) -> CGPoint? in
+                placement.cells[id].map { CGPoint(x: (CGFloat($0.column) + 0.5) * cell.width, y: (CGFloat($0.row) + 0.5) * cell.height) }
+            }
             ZStack {
                 ForEach(Array(artifact.current.content.edges.enumerated()), id: \.offset) { _, edge in
-                    if let from = nodes.first(where: { $0.id == edge.from }), let to = nodes.first(where: { $0.id == edge.to }) {
-                        let a = CGPoint(x: 75 + from.x * width, y: 45 + from.y * height)
-                        let b = CGPoint(x: 75 + to.x * width, y: 45 + to.y * height)
-                        Path { path in path.move(to: Self.connectorEnd(a, toward: b)); path.addLine(to: Self.connectorEnd(b, toward: a)) }.stroke(CK.secondary.opacity(0.6), lineWidth: 1.5)
+                    if let a = centre(edge.from), let b = centre(edge.to) {
+                        let start = CookieDiagramLayout.border(a, toward: b, box: box), end = CookieDiagramLayout.border(b, toward: a, box: box)
+                        Path { path in
+                            path.move(to: start); path.addLine(to: end)
+                            let angle = atan2(end.y - start.y, end.x - start.x)
+                            for side in [-0.45, 0.45] { path.move(to: end); path.addLine(to: CGPoint(x: end.x - 8 * cos(angle + side), y: end.y - 8 * sin(angle + side))) }
+                        }.stroke(CK.secondary.opacity(0.7), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                        if let label = edge.label {
+                            Text(label).font(.system(size: 10, weight: .medium)).foregroundStyle(CK.secondary).lineLimit(1).fixedSize()
+                                .padding(.horizontal, 5).background(Capsule().fill(Color(white: 0.14))).position(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+                        }
                     }
                 }
                 ForEach(nodes) { node in
-                    Button { select(node.id + " | " + node.label) } label: {
-                        Text(store.lessonLabel(node, content: lessonContent(artifact))).font(.system(size: 13, weight: .medium, design: .rounded)).multilineTextAlignment(.center)
-                            .lineLimit(3).padding(12).frame(width: 140, height: 64).background(CK.fillHover, in: RoundedRectangle(cornerRadius: 14))
-                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(target == node.id ? CK.accent : CK.hairline))
-                            .overlay(alignment: .leading) { cue(artifact, node.id) }
-                    }.position(x: 75 + node.x * width, y: 45 + node.y * height)
+                    if let point = centre(node.id) {
+                        Button { select(node.id + " | " + node.label) } label: {
+                            Text(store.lessonLabel(node, content: lessonContent(artifact))).font(.system(size: box.width >= 120 ? 13 : 11, weight: .medium, design: .rounded))
+                                .multilineTextAlignment(.center).lineLimit(4).minimumScaleFactor(0.75).padding(8)
+                                .frame(width: box.width, height: box.height).background(CK.fillHover, in: RoundedRectangle(cornerRadius: 14))
+                                .overlay(RoundedRectangle(cornerRadius: 14).stroke(target == node.id ? CK.accent : CK.hairline))
+                                .overlay(alignment: .leading) { cue(artifact, node.id) }
+                        }.help(node.label).position(point)
+                    }
                 }
             }
         }.padding(12)
@@ -530,5 +540,46 @@ private struct CookieWorkspacePointer: NSViewRepresentable {
             let rect = window.convertToScreen(view.convert(view.bounds, to: nil))
             CookieHand.shared.teach(owner: owner, at: CGPoint(x: rect.minX, y: rect.midY))
         }
+    }
+}
+
+/// Where a workspace diagram's boxes go. The model's x and y keep their order, left to right and top to
+/// bottom, but snap to a grid so no two boxes ever overlap, however close the model put them.
+enum CookieDiagramLayout {
+    struct Placement: Equatable { var cells: [String: (column: Int, row: Int)]; var columns: Int; var rows: Int
+        static func == (a: Placement, b: Placement) -> Bool {
+            a.columns == b.columns && a.rows == b.rows && a.cells.mapValues { [$0.column, $0.row] } == b.cells.mapValues { [$0.column, $0.row] }
+        }
+    }
+
+    /// Values closer than `gap` are one column (or row).
+    static func bands(_ values: [Double], gap: Double = 0.06) -> [Double: Int] {
+        var result: [Double: Int] = [:], band = -1, last = -Double.infinity
+        for value in Set(values).sorted() { if value - last > gap { band += 1 }; last = value; result[value] = band }
+        return result
+    }
+
+    static func place(_ nodes: [CookieArtifact.Node]) -> Placement {
+        let columnOf = bands(nodes.map(\.x)), rowOf = bands(nodes.map(\.y))
+        var cells: [String: (column: Int, row: Int)] = [:], taken = Set<[Int]>()
+        for node in nodes {
+            var column = columnOf[node.x] ?? 0
+            let row = rowOf[node.y] ?? 0
+            while taken.contains([column, row]) { column += 1 }   // two boxes in one spot: the later one moves right
+            taken.insert([column, row]); cells[node.id] = (column, row)
+        }
+        return Placement(cells: cells, columns: (cells.values.map(\.column).max() ?? 0) + 1, rows: (cells.values.map(\.row).max() ?? 0) + 1)
+    }
+
+    /// Box size for a cell: room left between boxes for an arrow, capped so a sparse diagram stays readable.
+    static func box(cell: CGSize) -> CGSize {
+        CGSize(width: max(64, min(cell.width - 36, 200)), height: max(40, min(cell.height - 28, 96)))
+    }
+
+    /// Where the line from a box's centre toward another leaves the box.
+    static func border(_ origin: CGPoint, toward target: CGPoint, box: CGSize) -> CGPoint {
+        let dx = target.x - origin.x, dy = target.y - origin.y
+        let factor = min(1, min((box.width / 2 + 4) / max(0.001, abs(dx)), (box.height / 2 + 4) / max(0.001, abs(dy))))
+        return CGPoint(x: origin.x + dx * factor, y: origin.y + dy * factor)
     }
 }
