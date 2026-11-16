@@ -294,12 +294,12 @@ struct CookieCardView: View {
     static let closeSize: CGFloat = 22
     static let closeInset: CGFloat = 10
 
-    /// Warm paper (charcoal in Dark Mode) and the text on it; scenes use the same.
+    /// The solid surface where glass can't go (scenes, chips), and the text on it: neutral, like macOS.
     static func paper(_ scheme: ColorScheme) -> Color {
-        scheme == .dark ? Color(red: 0.17, green: 0.15, blue: 0.13) : Color(red: 0.985, green: 0.965, blue: 0.93)
+        scheme == .dark ? Color(white: 0.16) : Color(white: 0.97)
     }
     static func inkText(_ scheme: ColorScheme) -> Color {
-        scheme == .dark ? Color(red: 0.95, green: 0.92, blue: 0.86) : Color(red: 0.20, green: 0.13, blue: 0.08)
+        scheme == .dark ? Color(white: 0.96) : Color(white: 0.11)
     }
     private var paper: Color { Self.paper(colorScheme) }
     private var inkText: Color { Self.inkText(colorScheme) }
@@ -326,10 +326,10 @@ struct CookieCardView: View {
             if !reveal.collapsed {
                 content
                     .animation(morph, value: reveal.state)
-                HStack(spacing: 18) {
+                HStack(spacing: 8) {
                     if !reveal.nodes.isEmpty {
-                        Button("Previous") { reveal.advance(false) }
-                        Button("Next step") { reveal.advance(true) }
+                        Button { reveal.advance(false) } label: { Label("Previous", systemImage: "chevron.left").glassPill(inkText) }
+                        Button { reveal.advance(true) } label: { Label("Next step", systemImage: "chevron.right").labelStyle(TrailingIcon()).glassPill(inkText) }
                     }
                     if card.states.count > 1 {
                         if !reveal.nodes.isEmpty { Spacer(minLength: 0) }
@@ -339,16 +339,11 @@ struct CookieCardView: View {
                     .buttonStyle(.plain).pointerCursor()
             }
         }
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 20)
         .padding(.top, 16)
         .padding(.bottom, 18)
         .frame(width: width, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(paper)
-                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(inkText.opacity(0.08), lineWidth: 1))
-                .shadow(color: .black.opacity(colorScheme == .dark ? 0.45 : 0.16), radius: 14, y: 6)
-        )
+        .background(glass)
         .overlay(alignment: .topTrailing) { closeButton }
         .padding(Self.shadowMargin)
         .coordinateSpace(name: "teachingPaper")
@@ -359,6 +354,19 @@ struct CookieCardView: View {
         .onChange(of: reveal.collapsed) { _, value in onCollapse(value) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(CookieCard.summary(reveal.content))
+    }
+
+    /// Frosted glass with a soft top sheen and a light rim, the way macOS floating panels look.
+    private var glass: some View {
+        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous), dark = colorScheme == .dark
+        return ZStack {
+            shape.fill(Color.black.opacity(dark ? 0.3 : 0.08))
+                .shadow(color: .black.opacity(dark ? 0.4 : 0.14), radius: 22, y: 10)
+            CookieGlass().clipShape(shape)
+            shape.fill(LinearGradient(colors: [.white.opacity(dark ? 0.09 : 0.35), .white.opacity(0)], startPoint: .top, endPoint: .center))
+            shape.strokeBorder(LinearGradient(colors: [.white.opacity(dark ? 0.28 : 0.7), .white.opacity(dark ? 0.06 : 0.25)],
+                                              startPoint: .top, endPoint: .bottom), lineWidth: 0.75)
+        }
     }
 
     /// The stage control of a card with states: back, a dot per stage, forward.
@@ -429,7 +437,7 @@ struct CookieCardView: View {
                 ForEach(steps.indices, id: \.self) { index in
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         Text("\(index + 1)")
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .font(.system(size: 12, weight: .bold))
                             .foregroundStyle(inkText)
                             .frame(width: 24, height: 24)
                             .background(inked([.ring(CGRect(x: 0.04, y: 0.04, width: 0.92, height: 0.92))], .row(index), pen: 1.8))
@@ -470,7 +478,7 @@ struct CookieCardView: View {
         case .number(let value, let label, let caption):
             VStack(alignment: .leading, spacing: 4) {
                 Text(value)
-                    .font(.system(size: 44, weight: .bold, design: .rounded))
+                    .font(.system(size: 44, weight: .bold))
                     .foregroundStyle(inkText)
                     .padding(.bottom, 6)
                     .overlay(alignment: .bottomLeading) {
@@ -478,13 +486,13 @@ struct CookieCardView: View {
                     }
                     .appear(reveal.isShown(.value), reduceMotion)
                 Text(label)
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(inkText)
                     .padding(.top, 6)
                     .appear(reveal.isShown(.label), reduceMotion)
                 if let caption {
                     Text(caption)
-                        .font(.system(size: 12, design: .rounded))
+                        .font(.system(size: 12))
                         .foregroundStyle(quietText)
                         .fixedSize(horizontal: false, vertical: true)
                         .appear(reveal.isShown(.caption), reduceMotion)
@@ -522,7 +530,7 @@ struct CookieCardView: View {
 
     private func titleView(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 15, weight: .semibold, design: .rounded))
+            .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(inkText)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.trailing, 26) // clear of the close control
@@ -537,7 +545,7 @@ struct CookieCardView: View {
 
     private func bodyText(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 13, design: .rounded))
+            .font(.system(size: 13))
             .foregroundStyle(inkText)
             .lineSpacing(1.5)
             .fixedSize(horizontal: false, vertical: true)
@@ -546,7 +554,7 @@ struct CookieCardView: View {
     private func timelineRow(_ event: CookieCard.Event, index: Int, last: Bool) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Text(event.when)
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(quietText)
                 .frame(width: 64, alignment: .trailing)
                 .padding(.top, 1)
@@ -571,12 +579,12 @@ struct CookieCardView: View {
     private func compareColumn(_ column: CookieCard.Column, column index: Int) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(column.heading)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(inkText)
                 .appear(reveal.isShown(.heading(index)), reduceMotion)
             ForEach(column.points.indices, id: \.self) { point in
                 Text(column.points[point])
-                    .font(.system(size: 12.5, design: .rounded))
+                    .font(.system(size: 12.5))
                     .foregroundStyle(inkText.opacity(0.88))
                     .fixedSize(horizontal: false, vertical: true)
                     .appear(reveal.isShown(.point(column: index, index: point)), reduceMotion)
@@ -591,13 +599,14 @@ struct CookieCardView: View {
         return VStack(spacing: compact ? 2 : 8) {
             if let icon = node.icon {
                 Image(systemName: icon)
-                    .font(.system(size: compact ? 16 : 28, weight: .light))
-                    .foregroundStyle(ink)
+                    .font(.system(size: compact ? 16 : 24, weight: .regular))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(active ? ink : inkText.opacity(0.8))
             }
             Text(node.label)
-                .font(.system(size: compact ? 11.5 : 12, weight: .semibold, design: .rounded))
+                .font(.system(size: compact ? 11.5 : 12, weight: .semibold))
             if let note = node.note, compact {
-                Text(note).font(.system(size: 9.5, design: .rounded)).foregroundStyle(quietText).lineLimit(1)
+                Text(note).font(.system(size: 9.5)).foregroundStyle(quietText).lineLimit(1)
             }
         }
         .foregroundStyle(inkText)
@@ -606,8 +615,10 @@ struct CookieCardView: View {
         .minimumScaleFactor(0.85)
         .padding(.horizontal, 6)
         .frame(width: size.width, height: size.height)
-        .background(RoundedRectangle(cornerRadius: compact ? 11 : 16).fill(ink.opacity(active ? 0.17 : 0.04)))
-        .overlay(RoundedRectangle(cornerRadius: compact ? 11 : 16).strokeBorder(ink.opacity(active ? 1 : 0.25), lineWidth: active ? 2 : 1))
+        .background(RoundedRectangle(cornerRadius: compact ? 11 : 14, style: .continuous).fill(active ? ink.opacity(0.16) : inkText.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: compact ? 11 : 14, style: .continuous)
+            .strokeBorder(active ? ink.opacity(0.9) : inkText.opacity(0.12), lineWidth: active ? 1.5 : 0.75))
+        .shadow(color: active ? ink.opacity(0.35) : .clear, radius: 10)
         .background(anchor(node.id))
         .onTapGesture { reveal.focus(node.id, hand: false) }
         .accessibilityElement(children: .ignore)
@@ -702,10 +713,10 @@ struct CookieCardView: View {
             inked([.arrow(unit(start), unit(end))], .edge(index), pen: 1.8, key: "edge \(edge.from)>\(edge.to)")
             if let label = edge.label {
                 Text(label)
-                    .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                    .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(quietText)
-                    .padding(.horizontal, 4)
-                    .background(paper)
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(.regularMaterial, in: Capsule())
                     .fixedSize()
                     .position(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 - (across ? 9 : 0))
                     .appear(reveal.isShown(.edge(index)), reduceMotion)
@@ -726,9 +737,9 @@ struct CookieCardView: View {
                         Image(systemName: icon).font(.system(size: 16, weight: .light)).foregroundStyle(ink).frame(width: 22)
                     }
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(layer.label).font(.system(size: 12.5, weight: .semibold, design: .rounded)).foregroundStyle(inkText)
+                        Text(layer.label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(inkText)
                         if let note = layer.note {
-                            Text(note).font(.system(size: 11, design: .rounded)).foregroundStyle(quietText)
+                            Text(note).font(.system(size: 11)).foregroundStyle(quietText)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
@@ -920,7 +931,7 @@ struct CookieCardView: View {
                     ForEach(Array(plots.enumerated()), id: \.element.id) { index, plot in
                         HStack(spacing: 5) {
                             Capsule().fill(seriesInks[index % seriesInks.count]).frame(width: 14, height: 3)
-                            Text(plot.label).font(.system(size: 10.5, weight: .medium, design: .rounded)).foregroundStyle(quietText)
+                            Text(plot.label).font(.system(size: 10.5, weight: .medium)).foregroundStyle(quietText)
                         }
                         .appear(reveal.isShown(.series(plot.id)), reduceMotion)
                     }
@@ -932,7 +943,7 @@ struct CookieCardView: View {
             }
             if let source = chart.source {
                 Text("Source: " + source)
-                    .font(.system(size: 10.5, design: .rounded))
+                    .font(.system(size: 10.5))
                     .foregroundStyle(quietText)
                     .fixedSize(horizontal: false, vertical: true)
                     .appear(reveal.isShown(.caption), reduceMotion)
@@ -958,7 +969,7 @@ struct CookieCardView: View {
             inked(figures, .axes, pen: 1.5, key: "axes")
             ForEach(ticks.indices, id: \.self) { index in
                 Text(CookieCard.format(ticks[index]))
-                    .font(.system(size: 9.5, weight: .medium, design: .rounded)).monospacedDigit()
+                    .font(.system(size: 9.5, weight: .medium)).monospacedDigit()
                     .foregroundStyle(quietText)
                     .frame(width: area.minX - 6, alignment: .trailing)
                     .position(x: (area.minX - 6) / 2, y: Self.place(CGPoint(x: chart.xRange.lowerBound, y: ticks[index]), in: chart).y)
@@ -966,7 +977,7 @@ struct CookieCardView: View {
             if chart.style == .bar {
                 ForEach(Array(chart.series.enumerated()), id: \.element.id) { index, bar in
                     Text(bar.label)
-                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                        .font(.system(size: 9.5, weight: .medium))
                         .foregroundStyle(quietText).lineLimit(1).minimumScaleFactor(0.7)
                         .frame(width: area.width / CGFloat(chart.series.count) - 2)
                         .position(x: Self.place(CGPoint(x: Double(index), y: 0), in: chart).x, y: area.maxY + 10)
@@ -974,14 +985,14 @@ struct CookieCardView: View {
             } else {
                 ForEach([chart.xRange.lowerBound, chart.xRange.upperBound], id: \.self) { x in
                     Text(CookieCard.format(x))
-                        .font(.system(size: 9.5, weight: .medium, design: .rounded)).monospacedDigit()
+                        .font(.system(size: 9.5, weight: .medium)).monospacedDigit()
                         .foregroundStyle(quietText)
                         .position(x: Self.place(CGPoint(x: x, y: chart.yRange.lowerBound), in: chart).x, y: area.maxY + 10)
                 }
             }
             if let xLabel = chart.xLabel {
                 Text(xLabel)
-                    .font(.system(size: 10, weight: .semibold, design: .rounded)).foregroundStyle(quietText)
+                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(quietText)
                     .frame(width: area.width, alignment: .trailing)
                     .position(x: area.midX, y: size.height - 6)
             }
@@ -989,7 +1000,7 @@ struct CookieCardView: View {
         .overlay(alignment: .topLeading) {
             // The y axis's name sits above its top, clear of the numbers.
             Text(chart.yLabel)
-                .font(.system(size: 10, weight: .semibold, design: .rounded)).foregroundStyle(quietText)
+                .font(.system(size: 10, weight: .semibold)).foregroundStyle(quietText)
                 .padding(.leading, area.minX - 4)
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
@@ -1047,7 +1058,7 @@ struct CookieCardView: View {
         let value = reveal.sliderValue(slider)
         return HStack(spacing: 8) {
             Text(slider.label)
-                .font(.system(size: 11, weight: .medium, design: .rounded)).foregroundStyle(inkText)
+                .font(.system(size: 11, weight: .medium)).foregroundStyle(inkText)
                 .lineLimit(1).frame(width: 78, alignment: .leading)
             Slider(value: Binding(get: { reveal.sliderValue(slider) }, set: { reveal.sliderValues[slider.id] = $0 }),
                    in: slider.minimum...slider.maximum)
@@ -1056,7 +1067,7 @@ struct CookieCardView: View {
                 .accessibilityLabel(slider.label)
                 .accessibilityValue(CookieCard.format(value) + (slider.unit.map { " " + $0 } ?? ""))
             Text(CookieCard.format(value) + (slider.unit.map { " " + $0 } ?? ""))
-                .font(.system(size: 10.5, weight: .medium, design: .rounded)).monospacedDigit()
+                .font(.system(size: 10.5, weight: .medium)).monospacedDigit()
                 .foregroundStyle(quietText).frame(width: 58, alignment: .trailing)
         }
         .appear(reveal.isShown(.axes), reduceMotion)
@@ -1097,7 +1108,7 @@ struct CookieCardView: View {
             }
             if let caption = equation.caption {
                 Text(caption)
-                    .font(.system(size: 12, design: .rounded))
+                    .font(.system(size: 12))
                     .foregroundStyle(quietText)
                     .fixedSize(horizontal: false, vertical: true)
                     .appear(reveal.isShown(.caption), reduceMotion)
@@ -1228,7 +1239,7 @@ struct CookieSimPanel: View {
                                  with: .color(colour(dot.tone)))
                 }
                 for label in drawing.labels {
-                    context.draw(Text(label.text).font(.system(size: 9.5, weight: .medium, design: .rounded)).foregroundColor(colour(label.tone)),
+                    context.draw(Text(label.text).font(.system(size: 9.5, weight: .medium)).foregroundColor(colour(label.tone)),
                                  at: label.at, anchor: UnitPoint(x: label.anchor.x, y: label.anchor.y))
                 }
             }
@@ -1237,7 +1248,7 @@ struct CookieSimPanel: View {
             .accessibilityLabel("A simulation of \(runner.model.noun). " + readouts.map(\.line).joined(separator: ", "))
             .appear(shown, reduceMotion)
             Text(readouts.map(\.line).joined(separator: "  ·  "))
-                .font(.system(size: 11, weight: .medium, design: .rounded)).monospacedDigit()
+                .font(.system(size: 11, weight: .medium)).monospacedDigit()
                 .foregroundStyle(inkText)
                 .fixedSize(horizontal: false, vertical: true)
                 .appear(shown, reduceMotion)
@@ -1265,7 +1276,7 @@ struct CookieSimPanel: View {
         let shown = CookieCard.format(value) + (slider.unit.isEmpty ? "" : " " + slider.unit)
         return HStack(spacing: 8) {
             Text(slider.label)
-                .font(.system(size: 11, weight: .medium, design: .rounded)).foregroundStyle(inkText)
+                .font(.system(size: 11, weight: .medium)).foregroundStyle(inkText)
                 .lineLimit(1).frame(width: 78, alignment: .leading)
             Group {
                 if slider.whole {
@@ -1281,7 +1292,7 @@ struct CookieSimPanel: View {
             .accessibilityLabel(slider.label)
             .accessibilityValue(shown)
             Text(shown)
-                .font(.system(size: 10.5, weight: .medium, design: .rounded)).monospacedDigit()
+                .font(.system(size: 10.5, weight: .medium)).monospacedDigit()
                 .foregroundStyle(quietText).frame(width: 64, alignment: .trailing)
         }
     }
@@ -1696,4 +1707,20 @@ final class CookieCardPanel: NSPanel {
 /// The close control answers the first click even though Cookie isn't the active app.
 private final class CookieCardHostingView: NSHostingView<CookieCardView> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// A small frosted capsule for the card's step buttons.
+private extension View {
+    func glassPill(_ text: Color) -> some View {
+        font(.system(size: 11.5, weight: .medium)).foregroundStyle(text.opacity(0.85))
+            .padding(.horizontal, 11).frame(height: 26)
+            .background(Capsule().fill(text.opacity(0.07)))
+            .overlay(Capsule().strokeBorder(text.opacity(0.12), lineWidth: 0.75))
+            .contentShape(Capsule())
+    }
+}
+
+/// "Next step ›": the chevron after the words.
+private struct TrailingIcon: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View { HStack(spacing: 4) { configuration.title; configuration.icon } }
 }

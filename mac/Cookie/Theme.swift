@@ -56,6 +56,20 @@ struct SidebarMaterial: NSViewRepresentable {
     func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
 
+/// Frosted glass for floating teaching cards: the desktop shows through, blurred. Always active,
+/// because the card's panel never becomes key and an inactive material would go flat grey.
+struct CookieGlass: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .hudWindow
+        view.blendingMode = .behindWindow
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
+}
+
 extension View {
     /// A card: Apple's grouped fill, rounded, no border.
     func card(padding: CGFloat = 14) -> some View {
