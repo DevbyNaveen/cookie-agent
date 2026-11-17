@@ -447,7 +447,14 @@ private struct CookieMemoryCardView: View {
             ForEach(Array(card.lines.enumerated()), id: \.offset) { _, line in
                 Text(line.text).font(.system(size: 11, weight: .medium)).lineLimit(2)
             }
-            Text(card.footer).font(.system(size: 9.5, weight: .semibold)).opacity(0.7)
+            HStack(spacing: 4) {
+                Text(card.footer).font(.system(size: 9.5, weight: .semibold)).opacity(0.7)
+                if let proof = card.proof, let symbol = proof.symbol {
+                    Image(systemName: symbol).font(.system(size: 9.5, weight: .semibold))
+                        .opacity(proof == .sourceChanged ? 1 : 0.7)
+                        .help(proof.explanation ?? "")
+                }
+            }
         }
         .foregroundStyle(CookieMarksLayer.onInk)
         .padding(.horizontal, 8).padding(.vertical, 5)
@@ -457,7 +464,8 @@ private struct CookieMemoryCardView: View {
             .strokeBorder(contrast == .increased ? Color.black : .clear, lineWidth: 1.5))
         .shadow(color: .black.opacity(contrast == .increased ? 0 : 0.38), radius: 2.5, y: 1)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("What Enkeon knows about \(card.title): " + card.lines.map(\.text).joined(separator: " ") + " \(card.footer)")
+        .accessibilityLabel("What Enkeon knows about \(card.title): " + card.lines.map(\.text).joined(separator: " ") + " \(card.footer)"
+                            + (card.proof?.explanation.map { ". \($0)" } ?? ""))
     }
 }
 

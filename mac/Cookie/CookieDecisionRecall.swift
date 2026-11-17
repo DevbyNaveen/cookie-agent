@@ -27,7 +27,8 @@ enum CookieDecisionRecall {
                   let date = dateLabel(hit),
                   let source = (hit["source_uri"] as? String).flatMap({ $0.isEmpty ? nil : $0 })
                     ?? (hit["id"] as? String).flatMap({ $0.isEmpty ? nil : $0 }) else { return nil }
-            return "• \(statement.trimmingCharacters(in: .whitespacesAndNewlines)) — \(date) · source: \(source)"
+            let changed = CookieRecallProof.of(hit) == .sourceChanged ? CookieRecallProof.changedSuffix : ""
+            return "• \(statement.trimmingCharacters(in: .whitespacesAndNewlines)) — \(date) · source: \(source)\(changed)"
         }
         guard !lines.isEmpty else { return noDecision }
         return lines.joined(separator: "\n")

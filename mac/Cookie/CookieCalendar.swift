@@ -158,7 +158,8 @@ final class CookieCalendar: ObservableObject {
     }
 
     /// The first hit's statement, cut to its first sentence. Enkeon's answer is
-    /// a JSON object followed by plain-text notes; only the object is read.
+    /// a JSON object followed by plain-text notes; only the object is read. A hit whose
+    /// source has changed since says so ("· source changed").
     static func firstStatement(in answer: String) -> String? {
         guard let json = leadingJSONObject(answer),
               let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
@@ -167,7 +168,8 @@ final class CookieCalendar: ObservableObject {
         let flat = statement.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
         let sentence = flat.range(of: #"[.!?](\s|$)"#, options: .regularExpression).map { String(flat[..<$0.upperBound]) } ?? flat
         let trimmed = sentence.trimmingCharacters(in: .whitespaces)
-        return trimmed.count > 140 ? String(trimmed.prefix(139)) + "\u{2026}" : trimmed
+        let line = trimmed.count > 140 ? String(trimmed.prefix(139)) + "\u{2026}" : trimmed
+        return CookieRecallProof.of(hit) == .sourceChanged ? line + CookieRecallProof.changedSuffix : line
     }
 
     static func leadingJSONObject(_ text: String) -> String? {

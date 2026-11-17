@@ -136,10 +136,15 @@ struct CookieMemoryCard: Equatable {
         let source: String?
         /// The app it was synced from, when it was.
         let app: String?
+        /// What Enkeon checked about it; nil when the engine sent no proof.
+        var proof: CookieRecallProof? = nil
     }
 
     let title: String
     let lines: [Line]
+
+    /// The footer's mark: one for all the lines, shown only when every line was checked (or one changed).
+    var proof: CookieRecallProof? { CookieRecallProof.combined(lines.map(\.proof)) }
 
     /// "from Enkeon · gmail · 25 Oct": the newest dated line's app and day.
     var footer: String {
@@ -164,7 +169,7 @@ struct CookieMemoryCard: Equatable {
             let app = (hit["source_uri"] as? String).flatMap(syncedApp)
             return Line(text: firstSentence(statement),
                         date: (hit["valid_from"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) },
-                        source: app ?? hit["id"] as? String, app: app)
+                        source: app ?? hit["id"] as? String, app: app, proof: CookieRecallProof.of(hit))
         }
         return lines.isEmpty ? nil : CookieMemoryCard(title: entity.text, lines: Array(lines.prefix(3)))
     }
