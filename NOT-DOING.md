@@ -3,7 +3,7 @@
 - No default model or provider. You name one.
 - No hidden prompts. The harness adds nothing to your instructions.
 - No chains, graphs, crews, prompt templates, retrievers or vector stores.
-- No blackboards or voting swarms. Multi-agent is sub-agents and handoffs only.
+- No blackboards or voting swarms. Multi-agent is sub-agents, receipted handoffs, and separate agents running side by side, each behind its own walls.
 - No auto-approval for anything that sends, deletes or pays.
 - No secrets in context: providers read keys from the environment.
 - No built-in price table: you supply prices, so a dollar cap is never computed from stale numbers.

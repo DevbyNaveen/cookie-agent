@@ -227,7 +227,10 @@ impl A2aAgent {
         if !crate::enkeon::safe_for_a_key(base_url) {
             return Err(a2a("an agent's URL must be https (or this machine)"));
         }
-        let card_url = reqwest::Url::parse(base_url).and_then(|u| u.join(CARD_PATH)).map_err(a2a)?;
+        // The card lives under the address given, so one host can serve many
+        // agents (`https://host/a2a/sales` → `https://host/a2a/sales/.well-known/…`);
+        // a bare host gets the usual root card.
+        let card_url = reqwest::Url::parse(&format!("{}{CARD_PATH}", base_url.trim_end_matches('/'))).map_err(a2a)?;
         let client = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
