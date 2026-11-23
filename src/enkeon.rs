@@ -71,6 +71,25 @@ pub struct Enkeon {
     key: String,
     url: String,
     tools: OnceCell<Vec<Arc<dyn Tool>>>,
+    /// Every `recall` and `remember` confined to this one space (see `space`).
+    space: Option<String>,
+    on_saved: Option<OnSaved>,
+    /// Offered tools the host asked to leave out (it has its own by that name).
+    left_out: Vec<String>,
+}
+
+/// Told of each memory the agent saved: its id (what `forget` takes) and its words.
+pub type OnSaved = Arc<dyn Fn(SavedMemory) + Send + Sync>;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct SavedMemory {
+    pub id: String,
+    pub text: String,
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// The id this saved a new version of, when it did.
+    #[serde(default)]
+    pub updates: Option<String>,
 }
 
 impl fmt::Debug for Enkeon {
@@ -83,7 +102,40 @@ impl fmt::Debug for Enkeon {
 
 impl Enkeon {
     pub fn new(key: &str) -> Self {
-        Self { key: key.to_string(), url: DEFAULT_URL.to_string(), tools: OnceCell::new() }
+        Self { key: key.to_string(), url: DEFAULT_URL.to_string(), tools: OnceCell::new(), space: None, on_saved: None, left_out: Vec::new() }
+    }
+
+    /// Confine this agent to one space: every `recall` reads that space (plus
+    /// `main`, the person's own general material), and every `remember` files
+    /// into it. Enforced here, not asked for: the space argument is taken out of
+    /// the tools the model sees and set on every call, so no text it reads can
+    /// steer it into another agent's space.
+    pub fn space(mut self, name: &str) -> Self {
+        let name = name.trim();
+        self.space = (!name.is_empty()).then(|| name.to_string());
+        self
+    }
+
+    /// Don't offer one of Enkeon's tools: for a host with its own (its own
+    /// `web_search`, say). Asked for by name; a clash nobody asked about is still refused.
+    pub fn without(mut self, tool: &str) -> Self {
+        self.left_out.push(tool.to_string());
+        self
+    }
+
+    /// Be told of every memory saved, so the host can list and erase what the agent kept.
+    pub fn on_saved(mut self, f: OnSaved) -> Self {
+        self.on_saved = Some(f);
+        self
+    }
+
+    /// A direct connection, for the host's own calls (read, forget, list a space).
+    pub async fn client(&self) -> Result<crate::mcp::McpClient> {
+        if !safe_for_a_key(&self.url) {
+            return Err(crate::Error::Mcp("Enkeon's URL must be https (or this machine), so the key is never sent in the clear".into()));
+        }
+        let auth = format!("Bearer {}", self.key);
+        crate::mcp::McpClient::http(&self.url, &[("Authorization", &auth)]).await
     }
 
     pub fn url(mut self, url: &str) -> Self {
@@ -171,10 +223,109 @@ impl Enkeon {
                     server = server.guard("web_search", "query");
                 }
                 let connected = server.tools_from(client).await?;
-                Ok::<_, crate::Error>(connected.tools.into_iter().filter(|t| OFFERED.contains(&t.spec().name.as_str())).collect())
+                let tools: Vec<Arc<dyn Tool>> = connected
+                    .tools
+                    .into_iter()
+                    .filter(|t| OFFERED.contains(&t.spec().name.as_str()) && !self.left_out.iter().any(|l| l == &t.spec().name))
+                    .collect();
+                if self.space.is_none() && self.on_saved.is_none() {
+                    return Ok::<_, crate::Error>(tools);
+                }
+                Ok(tools
+                    .into_iter()
+                    .map(|t| match t.spec().name.as_str() {
+                        "recall" | "remember" => Arc::new(Scoped::new(t, self.space.clone(), self.on_saved.clone())) as Arc<dyn Tool>,
+                        _ => t,
+                    })
+                    .collect())
             })
             .await
             .cloned()
+    }
+}
+
+/// `recall` or `remember` held to one space, and saves reported.
+struct Scoped {
+    inner: Arc<dyn Tool>,
+    spec: crate::tool::ToolSpec,
+    space: Option<String>,
+    on_saved: Option<OnSaved>,
+}
+
+impl Scoped {
+    fn new(inner: Arc<dyn Tool>, space: Option<String>, on_saved: Option<OnSaved>) -> Self {
+        let mut spec = inner.spec().clone();
+        if space.is_some() {
+            // The model never chooses the space, so it isn't offered one. `folder` too:
+            // a folder named like a space would move where the session reads.
+            for arg in ["branch", "folder"] {
+                if let Some(p) = spec.schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
+                    p.remove(arg);
+                }
+                if let Some(r) = spec.schema.get_mut("required").and_then(|r| r.as_array_mut()) {
+                    r.retain(|v| v.as_str() != Some(arg));
+                }
+            }
+        }
+        Self { inner, spec, space, on_saved }
+    }
+
+    fn held(&self, mut args: serde_json::Value) -> serde_json::Value {
+        if let (Some(space), Some(obj)) = (&self.space, args.as_object_mut()) {
+            obj.insert("branch".into(), serde_json::Value::String(space.clone()));
+            obj.remove("folder");
+        }
+        args
+    }
+
+    fn report(&self, args: &serde_json::Value, reply: &str) {
+        if self.spec.name != "remember" {
+            return;
+        }
+        let (Some(f), Some(id)) = (&self.on_saved, saved_id(reply)) else { return };
+        f(SavedMemory {
+            id,
+            text: args["text"].as_str().unwrap_or_default().to_string(),
+            kind: args["kind"].as_str().map(str::to_string),
+            updates: args["updates"].as_str().filter(|u| !u.is_empty()).map(str::to_string),
+        });
+    }
+}
+
+/// The memory id in a `remember` reply. Its own id is named by the Undo line
+/// ("call `forget` with id 01M…"), else first ("Remembered — \"…\" (id 01M…, v1)");
+/// what follows can name other memories (decisions in force, the nearest one).
+pub fn saved_id(reply: &str) -> Option<String> {
+    let at = match reply.find("with id ") {
+        Some(i) => i + "with id ".len(),
+        None => reply.find("(id ")? + "(id ".len(),
+    };
+    let id: String = reply[at..].chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+    (id.len() >= 10).then_some(id)
+}
+
+#[async_trait::async_trait]
+impl Tool for Scoped {
+    fn spec(&self) -> &crate::tool::ToolSpec {
+        &self.spec
+    }
+    async fn call(&self, args: serde_json::Value) -> std::result::Result<String, String> {
+        let args = self.held(args);
+        let out = self.inner.call(args.clone()).await?;
+        self.report(&args, &out);
+        Ok(out)
+    }
+    async fn call_in(&self, args: serde_json::Value, context: &crate::tool::ToolContext) -> std::result::Result<String, String> {
+        let args = self.held(args);
+        let out = self.inner.call_in(args.clone(), context).await?;
+        self.report(&args, &out);
+        Ok(out)
+    }
+    fn send_back(&self, args: &serde_json::Value) -> Option<String> {
+        self.inner.send_back(&self.held(args.clone()))
+    }
+    fn preview(&self, args: &serde_json::Value) -> String {
+        self.inner.preview(&self.held(args.clone()))
     }
 }
 
@@ -378,5 +529,46 @@ mod tests {
         assert_eq!(Enkeon::from_signed_in(dir.path(), Some("p2")).unwrap().key, "tr_sk_two");
         assert!(Enkeon::from_signed_in(dir.path(), Some("nope")).is_none());
         assert!(Enkeon::from_signed_in(&dir.path().join("missing"), None).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_space_is_enforced_on_every_call_and_saves_are_reported() {
+        let seen: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Arc::default();
+        let log = seen.clone();
+        let remember: Arc<dyn Tool> = Arc::new(tool(
+            "remember",
+            "Store",
+            json!({"type": "object", "properties": {"text": {"type": "string"}, "branch": {"type": ["string", "null"]}, "folder": {"type": ["string", "null"]}}, "required": ["text", "branch", "folder"]}),
+            Effect::Write,
+            move |a: serde_json::Value| {
+                log.lock().unwrap().push(a.clone());
+                async move { Ok("Remembered — \"x\" (id 01M85A58F8VFF7M4WTXCW3G5WT, v1).".to_string()) }
+            },
+        ));
+        let saved: Arc<std::sync::Mutex<Vec<SavedMemory>>> = Arc::default();
+        let into = saved.clone();
+        let scoped = Scoped::new(remember, Some("cookie-agent-pip".into()), Some(Arc::new(move |m| into.lock().unwrap().push(m))));
+        let props = scoped.spec().schema["properties"].as_object().unwrap();
+        assert!(!props.contains_key("branch") && !props.contains_key("folder"), "the model is never offered a space");
+        assert_eq!(scoped.spec().schema["required"], json!(["text"]));
+        // Text the model read tries to file into someone else's space: it can't.
+        scoped.call(json!({"text": "Bob likes tea", "kind": "preference", "branch": "cookie-agent-other", "folder": "/x"})).await.unwrap();
+        let sent = seen.lock().unwrap()[0].clone();
+        assert_eq!(sent["branch"], "cookie-agent-pip");
+        assert!(sent.get("folder").is_none());
+        assert_eq!(
+            saved.lock().unwrap()[0],
+            SavedMemory { id: "01M85A58F8VFF7M4WTXCW3G5WT".into(), text: "Bob likes tea".into(), kind: Some("preference".into()), updates: None }
+        );
+    }
+
+    #[test]
+    fn the_saved_id_is_read_from_the_reply() {
+        assert_eq!(saved_id("Remembered — \"a (b)\" (id 01ABCDEF1234567890, v2).").as_deref(), Some("01ABCDEF1234567890"));
+        // The real reply: its own id, then the Undo line, then other memories' ids.
+        let real = "Remembered — \"tea at 4pm\" (id 01M85AMPWM9NBCWJ04H588KS6K, v1).\nUndo: call `forget` with id 01M85AMPWM9NBCWJ04H588KS6K.\
+                    ── Decisions in force ──\n- Soft-delete cascade (id 01KY0ENV87NT6P3MGDF6ZR0X7F)";
+        assert_eq!(saved_id(real).as_deref(), Some("01M85AMPWM9NBCWJ04H588KS6K"));
+        assert_eq!(saved_id("Already kept."), None);
     }
 }
