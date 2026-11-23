@@ -1,0 +1,19 @@
+# The Cookie Network relay. Build from the cookie-harness root:
+#   docker build -f desktop/Dockerfile.relay -t cookie-relay .
+#   docker run -d -p 4700:4700 -v cookie-relay:/data cookie-relay
+# Put HTTPS in front (Cookie refuses http relays except on 127.0.0.1); pass
+# --trust-proxy when the proxy sets X-Forwarded-For, so limits apply per visitor.
+FROM rust:1.93-slim AS build
+WORKDIR /src
+COPY desktop/net ./desktop/net
+COPY desktop/relay ./desktop/relay
+COPY desktop/ui/face.js desktop/ui/md.js ./desktop/ui/
+RUN cd desktop/relay && cargo build --release
+
+FROM debian:bookworm-slim
+RUN useradd --create-home --uid 10001 relay && mkdir /data && chown relay /data
+COPY --from=build /src/desktop/relay/target/release/cookie-relay /usr/local/bin/cookie-relay
+USER relay
+VOLUME /data
+EXPOSE 4700
+ENTRYPOINT ["cookie-relay", "--dir", "/data", "--bind", "0.0.0.0", "--port", "4700"]

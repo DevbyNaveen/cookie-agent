@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cookie</title>
+<style>
+:root {
+  --bg: #121212; --raise: #1c1c1c; --raise-2: #262626; --line: #2a2a2a;
+  --text: #ededeb; --text-2: #b5b2ad; --text-3: #8d8a85;
+  --accent: #ad5c27; --accent-text: #e3955f; --good: #5bbf7a; --danger: #e0705f;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root { --bg: #fbfaf8; --raise: #f1eeea; --raise-2: #e7e3de; --line: #e1dcd5; --text: #1d1b19; --text-2: #5f5a54; --text-3: #6f6a63; --accent-text: #9a4f20; --good: #2f8a4c; --danger: #b8382a; color-scheme: light; }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body { font: 15.5px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif; -webkit-font-smoothing: antialiased; min-height: 100dvh; display: flex; flex-direction: column; align-items: center; }
+main { width: 100%; max-width: 640px; padding: 48px 16px 40px; flex: 1; display: flex; flex-direction: column; }
+a { color: var(--accent-text); }
+button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
+.hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; }
+.hero .face { margin-bottom: 14px; }
+h1 { font-size: 30px; line-height: 1.15; margin: 0; font-weight: 650; letter-spacing: -.015em; }
+.job { color: var(--text-2); margin: 2px 0 0; max-width: 46ch; text-wrap: balance; }
+.addr { display: inline-flex; align-items: center; gap: 8px; margin-top: 14px; padding: 7px 8px 7px 14px; border-radius: 999px; background: var(--raise); font: 14px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--text-2); }
+.addr button { padding: 5px 10px; border-radius: 999px; background: var(--raise-2); font: 13px/1 inherit; font-family: -apple-system, system-ui, sans-serif; color: var(--text); }
+.verified { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12.5px; color: var(--text-3); }
+.verified.ok b { color: var(--good); font-weight: 600; }
+.verified.bad b { color: var(--danger); font-weight: 600; }
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 26px 0 0; }
+.stat { background: var(--raise); border-radius: 16px; padding: 14px 14px 12px; }
+.stat b { display: block; font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 12.5px; color: var(--text-3); }
+.how { margin-top: 18px; padding: 14px 16px; border-radius: 16px; background: var(--raise); font-size: 14px; color: var(--text-2); }
+.how b { color: var(--text); font-weight: 600; }
+.agents { display: grid; gap: 8px; margin-top: 28px; }
+.agent { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 12px 14px; border-radius: 18px; background: var(--raise); text-decoration: none; color: inherit; transition: background .15s; }
+.agent:hover { background: var(--raise-2); }
+.agent strong { display: block; font-weight: 600; }
+.agent small { display: block; color: var(--text-2); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent .go { color: var(--text-3); font-size: 13px; white-space: nowrap; }
+@media (max-width: 520px) { .agent .go { display: none; } }
+.chat { margin-top: 30px; display: flex; flex-direction: column; gap: 10px; }
+.chat h2 { font-size: 13px; font-weight: 600; color: var(--text-3); margin: 0 0 2px; }
+.log { display: flex; flex-direction: column; gap: 8px; }
+.msg { max-width: 86%; padding: 8px 13px; border-radius: 18px; overflow-wrap: anywhere; }
+.msg.you { align-self: flex-end; background: var(--accent); color: #fff; white-space: pre-wrap; }
+.msg.them { align-self: flex-start; background: var(--raise); }
+.msg.them p { margin: 0 0 .6em; } .msg.them > :last-child { margin-bottom: 0; }
+.msg.them code { font: 13px ui-monospace, Menlo, monospace; background: var(--raise-2); padding: 1px 5px; border-radius: 5px; }
+.waiting { display: flex; align-items: center; gap: 10px; color: var(--text-2); font-size: 14px; }
+.waiting span:last-child { animation: breathe 1.6s ease-in-out infinite; }
+@keyframes breathe { 50% { opacity: .5; } }
+.composer { display: flex; align-items: flex-end; gap: 8px; padding: 6px 6px 6px 16px; border-radius: 26px; background: var(--raise); margin-top: 6px; }
+.composer textarea { flex: 1; resize: none; border: 0; outline: none; background: none; color: inherit; font: inherit; padding: 8px 0; max-height: 160px; min-height: 24px; }
+.composer button { width: 38px; height: 38px; border-radius: 50%; background: var(--text); color: var(--bg); display: grid; place-items: center; flex: none; }
+.composer button:disabled { opacity: .35; cursor: default; }
+.composer svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.note { font-size: 12.5px; color: var(--text-3); margin: 2px 4px 0; }
+.empty { text-align: center; color: var(--text-2); margin-top: 18vh; }
+.search { display: flex; gap: 8px; margin-top: 26px; }
+.search input { flex: 1; padding: 12px 16px; border-radius: 999px; background: var(--raise); border: 0; outline: none; color: inherit; font: inherit; }
+.error { color: var(--danger); font-size: 13.5px; }
+footer { padding: 20px 16px 28px; font-size: 12.5px; color: var(--text-3); text-align: center; }
+:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+@media (max-width: 480px) { main { padding-top: 32px; } h1 { font-size: 26px; } .stat { padding: 12px 11px 10px; } .stat b { font-size: 19px; } }
+</style>
+</head>
+<body>
+<main id="main" aria-live="polite"><p class="empty">Loading…</p></main>
+<footer>Cookie Network · messages are sealed end to end: this relay carries them but can't read them.</footer>
+<script src="/md.js"></script>
+<script src="/face.js"></script>
+<script>
+"use strict";
+const $main = document.getElementById("main");
+const enc = new TextEncoder(), dec = new TextDecoder();
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const hex = (b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("");
+const unhex = (s) => new Uint8Array(s.match(/../g).map((h) => parseInt(h, 16)));
+const b64 = (b) => btoa(String.fromCharCode(...new Uint8Array(b)));
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const concat = (a, b) => { const c = new Uint8Array(a.length + b.length); c.set(a); c.set(b, a.length); return c; };
+const rid = () => hex(crypto.getRandomValues(new Uint8Array(12)));
+const PROTO = enc.encode("cookie-net/1");
+
+/** The bytes a signature covers: compact JSON with sorted keys (same as the relay and Cookie). */
+function canonical(v) {
+  const sort = (x) => Array.isArray(x) ? x.map(sort) : x && typeof x === "object" ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, sort(x[k])])) : x;
+  return enc.encode(JSON.stringify(sort(v)));
+}
+
+async function verifySig(pubHex, bytes, sigHex) {
+  try {
+    const key = await crypto.subtle.importKey("raw", unhex(pubHex), { name: "Ed25519" }, false, ["verify"]);
+    return await crypto.subtle.verify({ name: "Ed25519" }, key, unhex(sigHex), bytes);
+  } catch { return null; } // this browser can't check Ed25519
+}
+
+async function aesKey(shared, epk, rpk) {
+  const ikm = await crypto.subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "HKDF", hash: "SHA-256", salt: concat(epk, rpk), info: PROTO }, ikm, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+
+/** Seal bytes to a recipient's X25519 key: ephemeral agreement, HKDF-SHA256, AES-256-GCM. */
+async function seal(recipientHex, plain) {
+  const rpk = unhex(recipientHex);
+  const eph = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
+  const epk = new Uint8Array(await crypto.subtle.exportKey("raw", eph.publicKey));
+  const peer = await crypto.subtle.importKey("raw", rpk, { name: "X25519" }, false, []);
+  const shared = await crypto.subtle.deriveBits({ name: "X25519", public: peer }, eph.privateKey, 256);
+  const key = await aesKey(shared, epk, rpk);
+  const n = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv: n }, key, plain);
+  return { v: 1, epk: hex(epk), n: hex(n), ct: b64(ct) };
+}
+
+async function open(me, sealed) {
+  const epk = unhex(sealed.epk);
+  const peer = await crypto.subtle.importKey("raw", epk, { name: "X25519" }, false, []);
+  const shared = await crypto.subtle.deriveBits({ name: "X25519", public: peer }, me.privateKey, 256);
+  const key = await aesKey(shared, epk, me.pub);
+  return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: unhex(sealed.n) }, key, unb64(sealed.ct)));
+}
+
+/** A guest's own key, kept in this browser so replies find them again. */
+async function guestKey() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("cookie.guest.v1") || "null");
+    if (saved) {
+      const privateKey = await crypto.subtle.importKey("pkcs8", unb64(saved.priv), { name: "X25519" }, false, ["deriveBits"]);
+      return { privateKey, pub: unb64(saved.pub) };
+    }
+  } catch {}
+  const k = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
+  const pub = new Uint8Array(await crypto.subtle.exportKey("raw", k.publicKey));
+  try { localStorage.setItem("cookie.guest.v1", JSON.stringify({ priv: b64(await crypto.subtle.exportKey("pkcs8", k.privateKey)), pub: b64(pub) })); } catch {}
+  return { privateKey: k.privateKey, pub };
+}
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw body.error || `The relay answered ${r.status}.`;
+  return body;
+}
+
+function addressPill(address) {
+  const p = el("div", "addr");
+  p.append(el("span", null, address));
+  const b = el("button", null, "Copy");
+  b.onclick = async () => { try { await navigator.clipboard.writeText(address); b.textContent = "Copied"; setTimeout(() => (b.textContent = "Copy"), 1400); } catch {} };
+  p.append(b);
+  return p;
+}
+
+function stat(n, label) { const s = el("div", "stat"); s.append(el("b", null, String(n)), el("span", null, label)); return s; }
+
+async function verifiedLine(sp) {
+  const ok = await verifySig(sp.profile.sign, canonical(sp.profile), sp.sig);
+  const v = el("div", "verified " + (ok === true ? "ok" : ok === false ? "bad" : ""));
+  const fp = sp.profile.sign.slice(0, 8) + "…" + sp.profile.sign.slice(-4);
+  if (ok === true) v.append(el("b", null, "Signed"), el("span", null, `by key ${fp}`));
+  else if (ok === false) v.append(el("b", null, "Signature doesn't match"), el("span", null, "don't trust this card"));
+  else v.append(el("span", null, `Key ${fp} (this browser can't check signatures)`));
+  return v;
+}
+
+/* ---------- guest chat ---------- */
+function chat(sp, slug, title, faceSeed) {
+  const p = sp.profile;
+  const box = el("section", "chat");
+  box.append(el("h2", null, `Message ${title}`));
+  const log = el("div", "log");
+  const waiting = el("div", "waiting"); waiting.hidden = true;
+  const wf = Faces.create(faceSeed, 22); wf.setMood("working");
+  waiting.append(wf.el, el("span", null, `${title} is thinking…`));
+  const form = el("form", "composer");
+  const ta = el("textarea"); ta.rows = 1; ta.placeholder = `Message ${title}`; ta.setAttribute("aria-label", "Message");
+  const go = el("button"); go.type = "submit"; go.disabled = true; go.setAttribute("aria-label", "Send");
+  go.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></svg>';
+  form.append(ta, go);
+  const note = el("p", "note", `You're a guest: no account. Your messages are sealed in this browser for ${p.name}'s Cookie. ${p.name} sees them, and their agent answers within its job.`);
+  box.append(log, waiting, form, note);
+  const key = `cookie.thread.${p.handle}/${slug || ""}`;
+  let thread = []; try { thread = JSON.parse(localStorage.getItem(key) || "[]"); } catch {}
+  const save = () => { try { localStorage.setItem(key, JSON.stringify(thread.slice(-60))); } catch {} };
+  const show = (m) => {
+    const b = el("div", "msg " + (m.you ? "you" : "them"));
+    if (m.you) b.textContent = m.text; else b.innerHTML = Md.render(m.text);
+    log.append(b);
+  };
+  thread.forEach(show);
+  const sync = () => { go.disabled = !ta.value.trim(); ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 160) + "px"; };
+  ta.oninput = sync;
+  ta.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } };
+  let me = null, cursorKey = `cookie.cursor.${p.handle}`;
+  const pending = new Set();
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const text = ta.value.trim();
+    if (!text) return;
+    ta.value = ""; sync();
+    try {
+      me = me || await guestKey();
+      const inner = { id: rid(), at: Math.floor(Date.now() / 1000), from: { box: hex(me.pub) }, to: slug ? { handle: p.handle, agent: slug } : { handle: p.handle }, kind: "msg", body: { text, conv: rid() } };
+      const sealed = await seal(p.box, enc.encode(JSON.stringify(inner)));
+      const r = await fetch("/v1/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: p.handle, sealed }) });
+      if (!r.ok) throw (await r.json().catch(() => ({}))).error || `The relay answered ${r.status}.`;
+      pending.add(inner.body.conv);
+      const m = { you: true, text }; thread.push(m); save(); show(m);
+      waiting.hidden = false;
+      poll();
+    } catch (err) {
+      const bad = el("p", "error", typeof err === "string" ? err : "This browser can't seal messages (it needs X25519 in WebCrypto). Try a current Safari, Chrome or Firefox.");
+      log.append(bad);
+      ta.value = text; sync();
+    }
+  };
+  let polling = false;
+  async function poll() {
+    if (polling) return; polling = true;
+    me = me || await guestKey();
+    while (true) {
+      let after = 0; try { after = +localStorage.getItem(cursorKey) || 0; } catch {}
+      let items = [];
+      try { items = (await getJSON(`/v1/guest/${hex(me.pub)}?after=${after}&wait=20`)).items || []; }
+      catch { await new Promise((r) => setTimeout(r, 4000)); continue; }
+      for (const it of items) {
+        try { localStorage.setItem(cursorKey, String(it.seq)); } catch {}
+        let inner;
+        try { inner = JSON.parse(dec.decode(await open(me, it.sealed))); } catch { continue; }
+        // Only the owner's key may answer: anyone can drop mail in a guest box.
+        if (inner.from?.sign !== p.sign) continue;
+        const { sig, ...rest } = inner;
+        const ok = await verifySig(p.sign, canonical(rest), sig);
+        if (ok === false) continue;
+        if (inner.kind !== "msg") continue;
+        pending.delete(inner.body?.reply_to);
+        const m = { you: false, text: String(inner.body?.text ?? "") };
+        thread.push(m); save(); show(m);
+      }
+      waiting.hidden = pending.size === 0;
+      if (!pending.size && !items.length) { polling = false; return; }
+    }
+  }
+  if (thread.length) poll();
+  return box;
+}
+
+/* ---------- pages ---------- */
+async function agentPage(sp, slug) {
+  const p = sp.profile;
+  const a = p.agents.find((x) => x.slug === slug);
+  if (!a) { $main.replaceChildren(el("p", "empty", `@${p.handle} has no agent called ${slug}.`)); return; }
+  document.title = `${a.name} · @${p.handle}`;
+  const hero = el("section", "hero");
+  const f = Faces.create(a.id, 132);
+  hero.append(f.el, el("h1", null, a.name), el("p", "job", a.job), el("p", "job", `${p.name}'s agent`), addressPill(`@${p.handle}/${a.slug}`), await verifiedLine(sp));
+  const r = a.record;
+  const stats = el("div", "stats");
+  stats.append(stat(r.jobs, "jobs done"), stat(r.promises_kept + "/" + (r.promises_kept + r.promises_missed), "promises kept"), stat(r.approvals_asked, `times it asked ${p.name} first`));
+  const parts = [hero, stats];
+  if (a.guests) parts.push(chat(sp, a.slug, a.name, a.id));
+  const how = el("div", "how");
+  how.innerHTML = `<b>Have Cookie?</b> Open Network, choose Add contact and paste <b>@${p.handle}/${a.slug}</b>. ${a.open ? "It talks to anyone, no knock needed." : `${p.name} accepts each new contact.`}`;
+  parts.push(how);
+  $main.replaceChildren(...parts);
+  setTimeout(() => f.setMood("received"), 400);
+}
+
+async function personPage(sp) {
+  const p = sp.profile;
+  document.title = `@${p.handle} · Cookie`;
+  const hero = el("section", "hero");
+  const initials = el("div", null);
+  initials.style.cssText = "width:96px;height:96px;border-radius:50%;background:var(--raise-2);display:grid;place-items:center;font-size:34px;font-weight:600;margin-bottom:12px";
+  initials.textContent = p.name.split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+  hero.append(initials, el("h1", null, p.name), addressPill(`@${p.handle}`), await verifiedLine(sp));
+  const parts = [hero];
+  const listed = p.agents.filter((a) => a.listed);
+  if (listed.length) {
+    const list = el("div", "agents");
+    for (const a of listed) {
+      const row = el("a", "agent"); row.href = `/${p.handle}/${a.slug}`;
+      const t = el("div"); t.append(el("strong", null, a.name), el("small", null, a.job));
+      row.append(Faces.create(a.id, 52).el, t, el("span", "go", `@${p.handle}/${a.slug}`));
+      list.append(row);
+    }
+    parts.push(list);
+  }
+  if (p.agents.some((a) => a.guests)) parts.push(chat(sp, null, p.name, "front-desk"));
+  const how = el("div", "how");
+  how.innerHTML = `<b>Have Cookie?</b> Add <b>@${p.handle}</b> as a contact: their front desk passes your message to the right agent.`;
+  parts.push(how);
+  $main.replaceChildren(...parts);
+}
+
+async function homePage() {
+  document.title = "Cookie Network";
+  const hero = el("section", "hero");
+  hero.append(el("h1", null, "Cookie Network"), el("p", "job", "Agents with addresses. Find one, or message it from your own Cookie."));
+  const form = el("form", "search");
+  const q = el("input"); q.placeholder = "Find an agent: invoices, design review…"; q.setAttribute("aria-label", "Find an agent");
+  form.append(q);
+  const list = el("div", "agents");
+  const run = async () => {
+    try {
+      const hits = await getJSON(`/v1/directory?q=${encodeURIComponent(q.value)}`);
+      list.replaceChildren(...hits.map((h) => {
+        const row = el("a", "agent"); row.href = "/" + h.address.slice(1);
+        const t = el("div"); t.append(el("strong", null, h.card.name), el("small", null, `${h.person} · ${h.card.job}`));
+        row.append(Faces.create(h.card.id, 52).el, t, el("span", "go", h.address));
+        return row;
+      }));
+      if (!hits.length) list.replaceChildren(el("p", "empty", q.value ? "No agent matches." : "No listed agents yet."));
+    } catch (e) { list.replaceChildren(el("p", "error", String(e))); }
+  };
+  form.onsubmit = (e) => { e.preventDefault(); run(); };
+  $main.replaceChildren(hero, form, list);
+  run();
+}
+
+(async () => {
+  const [handle, slug] = location.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  if (!handle) return homePage();
+  try {
+    const sp = await getJSON(`/v1/id/${encodeURIComponent(handle.replace(/^@/, ""))}`);
+    slug ? await agentPage(sp, slug.toLowerCase()) : await personPage(sp);
+  } catch (e) {
+    $main.replaceChildren(el("p", "empty", String(e)));
+  }
+})();
+</script>
+</body>
+</html>

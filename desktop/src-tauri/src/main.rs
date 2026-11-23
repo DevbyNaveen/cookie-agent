@@ -1,0 +1,142 @@
+//! Cookie for the desktop: a thin window over the team (`cookie-team`).
+//!
+//! Every feature lives in the core and answers through one command, `call`,
+//! the same API a home runner serves over HTTP. Team events reach the window
+//! as `team` events and, when the window is hidden, as notifications. Closing
+//! the window keeps the team working (routines, Telegram, other people's
+//! agents); quit from the tray or the menu to stop it.
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use std::sync::Arc;
+
+use cookie_team::{Team, TeamEvent};
+use serde_json::Value;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{Emitter, Manager, RunEvent, State, WindowEvent};
+use tauri_plugin_notification::NotificationExt;
+
+#[tauri::command]
+async fn call(cmd: String, args: Option<Value>, team: State<'_, Arc<Team>>) -> Result<Value, String> {
+    cookie_team::api::call(&team, &cmd, args.unwrap_or(Value::Null)).await
+}
+
+/// Show one of Cookie's own folders in Finder (or the system file manager).
+#[tauri::command]
+fn reveal(path: String, team: State<'_, Arc<Team>>) -> Result<(), String> {
+    let p = std::path::PathBuf::from(&path);
+    if !team.paths.owns(&p) {
+        return Err("Cookie only opens its own folders.".into());
+    }
+    std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(target_os = "windows")]
+    let opener = "explorer";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let opener = "xdg-open";
+    std::process::Command::new(opener).arg(&p).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// A second window on one agent, so two conversations can sit side by side.
+#[tauri::command]
+async fn open_window(app: tauri::AppHandle, agent: String, title: String) -> Result<(), String> {
+    if !agent.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("Not an agent id.".into());
+    }
+    let label = format!("agent-{agent}");
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.unminimize();
+        return w.set_focus().map_err(|e| e.to_string());
+    }
+    let url = tauri::WebviewUrl::App(format!("index.html?agent={agent}").into());
+    let builder = tauri::WebviewWindowBuilder::new(&app, label, url)
+        .title(title)
+        .inner_size(760.0, 720.0)
+        .min_inner_size(520.0, 420.0)
+        .disable_drag_drop_handler();
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .traffic_light_position(tauri::LogicalPosition::new(20.0, 28.0));
+    builder.build().map(|_| ()).map_err(|e| e.to_string())
+}
+
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+fn main() {
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
+        .setup(|app| {
+            let dir = app.path().app_data_dir()?;
+            let team = Team::open(&dir).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            app.manage(team.clone());
+            // The team's background work (routines, Telegram, the server) needs the async runtime.
+            let starter = team.clone();
+            tauri::async_runtime::spawn(async move { starter.start() });
+
+            // Team events → the window, and notifications when it can't be seen.
+            let handle = app.handle().clone();
+            let mut rx = team.subscribe();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    let ev = match rx.recv().await {
+                        Ok(ev) => ev,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(_) => break,
+                    };
+                    let _ = handle.emit("team", &ev);
+                    let visible = handle.get_webview_window("main").and_then(|w| w.is_visible().ok().zip(w.is_focused().ok())).is_some_and(|(v, f)| v && f);
+                    let note = match &ev {
+                        TeamEvent::Notice { title, body, .. } => Some((title.clone(), body.clone())),
+                        TeamEvent::Asked { approval } => Some((format!("{} needs your yes", approval.agent_name), approval.preview.chars().take(180).collect())),
+                        _ => None,
+                    };
+                    if let (Some((title, body)), false) = (note, visible) {
+                        let _ = handle.notification().builder().title(title).body(body).show();
+                    }
+                }
+            });
+
+            // The tray: Cookie keeps working with the window closed.
+            let open = MenuItem::with_id(app, "open", "Open Cookie", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit Cookie", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open, &quit])?;
+            let mut tray = TrayIconBuilder::with_id("cookie").menu(&menu).tooltip("Cookie").on_menu_event(|app, e| match e.id().as_ref() {
+                "open" => show_main(app),
+                "quit" => app.exit(0),
+                _ => {}
+            });
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+            tray.build(app)?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Hide the main window, don't quit: routines and approvals keep running.
+            // Extra agent windows simply close.
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![call, reveal, open_window])
+        .build(tauri::generate_context!())
+        .expect("Cookie could not start");
+    app.run(|app, event| {
+        if let RunEvent::Reopen { .. } = event {
+            show_main(app);
+        }
+    });
+}

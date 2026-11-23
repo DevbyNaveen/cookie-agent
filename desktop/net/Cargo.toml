@@ -1,0 +1,14 @@
+[package]
+name = "cookie-net"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT"
+description = "Cookie Network wire format: addresses, signed profiles, and end-to-end sealed messages (X25519, HKDF-SHA256, AES-256-GCM, Ed25519)."
+
+[dependencies]
+base64 = "0.22"
+curve25519-dalek = { version = "4", default-features = false, features = ["zeroize"] }
+ring = { version = "0.17", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -7,3 +7,6 @@ node_modules/
 evals/agentdojo/runs*/
 evals/agentdojo/runs*.log
 /.build
+/desktop/src-tauri/target
+/desktop/src-tauri/gen
+/desktop/target

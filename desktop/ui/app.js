@@ -1,0 +1,1080 @@
+// Cookie: the window over the team. Everything the team does arrives as
+// events (Api.listen); this file owns the roster, the chat, the composer,
+// hiring, and the shared helpers the other panels use.
+const call = Api.call;
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+const icon = (name) => { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); s.innerHTML = `<use href="#i-${name}"/>`; return s; };
+const strong = (t) => el("strong", null, t);
+
+// The project's own model ids (README, examples, the Swift app): suggestions, never a default.
+const MODELS = {
+  anthropic: ["anthropic:claude-sonnet-4-6", "anthropic:claude-haiku-4-5"],
+  openai: ["openai:gpt-6"],
+  gemini: ["gemini:gemini-3.8-flash"],
+};
+const STARTERS = [
+  { name: "Inbox Triage", job: "Sort my inbox every morning, tell me which threads need me, and draft a reply for each one. Never send anything yourself." },
+  { name: "Lead Pipeline Desk", job: "Qualify new inbound leads against my notes and draft a short, personal first reply for the good ones." },
+  { name: "Writing Desk", job: "Turn my rough notes into posts and emails in my own voice. Keep it short and plain." },
+  { name: "Research Scout", job: "Answer research questions with sources. Every fact names the page it came from, and you say plainly when you could not find something." },
+  { name: "Invoice Chaser", job: "Keep track of invoices I tell you about and draft polite reminders for the ones that are overdue." },
+  { name: "Chief of Staff", job: "Help me plan the week: what matters, what can wait, and what I promised people. Ask before assuming." },
+];
+
+let rows = [];
+let current = null;
+let view = "chat";
+let providers = [];
+let pending = [];              // attachments for the next message
+let approvals = [];            // everything waiting for a yes
+const busy = new Set();        // agent ids with a job in flight
+const live = new Map();        // job id -> { agent, trigger, input, acc, started, ui }
+const statusOf = new Map();    // agent id -> what it is doing, for the sidebar
+const faces = new Map();       // agent id -> roster face
+let pillFace = null, hireFace = null;
+
+/* ---------- small shared pieces ---------- */
+const fmtTime = (secs) => {
+  if (!secs) return "";
+  const d = new Date(secs * 1000), now = new Date();
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const days = (now - d) / 864e5;
+  if (days < 6) return d.toLocaleDateString([], { weekday: "short" });
+  return d.toLocaleDateString([], { day: "numeric", month: "short" });
+};
+const fmtDate = (secs) => new Date(secs * 1000).toLocaleDateString([], { day: "numeric", month: "long", year: "numeric" });
+const dollars = (micro) => micro >= 10_000 ? `$${(micro / 1e6).toFixed(2)}` : micro > 0 ? "under $0.01" : "$0";
+const humanSize = (b) => b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(1)} MB`;
+// The sidebar preview: Markdown marks dropped, one line.
+const plain = (t) => (t ?? "").replace(/```[\s\S]*?```/g, " ").replace(/[*`#>]+/g, "").replace(/(^|\s)_+|_+(?=\s|$)/g, "$1").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/\s+/g, " ").trim();
+/** "search_inbox" → "Using search inbox". The tool's own name, made readable; never invented. */
+const toolPhrase = (name) => "Using " + name.replace(/^external::[^:]+::/, "").replace(/[_\-.]+/g, " ").trim();
+const agentById = (id) => rows.find((r) => r.id === id);
+
+function select(options, value, onChange) {
+  const s = el("select", "pick");
+  for (const [v, label] of options) { const o = el("option", null, label); o.value = v; s.append(o); }
+  s.value = value;
+  s.onchange = () => onChange(s.value);
+  return s;
+}
+
+function toggle(value, onChange, label) {
+  const b = el("button", "switch" + (value ? " on" : ""));
+  b.type = "button";
+  b.setAttribute("role", "switch");
+  b.setAttribute("aria-checked", String(value));
+  b.setAttribute("aria-label", label);
+  b.onclick = () => { value = !value; b.classList.toggle("on", value); b.setAttribute("aria-checked", String(value)); onChange(value); };
+  return b;
+}
+
+function setRow(title, note, control) {
+  const r = el("div", "row");
+  const t = el("div", "row-text");
+  t.append(el("span", null, title));
+  if (note) t.append(el("small", null, note));
+  r.append(t);
+  if (control) r.append(control);
+  return r;
+}
+
+function button(text, cls, onClick) {
+  const b = el("button", "btn " + (cls || "quiet small"), text);
+  b.type = "button";
+  b.onclick = async (e) => {
+    b.disabled = true;
+    try { await onClick(e); } catch (err) { toast("Couldn't do that", String(err), "error"); } finally { b.disabled = false; }
+  };
+  return b;
+}
+
+function input(value, placeholder, attrs = {}) {
+  const i = el("input", "text-in");
+  i.value = value ?? "";
+  i.placeholder = placeholder ?? "";
+  Object.assign(i, attrs);
+  return i;
+}
+
+/* ---------- toasts: news within the day's budget ---------- */
+function toast(title, body, cls = "", onOpen, agent) {
+  const t = el("div", "toast " + cls);
+  const x = el("button", "toast-x");
+  x.setAttribute("aria-label", "Dismiss");
+  x.append(icon("x"));
+  x.onclick = (e) => { e.stopPropagation(); t.remove(); if (agent) call("notice_feedback", { agent, dismissed: true }).catch(() => {}); };
+  const text = el("div", "toast-text");
+  text.append(el("strong", null, title));
+  if (body) text.append(el("span", null, plain(body).slice(0, 220)));
+  if (agent && agentById(agent)) { const f = Faces.create(agent, 28); t.append(f.el); }
+  t.append(text, x);
+  if (onOpen) t.onclick = () => { t.remove(); if (agent) call("notice_feedback", { agent, dismissed: false }).catch(() => {}); onOpen(); };
+  $("toasts").append(t);
+  setTimeout(() => t.classList.add("leaving"), 7000);
+  setTimeout(() => t.remove(), 7400);
+}
+
+/* ---------- roster ---------- */
+async function loadRoster() {
+  rows = await call("list_agents");
+  for (const r of rows) if (r.busy) busy.add(r.id);
+  renderRoster();
+  renderTodayRow();
+}
+
+/** Latest activity first, like a messaging app. */
+function sortRows() {
+  rows.sort((a, b) => (b.last_at ?? b.created_at) - (a.last_at ?? a.created_at));
+}
+
+function renderRoster() {
+  sortRows();
+  const q = $("search").value.trim().toLowerCase();
+  const matches = rows.filter((r) => !q || r.name.toLowerCase().includes(q) || r.job.toLowerCase().includes(q));
+  // Searching finds hidden agents too; otherwise they wait behind "Hidden".
+  const shown = matches.filter((r) => q || showHidden || !r.hidden);
+  faces.forEach((f) => f.stop());
+  faces.clear();
+  const item = (r) => {
+    const unread = r.unread > 0 && !(view === "chat" && current?.id === r.id);
+    const li = el("li", "agent" + (view === "chat" && current?.id === r.id ? " active" : "") + (unread ? " unread" : ""));
+    li.dataset.id = r.id;
+    li.tabIndex = 0;
+    li.setAttribute("role", "button");
+    li.setAttribute("aria-label", r.name);
+    li.title = r.name;
+    const face = Faces.create(r.id, 46);
+    const waiting = approvals.some((a) => a.agent === r.id) || (typeof questions !== "undefined" && questions.some((q) => q.agent === r.id));
+    if (busy.has(r.id)) face.setMood(waiting ? "waiting" : "working");
+    faces.set(r.id, face);
+    const meta = el("div", "meta");
+    const preview = busy.has(r.id) ? (waiting ? "Waiting for your yes" : statusOf.get(r.id) ?? "Working…") : plain(r.last ?? r.job);
+    meta.append(el("div", "name", r.name), el("div", "preview" + (busy.has(r.id) ? " busy" : ""), preview));
+    const right = el("div", "row-right");
+    right.append(el("time", null, fmtTime(r.last_at ?? r.created_at)));
+    if (waiting) right.append(el("span", "dot-badge", String(approvals.filter((a) => a.agent === r.id).length + questions.filter((q) => q.agent === r.id).length)));
+    else if (unread) right.append(el("span", "unread-badge", String(r.unread)));
+    if (r.probation_until && r.probation_until > Date.now() / 1000) right.append(el("span", "tag", "probation"));
+    if (r.pinned) right.append(svgIcon("i-pin", "pin-mark"));
+    if (r.hidden) li.classList.add("is-hidden");
+    li.append(face.el, meta, right);
+    li.onmouseenter = () => face.peek(true);
+    li.onmouseleave = () => face.peek(false);
+    li.onclick = () => openAgent(r.id);
+    li.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openAgent(r.id); }
+      if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) { e.preventDefault(); const b = li.getBoundingClientRect(); openRowMenu(r.id, b.left + 40, b.bottom - 6); }
+    };
+    li.oncontextmenu = (e) => { e.preventDefault(); openRowMenu(r.id, e.clientX, e.clientY); };
+    return li;
+  };
+  const head = (text) => { const h = el("li", "roster-head", text); h.setAttribute("role", "presentation"); return h; };
+  // Pinned first, then everything else by latest activity, then each section in name order.
+  const pinned = shown.filter((r) => r.pinned);
+  const loose = shown.filter((r) => !r.pinned && !r.section);
+  const sections = [...new Set(shown.filter((r) => !r.pinned && r.section).map((r) => r.section))].sort((a, b) => a.localeCompare(b));
+  const out = [];
+  if (pinned.length) { if (!q) out.push(head("Pinned")); out.push(...pinned.map(item)); }
+  if (loose.length) { if (!q && (pinned.length || sections.length)) out.push(head("Recent")); out.push(...loose.map(item)); }
+  for (const name of sections) {
+    if (!q) out.push(head(name));
+    out.push(...shown.filter((r) => !r.pinned && r.section === name).map(item));
+  }
+  const hiddenCount = rows.filter((r) => r.hidden).length;
+  if (!q && hiddenCount) {
+    const t = el("li", "roster-hidden-toggle");
+    const b = el("button", null, showHidden ? "Hide hidden agents" : `Hidden (${hiddenCount})`);
+    b.onclick = () => { showHidden = !showHidden; renderRoster(); };
+    t.append(b);
+    out.push(t);
+  }
+  $("roster").replaceChildren(...out);
+  $("no-match").hidden = !(q && shown.length === 0);
+  $("no-agents").hidden = rows.length > 0;
+}
+
+function renderTodayRow() {
+  const n = approvals.length + (typeof questions === "undefined" ? 0 : questions.length);
+  $("today-badge").hidden = n === 0;
+  $("today-badge").textContent = String(n);
+  $("today-row").classList.toggle("active", view === "today");
+  document.querySelectorAll(".net-btn").forEach((b) => b.classList.toggle("active", view === "network"));
+}
+
+/* ---------- views ---------- */
+function show(v) {
+  view = v;
+  for (const id of ["chat", "hire", "today", "network"]) $(id).hidden = id !== v;
+  if (v !== "chat") closeProfile();
+  renderTodayRow();
+}
+
+const drafts = new Map(); // agent id -> unsent text, kept when you switch
+
+async function openAgent(id) {
+  const r = agentById(id);
+  if (!r) return;
+  if (current && current.id !== id) drafts.set(current.id, $("input").value);
+  closeTalk();
+  current = r;
+  if (r.unread) { r.unread = 0; call("mark_read", { id }).catch(() => {}); }
+  $("input").value = drafts.get(id) ?? "";
+  autosize();
+  closePops();
+  show("chat");
+  renderRoster();
+  syncSend();
+  pillFace?.stop();
+  pillFace = Faces.create(r.id, 26);
+  if (busy.has(r.id)) pillFace.setMood("working");
+  $("who-face").replaceChildren(pillFace.el);
+  $("who-name").textContent = r.name;
+  if (!$("profile").hidden) openProfile();
+  const lines = await call("history", { id: r.id });
+  if (current?.id !== id) return;
+  renderLog(r, lines);
+  renderSuggest(r, lines.length === 0 && !busy.has(r.id));
+  for (const a of approvals.filter((a) => a.agent === r.id)) $("log").append(approvalCard(a));
+  for (const q of questions.filter((q) => q.agent === r.id)) $("log").append(questionCard(q));
+  for (const job of live.values()) if (job.agent === r.id) attachLive(job);
+  scrollDown(true);
+  $("input").focus();
+}
+
+/** Starters for an empty chat, from the agent's own job. Click one to fill the box. */
+function renderSuggest(r, show) {
+  const box = $("suggest");
+  box.hidden = !show;
+  if (!show) return;
+  const job = r.job.replace(/\.$/, "");
+  const ideas = [
+    "What do you need from me to get started?",
+    `Show me how you'd do this: ${job.charAt(0).toLowerCase() + job.slice(1)}`,
+    "What can't you do yet?",
+  ];
+  box.replaceChildren(...ideas.map((t) => {
+    const b = el("button", null, t);
+    b.type = "button";
+    b.onclick = () => { $("input").value = t; autosize(); syncSend(); $("input").focus(); };
+    return b;
+  }));
+}
+
+function renderLog(r, lines) {
+  const log = $("log");
+  log.replaceChildren();
+  const intro = el("div", "intro");
+  const f = Faces.create(r.id, 96);
+  intro.append(f.el, el("h2", null, r.name), el("p", null, r.job));
+  log.append(intro);
+  log.append(event([icon("sparkle"), "Hired ", strong(fmtDate(r.created_at))]));
+  if (r.probation_until && r.probation_until > Date.now() / 1000) {
+    log.append(event([icon("shield"), "On probation until ", strong(fmtDate(r.probation_until)), ": changes it tries are recorded, not made"], "ask"));
+  }
+  for (const l of lines) log.append(line(l));
+}
+
+function event(parts, cls = "") {
+  const div = el("div", "event " + cls);
+  div.append(...parts);
+  return div;
+}
+
+const TALK_TOOLS = new Set(["ask_agent", "message_contact", "message_agent", "propose_deal"]);
+
+/** The salt that draws the other agent's face: yours for teammates, theirs for contacts. */
+const talkSalt = () => undefined;
+
+/** "2 messages with Writer": a conversation this agent had with another agent, inline where it happened. */
+function talkPill(t) {
+  const row = el("div", "talk-row");
+  const b = el("button", "talk-pill");
+  b.type = "button";
+  const n = t.messages.length;
+  b.append(el("span", null, `${n} message${n === 1 ? "" : "s"} with`), Faces.create(t.with_id, 20, talkSalt(t)).el, el("span", "talk-name", t.with_name));
+  b.setAttribute("aria-label", `Open ${n} messages with ${t.with_name}`);
+  b.onclick = () => openTalk(t);
+  row.append(b);
+  return row;
+}
+
+function openTalk(t) {
+  const v = $("talk-view");
+  const me = current;
+  const head = el("div", "talk-head");
+  const pair = el("div", "pill talk-pair");
+  pair.id = "talk-title";
+  pair.append(Faces.create(me.id, 22).el, el("span", null, me.name), icon("swap"), Faces.create(t.with_id, 22, talkSalt(t)).el, el("span", null, t.with_name));
+  head.append(pair);
+  if (t.with_address) head.append(el("small", "talk-addr", t.kind === "network" ? `${t.with_address} · another person's agent` : t.with_address));
+  const list = el("div", "talk-list");
+  t.messages.forEach((m, i) => {
+    const item = el("div", "talk-msg" + (m.mine ? " mine" : ""));
+    const name = el("div", "talk-who", m.who);
+    name.style.color = m.mine ? Faces.color(me.id) : Faces.color(t.with_id, talkSalt(t));
+    const bubble = el("div", "bubble md");
+    bubble.innerHTML = Md.render(m.text);
+    const body = el("div", "talk-body");
+    body.append(name, bubble);
+    // The face sits beside the last message in each run, like a chat app.
+    const lastOfRun = !t.messages[i + 1] || t.messages[i + 1].mine !== m.mine;
+    const slot = el("div", "talk-face");
+    if (lastOfRun) slot.append(m.mine ? Faces.create(me.id, 26).el : Faces.create(t.with_id, 26, talkSalt(t)).el);
+    item.append(slot, body, actions(m.text));
+    list.append(item);
+  });
+  const close = el("button", "pill talk-close", "Close Chat");
+  close.type = "button";
+  close.onclick = closeTalk;
+  v.replaceChildren(head, list, close);
+  v.hidden = false;
+  requestAnimationFrame(() => { v.classList.add("open"); close.focus({ preventScroll: true }); });
+}
+
+function closeTalk() {
+  const v = $("talk-view");
+  if (v.hidden) return;
+  v.classList.remove("open");
+  setTimeout(() => { v.hidden = true; v.replaceChildren(); }, 180);
+}
+
+function line(l) {
+  if (l.from === "talk") return talkPill(l.talk);
+  if (l.from === "file") {
+    const row = el("div", "msg file");
+    const chip = el("div", "file-chip");
+    chip.append(icon("clip"), l.text.split("\n")[0]);
+    row.append(chip);
+    return row;
+  }
+  const row = el("div", "msg " + l.from);
+  const b = el("div", "bubble");
+  if (l.from === "agent") { b.classList.add("md"); b.innerHTML = Md.render(l.text); }
+  else b.textContent = l.text;
+  row.append(b, actions(l.text));
+  return row;
+}
+
+/** Shown on hover beside a message: copy its text. */
+function actions(text) {
+  const bar = el("div", "msg-actions");
+  const copy = el("button");
+  copy.type = "button";
+  copy.title = "Copy";
+  copy.setAttribute("aria-label", "Copy message");
+  copy.append(icon("copy"));
+  copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(text); copy.classList.add("done"); setTimeout(() => copy.classList.remove("done"), 1200); } catch {}
+  };
+  bar.append(copy);
+  const speak = typeof speakButton === "function" ? speakButton(text) : null;
+  if (speak) bar.append(speak);
+  return bar;
+}
+
+const scrollDown = (force) => {
+  const log = $("log");
+  if (force || log.scrollHeight - log.scrollTop - log.clientHeight < 160) log.scrollTop = log.scrollHeight;
+};
+
+/* ---------- approvals: one card, every surface ---------- */
+function approvalCard(a) {
+  const c = el("div", "approve-card");
+  c.dataset.approval = a.id;
+  const head = el("div", "approve-head");
+  const f = Faces.create(a.agent, 24); f.setMood("waiting");
+  head.append(f.el, el("span", null, `${a.agent_name} needs your yes`), el("span", "tag", a.effect));
+  const tool = el("div", "approve-tool", toolPhrase(a.tool));
+  const pre = el("pre", "approve-preview", a.preview);
+  c.append(head, tool, pre);
+  if (a.from_data?.length) c.append(el("p", "approve-warn", `Not from you, check these: ${a.from_data.join(", ")}`));
+  if (a.checker) {
+    const ch = el("p", "approve-checker " + a.checker.verdict);
+    ch.append(strong(`Checker (${a.checker.model}): `), a.checker.note);
+    c.append(ch);
+  }
+  const bar = el("div", "approve-actions");
+  bar.append(
+    button("Deny", "quiet small", () => call("answer", { id: a.id, yes: false })),
+    button("Approve", "primary small", () => call("answer", { id: a.id, yes: true })),
+  );
+  c.append(bar);
+  return c;
+}
+
+async function loadApprovals() {
+  approvals = await call("approvals");
+  renderTodayRow();
+}
+
+/* ---------- live jobs ---------- */
+function setStatus(id, text) {
+  if (text) statusOf.set(id, text); else statusOf.delete(id);
+  const li = [...$("roster").children].find((n) => n.dataset.id === id);
+  const p = li?.querySelector(".preview");
+  if (p && text) { p.textContent = text; p.classList.add("busy"); }
+}
+
+function setMood(id, mood) {
+  faces.get(id)?.setMood(mood);
+  if (current?.id === id) pillFace?.setMood(mood);
+}
+
+const TRIGGER_LABEL = {
+  routine: () => "Routine",
+  telegram: () => "From your phone",
+  handoff: (t) => `Asked by ${agentById(t.from)?.name ?? "another agent"}`,
+  peer: (t) => `From ${t.label}`,
+  inbox: () => "Inbox scan",
+};
+
+/** Give a job in flight its place in the open chat: a status line, then its answer. */
+function attachLive(job) {
+  if (current?.id !== job.agent || view !== "chat") return;
+  job.ui?.status?.remove();
+  const label = TRIGGER_LABEL[job.trigger.kind];
+  if (label && !job.ui?.announced) {
+    $("log").append(event([icon("sparkle"), strong(label(job.trigger)), ": ", plain(job.input).slice(0, 160)]));
+  }
+  const status = el("div", "status");
+  const face = Faces.create(job.agent, 22);
+  face.setMood(job.acc ? "working" : "thinking");
+  const text = el("span", null, job.statusText ?? "Thinking it through");
+  status.append(face.el, text);
+  const row = el("div", "msg agent");
+  const reply = el("div", "bubble md");
+  row.append(reply);
+  if (job.acc) { reply.innerHTML = Md.render(job.acc); $("log").append(row); }
+  else $("log").append(status);
+  job.ui = { status, face, text, row, reply, announced: true };
+  renderTodos(job.agent);
+  scrollDown();
+}
+
+function onTeamEvent(ev) {
+  switch (ev.kind) {
+    case "job_started": {
+      const job = { agent: ev.agent, trigger: ev.trigger, input: ev.input, acc: "", started: false, ui: null, mine: ev.trigger.kind === "chat" };
+      if (["test", "shadow"].includes(ev.trigger.kind)) return; // private runs: their panels follow them
+      live.set(ev.job, job);
+      busy.add(ev.agent);
+      const row = agentById(ev.agent);
+      if (row) { row.last_at = Math.floor(Date.now() / 1000); renderRoster(); }
+      setStatus(ev.agent, "Thinking…");
+      setMood(ev.agent, "received");
+      if (current?.id === ev.agent) { $("suggest").hidden = true; attachLive(job); syncSend(); }
+      break;
+    }
+    case "text": {
+      const job = live.get(ev.job);
+      if (!job) return;
+      job.acc += ev.text;
+      if (!job.started) { job.started = true; setMood(ev.agent, "working"); setStatus(ev.agent, "Writing…"); }
+      if (job.ui && current?.id === ev.agent) {
+        if (job.ui.status.isConnected) { job.ui.status.replaceWith(job.ui.row); job.ui.face.stop(); }
+        job.ui.reply.innerHTML = Md.render(job.acc);
+        scrollDown();
+      }
+      break;
+    }
+    case "tool": {
+      const job = live.get(ev.job);
+      if (!job) return;
+      job.statusText = TALK_TOOLS.has(ev.name) ? "Talking with another agent" : toolPhrase(ev.name);
+      if (TALK_TOOLS.has(ev.name)) job.talked = true;
+      setMood(ev.agent, "working");
+      setStatus(ev.agent, job.statusText + "…");
+      if (job.ui) { job.ui.text.textContent = job.statusText; job.ui.face.setMood("working"); }
+      break;
+    }
+    case "asked": {
+      approvals.push(ev.approval);
+      renderTodayRow();
+      renderRoster();
+      setMood(ev.approval.agent, "waiting");
+      if (current?.id === ev.approval.agent && view === "chat") { $("log").append(approvalCard(ev.approval)); scrollDown(true); }
+      if (view === "today") renderToday();
+      break;
+    }
+    case "question": onQuestion(ev.question); break;
+    case "todos": onTodos(ev); break;
+    case "learned": onLearned(ev); break;
+    case "answered": {
+      if (onQuestionAnswered(ev)) break;
+      approvals = approvals.filter((a) => a.id !== ev.id);
+      document.querySelectorAll(`[data-approval="${ev.id}"]`).forEach((c) => {
+        c.replaceWith(event([ev.yes ? "Approved" : ev.by === "stopped" ? "No longer needed" : "Denied", ev.by === "telegram" ? " from your phone" : ""]));
+      });
+      renderTodayRow();
+      renderRoster();
+      if (ev.agent && busy.has(ev.agent)) setMood(ev.agent, "working");
+      break;
+    }
+    case "would": {
+      if (current?.id === ev.agent && view === "chat") $("log").append(event([icon("shield"), "Would have: ", strong(toolPhrase(ev.tool)), " (recorded, not done)"], "ask"));
+      break;
+    }
+    case "steered": {
+      if (current?.id === ev.agent && view === "chat") $("log").append(event([icon("sparkle"), strong(agentById(ev.agent)?.name ?? ""), " took in what you added"]));
+      break;
+    }
+    case "job_finished": {
+      const job = live.get(ev.job);
+      if (!job) { if (profileOpenFor(ev.agent)) refreshProfile(); return; }
+      live.delete(ev.job);
+      busy.delete(ev.agent);
+      setStatus(ev.agent, null);
+      const here = current?.id === ev.agent && view === "chat";
+      if (job.ui) {
+        job.ui.face.stop();
+        job.ui.status.remove();
+        if (ev.status === "done" && job.acc) job.ui.row.append(actions(job.acc));
+        else job.ui.row.remove();
+      }
+      if (here) {
+        if (ev.status === "done" && !job.acc && ev.answer) $("log").append(line({ from: "agent", text: ev.answer }));
+        if (ev.status === "stopped") $("log").append(event(["You stopped ", strong(agentById(ev.agent)?.name ?? "it")]));
+        if (ev.status === "failed") $("log").append(event([ev.error ?? "It hit a problem."], "error"));
+        scrollDown();
+        syncSend();
+        // It talked with another agent: redraw from the record so the conversation sits where it happened.
+        if (job.talked && ev.status === "done") {
+          const r = agentById(ev.agent);
+          call("history", { id: ev.agent }).then((lines) => { if (current?.id === ev.agent && view === "chat") { renderLog(r, lines); scrollDown(true); } }).catch(() => {});
+        }
+      }
+      const seen = here && document.visibilityState === "visible";
+      (seen ? call("mark_read", { id: ev.agent }).catch(() => {}) : Promise.resolve())
+        .then(loadRoster)
+        .then(() => setMood(ev.agent, ev.status === "done" && job.started ? "done" : "idle"));
+      if (profileOpenFor(ev.agent)) refreshProfile();
+      break;
+    }
+    case "notice": {
+      const visible = document.visibilityState === "visible" && document.hasFocus();
+      const fromNet = ev.agent === "network";
+      if (visible && !(current?.id === ev.agent && view === "chat")) toast(ev.title, ev.body, "", () => (fromNet ? openNetwork() : openAgent(ev.agent)), fromNet ? undefined : ev.agent);
+      notices.unshift({ ...ev, at: Date.now() });
+      notices.splice(30);
+      if (view === "today") renderToday();
+      break;
+    }
+    case "roster_changed": loadRoster(); loadAddresses(); break;
+    case "routines_changed": if (profileOpenFor(current?.id) && profileTab === "routines") refreshProfile(); break;
+    case "test_progress":
+    case "test_finished": if (profileOpenFor(ev.agent) && profileTab === "tests") refreshProfile(); if (ev.kind === "test_finished") toast("Tests finished", `${ev.passed} of ${ev.total} passed`, ev.passed === ev.total ? "good" : "", () => { openAgent(ev.agent).then(() => openProfile("tests")); }); break;
+    case "channel": if ($("settings").open) refreshSettings(); break;
+    case "network": onNetworkEvent(ev.what); if (ev.what === "contacts") loadAddresses(); break;
+  }
+}
+const notices = [];
+
+/* ---------- sending ---------- */
+// The send button: ↑ sends (or, while the agent works, adds to its job); ■ stops it.
+function syncSend() {
+  const working = current && busy.has(current.id);
+  const has = !!$("input").value.trim();
+  const stopMode = working && !has;
+  $("send").classList.toggle("stop", stopMode);
+  $("send").setAttribute("aria-label", stopMode ? "Stop" : working ? "Add to its job" : "Send");
+  $("send").title = stopMode ? "Stop" : working ? "Add to what it is doing" : "Send";
+  $("send").disabled = !current || (!has && !working);
+  if (current) $("input").placeholder = working ? `Add to what ${current.name} is doing…` : `Message ${current.name}`;
+}
+
+function autosize() {
+  const t = $("input");
+  t.style.height = "auto";
+  t.style.height = Math.min(t.scrollHeight, 220) + "px";
+}
+
+$("input").addEventListener("input", () => { autosize(); syncSend(); atSuggest(); });
+
+/* ---------- @addresses in the composer ---------- */
+// Type @ and pick: your agents (@writing-desk) and your contacts (@bob/sales).
+// The agent you're talking to writes to them with its `message` tool.
+let addressBook = [], atPick = 0, atOpen = false;
+async function loadAddresses() { try { addressBook = await call("addresses"); } catch { addressBook = []; } }
+
+function atToken() {
+  const ta = $("input");
+  const upto = ta.value.slice(0, ta.selectionStart);
+  const m = upto.match(/(^|\s)(@[a-z0-9\-/]*)$/i);
+  return m ? { start: upto.length - m[2].length, text: m[2].toLowerCase() } : null;
+}
+
+function atSuggest() {
+  const menu = $("at-menu");
+  const tok = atToken();
+  const hits = tok ? addressBook.filter((a) => a.id !== current?.id && (a.address.includes(tok.text) || a.name.toLowerCase().includes(tok.text.slice(1)))).slice(0, 8) : [];
+  atOpen = hits.length > 0;
+  menu.hidden = !atOpen;
+  if (!atOpen) return;
+  atPick = Math.min(atPick, hits.length - 1);
+  menu.replaceChildren(...hits.map((a, i) => {
+    const b = el("button", "at-item" + (i === atPick ? " on" : ""));
+    b.type = "button";
+    b.setAttribute("role", "option");
+    b.setAttribute("aria-selected", String(i === atPick));
+    const t = el("div", "row-text");
+    t.append(el("span", null, a.name), el("small", null, a.kind === "team" ? `${a.address} · your agent` : `${a.address} · ${a.job || "on the network"}`));
+    b.append(Faces.create(a.id, 24).el, t);
+    b.onmousedown = (e) => { e.preventDefault(); atInsert(a); };
+    return b;
+  }));
+  menu.dataset.hits = JSON.stringify(hits.map((h) => h.address));
+}
+
+function atInsert(a) {
+  const ta = $("input");
+  const tok = atToken();
+  if (!tok) return;
+  ta.value = ta.value.slice(0, tok.start) + a.address + " " + ta.value.slice(ta.selectionStart);
+  const caret = tok.start + a.address.length + 1;
+  ta.setSelectionRange(caret, caret);
+  $("at-menu").hidden = true; atOpen = false; atPick = 0;
+  autosize(); syncSend(); ta.focus();
+}
+
+// Before the composer's own keys: while the list is open, arrows move and Enter picks.
+$("input").addEventListener("keydown", (e) => {
+  if (!atOpen) return;
+  const hits = JSON.parse($("at-menu").dataset.hits || "[]");
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); e.stopImmediatePropagation(); atPick = (atPick + (e.key === "ArrowDown" ? 1 : hits.length - 1)) % hits.length; atSuggest(); }
+  else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); e.stopImmediatePropagation(); const a = addressBook.find((x) => x.address === hits[atPick]); if (a) atInsert(a); }
+  else if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); $("at-menu").hidden = true; atOpen = false; }
+}, true);
+$("input").addEventListener("blur", () => setTimeout(() => { $("at-menu").hidden = true; atOpen = false; }, 120));
+$("input").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowUp" && !$("input").value) {
+    const mine = [...$("log").querySelectorAll(".msg.you .bubble")].pop();
+    if (mine) { e.preventDefault(); $("input").value = mine.textContent; autosize(); syncSend(); }
+    return;
+  }
+  if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+  const cmd = prefs.get("cmdEnter", false);
+  if (!cmd || e.metaKey || e.ctrlKey) { e.preventDefault(); $("composer").requestSubmit(); }
+});
+
+$("composer").onsubmit = async (e) => {
+  e.preventDefault();
+  if (!current) return;
+  const agent = current;
+  const text = $("input").value.trim();
+  if (busy.has(agent.id)) {
+    if (!text) { await call("stop", { id: agent.id }); return; }
+    // Mid-job: the words join the job in flight instead of starting a new one.
+    if (await call("steer", { id: agent.id, text })) {
+      $("input").value = ""; autosize(); drafts.delete(agent.id);
+      const you = line({ from: "you", text });
+      you.querySelector(".bubble").classList.add("steer");
+      const statusRow = $("log").querySelector(".status");
+      statusRow ? statusRow.before(you) : $("log").append(you);
+      scrollDown(true);
+      syncSend();
+      return;
+    }
+  }
+  if (!text) return;
+  $("suggest").hidden = true;
+  drafts.delete(agent.id);
+  const files = pending;
+  pending = [];
+  renderChips();
+  $("input").value = "";
+  autosize();
+  $("log").append(line({ from: "you", text }));
+  for (const f of files) $("log").append(line({ from: "file", text: f.name }));
+  scrollDown(true);
+  try {
+    await call("send", { id: agent.id, text, attachments: files });
+  } catch (err) {
+    $("log").append(event([String(err)], "error"));
+    scrollDown(true);
+  }
+  syncSend();
+};
+
+/* ---------- attachments ---------- */
+$("attach").onclick = () => $("file").click();
+async function addFiles(list) {
+  for (const file of list) {
+    if (file.size > 2_000_000) { $("log").append(event([`${file.name} is over 2 MB, so it was left out.`], "error")); continue; }
+    if (file.type && !/^text\/|json|xml|yaml|toml|csv|javascript|markdown/.test(file.type)) { $("log").append(event([`${file.name} isn't a text file. Cookie reads text files for now.`], "error")); continue; }
+    pending.push({ name: file.name, text: await file.text() });
+  }
+  renderChips();
+  syncSend();
+  $("input").focus();
+}
+$("file").onchange = async () => { await addFiles($("file").files); $("file").value = ""; };
+$("input").addEventListener("paste", (e) => { if (e.clipboardData?.files?.length) { e.preventDefault(); addFiles(e.clipboardData.files); } });
+let dragDepth = 0;
+$("chat").addEventListener("dragenter", (e) => { if (e.dataTransfer?.types?.includes("Files")) { dragDepth++; $("drop").hidden = false; } });
+$("chat").addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; $("drop").hidden = true; } });
+$("chat").addEventListener("dragover", (e) => e.preventDefault());
+$("chat").addEventListener("drop", (e) => { e.preventDefault(); dragDepth = 0; $("drop").hidden = true; if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files); });
+
+function renderChips() {
+  $("chips").hidden = pending.length === 0;
+  $("chips").replaceChildren(...pending.map((f, i) => {
+    const c = el("span", "chip", f.name);
+    const x = el("button");
+    x.type = "button";
+    x.setAttribute("aria-label", `Remove ${f.name}`);
+    x.append(icon("x"));
+    x.onclick = () => { pending.splice(i, 1); renderChips(); syncSend(); };
+    c.append(x);
+    return c;
+  }));
+}
+
+/* ---------- hire ---------- */
+async function openHire(prefill) {
+  current = null;
+  closePops();
+  show("hire");
+  renderRoster();
+  const form = $("hire-form");
+  form.reset();
+  if (prefill) { form.name.value = prefill.name; form.job.value = prefill.job; }
+  form.model.value = localStorage.getItem("cookie.lastModel") || suggestions()[0] || "";
+  $("hire-error").hidden = true;
+  $("hire-cancel").hidden = rows.length === 0;
+  const handovers = await call("handovers").catch(() => []);
+  $("handover-field").hidden = handovers.length === 0;
+  form.handover.replaceChildren(el("option", null, "None"), ...handovers.map((h) => { const o = el("option", null, h.title); o.value = h.file; return o; }));
+  form.handover.options[0].value = "";
+  updateHirePreview();
+  if (prefill) { form.scrollIntoView({ behavior: "smooth", block: "center" }); (form.model.value ? form.job : form.model).focus(); }
+  else { $("hire").scrollTop = 0; form.name.focus({ preventScroll: true }); }
+}
+
+function suggestions() {
+  return providers.flatMap((p) => MODELS[p] || []);
+}
+
+function updateHirePreview() {
+  const name = $("hire-form").name.value.trim();
+  $("hire-title").textContent = name || (rows.length ? "Hire an agent" : "Build your team");
+  hireFace?.stop();
+  hireFace = Faces.create(name ? name.toLowerCase() : "cookie", 112);
+  $("hire-face").replaceChildren(hireFace.el);
+}
+
+$("hire-form").name.addEventListener("input", updateHirePreview);
+
+$("hire-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  $("hire-error").hidden = true;
+  try {
+    const agent = await call("hire_agent", { hire: {
+      name: form.name.value, model: form.model.value, job: form.job.value,
+      probation_days: +form.probation.value || 0, handover: form.handover.value || null,
+    } });
+    try { localStorage.setItem("cookie.lastModel", agent.model); } catch {}
+    await loadRoster();
+    openAgent(agent.id);
+  } catch (err) {
+    $("hire-error").textContent = String(err);
+    $("hire-error").hidden = false;
+  }
+};
+
+$("hire-cancel").onclick = () => rows.length && openAgent(rows[0].id);
+$("new-agent").onclick = () => openHire();
+
+function renderStarters() {
+  $("starter-list").replaceChildren(...STARTERS.map((s) => {
+    const li = el("li");
+    const b = el("button");
+    b.type = "button";
+    const f = Faces.create(s.name.toLowerCase(), 44);
+    const t = el("div");
+    t.append(el("strong", null, s.name), el("span", null, s.job));
+    b.append(f.el, t);
+    b.onclick = () => openHire(s);
+    li.append(b);
+    return li;
+  }));
+}
+
+/* ---------- fire ---------- */
+async function fireCurrent(agent) {
+  closePops();
+  const a = agent?.id ? agent : current;
+  if (!a) return;
+  const d = $("fire-dialog");
+  $("fire-title").textContent = `Fire ${a.name}?`;
+  $("fire-handover").checked = !!a.last;
+  $("fire-handover-row").hidden = !a.last;
+  d.showModal();
+  $("fire-go").onclick = async () => {
+    $("fire-go").disabled = true;
+    $("fire-go").textContent = $("fire-handover").checked ? "Writing its handover…" : "Firing…";
+    try {
+      const note = await call("fire_agent", { id: a.id, handover: $("fire-handover").checked });
+      d.close();
+      if (current?.id === a.id) { current = null; closeProfile(); }
+      await loadRoster();
+      if (note) toast(`${a.name} left a handover note`, "Pick it when you hire its successor.", "good");
+      if (!current) rows.length ? openAgent(rows[0].id) : openHire();
+    } catch (err) {
+      toast("Couldn't fire it", String(err), "error");
+    } finally {
+      $("fire-go").disabled = false;
+      $("fire-go").textContent = "Fire";
+    }
+  };
+}
+$("fire").onclick = () => fireCurrent();
+$("fire-cancel").onclick = () => $("fire-dialog").close();
+
+/* ---------- menus ---------- */
+function closePops() {
+  ["more-menu", "me-menu", "row-menu"].forEach((id) => { $(id).hidden = true; });
+  $("me-btn").setAttribute("aria-expanded", "false");
+}
+
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".pop, #more, #me-btn")) closePops();
+});
+// The rail is app chrome: no browser "Reload / Inspect Element" menu on it.
+document.querySelector(".rail").addEventListener("contextmenu", (e) => { if (!e.target.closest("input, textarea")) e.preventDefault(); });
+document.addEventListener("scroll", () => { if (!$("row-menu").hidden) closePops(); }, true);
+window.addEventListener("blur", () => { if (!$("row-menu").hidden) closePops(); });
+
+/* ---------- agent row menu (right-click) ---------- */
+let showHidden = false;
+
+function svgIcon(id, cls) {
+  const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  if (cls) s.setAttribute("class", cls);
+  const u = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  u.setAttribute("href", "#" + id);
+  s.append(u);
+  return s;
+}
+
+async function arrange(id, patch) {
+  try { await call("arrange", { id, patch }); await loadRoster(); }
+  catch (err) { toast("Couldn't change the sidebar", String(err), "error"); }
+}
+
+function openRowMenu(id, x, y) {
+  const r = agentById(id);
+  if (!r) return;
+  closePops();
+  const m = $("row-menu");
+  const item = (icon, label, fn, cls) => {
+    const b = el("button", cls ?? null);
+    b.setAttribute("role", "menuitem");
+    b.append(svgIcon(icon), el("span", null, label));
+    b.onclick = (e) => { e.stopPropagation(); closePops(); fn(); };
+    return b;
+  };
+  const parts = [
+    item("i-pin", r.pinned ? "Unpin" : "Pin", () => arrange(id, { pinned: !r.pinned })),
+    item("i-section", r.section ? "Move to another section" : "Move to new section", () => sectionPrompt(r)),
+  ];
+  if (r.section) parts.push(item("i-x", `Take out of "${r.section}"`, () => arrange(id, { section: "" })));
+  parts.push(
+    r.unread > 0
+      ? item("i-bell", "Mark as read", () => call("mark_read", { id }).then(loadRoster))
+      : item("i-bell", "Mark as unread", () => arrange(id, { unread: true })),
+    item("i-window", "New window", () => Api.openWindow(id, r.name).catch((err) => toast("Couldn't open a window", String(err), "error"))),
+    el("hr"),
+    item("i-copy", "Copy agent ID", async () => {
+      try { await navigator.clipboard.writeText(id); toast("Agent ID copied", id, "good"); }
+      catch { toast("Couldn't reach the clipboard", id, "error"); }
+    }),
+    el("hr"),
+    item(r.hidden ? "i-eye" : "i-eyeoff", r.hidden ? "Show in sidebar" : "Hide from sidebar", () => arrange(id, { hidden: !r.hidden })),
+    item("i-trash", "Delete", () => fireCurrent(r), "danger"),
+  );
+  m.replaceChildren(...parts);
+  m.hidden = false;
+  // Keep it on screen: flip up or left when it would spill over the edge.
+  const w = m.offsetWidth, h = m.offsetHeight;
+  m.style.left = Math.max(8, Math.min(x, innerWidth - w - 8)) + "px";
+  m.style.top = Math.max(8, y + h > innerHeight - 8 ? y - h : y) + "px";
+  m.querySelector("button")?.focus({ preventScroll: true });
+}
+
+/** "Move to new section": name it in place, or pick one that already exists. */
+function sectionPrompt(r) {
+  const m = $("row-menu");
+  const names = [...new Set(rows.map((x) => x.section).filter(Boolean))].filter((n) => n !== r.section).sort();
+  const input = el("input");
+  input.placeholder = "Section name";
+  input.maxLength = 40;
+  input.setAttribute("aria-label", "Section name");
+  const go = (name) => { if (name.trim()) { closePops(); arrange(r.id, { section: name.trim(), pinned: false }); } };
+  input.onkeydown = (e) => { if (e.key === "Enter") go(input.value); if (e.key === "Escape") closePops(); };
+  const parts = [el("div", "menu-title", `Move ${r.name} to`), input];
+  for (const n of names) {
+    const b = el("button");
+    b.append(svgIcon("i-folder"), el("span", null, n));
+    b.onclick = (e) => { e.stopPropagation(); go(n); };
+    parts.push(b);
+  }
+  m.replaceChildren(...parts);
+  m.hidden = false;
+  if (m.getBoundingClientRect().bottom > innerHeight - 8) m.style.top = Math.max(8, innerHeight - m.offsetHeight - 8) + "px";
+  input.focus();
+}
+$("row-menu").addEventListener("keydown", (e) => {
+  const items = [...$("row-menu").querySelectorAll("button")];
+  const i = items.indexOf(document.activeElement);
+  if (e.key === "ArrowDown") { e.preventDefault(); items[(i + 1) % items.length]?.focus(); }
+  if (e.key === "ArrowUp") { e.preventDefault(); items[(i - 1 + items.length) % items.length]?.focus(); }
+  if (e.key === "Escape") closePops();
+});
+document.addEventListener("keydown", (e) => {
+  const mod = e.metaKey || e.ctrlKey;
+  if (e.key === "Escape" && !$("talk-view").hidden) { closeTalk(); return; }
+  if (e.key === "Escape") { closePops(); if (!$("profile").hidden && !document.querySelector("dialog[open]")) closeProfile(); }
+  if (mod && e.key === "n") { e.preventDefault(); openHire(); }
+  if (mod && e.key === "f") { e.preventDefault(); toggleSearch(true); }
+  if (mod && e.key === ",") { e.preventDefault(); openSettings("general"); }
+  if (mod && e.key === "\\") { e.preventDefault(); toggleRail(); }
+  if (mod && e.key === "t") { e.preventDefault(); openToday(); }
+});
+
+$("more").onclick = () => { const open = $("more-menu").hidden; closePops(); $("more-menu").hidden = !open; };
+
+$("copy-chat").onclick = async () => {
+  closePops();
+  const text = [...$("log").querySelectorAll(".msg")].map((m) => (m.classList.contains("you") ? "You: " : m.classList.contains("file") ? "File: " : `${current.name}: `) + m.querySelector(".bubble, .file-chip").innerText).join("\n\n");
+  try { await navigator.clipboard.writeText(text); $("log").append(event(["Conversation copied"])); scrollDown(true); }
+  catch { $("log").append(event(["Couldn't reach the clipboard."], "error")); }
+};
+
+/* ---------- account drop-up ---------- */
+$("me-btn").onclick = () => {
+  const open = $("me-menu").hidden;
+  closePops();
+  $("me-menu").hidden = !open;
+  $("me-btn").setAttribute("aria-expanded", String(open));
+};
+$("apps-btn").onclick = () => openConnect();
+$("apps-mini").onclick = () => openConnect();
+$("new-agent-mini").onclick = () => openHire();
+$("today-row").onclick = () => openToday();
+$("me-menu").onclick = async (e) => {
+  const go = e.target.closest("[data-go]")?.dataset.go;
+  if (!go) return;
+  closePops();
+  if (go === "expand") toggleRail();
+  else if (go === "connect") openConnect();
+  else if (go === "folder") Api.reveal(await call("data_dir")).catch((err) => toast("Can't open it here", String(err), "error"));
+  else openSettings(go);
+};
+
+/* ---------- preferences (this window only) ---------- */
+const prefs = (() => {
+  let p = {};
+  try { p = JSON.parse(localStorage.getItem("cookie.prefs") || "{}"); } catch {}
+  return {
+    get: (k, d) => (k in p ? p[k] : d),
+    set: (k, v) => { p[k] = v; try { localStorage.setItem("cookie.prefs", JSON.stringify(p)); } catch {} applyPrefs(); },
+  };
+})();
+
+function applyPrefs() {
+  const theme = prefs.get("theme", "system");
+  if (theme === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.dataset.theme = theme;
+  $("input").spellcheck = prefs.get("spell", true);
+}
+
+/* ---------- sheets ---------- */
+document.querySelectorAll("dialog.sheet").forEach((d) => {
+  d.querySelector("[data-close]")?.addEventListener("click", () => d.close());
+  d.addEventListener("click", (e) => { if (e.target === d) d.close(); });
+});
+
+/* ---------- sidebar: drag to resize, collapse to faces ---------- */
+const RAIL = { min: 210, max: 420, collapsed: 96, snap: 170 };
+function setRail(w, save = true) {
+  const collapsed = w < RAIL.snap;
+  const width = collapsed ? RAIL.collapsed : Math.min(RAIL.max, Math.max(RAIL.min, w));
+  document.body.style.setProperty("--rail-w", width + "px");
+  document.body.classList.toggle("rail-collapsed", collapsed);
+  $("rail-toggle").title = collapsed ? "Expand sidebar (⌘\\)" : "Collapse sidebar (⌘\\)";
+  $("rail-toggle").setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
+  if (collapsed) { $("search-wrap").hidden = true; closePops(); }
+  if (save) try { localStorage.setItem("cookie.rail", String(width)); if (!collapsed) localStorage.setItem("cookie.railOpen", String(width)); } catch {}
+}
+function toggleRail() {
+  const collapsed = document.body.classList.contains("rail-collapsed");
+  let open = 272;
+  try { open = +localStorage.getItem("cookie.railOpen") || 272; } catch {}
+  setRail(collapsed ? open : 0);
+}
+$("rail-toggle").onclick = toggleRail;
+$("rail-resize").ondblclick = toggleRail;
+$("rail-resize").onpointerdown = (e) => {
+  e.preventDefault();
+  const h = $("rail-resize");
+  h.setPointerCapture(e.pointerId);
+  document.body.classList.add("resizing");
+  h.onpointermove = (m) => setRail(m.clientX, false);
+  h.onpointerup = (u) => {
+    h.onpointermove = h.onpointerup = null;
+    document.body.classList.remove("resizing");
+    setRail(u.clientX);
+  };
+};
+$("rail-resize").onkeydown = (e) => {
+  const w = parseInt(getComputedStyle(document.body).getPropertyValue("--rail-w")) || 272;
+  if (e.key === "ArrowLeft") setRail(w <= RAIL.min ? 0 : w - 16);
+  if (e.key === "ArrowRight") setRail(w <= RAIL.collapsed ? RAIL.min : w + 16);
+};
+try { setRail(+localStorage.getItem("cookie.rail") || 272, false); } catch { setRail(272, false); }
+
+/* ---------- search ---------- */
+function toggleSearch(force) {
+  const wrap = $("search-wrap");
+  const open = force ?? wrap.hidden;
+  wrap.hidden = !open;
+  if (open) $("search").focus();
+  else { $("search").value = ""; renderRoster(); }
+}
+$("search-toggle").onclick = () => toggleSearch();
+$("search").addEventListener("input", renderRoster);
+$("search").addEventListener("keydown", (e) => { if (e.key === "Escape") toggleSearch(false); });
+
+/* ---------- boot ---------- */
+async function boot() {
+  if (!Api.signedIn()) { document.body.classList.add("signed-out"); return; }
+  applyPrefs();
+  Api.listen(onTeamEvent);
+  const [name, keys] = await Promise.all([call("me"), call("providers")]);
+  providers = keys;
+  $("me-name").textContent = name || "You";
+  $("me-initials").textContent = (name || "You").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+  $("models").replaceChildren(...Object.values(MODELS).flat().map((m) => { const o = el("option"); o.value = m; return o; }));
+  const note = $("model-note");
+  if (providers.some((p) => MODELS[p])) note.textContent = `Keys found for ${providers.filter((p) => MODELS[p]).join(", ")}. Type any provider:model you like.`;
+  else { note.innerHTML = "No model key yet. Add one in Settings → Models, or use a local <code>ollama:</code> model."; note.classList.add("warn"); }
+  renderStarters();
+  await loadApprovals();
+  await loadQuestions();
+  await loadRoster();
+  refreshNetBadge();
+  loadAddresses();
+  const only = new URLSearchParams(location.search).get("agent");
+  if (only && agentById(only)) {
+    // A window of its own: just this conversation, rail folded away.
+    document.body.classList.add("agent-window");
+    document.body.classList.add("rail-collapsed");
+    openAgent(only);
+  } else if (approvals.length) openToday();
+  else rows.length ? openAgent(rows[0].id) : openHire();
+}
+// After every script has loaded: the panels (profile, Today, settings) are defined in their own files.
+window.addEventListener("DOMContentLoaded", () => boot().catch((e) => toast("Cookie couldn't start", String(e), "error")));

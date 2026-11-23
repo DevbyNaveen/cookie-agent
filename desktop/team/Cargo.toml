@@ -1,0 +1,38 @@
+[package]
+name = "cookie-team"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT"
+description = "Cookie's team of focused agents: each with its own walls, tools, rules, routines, record and tests. Runs inside the desktop app or headless as a home or cloud runner."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "cookie-team"
+path = "src/main.rs"
+
+[dependencies]
+cookie-harness = { path = "../.." }
+cookie-net = { path = "../net" }
+base64 = "0.22"
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart", "stream"] }
+ring = { version = "0.17", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "signal", "net"] }
+tokio-util = "0.7"
+tokio-stream = { version = "0.1", features = ["sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std"] }
+
+[dev-dependencies]
+tempfile = "3"

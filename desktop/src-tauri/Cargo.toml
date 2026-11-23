@@ -1,0 +1,17 @@
+[package]
+name = "cookie-desktop"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT"
+description = "Cookie for the desktop: a team of focused agents, each with its own walls."
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-notification = "2"
+cookie-team = { path = "../team" }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "rt-multi-thread"] }
