@@ -181,7 +181,8 @@ impl Team {
             agent = agent.trace(Tracer::new(log, job.to_string()));
         }
         if rec.grants.memory {
-            match cookie_harness::enkeon::Enkeon::from_env() {
+            // Its own space in Enkeon (see `memory`), or its own notes on this computer.
+            match self.enkeon_for(&rec.id, "agent", rec.grants.web && cookie_harness::local::Search::from_env().is_some()) {
                 Some(e) => agent = agent.enkeon(e),
                 None => agent = agent.without_enkeon().notes(self.paths.notes(&rec.id)),
             }

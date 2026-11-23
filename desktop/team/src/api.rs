@@ -177,9 +177,20 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "channel_code" => ok(team.channel_code(&arg::<String>(a, "kind")?).await?),
         "channel_unlink" => ok(team.channel_unlink(&arg::<String>(a, "kind")?, &arg::<String>(a, "chat")?)?),
 
+        /* what an agent knows */
+        "memory" => ok(team.memory(&arg::<String>(a, "id")?).await?),
+        "memory_search" => ok(team.memory_search(&arg::<String>(a, "id")?, &arg::<String>(a, "query")?).await?),
+        "memory_add" => ok(team.memory_add(&arg::<String>(a, "id")?, &arg::<String>(a, "text")?).await?),
+        "memory_edit" => ok(team.memory_edit(&arg::<String>(a, "id")?, &arg::<String>(a, "memory")?, &arg::<String>(a, "text")?).await?),
+        "memory_forget" => ok(team.memory_forget(&arg::<String>(a, "id")?, &arg::<String>(a, "memory")?).await?),
+
         /* voice */
         "voice_status" => ok(team.voice_status()),
         "voice_setup" => ok(team.voice_setup().await?),
+        "voice_voices" => ok(team.voice_voices().await?),
+        "voice_choose" => ok(team.voice_choose(&opt::<String>(a, "voice").unwrap_or_default())?),
+        "voice_use_mac_key" => ok(team.voice_use_mac_key()?),
+        "speak" => ok(team.speak(&arg::<String>(a, "text")?).await?),
         "transcribe" => ok(team.transcribe_b64(&arg::<String>(a, "audio")?, &opt::<String>(a, "ext").unwrap_or_else(|| "webm".into())).await?),
 
         /* questions, plans, undo */

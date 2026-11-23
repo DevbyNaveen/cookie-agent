@@ -17,6 +17,7 @@ pub const PROVIDERS: &[(&str, &str, &str)] = &[
     ("gemini", "Gemini", "GEMINI_API_KEY"),
     ("exa", "Exa search", "EXA_API_KEY"),
     ("brave", "Brave search", "BRAVE_SEARCH_API_KEY"),
+    ("elevenlabs", "ElevenLabs voice", "ELEVENLABS_API_KEY"),
 ];
 
 pub struct Keys {

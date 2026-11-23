@@ -55,13 +55,32 @@ async fn open_window(app: tauri::AppHandle, agent: String, title: String) -> Res
         .title(title)
         .inner_size(760.0, 720.0)
         .min_inner_size(520.0, 420.0)
-        .disable_drag_drop_handler();
+        .disable_drag_drop_handler()
+        .transparent(true);
     #[cfg(target_os = "macos")]
     let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true)
         .traffic_light_position(tauri::LogicalPosition::new(20.0, 28.0));
     builder.build().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// The Glass theme: the window itself turns to frosted glass (macOS vibrancy), so the
+/// desktop shows through, blurred, wherever the page leaves it uncovered.
+#[tauri::command]
+fn set_glass(window: tauri::WebviewWindow, on: bool) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::window::{Effect, EffectState, EffectsBuilder};
+        let effects = on.then(|| EffectsBuilder::new().effect(Effect::UnderWindowBackground).state(EffectState::Active).build());
+        window.set_effects(effects).map_err(|e| e.to_string())?;
+        Ok(on)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, on);
+        Ok(false)
+    }
 }
 
 fn show_main(app: &tauri::AppHandle) {
@@ -131,7 +150,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![call, reveal, open_window])
+        .invoke_handler(tauri::generate_handler![call, reveal, open_window, set_glass])
         .build(tauri::generate_context!())
         .expect("Cookie could not start");
     app.run(|app, event| {

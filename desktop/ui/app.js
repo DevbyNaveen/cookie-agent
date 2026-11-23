@@ -471,6 +471,7 @@ function onTeamEvent(ev) {
       const job = live.get(ev.job);
       if (!job) return;
       job.acc += ev.text;
+      if (typeof Voice !== "undefined") Voice.onText(ev);
       if (!job.started) { job.started = true; setMood(ev.agent, "working"); setStatus(ev.agent, "Writing…"); }
       if (job.ui && current?.id === ev.agent) {
         if (job.ui.status.isConnected) { job.ui.status.replaceWith(job.ui.row); job.ui.face.stop(); }
@@ -522,6 +523,7 @@ function onTeamEvent(ev) {
     }
     case "job_finished": {
       const job = live.get(ev.job);
+      if (typeof Voice !== "undefined") Voice.onDone(ev, job);
       if (!job) { if (profileOpenFor(ev.agent)) refreshProfile(); return; }
       live.delete(ev.job);
       busy.delete(ev.agent);
@@ -573,15 +575,21 @@ const notices = [];
 
 /* ---------- sending ---------- */
 // The send button: ↑ sends (or, while the agent works, adds to its job); ■ stops it.
+// Empty and idle it is the voice button (talk with the agent); while dictating, ↑ sends what you said.
 function syncSend() {
   const working = current && busy.has(current.id);
   const has = !!$("input").value.trim();
-  const stopMode = working && !has;
-  $("send").classList.toggle("stop", stopMode);
-  $("send").setAttribute("aria-label", stopMode ? "Stop" : working ? "Add to its job" : "Send");
-  $("send").title = stopMode ? "Stop" : working ? "Add to what it is doing" : "Send";
-  $("send").disabled = !current || (!has && !working);
-  if (current) $("input").placeholder = working ? `Add to what ${current.name} is doing…` : `Message ${current.name}`;
+  const dictating = document.body.classList.contains("dictating");
+  const stopMode = working && !has && !dictating;
+  const voiceMode = !working && !has && !dictating;
+  const s = $("send");
+  s.classList.toggle("stop", stopMode);
+  s.classList.toggle("voice", voiceMode);
+  const label = stopMode ? "Stop" : voiceMode ? (current ? `Talk with ${current.name}` : "Talk") : working ? "Add to what it is doing" : "Send";
+  s.setAttribute("aria-label", label);
+  s.title = label;
+  s.disabled = !current;
+  if (current && !dictating) $("input").placeholder = working ? `Add to what ${current.name} is doing…` : `Message ${current.name}`;
 }
 
 function autosize() {
@@ -661,6 +669,10 @@ $("input").addEventListener("keydown", (e) => {
 $("composer").onsubmit = async (e) => {
   e.preventDefault();
   if (!current) return;
+  if (typeof Voice !== "undefined") {
+    if (Voice.dictating()) { Voice.finishDictation(true); return; }
+    if (e.submitter === $("send") && $("send").classList.contains("voice")) { Voice.startCall(); return; }
+  }
   const agent = current;
   const text = $("input").value.trim();
   if (busy.has(agent.id)) {
@@ -988,6 +1000,10 @@ function applyPrefs() {
   const theme = prefs.get("theme", "system");
   if (theme === "system") document.documentElement.removeAttribute("data-theme");
   else document.documentElement.dataset.theme = theme;
+  // Glass asks the window for real frosted glass; without it the page keeps a tinted stand-in.
+  const glass = theme === "glass";
+  const native = window.__TAURI__?.core?.invoke;
+  if (native) native("set_glass", { on: glass }).then((on) => document.documentElement.classList.toggle("glass-native", !!on)).catch(() => document.documentElement.classList.remove("glass-native"));
   $("input").spellcheck = prefs.get("spell", true);
 }
 

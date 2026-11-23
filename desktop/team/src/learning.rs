@@ -593,7 +593,7 @@ impl Team {
             (false, true) => SKILL_REVIEW,
             _ => COMBINED_REVIEW,
         };
-        let enkeon = cookie_harness::enkeon::Enkeon::from_env();
+        let enkeon = self.enkeon_for(&rec.id, "review", false);
         let mut instructions = format!(
             "You are {name}'s learning pass. {name}'s one job: {job}\n\n{rules}{prompt}\n\nNotes are your own facts about the work (note / forget_note); \
              what the person is like goes to note_about_person; how to do a kind of task goes in a skill.",

@@ -15,7 +15,7 @@ const SETTINGS = {
     acct.append(who);
     const look = el("div", "group");
     look.append(
-      setRow("Theme", null, select([["system", "Follow system"], ["dark", "Dark"], ["light", "Light"]], prefs.get("theme", "system"), (v) => prefs.set("theme", v))),
+      setRow("Theme", null, select([["system", "Follow system"], ["dark", "Dark"], ["light", "Light"], ["white", "White"], ["glass", "Glass"]], prefs.get("theme", "system"), (v) => prefs.set("theme", v))),
       setRow("Check spelling while typing", null, toggle(prefs.get("spell", true), (v) => prefs.set("spell", v), "Check spelling")),
       setRow("Send with ⌘↵", "Enter starts a new line; ⌘↵ sends.", toggle(prefs.get("cmdEnter", false), (v) => prefs.set("cmdEnter", v), "Send with Command Enter")),
     );

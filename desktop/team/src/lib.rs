@@ -16,6 +16,7 @@ pub mod inbox;
 pub mod keys;
 pub mod learning;
 pub mod mac;
+pub mod memory;
 pub mod network;
 pub mod pack;
 pub mod peers;
@@ -175,6 +176,9 @@ impl Team {
         server::spawn_if_enabled(self.clone());
         self.spawn_net();
         self.spawn_channels();
+        // Memories of fired agents that Enkeon couldn't erase at the time.
+        let me = self.clone();
+        tokio::spawn(async move { me.retry_erasures().await });
         // Cards follow the roster: a hire, a rename or a firing republishes them.
         let team = Arc::downgrade(self);
         let mut rx = self.subscribe();
@@ -396,6 +400,14 @@ impl Team {
         agents.retain(|a| !gone.contains(&a.id));
         self.save_roster(&agents).await?;
         drop(agents);
+        // Its memories go with it: erased from Enkeon (from its ledger, inside the folder
+        // about to be deleted), and retried at the next start if Enkeon can't be reached.
+        for g in &gone {
+            let (erased, waiting) = self.erase_memory_of(g).await;
+            if erased + waiting > 0 {
+                tracing::info!(agent = %g, erased, waiting, "erased a fired agent's memories");
+            }
+        }
         for g in &gone {
             let dir = self.paths.agent(g);
             if dir.starts_with(self.paths.agents_dir()) && dir.exists() {
