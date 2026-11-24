@@ -1235,3 +1235,12 @@ footer.me { gap: 6px; }
 .me-copy svg { width: 15px; height: 15px; }
 .menu .me-copy { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; border-radius: 50%; }
 .group + .group { margin-top: 12px; }
+/* Routines that start when something happens */
+.routine-wait { display: block; margin-top: 6px; }
+.routine-warn { display: block; margin-top: 6px; font-size: 12.5px; color: var(--warn); }
+.webhook-line { display: flex; align-items: center; gap: 8px; margin-top: 8px; min-width: 0; }
+.webhook-line code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12.5px/1.4 ui-monospace, "SF Mono", Menlo, monospace; padding: 5px 8px; border-radius: 8px; background: var(--raise-2); cursor: copy; }
+.inline-row .contains-in { flex: 1; min-width: 180px; }
+.secret-sheet[open] { width: min(620px, calc(100vw - 32px)); padding: 22px 24px 18px; }
+.secret-sheet h2 { margin: 0 0 6px; font-size: 18px; }
+.secret-pre { margin: 12px 0 14px; padding: 12px 14px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); font: 12.5px/1.55 ui-monospace, "SF Mono", Menlo, monospace; white-space: pre-wrap; word-break: break-all; user-select: all; }

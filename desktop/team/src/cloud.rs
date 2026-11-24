@@ -174,7 +174,7 @@ impl Team {
             .into_iter()
             .filter(|a| allowed.contains(&a.id) && a.shadow_of.is_none() && !self.is_asleep(&a.id))
             .map(|a| {
-                let rs: Vec<Value> = routines.iter().filter(|r| r.agent == a.id).map(|r| json!({"id": r.id, "task": r.task, "next_run": r.next_run, "enabled": r.enabled})).collect();
+                let rs: Vec<Value> = routines.iter().filter(|r| r.agent == a.id && !matches!(r.schedule, crate::store::Schedule::App { .. } | crate::store::Schedule::Webhook { .. })).map(|r| json!({"id": r.id, "task": r.task, "next_run": r.next_run, "enabled": r.enabled})).collect();
                 json!({"id": a.id, "name": a.name, "job": a.job, "routines": rs})
             })
             .collect()

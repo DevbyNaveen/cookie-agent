@@ -141,6 +141,42 @@ const GRANT_INFO = [
   ["mac", "Mac apps", "Reminders, Notes, Calendar, Contacts; send iMessages (each asks you). macOS asks once per app."],
 ];
 
+/** A web-address routine's line: where it is called, and a new secret. */
+async function webhookLine(r) {
+  const url = await call("webhook_url", { id: r.id }).catch(() => null);
+  const line = el("div", "webhook-line");
+  if (url) {
+    const code = el("code", "copyable", url);
+    code.title = "Copy";
+    code.onclick = () => navigator.clipboard.writeText(url).then(() => toast("Copied", "Its address. The secret goes in an Authorization: Bearer header."));
+    line.append(code);
+  } else line.append(el("small", "routine-warn", "No address yet: turn on This team over HTTP in Settings → Sharing."));
+  line.append(button("New secret", "quiet small", async () => { if (!confirm("Make a new secret? The old one stops working at once.")) return; showSecret({ ...(await call("rotate_webhook", { id: r.id })), routine: r }); }));
+  return line;
+}
+
+/** A webhook's secret, shown this once, with how to call it. */
+function showSecret(made) {
+  const d = el("dialog", "sheet secret-sheet");
+  const url = made.url ?? "https://<this team's address>/hooks/routine/" + made.routine.id;
+  const curl = `curl -X POST '${url}' \\\n  -H 'Authorization: Bearer ${made.secret}' \\\n  -H 'Content-Type: application/json' \\\n  -d '{"hello": "world"}'`;
+  const pre = el("pre", "secret-pre", curl);
+  d.append(
+    el("h2", null, "Its web address"),
+    el("p", "muted", "Copy the secret now: Cookie keeps only a fingerprint of it, so it can't show it again. Anyone with it can start this routine (60 times an hour at most)."),
+    pre,
+    el("div", "form-end"),
+  );
+  if (!made.url) d.insertBefore(el("p", "routine-warn", "This team has no address yet: turn on This team over HTTP in Settings → Sharing, and use that address."), pre);
+  d.lastChild.append(
+    button("Copy", "quiet small", () => navigator.clipboard.writeText(curl.replace(/\\\n\s*/g, " ")).then(() => toast("Copied", "The call, with its secret."))),
+    button("Done", "primary small", () => d.close()),
+  );
+  d.addEventListener("close", () => d.remove());
+  document.body.append(d);
+  d.showModal();
+}
+
 const PANELS = {
   async about(a) {
     const form = el("form", "group edit");
@@ -261,7 +297,10 @@ const PANELS = {
   },
 
   async routines(a) {
-    const [all, recipes, offers] = await Promise.all([call("routines"), call("procedures", { id: a.id }).catch(() => []), call("routine_offers").catch(() => [])]);
+    const [all, recipes, offers, apps, waiting, enkeon] = await Promise.all([
+      call("routines"), call("procedures", { id: a.id }).catch(() => []), call("routine_offers").catch(() => []),
+      call("trigger_apps").catch(() => []), call("queued_triggers").catch(() => ({})), call("enkeon_status").catch(() => false),
+    ]);
     const mine = all.filter((r) => r.agent === a.id);
     const list = el("div", "group");
     const out = [];
@@ -281,7 +320,7 @@ const PANELS = {
       }
       out.push(el("h3", "group-title", "A routine to consider"), box);
     }
-    if (!mine.length) list.append(setRow("No routines yet", "A routine runs a job on a schedule, even with the window closed.", null));
+    if (!mine.length) list.append(setRow("No routines yet", "A routine runs a job on a schedule, or when something happens: a new email from a client, a call from another app. Even with the window closed.", null));
     for (const r of mine) {
       const sched = await call("describe_schedule", { schedule: r.schedule });
       const row = setRow(r.task, `${sched}${r.next_run && r.enabled ? " · next " + new Date(r.next_run * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : ""}`,
@@ -289,6 +328,11 @@ const PANELS = {
       const more = el("div", "row-actions");
       more.append(button("Run now", "quiet small", () => call("run_routine_now", { id: r.id })), button("Delete", "quiet small danger", () => call("delete_routine", { id: r.id })));
       row.append(more);
+      // Under its words: what waits, what it needs, and a web address's line.
+      const text = row.querySelector(".row-text") ?? row;
+      if (waiting[r.id]) text.append(el("small", "muted routine-wait", `${waiting[r.id]} waiting for ${a.name} to be free`));
+      if (r.schedule.every === "app" && !enkeon) text.append(el("small", "routine-warn", "Needs Enkeon with your apps connected (Settings → Enkeon): nothing arrives until then."));
+      if (r.schedule.every === "webhook") text.append(await webhookLine(r));
       // The recipe it kept from its last clean run.
       const p = recipes.find((x) => x.routine === r.id);
       if (p) {
@@ -304,19 +348,41 @@ const PANELS = {
     }
     const form = el("div", "group edit");
     const task = el("textarea", "text-in"); task.rows = 2; task.placeholder = "What to do each time, e.g. Check the inbox and draft replies to anything urgent.";
-    const every = select([["day", "Every day"], ["weekday", "Weekdays"], ["week", "Every week"], ["minutes", "Every few hours"]], "weekday", () => sync());
+    const every = select([["day", "Every day"], ["weekday", "Weekdays"], ["week", "Every week"], ["minutes", "Every few hours"], ["app", "When something arrives in an app"], ["webhook", "When its web address is called"]], "weekday", () => sync());
+    const app = select(apps.map((x) => [x.id, x.id === "any" ? "Any app" : x.name]), "gmail", () => {});
+    const contains = input("", "Only if it mentions… (optional, e.g. Acme, invoice)");
+    contains.classList.add("contains-in");
     const day = select([["mon", "Monday"], ["tue", "Tuesday"], ["wed", "Wednesday"], ["thu", "Thursday"], ["fri", "Friday"], ["sat", "Saturday"], ["sun", "Sunday"]], "mon", () => {});
     const at = input("08:30", "HH:MM", { type: "time" });
     const hours = select([["60", "every hour"], ["120", "every 2 hours"], ["240", "every 4 hours"], ["480", "every 8 hours"]], "240", () => {});
-    const when = el("div", "inline-row"); when.append(every, day, at, hours);
-    const sync = () => { day.hidden = every.value !== "week"; at.hidden = every.value === "minutes"; hours.hidden = every.value !== "minutes"; };
+    const when = el("div", "inline-row"); when.append(every, day, at, hours, app, contains);
+    const hint = el("p", "set-note");
+    const sync = () => {
+      const v = every.value, event = v === "app" || v === "webhook";
+      day.hidden = v !== "week"; at.hidden = v === "minutes" || event; hours.hidden = v !== "minutes";
+      app.hidden = contains.hidden = v !== "app";
+      hint.hidden = !event;
+      hint.textContent = v === "app"
+        ? (enkeon ? "Each new item starts it once (30 times a day at most), with the item given as information, never instructions." : "Needs Enkeon with your apps connected (Settings → Enkeon).")
+        : "Another app calls its address with a secret, shown once. What it sends is given as information, never instructions.";
+    };
     sync();
     const add = button("Add routine", "primary small", async () => {
-      const schedule = every.value === "minutes" ? { every: "minutes", n: +hours.value } : every.value === "week" ? { every: "week", day: day.value, at: at.value } : { every: every.value, at: at.value };
+      if (every.value === "webhook") {
+        const made = await call("add_webhook_routine", { agent: a.id, task: task.value });
+        task.value = "";
+        showSecret(made);
+        return;
+      }
+      const words = contains.value.split(",").map((w) => w.trim()).filter(Boolean);
+      const schedule = every.value === "minutes" ? { every: "minutes", n: +hours.value }
+        : every.value === "week" ? { every: "week", day: day.value, at: at.value }
+        : every.value === "app" ? { every: "app", app: app.value, contains: words }
+        : { every: every.value, at: at.value };
       await call("add_routine", { agent: a.id, task: task.value, schedule });
-      task.value = "";
+      task.value = ""; contains.value = "";
     });
-    form.append(task, when);
+    form.append(task, when, hint);
     const end = el("div", "form-end"); end.append(add);
     return [...out, el("h3", "group-title", "Routines"), list, el("h3", "group-title", "New routine"), form, end];
   },

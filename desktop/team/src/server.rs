@@ -135,6 +135,8 @@ pub fn router(team: Arc<Team>) -> Router {
         .route("/hooks/whatsapp", get(whatsapp_verify).post(whatsapp_hook))
         .route("/hooks/teams", post(teams_hook))
         .route("/hooks/mail", post(mail_hook))
+        // A routine started by a call to its own address (secret as a bearer token).
+        .route("/hooks/routine/{id}", post(routine_hook))
         .with_state(state)
 }
 
@@ -252,6 +254,14 @@ async fn mail_hook(State(st): State<AppState>, headers: HeaderMap, body: axum::b
     match st.team.mail_inbound(&body, &rcpt).await {
         Ok(what) => Json(json!({"ok": what})).into_response(),
         Err(e) => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": e}))).into_response(),
+    }
+}
+
+async fn routine_hook(State(st): State<AppState>, Path(id): Path<String>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    let secret = bearer(&headers).unwrap_or("");
+    match st.team.webhook_call(&id, secret, &body).await {
+        Ok(what) => (StatusCode::ACCEPTED, Json(json!({"ok": what}))).into_response(),
+        Err((code, why)) => (StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST), Json(json!({"error": why}))).into_response(),
     }
 }
 

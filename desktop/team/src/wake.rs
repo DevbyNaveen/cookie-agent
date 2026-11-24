@@ -152,6 +152,18 @@ impl Team {
         if !matches!(verb, "remember" | "update" | "ingest") || event["ok"] != true || attention::by_cookie(event) {
             return;
         }
+        // Routines that start when something arrives in an app (`triggers`): their own pass,
+        // whether or not wakes are on, reading an item's text only when one is watching.
+        if self.watches_apps().await {
+            let ids: Vec<String> = event.pointer("/detail/ids").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).take(20).map(str::to_string).collect()).unwrap_or_default();
+            for id in ids {
+                let Some((face, text)) = memory_record(gateway, key, &id).await else { continue };
+                let Some(app) = crate::triggers::app_of(face["source_uri"].as_str().unwrap_or("")) else { continue };
+                let about: Vec<&str> = face["about"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                let item = format!("{}\n{}\n{}", face["name"].as_str().unwrap_or(""), about.join(", "), text);
+                self.on_app_item(&app, &id, item.trim()).await;
+            }
+        }
         if !self.settings().await.wake {
             return;
         }
@@ -300,6 +312,20 @@ fn set_watching(s: &str) {
 fn stream_client() -> &'static reqwest::Client {
     static C: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     C.get_or_init(|| reqwest::Client::builder().connect_timeout(Duration::from_secs(10)).build().unwrap_or_default())
+}
+
+/// A memory's face and its text (the statement it holds), for a rule to read.
+async fn memory_record(gateway: &str, key: &str, id: &str) -> Option<(Value, String)> {
+    let enc: String = id.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+    let r = stream_client().get(format!("{gateway}/engine/api/v1/ws/main/memories/{enc}")).bearer_auth(key).timeout(Duration::from_secs(10)).send().await.ok()?;
+    if !r.status().is_success() {
+        return None;
+    }
+    let v: Value = r.json().await.ok()?;
+    let v = v.get("data").cloned().unwrap_or(v);
+    let face = v.get("face").filter(|f| f.is_object()).cloned()?;
+    let text = ["statement", "text", "content", "body"].iter().find_map(|k| v.get(*k).and_then(Value::as_str).filter(|t| !t.trim().is_empty())).unwrap_or("").to_string();
+    Some((face, text))
 }
 
 /// A memory's face (name, kind, about, weight, feeling, version, source_uri).

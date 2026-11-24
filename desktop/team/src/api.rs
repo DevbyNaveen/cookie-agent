@@ -139,8 +139,34 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
 
         /* routines */
         "routines" => ok(team.routines().await),
-        "add_routine" => ok(team.add_routine(&arg::<String>(a, "agent")?, &arg::<String>(a, "task")?, arg::<Schedule>(a, "schedule")?).await?),
-        "update_routine" => ok(team.update_routine(&arg::<String>(a, "id")?, opt(a, "task"), opt(a, "schedule")).await?),
+        "add_routine" => {
+            let schedule = arg::<Schedule>(a, "schedule")?;
+            if matches!(schedule, Schedule::Webhook { .. }) {
+                return Err("Make a web-address routine with add_webhook_routine.".into());
+            }
+            ok(team.add_routine(&arg::<String>(a, "agent")?, &arg::<String>(a, "task")?, schedule).await?)
+        }
+        "update_routine" => {
+            let schedule: Option<Schedule> = opt(a, "schedule");
+            if matches!(schedule, Some(Schedule::Webhook { .. })) {
+                return Err("A web address's secret changes with rotate_webhook.".into());
+            }
+            ok(team.update_routine(&arg::<String>(a, "id")?, opt(a, "task"), schedule).await?)
+        }
+        // A routine started by a call to its address: the secret is in this answer only.
+        "add_webhook_routine" => {
+            let (r, secret) = team.add_webhook_routine(&arg::<String>(a, "agent")?, &arg::<String>(a, "task")?).await?;
+            let url = team.webhook_url(&r.id).await;
+            ok(json!({"routine": r, "secret": secret, "url": url}))
+        }
+        "rotate_webhook" => {
+            let id = arg::<String>(a, "id")?;
+            let secret = team.rotate_webhook(&id).await?;
+            ok(json!({"secret": secret, "url": team.webhook_url(&id).await}))
+        }
+        "webhook_url" => ok(team.webhook_url(&arg::<String>(a, "id")?).await),
+        "queued_triggers" => ok(team.queued_triggers()),
+        "trigger_apps" => ok(crate::triggers::APPS.iter().map(|(id, name)| json!({"id": id, "name": name})).collect::<Vec<_>>()),
         "set_routine_enabled" => ok(team.set_routine_enabled(&arg::<String>(a, "id")?, arg(a, "enabled")?).await?),
         "delete_routine" => ok(team.delete_routine(&arg::<String>(a, "id")?).await?),
         "run_routine_now" => ok(team.run_routine_now(&arg::<String>(a, "id")?).await?),

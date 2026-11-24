@@ -391,6 +391,10 @@ pub enum Schedule {
     Weekday { at: String },
     Week { day: String, at: String },
     Minutes { n: u32 },
+    /// When something new arrives in a connected app (`triggers`), mentioning every word in `contains`.
+    App { app: String, #[serde(default)] contains: Vec<String> },
+    /// When its web address is called with its secret, kept only as its SHA-256 (`triggers`).
+    Webhook { digest: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

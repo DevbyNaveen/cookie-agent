@@ -57,6 +57,7 @@ pub mod talk;
 pub mod toolsearch;
 pub mod telegram;
 pub mod tools;
+pub mod triggers;
 pub mod tuning;
 pub mod util;
 pub mod voice;

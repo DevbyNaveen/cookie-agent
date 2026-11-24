@@ -32,6 +32,9 @@ pub fn validate(s: &Schedule) -> Result<(), String> {
         Schedule::Week { day, at } => weekday_of(day).and(time_of(at)).map(|_| ()),
         Schedule::Minutes { n } if *n >= 15 && *n <= 7 * 24 * 60 => Ok(()),
         Schedule::Minutes { .. } => Err("Every 15 minutes at most often, and once a week at least.".into()),
+        Schedule::App { app, contains } => crate::triggers::validate_app(app, contains),
+        Schedule::Webhook { digest } if digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit()) => Ok(()),
+        Schedule::Webhook { .. } => Err("A web address needs its secret.".into()),
     }
 }
 
@@ -42,6 +45,13 @@ pub fn describe(s: &Schedule) -> String {
         Schedule::Week { day, at } => format!("every {} at {at}", weekday_of(day).map(|w| format!("{w:?}")).unwrap_or_else(|_| day.clone())),
         Schedule::Minutes { n } if n % 60 == 0 => format!("every {} hour{}", n / 60, if *n == 60 { "" } else { "s" }),
         Schedule::Minutes { n } => format!("every {n} minutes"),
+        Schedule::App { app, contains } if contains.iter().all(|c| c.trim().is_empty()) => format!("when something new arrives in {}", crate::triggers::app_name(app)),
+        Schedule::App { app, contains } => format!(
+            "when something new in {} mentions {}",
+            crate::triggers::app_name(app),
+            contains.iter().filter(|c| !c.trim().is_empty()).map(|c| format!("“{}”", c.trim())).collect::<Vec<_>>().join(" and ")
+        ),
+        Schedule::Webhook { .. } => "when its web address is called".into(),
     }
 }
 
@@ -52,8 +62,11 @@ pub fn local_time(t: u64) -> String {
 /// The first run strictly after `after` (seconds since the epoch).
 pub fn next_after(s: &Schedule, after: u64) -> Option<u64> {
     let from = Local.timestamp_opt(after as i64, 0).single()?;
-    if let Schedule::Minutes { n } = s {
-        return Some(after + *n as u64 * 60);
+    match s {
+        Schedule::Minutes { n } => return Some(after + *n as u64 * 60),
+        // Started by what happens, never by the clock.
+        Schedule::App { .. } | Schedule::Webhook { .. } => return None,
+        _ => {}
     }
     let (time, ok_day): (NaiveTime, Box<dyn Fn(Weekday) -> bool>) = match s {
         Schedule::Day { at } => (time_of(at).ok()?, Box::new(|_| true)),
@@ -62,7 +75,7 @@ pub fn next_after(s: &Schedule, after: u64) -> Option<u64> {
             let want = weekday_of(day).ok()?;
             (time_of(at).ok()?, Box::new(move |w| w == want))
         }
-        Schedule::Minutes { .. } => unreachable!(),
+        Schedule::Minutes { .. } | Schedule::App { .. } | Schedule::Webhook { .. } => unreachable!(),
     };
     for add in 0..=8 {
         let date = from.date_naive() + chrono::Duration::days(add);
@@ -159,6 +172,8 @@ impl Team {
         // Idle agents get ready for routines due soon; local models stay loaded while used.
         self.maybe_prepare().await;
         self.keep_local_models_warm().await;
+        // What happened in an app or at a web address, for agents now free.
+        self.drain_triggers().await;
         let now = util::now();
         let due: Vec<Routine> = self.routines.read().await.iter().filter(|r| r.enabled && r.next_run.is_some_and(|t| t <= now)).cloned().collect();
         // One snapshot a day of each agent that worked today (`sleep`).
