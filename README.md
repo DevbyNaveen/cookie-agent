@@ -1,71 +1,85 @@
 <p align="center">
-  <img src="web/public/cookie/cookie-512.png" width="150" alt="Cookie">
+  <img src="desktop/src-tauri/icons/128x128@2x.png" width="128" alt="Cookie">
 </p>
 
-<h1 align="center">Cookie Agent</h1>
+<h1 align="center">Cookie</h1>
 <p align="center"><b>by <a href="https://enkeon.com">Enkeon</a></b></p>
 
-<h3 align="center">The teammate that writes the follow-up for you.</h3>
+<h3 align="center">A team of AI agents that works on your computer, and asks before it acts.</h3>
 
 <p align="center">
-Cookie writes to the people you are waiting on, in your voice.<br>
-When they go quiet, a short nudge waits as a draft. You read it and send it.
-</p>
-
-<p align="center">
-  <a href="#install">Install</a> ·
-  <a href="#the-follow-up-job">The follow-up job</a> ·
-  <a href="#research-with-sources">Research</a> ·
-  <a href="#competitor-watch">Competitor watch</a> ·
-  <a href="#open-source-and-enkeon">Open source and Enkeon</a>
+  <a href="#the-app">The app</a> ·
+  <a href="#run-it">Run it</a> ·
+  <a href="#whats-in-this-repo">What's in this repo</a> ·
+  <a href="#the-cookie-command">The cookie command</a> ·
+  <a href="#open-source-and-enkeon">Open source and Enkeon</a> ·
+  <a href="#reference">Reference</a>
 </p>
 
 ---
 
-## The follow-up job
+## The app
 
-Point Cookie at your inbox and ask it to write to someone outside the team:
-a client who owes you an answer, a lead, a supplier. Cookie writes the
-message and leaves it as a draft for you to send. When a reply is really
-needed, it sets a follow-up: if they have not answered after the days it
-chose, a short nudge, written from the thread, waits as a draft too. If they
-reply, the follow-up ends. Nothing goes out without you.
+Cookie is a desktop app. You hire agents, each with one job in your words,
+its own face and its own folder, and talk to them like teammates.
 
-Your drafts sound like you, not like an AI:
+- **Hire for one job.** Pick a starter or write the job yourself and name the
+  model (`provider:model`); there is no default model. New hires can start on
+  probation: everything they would change is recorded, and nothing changes
+  until you say so.
+- **Today.** One place for what waits for you: approvals, questions, offers
+  from your agents and what their worlds want to send out.
+- **Each agent's profile.** About, Skills (with its routines), Memory (with
+  its files), Record, Evolution (tests and forks), Computer (its worlds) and
+  Share, in one panel. Every agent has an address, like `@you/writing-desk`.
+- **Its own computer.** Each agent works in [Parallax](#parallax) worlds that
+  copy instantly, rewind and race. Sending, paying or going live waits at the
+  wall for your yes.
+- **It gets better, and shows you how.** Every change to how an agent works is
+  listed with an Undo. Tests and a bench check each change before it stays.
+- **Talk or type.** Dictate into the message box, or call an agent and talk
+  hands-free. Speech becomes text on your Mac (whisper.cpp) when the model is
+  downloaded; replies are spoken by ElevenLabs or the Mac's own voice.
+- **Where you already are.** Reach your agents from Slack, Discord, Microsoft
+  Teams, Telegram, WhatsApp, Signal, iMessage and mail. Write `@AgentName` and
+  what you need.
+- **Other people's agents.** Invite another person's agent to talk to yours.
+  What arrives is information, never an order, and anything your agent would
+  send or change waits for you.
 
-- **Your voice.** Give Cookie a few messages you really sent (`voice` in its
-  profile), and it matches their tone, length, greeting and sign-off. It
-  never borrows their content.
-- **Checked before you see it.** The drafts Cookie hands to your apps and
-  the answers it gives are read for the habits that give AI writing away:
-  dashes used as punctuation, "it's not X, it's Y", lists of three "no ...",
-  stock phrases, words about being an AI. One that has them goes back to be
-  rewritten once before it reaches you.
+Mail, pages and files are things an agent reads, never orders it takes. Who
+gets a message, where money goes and what gets deleted always come from you.
 
-The inbox, the waiting and the sending run with [Enkeon](https://enkeon.com),
-which connects your mail in one click. What decides the words is here: the
-`chase` follow-up, the voice examples and the check (`src/cookie/voice.rs`,
-also a `voice_check` line on `cookie serve` for any text you want checked).
+## Run it
 
-## Research with sources
+Needs macOS, Rust 1.91+ (https://rustup.rs) and the Tauri CLI
+(`cargo install tauri-cli --locked`).
 
-Ask what you would ask a teammate: who to talk to this week, what a company
-does, where in your project refunds are handled. Cookie looks things up in
-your folder and on the web, reads the pages, and every fact says where it
-came from: a page address or a `path:line`. When Cookie hands a question to
-one of its researchers, the report is checked against the pages it read
-before Cookie uses it.
+```sh
+cd desktop
+./run.sh          # dev mode: UI changes show live, Rust changes rebuild
+```
 
-## Competitor watch
+Add your model keys in Settings → Models (they go to the Keychain), or export
+them before starting. `cd desktop/src-tauri && cargo tauri build` makes the app
+bundle. A signed download comes with the first desktop release.
 
-Name your competitors. Cookie researches each one, keeps an eye on the
-pricing, changelog and careers pages they really have (never an address it
-made up), and writes a dated baseline with its sources, so the next change
-has something to be compared with. The `watch-competitors` skill ships with
-Cookie's profile; reading the watched pages every few hours is done by the
-app that runs Cookie, which Enkeon does for you.
+To keep the team working while your laptop sleeps, run the same team on
+another machine: see [`desktop/RUNNER.md`](desktop/RUNNER.md).
 
-## Install
+## What's in this repo
+
+| Folder | What it is |
+|---|---|
+| [`desktop/`](desktop/) | The Cookie app (Tauri): `ui/`, the team that runs your agents (`team/`), addresses and messages between people (`net/`) and the relay that carries them (`relay/`). |
+| [`src/`](src/) | The agent harness every agent runs on, and the `cookie` command. |
+| [`parallax/`](parallax/) | Parallax, the computer built for agents. |
+| [`bindings/`](bindings/) | Python and TypeScript clients for `cookie serve`. |
+| [`examples/`](examples/), [`tests/`](tests/), [`evals/`](evals/) | Examples, the test suites and the AgentDojo eval. |
+
+## The cookie command
+
+The harness also runs on its own, in a terminal or on a server.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/DevbyNaveen/cookie-agent/main/install.sh | sh
@@ -73,123 +87,15 @@ curl -fsSL https://raw.githubusercontent.com/DevbyNaveen/cookie-agent/main/insta
 
 It downloads the latest release for your Mac or Linux machine, checks it
 against the SHA-256 published with it, and puts `cookie` in
-`/usr/local/bin` (or `~/.local/bin`) with its page beside it. Then:
+`/usr/local/bin` (or `~/.local/bin`). Then:
 
 ```sh
 export ANTHROPIC_API_KEY=sk-ant-...
-cd ~/your-project && cookie local     # in the terminal
-cookie page ~/your-project            # on its page: http://localhost:4747/me/local/cookie
-```
-
-From source instead: `cargo install --git https://github.com/DevbyNaveen/cookie-agent --locked`.
-
-## One Cookie. Everywhere you work.
-
-Cookie has no app you have to open. It comes to you.
-
-| | |
-|---|---|
-| **Slack** | Mention `@Cookie` in a thread. The answer lands in the same thread. |
-| **Email** | Write to Cookie like you would a colleague. It replies on the same thread. |
-| **Its page** | A live board of everything Cookie is working on: each job, its steps, its answer. |
-| **Your AI tools** | Claude Code, Cursor and any MCP client can hand Cookie a job. |
-| **Your Mac** | Hold a key and talk. Cookie answers out loud and points to it on your screen. Build it from [`mac/`](mac/). |
-
-Wherever a job starts, it shows up on the page, so the whole team sees what Cookie is doing.
-
-## It does the job
-
-Ask for five companies to talk to this week and you get five companies, with
-why each one fits. Ask for outreach and you get the drafts, ready to send.
-Cookie decides the small things itself, says what it assumed in one line, and
-only asks when the answer really changes the work.
-
-## It knows your team
-
-In `cookie local` and Cookie's page, Cookie keeps a few notes between
-conversations in `~/.cookie/NOTES.md`: lasting preferences, facts about your
-work, corrections. It's one small file you can read and edit. When it's full,
-a new note is refused until Cookie replaces or removes an old one, so nothing
-is dropped without you seeing it. A note never holds a secret.
-
-With [Enkeon](https://enkeon.com), Cookie keeps far more, and your whole team
-and every AI tool you use share it. A correction replaces the old fact
-everywhere, each person's private work stays theirs, and everything is backed
-up.
-
-## Every answer shows its sources
-
-Each fact comes with where it was found: a page, a note, a line in a file.
-Open any card on the board to read the page Cookie read.
-
-## You stay in charge
-
-Mail, pages and files are things Cookie reads, never orders it takes. Who
-gets a message, where money goes and what gets deleted always come from you.
-Sending, deleting and paying wait for your yes, and you can stop any job with
-one click.
-
-## Cookie's page
-
-<p align="center">
-  <img src="web/public/cookie/cookie-512.png" width="56" alt="">
-</p>
-
-`web/` is Cookie's page: the board where every job grows out of Cookie, the
-conversations on the left, the chat on the right with Stop, and cards you
-pin and read. It is the same page Enkeon teams use every day.
-
-```sh
-cd web && npm install && npm run build   # once: the page, built
-cd .. && cookie page ~/your-project      # http://localhost:4747/me/local/cookie
-```
-
-Give Cookie a job and watch it work on the board: every file it opens, every
-search and page, live, with the answer beside them. Ask a follow-up and it
-carries on in the same conversation. A link it found inside a page waits for
-your yes on the page. Write how Cookie should be in Settings, and it reads
-that before every job. Jobs and conversations are kept in `~/.cookie`, one
-file each, on your machine.
-
-## Cookie for Mac
-
-Cookie lives in your menu bar and in the notch. Hold Control + Option and
-talk; it answers out loud, and what it shows you lands on the word that
-names it.
-
-- **A voice with timing.** ElevenLabs or the Mac's own voice, timed word by
-  word, so the pointer and every mark arrive as Cookie says them.
-- **Marks on your screen.** Circles, arrows, underlines and notes, drawn on
-  by hand in amber ink at your display's frame rate, right on the control
-  it means.
-- **Cards that explain.** A timeline, steps, a flow, a list, a comparison or
-  one number, drawn beside the notch as Cookie talks it through. Esc puts
-  them away.
-- **Things in 3D.** Ask how something is built and Cookie puts a small model
-  beside you, labelled part by part as it names them. Drag to turn it.
-- **Routines by voice.** "Every Tuesday at 5, clean up my inbox" becomes a
-  routine after your yes, on the Board where you can pause it.
-- **One Cookie.** The Mac's Board and Cookie's page are the same list: on
-  your own computer with the bundled page, or your team's with an Enkeon
-  sign-in, where Enkeon also gives Cookie its voice.
-- **Hide from screen sharing.** One switch asks macOS to leave Cookie's
-  windows out of other apps' screen shares, wherever they honour it.
-
-Build it from [`mac/`](mac/): `cd mac && ./build.sh`.
-
-## Which one?
-
-**On a Mac**, use Cookie for Mac: it is everything below, plus your voice and
-your screen. **On Linux or a server**, use `cookie page`
-in your browser or `cookie local` in a terminal. It is the same Cookie either
-way; you only need one.
-
-## Ask about your folder
-
-```sh
 export TINYFISH_API_KEY=...      # optional: free web search (or EXA_API_KEY, BRAVE_SEARCH_API_KEY)
 cd ~/your-project && cookie local
 ```
+
+From source instead: `cargo install --git https://github.com/DevbyNaveen/cookie-agent --locked`.
 
 Ask it what you would ask a teammate who just read your folder: *"What does
 this project do?"*, *"Where do we handle refunds?"*, *"Summarise
@@ -203,6 +109,32 @@ openai:<model>`, `gemini:…`, `ollama:qwen3` or `bedrock:…` pick another mode
 `--session talk.jsonl` keeps the conversation to pick up later. `cookie local
 --help` lists everything.
 
+Between conversations it keeps a few notes in `~/.cookie/NOTES.md`: lasting
+preferences, facts about your work, corrections. It's one small file you can
+read and edit. When it's full, a new note is refused until Cookie replaces or
+removes an old one, so nothing is dropped without you seeing it. A note never
+holds a secret.
+
+### Drafts that sound like you
+
+Give Cookie a few messages you really sent (`voice` in its profile), and its
+drafts match their tone, length, greeting and sign-off without borrowing their
+content. Drafts and answers are read for the habits that give AI writing away
+(dashes used as punctuation, "it's not X, it's Y", lists of three "no ...",
+stock phrases, words about being an AI); one that has them is rewritten once
+before it reaches you. The `chase` follow-up, the voice examples and the
+check live in `src/cookie/voice.rs` (also a `voice_check` line on
+`cookie serve` for any text you want checked).
+
+## Parallax
+
+A computer built for agents: the brains of everyday apps (browser,
+spreadsheet, files, documents, PDF, images, video, data) used directly, in
+worlds that copy instantly, rewind and race, with four verbs: Preview, Do,
+Undo, Branch. It runs inside the app for every agent, and on its own as an
+MCP server for Claude Code, Codex, Claude Desktop or ChatGPT. See
+[`parallax/README.md`](parallax/README.md).
+
 ## Open source and Enkeon
 
 Cookie is open source under the MIT licence. Everything that makes it work
@@ -210,11 +142,10 @@ for one person is here. Enkeon makes it work for a whole team.
 
 | In this repo | With Enkeon |
 |---|---|
-| Cookie itself: tools, MCP servers, skills, helpers | Cookie for your whole team |
-| Cookie's page on your machine | The page for every teammate, with their own jobs |
-| `cookie local` on your folder, with a small notes file | Your team's shared context, across everyone and every AI tool, backed up |
+| The app, the harness, Parallax, tools, MCP servers, skills | Cookie for your whole team |
+| Each agent's memory on your computer | Your team's shared context, across everyone and every AI tool, backed up |
 | Your own Slack bot, mailbox and MCP servers | One-click Gmail, Slack, Drive, Notion, Linear and more |
-| The approval rules and the approval card | Team roles: who can give Cookie a job, from where |
+| The approval rules and the approval card | Team roles: who can give an agent a job, from where |
 
 Set `ENKEON_API_KEY` and anything built here reads and saves to Enkeon.
 

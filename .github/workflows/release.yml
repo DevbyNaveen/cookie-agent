@@ -30,12 +30,6 @@ jobs:
         # An Intel build on an Apple-silicon runner is built, not run.
         if: matrix.target != 'x86_64-apple-darwin'
         run: cargo test --features bedrock --target ${{ matrix.target }} -- --skip bubblewrap
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: the page
-        working-directory: web
-        run: npm ci && npm run build
       - name: build
         run: cargo build --release --features bedrock --bin cookie --target ${{ matrix.target }}
       - name: package
@@ -44,8 +38,6 @@ jobs:
           name="cookie-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir "$name"
           cp "target/${{ matrix.target }}/release/cookie" README.md LICENSE THIRD_PARTY_NOTICES.md "$name/"
-          # `cookie page` finds the page beside the binary.
-          cp -R web/out "$name/page"
           tar -czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
       - uses: softprops/action-gh-release@v2

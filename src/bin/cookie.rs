@@ -257,7 +257,7 @@ few notes Cookie keeps between conversations when Enkeon isn't connected.
   --permission ask|full    ask before opening an address from what it read (default: ask)
   --port 4747              where it listens, on 127.0.0.1 only
   --home DIR               where jobs and conversations are kept
-  --page DIR               the built page (cd web && npm run build → web/out); default: COOKIE_PAGE_DIR, else ./web/out
+  --page DIR               a built page to serve at /; default: COOKIE_PAGE_DIR, else page/ beside the binary
   --origin URL             another page origin allowed to ask (the dev server: http://localhost:4748 is allowed already)";
 
 async fn page_command(args: &[String]) -> Result<(), Failure> {
@@ -302,12 +302,10 @@ async fn page_command(args: &[String]) -> Result<(), Failure> {
         Some(home) => home,
         None => return Err(Failure::Usage("set --home".into())),
     };
-    // The built page: given, or this repo's `web/out`, or `page/` beside the binary (a release
-    // archive carries it there).
+    // A built page: given, or `page/` beside the binary.
     let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("page")));
     let page_dir = page
         .or_else(|| std::env::var_os("COOKIE_PAGE_DIR").map(Into::into))
-        .or_else(|| Some(std::path::PathBuf::from("web/out")).filter(|d| d.join("me").is_dir()))
         .or_else(|| beside.filter(|d| d.join("me").is_dir()));
     origins.extend(["http://localhost:4748".to_string(), "http://127.0.0.1:4748".to_string()]);
     std::fs::create_dir_all(&home).map_err(|e| failed(format!("{}: {e}", home.display())))?;
@@ -315,7 +313,7 @@ async fn page_command(args: &[String]) -> Result<(), Failure> {
     eprintln!("Each job's actions are signed into {}/runs/<job>.trace.jsonl (cookie trace verify <file> --key {key})", home.display());
     match &page_dir {
         Some(_) => eprintln!("Cookie's page: http://localhost:{port}{}", cookie_harness::page::PAGE_PATH),
-        None => eprintln!("Cookie answers on http://127.0.0.1:{port}. For the page: cd web && npm run dev, then open http://localhost:4748"),
+        None => eprintln!("Cookie answers on http://127.0.0.1:{port}"),
     }
     cookie_harness::page::serve(cookie_harness::page::PageOptions { root, model, ask, home, port, page_dir, origins })
         .await

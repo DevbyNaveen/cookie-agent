@@ -1,5 +1,5 @@
 // Cookie characters: each agent is a living glass body of slow, domain-warped
-// fluid (Cookie's own orb shader, web/components/central/CookieOrb.tsx), in
+// fluid (ported from Cookie's own orb shader), in
 // its own colours and its own baked shape, with eyes that move the way eyes do.
 //
 // One WebGL context draws every body: each frame it renders a face at its own

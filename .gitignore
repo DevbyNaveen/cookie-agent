@@ -10,3 +10,7 @@ evals/agentdojo/runs*.log
 /desktop/src-tauri/target
 /desktop/src-tauri/gen
 /desktop/target
+
+# Local keys and settings never leave this computer
+.env
+.env.*

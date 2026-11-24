@@ -94,8 +94,7 @@ pub struct PageOptions {
     /// Where jobs, conversations and the SOUL are kept.
     pub home: PathBuf,
     pub port: u16,
-    /// The built page (`web/out`), served at `/`; `None` serves the answers only
-    /// (for `npm run dev`, which proxies to them).
+    /// A built page, served at `/`; `None` serves the answers only.
     pub page_dir: Option<PathBuf>,
     /// Origins allowed besides this address itself (the dev server's).
     pub origins: Vec<String>,
@@ -951,7 +950,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// file extension is its `.html` (Next's export), `/` opens the page.
 fn static_file(state: &State, path: &str) -> Response<Body> {
     let Some(dir) = &state.opts.page_dir else {
-        return error(StatusCode::NOT_FOUND, "no_page", "Build the page first: cd web && npm run build.");
+        return error(StatusCode::NOT_FOUND, "no_page", "No page is installed here; this address answers Cookie's API only.");
     };
     if path == "/" {
         return Response::builder().status(StatusCode::FOUND).header(header::LOCATION, PAGE_PATH).body(empty()).expect("response");
