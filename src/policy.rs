@@ -93,6 +93,9 @@ impl Provenance {
 pub struct Policy {
     allowed: Vec<String>,
     confirm_data: bool,
+    /// Tools that always need a person, whatever they read and however much
+    /// trust was earned: an app's changes to the person's own things.
+    always_ask: Vec<String>,
 }
 
 /// Every value a guarded argument holds, object keys included. False when
@@ -146,10 +149,25 @@ impl Policy {
 
     /// This policy, allowing only what `ceiling` also allows: a sub-agent can
     /// never allow a destination its parent doesn't, nor ask where it refuses.
+    /// `tool` always needs a person: every call is put to them, and earned
+    /// trust never answers for them. For changes to the person's own files,
+    /// where a write is as consequential as a send.
+    pub fn always_ask(mut self, tool: &str) -> Self {
+        self.always_ask.push(tool.to_string());
+        self
+    }
+
+    pub(crate) fn always_asks(&self, tool: &str) -> bool {
+        self.always_ask.iter().any(|t| t == tool)
+    }
+
     pub(crate) fn within(&self, ceiling: &Policy) -> Policy {
+        let mut always_ask = self.always_ask.clone();
+        always_ask.extend(ceiling.always_ask.iter().filter(|t| !self.always_ask.contains(t)).cloned());
         Policy {
             allowed: self.allowed.iter().filter(|v| ceiling.allowed.contains(v)).cloned().collect(),
             confirm_data: self.confirm_data && ceiling.confirm_data,
+            always_ask,
         }
     }
 
@@ -186,6 +204,13 @@ impl Policy {
                     "{} came from content the person didn't write (a page, file, screen or tool result). Check it before saying yes.",
                     from_data.join(", ")
                 ),
+                from_data,
+            };
+        }
+        if self.always_asks(&spec.name) {
+            return Decision::Ask {
+                preview,
+                reason: format!("`{}` changes something of the person's, which always needs a person.", spec.name),
                 from_data,
             };
         }
@@ -417,5 +442,17 @@ mod tests {
     fn reads_are_always_allowed() {
         let p = seen(&[Message::untrusted("x", Source::Web)]);
         assert!(matches!(Policy::default().decide(&spec(Effect::Read, &[]), &json!({}), &p, "r".into()), Decision::Allow));
+    }
+
+    #[test]
+    fn an_always_ask_tool_is_put_to_the_person_even_with_nothing_untrusted_read() {
+        let p = Policy::default().always_ask("mac_files_write");
+        let mut w = spec(Effect::Write, &[]);
+        w.name = "mac_files_write".into();
+        assert!(matches!(p.decide(&w, &json!({}), &Provenance::default(), "x".into()), Decision::Ask { .. }));
+        let mut other = spec(Effect::Write, &[]);
+        other.name = "write_file".into();
+        assert!(matches!(p.decide(&other, &json!({}), &Provenance::default(), "x".into()), Decision::Allow));
+        assert!(Policy::default().within(&p).always_asks("mac_files_write"), "a ceiling's always-ask holds below it");
     }
 }

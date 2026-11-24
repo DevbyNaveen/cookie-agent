@@ -149,7 +149,7 @@ impl Agent {
                     outcomes[index] = Some((NOT_RUN_CANCELLED.into(), true));
                 }
                 // Earned trust answers only for values the person wrote; data is always put to them.
-                Decision::Ask { ref from_data, .. } if from_data.is_empty() && self.trust.as_ref().is_some_and(|t| t.allows(tool.spec())) => {
+                Decision::Ask { ref from_data, .. } if from_data.is_empty() && !policy.always_asks(name) && self.trust.as_ref().is_some_and(|t| t.allows(tool.spec())) => {
                     on_event(Event::RanOnEarnedTrust { tool: name.clone() });
                     decided.push((index, "earned_trust"));
                     approved.push((index, tool));
