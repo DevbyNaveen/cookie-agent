@@ -412,12 +412,38 @@ impl Team {
         self.net_status().await
     }
 
+    /// Your handle on this computer, before any relay: you are @handle and every
+    /// agent @handle/agent at once. With a relay set, a change goes through the
+    /// relay instead, which is where a handle is checked as free.
+    pub async fn net_handle(self: &Arc<Self>, handle: &str, display_name: Option<String>) -> Result<NetStatus, String> {
+        if let Some(relay) = self.net_config().relay {
+            return self.net_setup(&relay, handle, display_name).await;
+        }
+        let handle = handle.trim().trim_start_matches('@').to_lowercase();
+        if !cookie_net::valid_handle(&handle) {
+            return Err("A handle is 3 to 24 of a-z, 0-9 and -, like naveen or acme-studio.".into());
+        }
+        {
+            let _g = self.net.files.lock().await;
+            let mut c = self.net_config();
+            c.handle = Some(handle);
+            if let Some(n) = display_name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
+                c.display_name = Some(n);
+            }
+            self.save_net_config(&c)?;
+        }
+        self.net_status().await
+    }
+
     pub async fn net_enable(self: &Arc<Self>, on: bool) -> Result<NetStatus, String> {
         {
             let _g = self.net.files.lock().await;
             let mut c = self.net_config();
             if on && c.handle.is_none() {
                 return Err("Claim an address first.".into());
+            }
+            if on && c.relay.is_none() {
+                return Err("Set a relay first (Settings → Sharing).".into());
             }
             c.enabled = on;
             self.save_net_config(&c)?;

@@ -325,6 +325,7 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "addresses" => ok(team.addresses().await),
         "net_status" => ok(team.net_status().await?),
         "net_setup" => ok(team.net_setup(&arg::<String>(a, "relay")?, &arg::<String>(a, "handle")?, opt(a, "display_name")).await?),
+        "net_handle" => ok(team.net_handle(&arg::<String>(a, "handle")?, opt(a, "display_name")).await?),
         "net_enable" => ok(team.net_enable(arg(a, "on")?).await?),
         "net_update" => ok(team.net_update(a.get("patch").unwrap_or(&Value::Null)).await?),
         "net_agent" => ok(team.net_agent(&arg::<String>(a, "id")?, a.get("patch").unwrap_or(&Value::Null)).await?),

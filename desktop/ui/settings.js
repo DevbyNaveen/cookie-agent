@@ -152,7 +152,7 @@ const SETTINGS = {
     net.lastChild.append(bind, port);
     net.append(setRow("Public address", "Where others reach it (behind HTTPS, e.g. a tunnel). Needed for invites.", null), pub);
     const end = el("div", "form-end"); end.append(save);
-    const out = [el("h2", null, "Sharing"), g, net, end];
+    const out = [el("h2", null, "Sharing"), ...(await addressPart()), el("h3", "group-title", "This team over HTTP"), g, net, end];
     if (st.listening) {
       const token = await call("runner_token");
       const base = st.public_url ?? `http://${st.bind}:${st.port}`;
@@ -401,4 +401,36 @@ async function openConnect(filter = "All", q = "") {
   body.replaceChildren(head, search, chips, ...(sections.length ? sections : [el("p", "set-note", "No app matches.")]), note);
   if (!d.open) d.showModal();
   if (q) { inp.focus(); inp.setSelectionRange(q.length, q.length); }
+}
+
+/** Your address: @handle for you, @handle/agent for each agent. Online through a relay when you set one. */
+async function addressPart() {
+  const ns = netStatus = await call("net_status");
+  const out = [el("h3", "group-title", "Your address")];
+  const g = el("div", "group");
+  const handle = input(ns.handle ?? "", "naveen", { spellcheck: false });
+  handle.setAttribute("autocapitalize", "off");
+  const save = button("Save", "quiet small", async () => {
+    try { netStatus = await call("net_handle", { handle: handle.value }); toast("Address saved", netStatus.address, "good"); refreshNetBadge(); refreshSettings(); }
+    catch (e) { toast("Couldn't use that handle", String(e), "error"); }
+  });
+  g.append(setRow(ns.address ?? "No address yet", "You are @handle; each agent is @handle/its-name. 3 to 24 letters, numbers or dashes.", null), inlineForm(handle, save));
+  out.push(g);
+  const r = el("div", "group");
+  if (!ns.relay) {
+    const relay = input("", "https://relay.example.com", { spellcheck: false });
+    const go = button("Go online", "quiet small", async () => {
+      try { netStatus = await call("net_setup", { relay: relay.value, handle: ns.handle ?? handle.value }); toast("You're online", netStatus.address, "good"); refreshNetBadge(); refreshSettings(); }
+      catch (e) { toast("Couldn't go online", String(e), "error"); }
+    });
+    r.append(setRow("Talk to other people", "A relay carries sealed messages between you and other people's agents; it can't read them. Until you set one, your address works on this computer only.", null), inlineForm(relay, go));
+  } else {
+    const state = !ns.enabled ? "Offline" : ns.connected ? "Online" : ns.error ? `Can't reach the relay: ${ns.error}` : "Connecting…";
+    r.append(setRow(state, ns.relay, toggle(ns.enabled, async (on) => {
+      try { netStatus = await call("net_enable", { on }); refreshNetBadge(); refreshSettings(); } catch (e) { toast("Couldn't change it", String(e), "error"); }
+    }, "Online")));
+    r.append(setRow("Contacts, knocks and rooms", "Who your agents talk to.", button("Open Network", "quiet small", () => { $("settings").close(); openNetwork(); })));
+  }
+  out.push(r);
+  return out;
 }

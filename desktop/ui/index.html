@@ -70,13 +70,15 @@
     <footer class="me">
       <button id="new-agent-mini" class="mini" title="Hire an agent (⌘N)" aria-label="Hire an agent"><svg><use href="#i-plus"/></svg></button>
       <button id="apps-mini" class="mini" title="Connect apps" aria-label="Connect apps"><svg><use href="#i-grid"/></svg></button>
-      <button id="net-mini" class="mini net-btn" title="Network" aria-label="Network"><svg><use href="#i-globe"/></svg><span class="net-pip" hidden></span></button>
-      <button id="me-btn" class="me-btn" aria-haspopup="menu" aria-expanded="false"><span id="me-initials" class="initials"></span><span id="me-name" class="me-name"></span></button>
-      <button id="net-btn" class="round small net-btn" title="Network" aria-label="Network"><svg><use href="#i-globe"/></svg><span id="net-badge" class="net-pip" hidden></span></button>
+      <button id="net-mini" class="mini net-btn" title="Network" aria-label="Network" hidden><svg><use href="#i-globe"/></svg><span class="net-pip" hidden></span></button>
+      <button id="me-btn" class="me-btn" aria-haspopup="menu" aria-expanded="false"><span id="me-initials" class="initials"></span><span class="me-text"><span id="me-name" class="me-name"></span><span id="me-handle" class="me-handle" hidden></span></span></button>
+      <button id="net-btn" class="round small net-btn" title="Network" aria-label="Network" hidden><svg><use href="#i-globe"/></svg><span id="net-badge" class="net-pip" hidden></span></button>
       <button id="apps-btn" class="round small" title="Connect apps" aria-label="Connect apps"><svg><use href="#i-grid"/></svg></button>
     </footer>
     <div id="rail-resize" class="rail-resize" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
     <div id="me-menu" class="pop menu me-menu" role="menu" hidden>
+      <div id="me-head" class="me-head"></div>
+      <hr>
       <button role="menuitem" data-go="expand" class="when-collapsed"><svg><use href="#i-sidebar"/></svg>Show sidebar<kbd>⌘\</kbd></button>
       <button role="menuitem" data-go="connect"><svg><use href="#i-grid"/></svg>Connect apps</button>
       <button role="menuitem" data-go="models"><svg><use href="#i-key"/></svg>Model keys</button>

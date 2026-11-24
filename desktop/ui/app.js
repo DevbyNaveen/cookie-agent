@@ -1277,7 +1277,7 @@ async function boot() {
   await loadApprovals();
   await loadQuestions();
   await loadRoster();
-  refreshNetBadge();
+  ensureAddress();
   refreshWall();
   loadAddresses();
   if (fromLink && agentById(fromLink.agent)) { openAgent(fromLink.agent); return; }

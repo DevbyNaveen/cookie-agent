@@ -64,21 +64,16 @@ function profileShell(a) {
   fillAddress(a, addr);
 }
 
-/** Its address on the Cookie Network (click to copy), or the way to get one. */
+/** Its address (click to copy). Every agent has one once you have a handle, made on first launch. */
 async function fillAddress(a, box) {
   let s = netStatus;
-  if (!s?.agents) { try { s = netStatus = await call("net_status"); } catch { s = null; } }
-  const row = s?.agents?.find((x) => x.id === a.id);
-  if (row?.address) {
-    box.textContent = row.address;
-    box.title = "Copy its address";
-    box.onclick = () => copy(row.address, "Address copied");
-  } else {
-    box.textContent = "Give it an address";
-    box.classList.add("none");
-    box.title = "Join the Cookie Network to get @you and an address for each agent";
-    box.onclick = () => { closeProfile(); openNetwork(); };
-  }
+  if (!s?.agents?.some((x) => x.id === a.id)) { try { s = netStatus = await call("net_status"); } catch { s = null; } }
+  const addr = s?.agents?.find((x) => x.id === a.id)?.address;
+  box.hidden = !addr;
+  if (!addr) return;
+  box.textContent = addr;
+  box.title = "Copy its address";
+  box.onclick = () => copy(addr, "Address copied");
 }
 
 async function openProfile(tab = profileTab, keepScroll = false) {

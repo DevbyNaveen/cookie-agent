@@ -14,8 +14,50 @@ function openNetwork(sub) {
 }
 
 /** The rail badge: knocks, deals and room invites waiting for you. */
+/** Your address on this computer: made from your name the first time, yours to change in Settings → Sharing. */
+async function ensureAddress() {
+  try { netStatus = await call("net_status"); } catch { return; }
+  if (!netStatus.handle) {
+    const guess = handleFrom(netStatus.display_name || $("me-name").textContent);
+    try { netStatus = await call("net_handle", { handle: guess }); } catch {}
+  }
+  refreshNetBadge();
+}
+
+/** "Naveen K." → "naveen-k"; padded to the 3 letters a handle needs. */
+function handleFrom(name) {
+  let h = String(name || "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24).replace(/-+$/, "");
+  if (h.length < 3) h = (h + "-me").replace(/^-/, "").padEnd(3, "0");
+  return h;
+}
+
+/** The footer and the account menu show who you are: name, then @handle. */
+function showMyAddress() {
+  const addr = netStatus?.address;
+  $("me-handle").hidden = !addr;
+  $("me-handle").textContent = addr || "";
+  const head = $("me-head");
+  const t = el("div", "me-head-text");
+  t.append(el("strong", null, $("me-name").textContent), el("span", null, addr || "No address yet"));
+  const ini = el("span", "initials", $("me-initials").textContent);
+  head.replaceChildren(ini, t);
+  if (addr) {
+    const c = el("button", "round soft me-copy");
+    c.type = "button";
+    c.title = "Copy your address";
+    c.setAttribute("aria-label", "Copy your address");
+    c.append(icon("copy"));
+    c.onclick = (e) => { e.stopPropagation(); copy(addr, "Address copied"); };
+    head.append(c);
+  }
+}
+
 async function refreshNetBadge() {
   try { netStatus = await call("net_status"); } catch { return; }
+  // The Network page is for talking to other people, which needs a relay; until
+  // one is set (Settings → Sharing) there's nothing to open.
+  for (const id of ["net-btn", "net-mini"]) $(id).hidden = !netStatus.relay;
+  showMyAddress();
   const n = netStatus.waiting || 0;
   document.querySelectorAll(".net-pip").forEach((p) => { p.hidden = n === 0; });
   for (const id of ["net-btn", "net-mini"]) $(id).setAttribute("aria-label", n ? `Network, ${n} waiting for you` : "Network");
