@@ -48,6 +48,11 @@ const Api = (() => {
     return tauri.core.invoke("open_file", { agent, path, reveal });
   }
 
+  /** The count on the app's icon (the dock on a Mac); nothing in a browser. */
+  async function setBadge(count) {
+    if (tauri) return tauri.core.invoke("set_badge", { count });
+  }
+
   /** An https page in the person's browser (the Enkeon Console, to pair). */
   async function openUrl(url) {
     if (!/^https:\/\//.test(url)) throw "Cookie opens only https pages.";
@@ -80,5 +85,5 @@ const Api = (() => {
     return body.ok;
   }
 
-  return { call, listen, reveal, openFile, openUrl, openWindow, pickFolder, openLink, pendingLink, web: !tauri, signedIn: () => !!tauri || !!token };
+  return { call, listen, reveal, openFile, setBadge, openUrl, openWindow, pickFolder, openLink, pendingLink, web: !tauri, signedIn: () => !!tauri || !!token };
 })();

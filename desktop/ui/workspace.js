@@ -344,15 +344,16 @@ function historyCard(id, history) {
   return card;
 }
 
-/* ---------- worlds: in each agent's profile (Computer), the wall in Today ---------- */
+/* ---------- worlds: in each agent's profile (Computer), the wall in its chat ---------- */
 let watchSel = new Set(), watchScrub = new Map();
 let wallWaiting = [], wallWorlds = [];
 
-/** What waits at the wall, for Today and the badge. */
+/** What waits at the wall: in its agent's chat, its badge and place in the list, and the app's count. */
 async function refreshWall() {
   try { const w = await call("watch"); wallWaiting = w.waiting || []; wallWorlds = w.worlds || []; } catch { return; }
-  renderTodayRow();
-  if (view === "today") renderToday();
+  renderNeeds();
+  renderRoster();
+  refreshDesk();
 }
 
 /** Each thing trying to leave a world, with Yes and No. */

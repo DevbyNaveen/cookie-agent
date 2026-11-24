@@ -14,7 +14,7 @@
 //! - **A hire to consider** (`hire_gap`): requests Cookie did itself that
 //!   keep falling in a lane no teammate covers.
 //!
-//! Posted once a day from 8:00 local, as Cookie's notice and on Today.
+//! Posted once a day from 8:00 local, as Cookie's notice and at the end of Cookie's chat.
 //!
 //! Ported from the super console (gateway `chat/retro.rs`, `chat/learning.rs`).
 

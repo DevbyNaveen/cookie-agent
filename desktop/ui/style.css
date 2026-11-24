@@ -459,21 +459,29 @@ body:not(.resizing) { transition: grid-template-columns .22s var(--ease); }
 .tag { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 9px; font-size: 11.5px; font-weight: 550; background: var(--raise-2); color: var(--text-2); white-space: nowrap; }
 .tag.good { color: #8fc98a; background: rgb(143 201 138 / .12); }
 .tag.bad { color: var(--danger); background: rgb(236 106 94 / .12); }
-.dot-badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 650; display: inline-grid; place-items: center; font-variant-numeric: tabular-nums; }
+.dot-badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--warn); color: #241503; font-size: 11px; font-weight: 650; display: inline-grid; place-items: center; font-variant-numeric: tabular-nums; }
 .roster .agent .row-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; align-self: start; margin-top: 2px; }
 .roster .agent .row-right time { margin-top: 0; }
 .small { font-size: 12.5px; }
 
 /* Today in the rail */
-.today-row { margin: 0 8px 6px; display: flex; align-items: center; gap: 11px; padding: 9px; border-radius: 14px; color: var(--text); text-align: left; transition: background .15s; }
-.today-row:hover { background: rgb(255 255 255 / .035); }
-.today-row.active { background: var(--raise-2); }
-.today-ic { width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center; background: var(--raise); color: var(--text-2); flex: none; }
-.today-ic svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-.today-label { flex: 1; font-size: 14.5px; font-weight: 550; }
-.rail-collapsed .today-row { margin: 0 14px 6px; justify-content: center; position: relative; padding: 8px 0; }
-.rail-collapsed .today-label { display: none; }
-.rail-collapsed .today-row .dot-badge { position: absolute; top: 4px; right: 6px; }
+/* "Needs you": only the agents waiting on you, like a messaging app's Unread filter */
+.needs-chip { align-self: flex-start; display: inline-flex; align-items: center; gap: 7px; margin: 0 14px 8px; padding: 6px 8px 6px 11px; border-radius: 999px; border: 1px solid var(--line-2); font-size: 13px; font-weight: 550; color: var(--text-2); transition: background .15s, color .15s, border-color .15s; }
+.needs-chip:hover { background: rgb(255 255 255 / .04); color: var(--text); }
+.needs-chip.active { background: rgb(224 166 74 / .16); border-color: rgb(224 166 74 / .45); color: var(--warn); }
+.needs-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--warn); }
+.needs-count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--warn); color: #241503; font-size: 11px; font-weight: 700; display: inline-grid; place-items: center; font-variant-numeric: tabular-nums; }
+.badges { display: inline-flex; gap: 4px; align-items: center; }
+/* The desk: what an agent holds for you, at the end of its chat */
+.desk { display: flex; flex-direction: column; gap: 10px; width: min(100%, 640px); margin: 14px auto 4px; flex: none; }
+.desk-card { border: 1px solid var(--line); border-radius: 16px; background: var(--rail); padding: 10px 12px 12px; }
+.desk-head { display: flex; align-items: center; gap: 8px; margin: 0 2px 8px; font-size: 13px; font-weight: 600; color: var(--text-2); }
+.desk-title { flex: 1; min-width: 0; }
+.desk-head .face { flex: none; width: 20px; height: 20px; }
+.desk-card .group { margin: 0; }
+.desk-card .idea { border: 0; padding: 0; background: none; }
+.rail-collapsed .needs-chip { align-self: center; margin: 0 0 8px; padding: 6px 7px; gap: 0; }
+.rail-collapsed .needs-chip .needs-dot, .rail-collapsed .needs-label { display: none; }
 
 /* Today view */
 .today { overflow-y: auto; }
@@ -1011,7 +1019,6 @@ footer.me { gap: 6px; }
 .access-dot { width: 18px; height: 18px; flex: none; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--line-2); transition: box-shadow .15s; }
 .access-kind.on .access-dot { box-shadow: inset 0 0 0 5px var(--accent); }
 .access-folder .row-text > span { font: 13px/1.4 ui-monospace, "SF Mono", Menlo, monospace; overflow-wrap: anywhere; }
-.roster-cookie { margin-bottom: 4px; }
 
 /* The header strip lets clicks through to the chat; its menus must still take them. */
 .pill-row .pop { pointer-events: auto; }

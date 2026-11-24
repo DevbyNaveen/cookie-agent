@@ -1,7 +1,7 @@
 //! Working with the person mid-job, and undoing what an agent changed.
 //!
 //! - `ask_person`: a question with choices (or a free answer). The job waits
-//!   for the answer, shown as a card in the chat, on Today, and on Telegram.
+//!   for the answer, shown as a card in the chat (its row moves up with an amber count), and on Telegram.
 //! - `todo_list`: the agent's plan for a long job, shown live as a checklist.
 //! - Checkpoints: before a job that may change files, the agent's folder is
 //!   copied aside; the person can put it back the way it was ("Undo").

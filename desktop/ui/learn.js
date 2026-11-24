@@ -6,7 +6,7 @@ const todosOf = new Map(); // agent id -> [{text, state}]
 /* ---------- questions ---------- */
 async function loadQuestions() {
   try { questions = await call("questions"); } catch { questions = []; }
-  renderTodayRow();
+  renderNeeds();
 }
 
 function questionCard(q) {
@@ -37,11 +37,10 @@ function questionCard(q) {
 
 function onQuestion(q) {
   questions.push(q);
-  renderTodayRow();
+  renderNeeds();
   renderRoster();
   setMood(q.agent, "waiting");
   if (current?.id === q.agent && view === "chat") { $("log").append(questionCard(q)); scrollDown(true); }
-  if (view === "today") renderToday();
 }
 
 function onQuestionAnswered(ev) {
@@ -51,9 +50,9 @@ function onQuestionAnswered(ev) {
   document.querySelectorAll(`[data-question="${ev.id}"]`).forEach((c) => {
     c.replaceWith(event([ev.by === "timeout" ? "Unanswered: it carried on without" : "Answered", ev.by === "telegram" ? " from your phone" : ""]));
   });
-  renderTodayRow();
+  renderNeeds();
+  renderRoster();
   if (busy.has(q.agent)) setMood(q.agent, "working");
-  if (view === "today") renderToday();
   return true;
 }
 

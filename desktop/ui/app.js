@@ -123,20 +123,34 @@ async function loadRoster() {
   rows = await call("list_agents");
   for (const r of rows) if (r.busy) busy.add(r.id);
   renderRoster();
-  renderTodayRow();
+  renderNeeds();
 }
 
-/** Latest activity first, like a messaging app. */
-function sortRows() {
-  rows.sort((a, b) => (b.last_at ?? b.created_at) - (a.last_at ?? a.created_at));
+/** What an agent holds for you: approvals, questions, and what its worlds want to send. */
+function needsOf(id) {
+  const worlds = new Set((typeof wallWorlds === "undefined" ? [] : wallWorlds).filter((w) => w.owner === id).map((w) => w.id));
+  return {
+    count: approvals.filter((a) => a.agent === id).length + questions.filter((q) => q.agent === id).length
+      + (typeof wallWaiting === "undefined" ? 0 : wallWaiting.filter((e) => worlds.has(e.world)).length),
+    // The newest of them: something new for you moves the agent up, like a new message.
+    at: Math.max(0, ...approvals.filter((a) => a.agent === id).map((a) => a.asked_at ?? 0), ...questions.filter((q) => q.agent === id).map((q) => q.asked_at ?? 0),
+      ...(typeof wallWaiting === "undefined" ? [] : wallWaiting.filter((e) => worlds.has(e.world)).map((e) => e.at ?? 0))),
+  };
 }
+
+/** Latest activity first, like a messaging app: a message, or anything new it holds for you. */
+function sortRows() {
+  const at = (r) => Math.max(r.last_at ?? r.created_at, needsOf(r.id).at);
+  rows.sort((a, b) => at(b) - at(a));
+}
+let needsOnly = false; // the "Needs you" filter at the top of the list
 
 function renderRoster() {
   sortRows();
   const q = $("search").value.trim().toLowerCase();
   const matches = rows.filter((r) => !q || r.name.toLowerCase().includes(q) || r.job.toLowerCase().includes(q));
   // Searching finds hidden agents too; otherwise they wait behind "Hidden".
-  const shown = matches.filter((r) => q || showHidden || !r.hidden);
+  const shown = matches.filter((r) => (q || showHidden || !r.hidden) && (!needsOnly || needsOf(r.id).count > 0));
   faces.forEach((f) => f.stop());
   faces.clear();
   const item = (r) => {
@@ -148,7 +162,8 @@ function renderRoster() {
     li.setAttribute("aria-label", r.name);
     li.title = r.name;
     const face = Faces.create(r.id, 46);
-    const waiting = approvals.some((a) => a.agent === r.id) || (typeof questions !== "undefined" && questions.some((q) => q.agent === r.id));
+    const needs = needsOf(r.id).count;
+    const waiting = needs > 0;
     if (busy.has(r.id)) face.setMood(waiting ? "waiting" : "working");
     faces.set(r.id, face);
     const meta = el("div", "meta");
@@ -156,8 +171,11 @@ function renderRoster() {
     meta.append(el("div", "name", r.name), el("div", "preview" + (busy.has(r.id) ? " busy" : ""), preview));
     const right = el("div", "row-right");
     right.append(el("time", null, fmtTime(r.last_at ?? r.created_at)));
-    if (waiting) right.append(el("span", "dot-badge", String(approvals.filter((a) => a.agent === r.id).length + questions.filter((q) => q.agent === r.id).length)));
-    else if (unread) right.append(el("span", "unread-badge", String(r.unread)));
+    // Amber: it needs your yes or an answer. Green: messages you haven't read.
+    const badges = el("span", "badges");
+    if (waiting) { const b = el("span", "dot-badge", String(needs)); b.title = `${needs} waiting for you`; badges.append(b); }
+    if (unread) badges.append(el("span", "unread-badge", String(r.unread)));
+    if (waiting || unread) right.append(badges);
     if (r.probation_until && r.probation_until > Date.now() / 1000) right.append(el("span", "tag", "probation"));
     if (r.pinned) right.append(svgIcon("i-pin", "pin-mark"));
     if (r.hidden) li.classList.add("is-hidden");
@@ -173,14 +191,12 @@ function renderRoster() {
     return li;
   };
   const head = (text) => { const h = el("li", "roster-head", text); h.setAttribute("role", "presentation"); return h; };
-  // Cookie, the front door, always on top; then pinned, then everything else by latest activity, then each section in name order.
-  const cookie = shown.find((r) => r.id === "cookie");
-  const rest = shown.filter((r) => r.id !== "cookie");
+  // Pinned first, then everything by latest activity (Cookie too), then each section in name order.
+  const rest = shown;
   const pinned = rest.filter((r) => r.pinned);
   const loose = rest.filter((r) => !r.pinned && !r.section);
   const sections = [...new Set(rest.filter((r) => !r.pinned && r.section).map((r) => r.section))].sort((a, b) => a.localeCompare(b));
   const out = [];
-  if (cookie) { const li = item(cookie); li.classList.add("roster-cookie"); out.push(li); }
   if (pinned.length) { if (!q) out.push(head("Pinned")); out.push(...pinned.map(item)); }
   if (loose.length) { if (!q && (pinned.length || sections.length)) out.push(head("Recent")); out.push(...loose.map(item)); }
   for (const name of sections) {
@@ -196,25 +212,32 @@ function renderRoster() {
     out.push(t);
   }
   $("roster").replaceChildren(...out);
-  $("no-match").hidden = !(q && shown.length === 0);
+  $("no-match").hidden = !((q || needsOnly) && shown.length === 0);
+  $("no-match").textContent = needsOnly && !q ? "Nothing needs you right now." : "No agent matches.";
   $("no-agents").hidden = rows.length > 0;
 }
 
-function renderTodayRow() {
+/** The "Needs you" chip at the top of the list, and the count on the app's icon. */
+function renderNeeds() {
   const n = approvals.length + (typeof questions === "undefined" ? 0 : questions.length) + (typeof wallWaiting === "undefined" ? 0 : wallWaiting.length);
-  $("today-badge").hidden = n === 0;
-  $("today-badge").textContent = String(n);
-  $("today-row").classList.toggle("active", view === "today");
+  const chip = $("needs-chip");
+  if (n === 0 && needsOnly) { needsOnly = false; renderRoster(); }
+  chip.hidden = n === 0;
+  chip.classList.toggle("active", needsOnly);
+  chip.setAttribute("aria-pressed", String(needsOnly));
+  $("needs-count").textContent = String(n);
+  if (n !== lastBadge) { lastBadge = n; Api.setBadge(n).catch(() => {}); }
   document.querySelectorAll(".net-btn").forEach((b) => b.classList.toggle("active", view === "network"));
 }
+let lastBadge = -1;
 
 /* ---------- views ---------- */
 function show(v) {
   view = v;
-  for (const id of ["chat", "hire", "today", "network"]) $(id).hidden = id !== v;
+  for (const id of ["chat", "hire", "network"]) $(id).hidden = id !== v;
   if (v !== "chat") { closeProfile(); closeWorkspace(); }
   if (v !== "hire") stopCrew();
-  renderTodayRow();
+  renderNeeds();
 }
 
 const drafts = new Map(); // agent id -> unsent text, kept when you switch
@@ -254,7 +277,13 @@ async function openAgent(id) {
   const lines = await call("history", { id: r.id });
   if (current?.id !== id) return;
   renderLog(r, lines);
-  renderSuggest(r, lines.length === 0 && !busy.has(r.id));
+  renderSuggest(r, lines.length === 0 && !busy.has(r.id) && needsOf(r.id).count === 0);
+  // What it holds for you sits at the end of its chat (today.js), then what waits for your yes.
+  const desk = el("div", "desk");
+  desk.id = "desk";
+  desk.hidden = true;
+  $("log").append(desk);
+  renderDesk(r.id);
   for (const a of approvals.filter((a) => a.agent === r.id)) $("log").append(approvalCard(a));
   for (const q of questions.filter((q) => q.agent === r.id)) $("log").append(questionCard(q));
   for (const job of live.values()) if (job.agent === r.id) attachLive(job);
@@ -633,7 +662,7 @@ function approvalCard(a) {
 
 async function loadApprovals() {
   approvals = await call("approvals");
-  renderTodayRow();
+  renderNeeds();
 }
 
 /* ---------- live jobs ---------- */
@@ -750,11 +779,11 @@ function onTeamEvent(ev) {
     }
     case "asked": {
       approvals.push(ev.approval);
-      renderTodayRow();
+      renderNeeds();
       renderRoster();
       setMood(ev.approval.agent, "waiting");
       if (current?.id === ev.approval.agent && view === "chat") { $("log").append(approvalCard(ev.approval)); scrollDown(true); }
-      if (view === "today") renderToday();
+      refreshDesk();
       break;
     }
     case "helper": {
@@ -777,7 +806,7 @@ function onTeamEvent(ev) {
       document.querySelectorAll(`[data-approval="${ev.id}"]`).forEach((c) => {
         c.replaceWith(event([ev.yes ? "Approved" : ev.by === "stopped" ? "No longer needed" : "Denied", ev.by === "telegram" ? " from your phone" : ""]));
       });
-      renderTodayRow();
+      renderNeeds();
       renderRoster();
       if (ev.agent && busy.has(ev.agent)) setMood(ev.agent, "working");
       break;
@@ -833,12 +862,12 @@ function onTeamEvent(ev) {
       if (visible && !(current?.id === ev.agent && view === "chat")) toast(ev.title, ev.body, "", () => (fromNet ? openNetwork() : openAgent(ev.agent)), fromNet ? undefined : ev.agent);
       notices.unshift({ ...ev, at: Date.now() });
       notices.splice(30);
-      if (view === "today") renderToday();
+      refreshDesk();
       break;
     }
     case "roster_changed": loadRoster(); loadAddresses(); break;
-    case "routines_changed": if (profileOpenFor(current?.id) && profileTab === "skills") refreshProfile(); if (view === "today") renderToday(); break;
-    case "retro": if (view === "today") renderToday(); break;
+    case "routines_changed": if (profileOpenFor(current?.id) && profileTab === "skills") refreshProfile(); refreshDesk(); break;
+    case "retro": if (current?.id === "cookie") refreshDesk(); break;
     case "evolved": if (profileOpenFor(ev.agent)) refreshProfile(); break;
     case "workspace": refreshWorkspace(ev.agent); break;
     case "worlds": refreshWall(); if (profileOpenFor(current?.id) && profileTab === "computer") refreshProfile(); break;
@@ -1389,7 +1418,7 @@ document.addEventListener("keydown", (e) => {
   if (mod && e.key === "f") { e.preventDefault(); toggleSearch(true); }
   if (mod && e.key === ",") { e.preventDefault(); openSettings("general"); }
   if (mod && e.key === "\\") { e.preventDefault(); toggleRail(); }
-  if (mod && e.key === "t") { e.preventDefault(); openToday(); }
+  if (mod && e.key === "t") { e.preventDefault(); openNextNeed(); }
 });
 
 $("more").onclick = () => { const open = $("more-menu").hidden; closePops(); $("more-menu").hidden = !open; };
@@ -1411,7 +1440,14 @@ $("me-btn").onclick = () => {
 $("apps-btn").onclick = () => openConnect();
 $("apps-mini").onclick = () => openConnect();
 $("new-agent-mini").onclick = () => openHire();
-$("today-row").onclick = () => openToday();
+$("needs-chip").onclick = () => { needsOnly = !needsOnly; renderRoster(); renderNeeds(); };
+
+/** ⌘T: the next agent that needs you, newest first. */
+function openNextNeed() {
+  sortRows();
+  const next = rows.find((r) => needsOf(r.id).count > 0 && r.id !== current?.id) ?? rows.find((r) => needsOf(r.id).count > 0);
+  if (next) openAgent(next.id); else toast("Nothing needs you", "Every agent is fine on its own right now.");
+}
 $("me-menu").onclick = async (e) => {
   const go = e.target.closest("[data-go]")?.dataset.go;
   if (!go) return;
@@ -1526,10 +1562,13 @@ async function boot() {
     document.body.classList.add("agent-window");
     document.body.classList.add("rail-collapsed");
     openAgent(only);
-  } else if (approvals.length) openToday();
-  else rows.length ? openAgent(rows[0].id) : openHire();
+  } else if (rows.length) {
+    // The chat that needs you most recently, else the most recent one: like opening a messaging app.
+    sortRows();
+    openAgent((rows.find((r) => needsOf(r.id).count > 0) ?? rows[0]).id);
+  } else openHire();
 }
-// After every script has loaded: the panels (profile, Today, settings) are defined in their own files.
+// After every script has loaded: the panels (profile, the desk, settings) are defined in their own files.
 window.addEventListener("DOMContentLoaded", () => boot().catch((e) => toast("Cookie couldn't start", String(e), "error")));
 
 // The PIN for a job link, in place of the app until it's right.

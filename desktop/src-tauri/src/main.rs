@@ -70,6 +70,13 @@ fn open_file(agent: String, path: String, reveal: bool, team: State<'_, Arc<Team
     cmd.arg(&real).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// The count on the app's icon: what waits for the person (approvals, questions, worlds). 0 clears it.
+#[tauri::command]
+fn set_badge(count: i64, app: tauri::AppHandle) -> Result<(), String> {
+    let Some(w) = app.get_webview_window("main") else { return Ok(()) };
+    w.set_badge_count((count > 0).then_some(count)).map_err(|e| e.to_string())
+}
+
 /// Open a web page in the person's browser: only https (pairing with Enkeon opens its Console).
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
@@ -221,7 +228,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![call, reveal, open_file, open_window, open_url, set_glass, pick_folder])
+        .invoke_handler(tauri::generate_handler![call, reveal, open_file, set_badge, open_window, open_url, set_glass, pick_folder])
         .build(tauri::generate_context!())
         .expect("Cookie could not start");
     app.run(|app, event| {

@@ -64,7 +64,7 @@
       <svg><use href="#i-search"/></svg>
       <input id="search" type="search" placeholder="Search agents" aria-label="Search agents" autocomplete="off" spellcheck="false">
     </div>
-    <button id="today-row" class="today-row" aria-label="Today"><span class="today-ic"><svg><use href="#i-inbox"/></svg></span><span class="today-label">Today</span><span id="today-badge" class="dot-badge" hidden>0</span></button>
+    <button id="needs-chip" class="needs-chip" type="button" aria-pressed="false" title="Show only the agents that need you (⌘T opens the next one)" hidden><span class="needs-dot"></span><span class="needs-label">Needs you</span><span id="needs-count" class="needs-count">0</span></button>
     <p id="no-agents" class="rail-note" hidden>Your agents will live here.</p>
     <ul id="roster" class="roster" aria-label="Your agents"></ul>
     <p id="no-match" class="rail-note" hidden>No agent matches.</p>
@@ -126,10 +126,6 @@
       </form>
     </section>
 
-    <!-- Today -->
-    <section id="today" class="view today" hidden>
-      <div id="today-body" class="today-inner"></div>
-    </section>
 
     <!-- Network -->
     <section id="network" class="view today" hidden>
