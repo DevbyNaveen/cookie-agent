@@ -42,6 +42,34 @@ async function renderToday() {
     parts.push(card);
   }
 
+  // Offers from the nightly round: split an agent doing two kinds of work, or retire one with none.
+  const evs = await call("evolve_status").catch(() => null);
+  if (view !== "today") return;
+  for (const o of (evs?.offers || []).slice(0, 3)) {
+    const who = agentById(o.agent);
+    if (!who) continue;
+    const g = el("div", "group");
+    const title = o.kind === "split" ? `Split ${who.name} in two?` : `Retire ${who.name}?`;
+    const r = setRow(title, o.kind === "split" ? `${o.why} For example: “${(o.kinds[1] || [])[0] ?? ""}”.` : `${o.why} What it learned is kept for whoever you hire next.`, null);
+    const acts = el("div", "row-actions");
+    if (o.kind === "split") acts.append(button("Split", "primary small", async () => {
+      const name = prompt(`Name the new agent that takes work like “${(o.kinds[1] || [])[0] ?? ""}”`);
+      if (!name) return;
+      const job = prompt("Its one job, in a sentence");
+      if (!job) return;
+      const child = await call("accept_split", { offer: o.id, name, job });
+      await loadRoster(); toast("Split", `${child.name} takes that work now.`, "good"); renderToday();
+    }));
+    else acts.append(button("Retire", "primary small", async () => {
+      if (!confirm(`Retire ${who.name}? It writes a handover note, what it learned is kept for a successor, and it is let go.`)) return;
+      await call("accept_retire", { offer: o.id }); await loadRoster(); toast("Retired", `What ${who.name} learned is kept: hire someone and start from it.`); renderToday();
+    }));
+    acts.append(button("Not now", "quiet small", async () => { await call("decline_offer", { offer: o.id }); renderToday(); }));
+    r.append(acts);
+    g.append(r);
+    parts.push(g);
+  }
+
   // Agents that woke because their memory changed: label them so the next wake is better judged.
   const wk = await call("wakes").catch(() => null);
   if (view !== "today") return;

@@ -607,6 +607,7 @@ function onTeamEvent(ev) {
     case "roster_changed": loadRoster(); loadAddresses(); break;
     case "routines_changed": if (profileOpenFor(current?.id) && profileTab === "routines") refreshProfile(); if (view === "today") renderToday(); break;
     case "retro": if (view === "today") renderToday(); break;
+    case "evolved": if (profileOpenFor(ev.agent)) refreshProfile(); break;
     case "test_progress":
     case "test_finished": if (profileOpenFor(ev.agent) && profileTab === "tests") refreshProfile(); if (ev.kind === "test_finished") toast("Tests finished", `${ev.passed} of ${ev.total} passed`, ev.passed === ev.total ? "good" : "", () => { openAgent(ev.agent).then(() => openProfile("tests")); }); break;
     case "channel": if ($("settings").open) refreshSettings(); break;
@@ -952,9 +953,11 @@ async function openHire(prefill) {
   $("hire-cancel").hidden = rows.length === 0;
   $("hire-title").textContent = rows.filter((r) => r.id !== "cookie").length ? "Hire" : "Build your team";
   renderStarters();
-  const handovers = await call("handovers").catch(() => []);
-  form.handover.hidden = handovers.length === 0;
-  form.handover.replaceChildren(el("option", null, "No handover note"), ...handovers.map((h) => { const o = el("option", null, h.title); o.value = h.file; return o; }));
+  const [handovers, archives] = await Promise.all([call("handovers").catch(() => []), call("archives").catch(() => [])]);
+  form.handover.hidden = handovers.length + archives.length === 0;
+  // A retired agent's archive brings its lessons, skills, tests and habits with its handover note.
+  const learned = archives.map((a) => { const o = el("option", null, `Everything ${a.name} learned (${a.lessons} lessons, ${a.skills} skills)`); o.value = "archive:" + a.id; return o; });
+  form.handover.replaceChildren(el("option", null, "Start fresh"), ...learned, ...handovers.map((h) => { const o = el("option", null, h.title); o.value = h.file; return o; }));
   form.handover.options[0].value = "";
   if (prefill) {
     const own = crew.find((c) => c.own);
@@ -980,7 +983,9 @@ async function hireNow() {
   $("hire-error").hidden = true;
   if (!model) { form.hidden = false; form.model.hidden = false; form.model.focus(); $("hire-error").textContent = "Add a model key in Settings → Models first."; $("hire-error").hidden = false; return; }
   const hire = picked.own
-    ? { name: form.name.value, job: form.job.value, model, handover: form.handover.value || null }
+    ? (form.handover.value.startsWith("archive:")
+        ? { name: form.name.value, job: form.job.value, model, inherit: form.handover.value.slice("archive:".length) }
+        : { name: form.name.value, job: form.job.value, model, handover: form.handover.value || null })
     : { name: picked.name, job: picked.job, model, id: picked.id };
   $("hire-btn").disabled = true;
   try {

@@ -369,7 +369,8 @@ impl Team {
                         continue;
                     }
                     let held = self.lessons(&learner.id);
-                    let texts: Vec<&str> = held.iter().filter(|h| h.state != "archived").map(|h| h.text.as_str()).collect();
+                    // Archived ones count: a lesson the learner already let go is not taught back.
+                    let texts: Vec<&str> = held.iter().map(|h| h.text.as_str()).collect();
                     if cookie_harness::lessons::is_duplicate(&l.text, &texts) {
                         continue;
                     }

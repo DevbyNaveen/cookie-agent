@@ -79,6 +79,46 @@ const SETTINGS = {
       el("h3", "group-title", "Defaults"), def];
   },
 
+  async evolution() {
+    const [s, bench, ev, local] = await Promise.all([call("settings"), call("bench"), call("evolve_status"), call("local_models").catch(() => null)]);
+    const e = s.evolve;
+    const out = [el("h2", null, "Evolution")];
+    const g = el("div", "group");
+    g.append(setRow("Tune agents at night", "Each night, one change per agent is tried on a copy against your own jobs, and kept only if it does as well or better. Every change shows in the agent's Evolution tab with Undo. Exams use real model calls, so the night has a budget.", toggle(!!e.nightly, (v) => call("update_settings", { patch: { evolve: { nightly: v } } }), "Tune at night")));
+    const hour = input(String(e.hour), "3", { type: "number", min: 0, max: 23 }), dollarsIn = input(String(e.max_dollars), "1", { type: "number", min: 0, step: "0.5" }), cases = input(String(e.cases), "6", { type: "number", min: 3, max: 20 });
+    for (const i of [hour, dollarsIn, cases]) i.classList.add("num-in");
+    g.append(setRow("Hour it starts", "Your local time, when nothing is working.", hour), setRow("Most a night may spend ($)", "Needs prices set for the models (Models); without them, a few exams at most.", dollarsIn), setRow("Jobs per exam", "Each runs twice: as it is, and changed.", cases));
+    const end = el("div", "form-end");
+    end.append(button("Save", "quiet small", async () => { await call("update_settings", { patch: { evolve: { hour: +hour.value, max_dollars: +dollarsIn.value, cases: +cases.value } } }); toast("Saved", "", "good"); }),
+      button("Run tonight's round now", "quiet small", async () => { await call("evolve_now"); toast("Started", "Results show in each agent's Evolution tab, and in a note from Cookie."); }));
+    out.push(g, end);
+
+    const b = el("div", "group");
+    b.append(setRow(`The bench: ${bench.count} of your jobs`, bench.count >= 30 ? "Changes are examined on these: jobs your agents finished cleanly, the ones you graded good first." : `Aim is 30 to 50. It has what your agents did cleanly so far (${bench.count}); it grows as they work and is never padded with made-up tasks.`,
+      button(bench.built_at ? "Choose again" : "Build it", "quiet small", async () => { await call("build_bench"); refreshSettings(); })));
+    for (const c of bench.cases.slice(0, 50)) {
+      const who = agentById(c.agent)?.name ?? "an agent";
+      b.append(setRow(plain(c.input).slice(0, 110), `${who}${c.graded_good ? " · graded good" : ""}`, button("Drop", "quiet small", async () => { await call("drop_bench_case", { case: c.id }); refreshSettings(); })));
+    }
+    out.push(el("h3", "group-title", "Bench"), b);
+
+    if (ev.last_night) {
+      const n = el("div", "group");
+      n.append(setRow(`Last round: ${ev.last_night.day}`, `${ev.last_night.exams} exams${ev.last_night.spent_microdollars ? `, ${dollars(ev.last_night.spent_microdollars)}` : ""}.`, null));
+      for (const l of ev.last_night.log.slice(0, 20)) n.append(el("p", "set-note", l));
+      out.push(el("h3", "group-title", "Last round"), n);
+    }
+
+    if (local && (local.used.length || local.loaded.length)) {
+      const l = el("div", "group");
+      if (!local.reachable) l.append(setRow("Ollama", `Not reachable at ${local.server}.`, null));
+      for (const m of local.loaded) l.append(setRow(m.model, `In memory: ${humanSize(m.bytes || 0)}${m.agents.length ? ` · shared by ${m.agents.join(", ")}` : ""}`, null));
+      for (const d of local.doubles) l.append(setRow(`Two copies of ${d.base}`, `Your agents use ${d.tags.join(" and ")}; Ollama loads each separately. Put them on one tag to share memory.`, null));
+      out.push(el("h3", "group-title", "Local models"), l);
+    }
+    return out;
+  },
+
   async channels() {
     const t = await call("telegram_status");
     const g = el("div", "group edit");

@@ -1,7 +1,7 @@
 // The agent's profile: its setup and walls, its record, its routines, its
 // tests and forks, its folder, and who else may talk to it.
 let profileFace = null, profileTab = "about";
-const TABS = [["about", "About"], ["skills", "Skills"], ["record", "Record"], ["routines", "Routines"], ["tests", "Tests"], ["files", "Files"], ["computer", "Computer"], ["share", "Share"]];
+const TABS = [["about", "About"], ["skills", "Skills"], ["record", "Record"], ["routines", "Routines"], ["tests", "Tests"], ["files", "Files"], ["evolution", "Evolution"], ["computer", "Computer"], ["share", "Share"]];
 
 $("who").onclick = () => ($("profile").hidden ? openProfile() : closeProfile());
 
@@ -53,6 +53,12 @@ async function openProfile(tab = profileTab, keepScroll = false) {
     body.append(el("p", "error-line", String(err)));
   }
   box.scrollTop = scroll;
+}
+
+/** Cost before → after, in dollars when priced, else tokens. */
+function costLine(b, a) {
+  if (b.microdollars && a.microdollars) return `${dollars(b.microdollars)} → ${dollars(a.microdollars)}`;
+  return `${(b.tokens || 0).toLocaleString()} → ${(a.tokens || 0).toLocaleString()} tokens`;
 }
 
 const fact = (k, v) => { const r = el("div", "row"); r.append(el("span", null, k), el("span", "muted", v)); return r; };
@@ -168,9 +174,20 @@ const PANELS = {
     if (card.would) money.append(fact("Would have done (probation)", String(card.would)));
     if (card.handoffs_in || card.handoffs_out) money.append(fact("Teamwork", `${card.handoffs_out} asked, ${card.handoffs_in} answered`));
 
+    const cache = await call("cache_view", { id: a.id }).catch(() => null);
+    const cacheG = el("div", "group");
+    if (cache && cache.jobs) {
+      cacheG.append(
+        fact("Prompt cache hit rate", cache.hit_rate == null ? "—" : `${Math.round(cache.hit_rate * 100)}% of input tokens (last 30 days)`),
+        fact("Saved by the cache", cache.saved_microdollars == null ? "set a price for its model to see" : cache.saved_microdollars >= 0 ? dollars(cache.saved_microdollars) : `cost ${dollars(-cache.saved_microdollars)} more than it saved`),
+        fact("Cache lifetime", `${cache.ttl === "1h" ? "1 hour" : "5 minutes"}${cache.ttl_setting === "auto" ? " (chosen from when its jobs come)" : " (set by you)"}`),
+      );
+    } else cacheG.append(fact("Prompt cache", "No cache use recorded yet."));
+    if (cache && (cache.reads_from_cache || cache.reads_fetched)) cacheG.append(fact("Web reads answered from the read cache", `${cache.reads_from_cache} of ${cache.reads_from_cache + cache.reads_fetched}`));
+
     const list = el("div", "job-list");
     for (const j of jobs.slice(0, 30)) list.append(jobRow(a, j));
-    return [stats, ...learned, el("h3", "group-title", "Money and work"), money, el("h3", "group-title", "Recent jobs"), list];
+    return [stats, ...learned, el("h3", "group-title", "Money and work"), money, el("h3", "group-title", "Cache"), cacheG, el("h3", "group-title", "Recent jobs"), list];
   },
 
   async routines(a) {
@@ -310,6 +327,75 @@ const PANELS = {
     return out;
   },
 
+  async evolution(a) {
+    const [career, tuning, changes, exams, bench] = await Promise.all([
+      call("career", { id: a.id }), call("tuning", { id: a.id }), call("evolution", { id: a.id }), call("exams", { id: a.id }), call("bench"),
+    ]);
+    const out = [];
+    const cg = el("div", "group");
+    cg.append(setRow(`Stage: ${career.stage}`, `${career.means} ${career.jobs} jobs on its record${career.tenure_days ? `, ${career.tenure_days} days` : ""}.`, null));
+    out.push(el("h3", "group-title", "Career"), cg);
+
+    // Offers waiting for you.
+    const offered = changes.filter((c) => c.state === "proposed");
+    if (offered.length) {
+      const g = el("div", "group");
+      for (const c of offered) {
+        const e = c.exam;
+        const r = setRow(c.what, e ? `On ${e.cases} of your jobs: ${e.before.passed} → ${e.after.passed} passed; cost ${costLine(e.before, e.after)}.` : "", null);
+        const acts = el("div", "row-actions");
+        acts.append(
+          button("Switch", "primary small", async () => { await call("accept_change", { id: a.id, change: c.id }); toast("Switched", c.what, "good"); loadRoster(); refreshProfile(); }),
+          button("No", "quiet small", async () => { await call("decline_change", { id: a.id, change: c.id }); refreshProfile(); }),
+        );
+        r.append(acts);
+        g.append(r);
+      }
+      out.push(el("h3", "group-title", "Offered"), g);
+    }
+
+    // How it runs.
+    const tg = el("div", "group");
+    const cacheSel = el("select", "text-in");
+    for (const [v, l] of [["auto", "Chosen from when its jobs come"], ["5m", "5 minutes"], ["1h", "1 hour"]]) { const o = el("option", null, l); o.value = v; if (tuning.cache === v) o.selected = true; cacheSel.append(o); }
+    cacheSel.onchange = () => call("set_tuning", { id: a.id, patch: { cache: cacheSel.value } }).then(refreshProfile);
+    tg.append(setRow("Prompt cache lifetime", "An hour costs more to write and pays off when its jobs come 5 to 60 minutes apart.", cacheSel));
+    tg.append(setRow("Prepare ahead of its routines", "While idle, it gets ready for a routine due in the next half hour (nothing sent or changed). Each prep is a job.", toggle(!!tuning.prepare, (v) => call("set_tuning", { id: a.id, patch: { prepare: v } }), "Prepare ahead")));
+    for (const h of tuning.habits) tg.append(setRow("Habit", h, button("Remove", "quiet small", async () => { await call("set_tuning", { id: a.id, patch: { remove_habit: h } }); refreshProfile(); })));
+    out.push(el("h3", "group-title", "How it runs"), tg);
+
+    // Every change, with Undo.
+    const hg = el("div", "group");
+    const shown = changes.filter((c) => c.state !== "proposed").slice(0, 40);
+    if (!shown.length) hg.append(setRow("No changes yet", "Changes from the nightly exams, from teammates' teaching, from right-sizing and from you show here, each with Undo.", null));
+    for (const c of shown) {
+      const when = new Date(c.at * 1000).toLocaleDateString([], { day: "numeric", month: "short" });
+      const e = c.exam;
+      const note = `${when} · ${c.by}${e ? ` · exam ${e.before.passed}→${e.after.passed} of ${e.cases}` : ""}${c.state !== "kept" ? ` · ${c.state}` : ""}`;
+      const row = setRow(c.what, note, c.state === "kept" && c.kind !== "split" && c.kind !== "inherited" ? button("Undo", "quiet small", async () => { await call("undo_change", { id: a.id, change: c.id }); toast("Undone", c.what); loadRoster(); refreshProfile(); }) : null);
+      if (c.state !== "kept") row.classList.add("faded");
+      hg.append(row);
+    }
+    out.push(el("h3", "group-title", "Changes"), hg);
+
+    // Its bench cases and exams.
+    const mine = bench.cases.filter((c) => c.agent === a.id);
+    const bg = el("div", "group");
+    bg.append(setRow(`${mine.length} of your jobs on the bench`, mine.length ? "Changes to this agent are examined on these." : "Build the bench in Settings → Evolution once it has done some jobs.",
+      mine.length ? button("Run an exam now", "quiet small", async () => {
+        const model = prompt("Try another model? Leave empty to check it as it is.", "") ?? null;
+        if (model === null) return;
+        toast("Exam started", "It runs your jobs on a copy; nothing real is changed. Results show here.");
+        await call("exam", { id: a.id, model: model.trim() || null });
+        refreshProfile();
+      }) : null));
+    for (const ex of exams.slice(0, 5)) {
+      bg.append(setRow(ex.what, `${ex.before.passed}/${ex.before.total} as it is · ${ex.after.passed}/${ex.after.total} changed · cost ${costLine(ex.before, ex.after)}`, null));
+    }
+    out.push(el("h3", "group-title", "Bench and exams"), bg);
+    return out;
+  },
+
   async computer(a) {
     const [asleep, cage, browser, snaps, cloud] = await Promise.all([
       call("asleep", { id: a.id }), call("cage", { id: a.id }), call("browser", { id: a.id }), call("snapshots", { id: a.id }), call("cloud").catch(() => null),
@@ -409,6 +495,18 @@ const PANELS = {
 
   async share(a) {
     const out = [];
+    // Its passport: the record, signed by this team.
+    const pp = el("div", "group");
+    pp.append(setRow("Passport", "Its record — stage, jobs, grades, tests — signed by your team, so anyone can check it came from you and wasn't changed. No conversation, files or memory.",
+      button("Copy passport", "quiet small", async () => { const p = await call("passport", { id: a.id }); await navigator.clipboard.writeText(JSON.stringify(p, null, 2)); toast("Passport copied", "Paste it wherever you introduce this agent.", "good"); })));
+    pp.append(setRow("Check a passport", "Paste one someone gave you.", button("Check", "quiet small", async () => {
+      const raw = prompt("Paste the passport");
+      if (!raw) return;
+      let p; try { p = JSON.parse(raw); } catch { return toast("That isn't a passport", "It should be the JSON a passport is.", "error"); }
+      const r = await call("verify_passport", { passport: p });
+      toast("Genuine", `${r.agent?.name ?? "This agent"}'s passport, signed by key ${String(r.issuer).slice(0, 12)}…, unchanged since it was issued.`, "good");
+    })));
+    out.push(el("h3", "group-title", "Passport"), pp);
     // Inbound: other people's agents you invite.
     const invites = (await call("invites")).filter((i) => i.agent === a.id);
     const inv = el("div", "group");
