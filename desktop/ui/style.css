@@ -1127,3 +1127,6 @@ footer.me { gap: 6px; }
 .group .row > .row-text { flex: 1; }
 .group .row > .btn, .group .row > .row-actions .btn, .form-end .btn { flex: none; white-space: nowrap; }
 .group .row > .row-actions { margin-top: 0; flex-wrap: nowrap; }
+.group .row.inline-form { gap: 10px; padding-top: 10px; padding-bottom: 10px; }
+.inline-form .inline-in { flex: 1; min-width: 0; height: 36px; padding: 0 12px; }
+.group.edit > .row.inline-form { padding: 6px 0 0; }

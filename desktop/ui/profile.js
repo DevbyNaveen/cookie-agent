@@ -123,6 +123,14 @@ function shortPath(p) {
   return parts.length > 5 ? [parts[0], "…", ...parts.slice(-3)].join("/") : parts.join("/");
 }
 
+/** A field and its button on one line, inside the list it adds to. */
+function inlineForm(field, btn) {
+  const r = el("div", "row inline-form");
+  field.classList.add("inline-in");
+  r.append(field, btn);
+  return r;
+}
+
 const fact = (k, v) => { const r = el("div", "row"); r.append(el("span", null, k), el("span", "muted", v)); return r; };
 
 const GRANT_INFO = [
@@ -386,10 +394,8 @@ const PANELS = {
     }
     const fm = input("", "provider:model for the fork", { spellcheck: false });
     fm.setAttribute("list", "models");
-    const fe = el("div", "form-end");
-    fe.append(button("Start fork", "quiet small", async () => { await call("fork", { id: a.id, model: fm.value || null }); refreshProfile(); }));
-    forkBox.append(fm);
-    out.push(el("h3", "group-title", "Forks"), forkBox, fe);
+    forkBox.append(inlineForm(fm, button("Start fork", "quiet small", async () => { await call("fork", { id: a.id, model: fm.value || null }); refreshProfile(); })));
+    out.push(el("h3", "group-title", "Forks"), forkBox);
     return out;
   },
 
@@ -563,9 +569,9 @@ const PANELS = {
     const out = [];
     // Its passport: the record, signed by this team.
     const pp = el("div", "group");
-    pp.append(setRow("Passport", "Its record — stage, jobs, grades, tests — signed by your team, so anyone can check it came from you and wasn't changed. No conversation, files or memory.",
+    pp.append(setRow("Its passport", "Its record — stage, jobs, grades, tests — signed by your team, so anyone can check it came from you and wasn't changed. No conversation, files or memory.",
       button("Copy passport", "quiet small", async () => { const p = await call("passport", { id: a.id }); await navigator.clipboard.writeText(JSON.stringify(p, null, 2)); toast("Passport copied", "Paste it wherever you introduce this agent.", "good"); })));
-    pp.append(setRow("Check a passport", "Paste one someone gave you.", button("Check", "quiet small", async () => {
+    pp.append(setRow("Check someone's passport", "Paste one someone gave you.", button("Check", "quiet small", async () => {
       const raw = prompt("Paste the passport");
       if (!raw) return;
       let p; try { p = JSON.parse(raw); } catch { return toast("That isn't a passport", "It should be the JSON a passport is.", "error"); }
@@ -585,9 +591,8 @@ const PANELS = {
       linkOut.replaceChildren("Send this link to them (it's shown once): ", el("code", "copyable", r.link));
       try { await navigator.clipboard.writeText(r.link); linkOut.append(" Copied."); } catch {}
     });
-    const invForm = el("div", "group edit"); invForm.append(label);
-    const invEnd = el("div", "form-end"); invEnd.append(make);
-    out.push(el("h3", "group-title", "Other agents that may talk to this one"), inv, invForm, invEnd, linkOut);
+    inv.append(inlineForm(label, make));
+    out.push(el("h3", "group-title", "Other agents that may talk to this one"), inv, linkOut);
     // Outbound: agents this one may message.
     const peers = el("div", "group");
     if (!a.grants.peers.length) peers.append(setRow("No peers", "Paste an invite someone gave you, and this agent can message theirs (asking you each time).", null));
@@ -598,9 +603,8 @@ const PANELS = {
       toast("Peer added", `${a.name} can now message ${name}.`, "good");
       await loadRoster(); current = agentById(a.id); refreshProfile();
     });
-    const pf = el("div", "group edit"); pf.append(link);
-    const pe = el("div", "form-end"); pe.append(add);
-    out.push(el("h3", "group-title", "Agents this one may message"), peers, pf, pe);
+    peers.append(inlineForm(link, add));
+    out.push(el("h3", "group-title", "Agents this one may message"), peers);
     // Packs.
     const pack = el("div", "group");
     pack.append(setRow("Export as a pack", "Its setup, tests and record in one signed file. Whoever hires it starts with no access.", button("Export", "quiet small", async () => {
