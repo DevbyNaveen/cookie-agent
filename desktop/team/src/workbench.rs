@@ -252,6 +252,8 @@ fn ask_tool(team: Weak<Team>, agent: String, agent_name: String) -> impl Tool {
                 team.questions.lock().unwrap().insert(q.id.clone(), PendingQuestion { question: q.clone(), answer: tx });
                 team.emit(TeamEvent::Question { question: q.clone() });
                 team.notice(&agent, &format!("{agent_name} has a question"), &util::clip(&q.question, 200), None, true);
+                // A job you started by mail asks by mail too; the app and your linked chats still show it.
+                team.mail_question(&q).await;
                 let id = q.id.clone();
                 match tokio::time::timeout(ASK_WAIT, rx).await {
                     Ok(Ok(answer)) => Ok(format!("The person answered: {answer}")),

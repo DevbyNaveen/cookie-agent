@@ -53,6 +53,22 @@ struct Draft {
     at: u64,
 }
 
+/// A question an agent asked during a job you started by mail, mailed to you in that thread.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AskedByMail {
+    /// The question it answers (`ask_person`'s id).
+    question_id: String,
+    question: String,
+    /// The question's choices, so a reply of "2" picks the second.
+    choices: Vec<String>,
+    /// Only a reply from this address, proven, answers it.
+    to: String,
+    at: u64,
+}
+
+/// How long a mailed question's reply address stays good (the question itself waits 30 minutes).
+const ASKED_KEEP: u64 = 2 * 86_400;
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct MailBook {
@@ -60,6 +76,8 @@ struct MailBook {
     seen: Vec<String>,
     jobs: BTreeMap<String, MailJob>,
     drafts: BTreeMap<String, Draft>,
+    /// Questions mailed to you, by the token in their reply-to (`+q_<token>`).
+    asked: BTreeMap<String, AskedByMail>,
     /// The day an "outside sender" line was last shown.
     outsider_day: String,
 }
@@ -137,6 +155,131 @@ pub fn parse(raw: &[u8]) -> Option<Mail> {
     })
 }
 
+/// One file attached to a mail.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MailFile {
+    pub name: String,
+    pub media_type: String,
+    pub bytes: Vec<u8>,
+}
+
+/// The most files one mail brings, the most one file may be, and all of them together.
+const FILES_MAX: usize = 10;
+const FILE_MAX: usize = 15 * 1024 * 1024;
+const FILES_TOTAL: usize = 30 * 1024 * 1024;
+
+/// The mail's attached files, in order. Parts without a file name (a signature's logo, an inline
+/// picture of the body) are part of the message, not files.
+pub fn files_of(raw: &[u8]) -> Vec<MailFile> {
+    use mail_parser::{MessageParser, MimeHeaders};
+    let Some(msg) = MessageParser::default().parse(raw) else { return Vec::new() };
+    msg.attachments()
+        .filter_map(|p| {
+            let name = p.attachment_name()?.trim().to_string();
+            if name.is_empty() {
+                return None;
+            }
+            let media_type = p.content_type().map(|c| format!("{}/{}", c.ctype(), c.subtype().unwrap_or("octet-stream"))).unwrap_or_else(|| "application/octet-stream".into()).to_ascii_lowercase();
+            Some(MailFile { name, media_type, bytes: p.contents().to_vec() })
+        })
+        .collect()
+}
+
+/// A file name safe to write in a folder: no path, no control characters, never hidden.
+fn safe_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let clean: String = base.chars().map(|c| if c.is_control() || matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c }).collect();
+    let clean = clean.trim().trim_start_matches('.').to_string();
+    let clean: String = clean.chars().take(120).collect();
+    if clean.is_empty() { "file".into() } else { clean }
+}
+
+/// Text the model can read as it is.
+fn readable_text(f: &MailFile) -> Option<String> {
+    let ext = f.name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    let texty = f.media_type.starts_with("text/")
+        || ["json", "xml", "yaml", "x-yaml", "csv", "calendar", "markdown", "javascript", "toml"].iter().any(|t| f.media_type.ends_with(&format!("/{t}")))
+        || ["txt", "md", "csv", "tsv", "json", "xml", "yaml", "yml", "toml", "ics", "log", "html", "htm"].contains(&ext.as_str());
+    if !texty {
+        return None;
+    }
+    String::from_utf8(f.bytes.clone()).ok()
+}
+
+/// How the files of one mail reach the job: text and images inline (untrusted, like anything in a
+/// mail), every file kept in Cookie's folder, and a list of what was left out and why.
+pub(crate) struct FilesForJob {
+    pub inline: Vec<crate::runtime::Attachment>,
+    pub saved: Vec<(String, String, usize)>,
+    pub left_out: Vec<String>,
+}
+
+pub(crate) fn files_for_job(files: Vec<MailFile>, folder: &std::path::Path) -> FilesForJob {
+    let mut out = FilesForJob { inline: Vec::new(), saved: Vec::new(), left_out: Vec::new() };
+    let mut total = 0usize;
+    for (i, f) in files.into_iter().enumerate() {
+        if i >= FILES_MAX {
+            out.left_out.push(format!("{} (more than {FILES_MAX} files)", f.name));
+            continue;
+        }
+        if f.bytes.len() > FILE_MAX || total + f.bytes.len() > FILES_TOTAL {
+            out.left_out.push(format!("{} (too large: {})", f.name, util::human_bytes(f.bytes.len() as u64)));
+            continue;
+        }
+        total += f.bytes.len();
+        let mut name = safe_name(&f.name);
+        let (stem, ext) = match name.rsplit_once('.') {
+            Some((a, b)) => (a.to_string(), format!(".{b}")),
+            None => (name.clone(), String::new()),
+        };
+        let mut n = 2;
+        while folder.join(&name).exists() {
+            name = format!("{stem} ({n}){ext}");
+            n += 1;
+        }
+        let path = folder.join(&name);
+        if std::fs::create_dir_all(folder).and_then(|_| std::fs::write(&path, &f.bytes)).is_err() {
+            out.left_out.push(format!("{} (couldn't be saved)", f.name));
+            continue;
+        }
+        out.saved.push((path.to_string_lossy().into_owned(), f.media_type.clone(), f.bytes.len()));
+        if let Some(text) = readable_text(&f) {
+            out.inline.push(crate::runtime::Attachment::text(format!("Attached to the mail: {}", f.name), text));
+        } else if crate::runtime::IMAGE_TYPES.contains(&f.media_type.as_str()) && f.bytes.len() <= crate::runtime::IMAGE_MAX {
+            out.inline.push(crate::runtime::Attachment::image(format!("Attached to the mail: {}", f.name), &f.media_type, &f.bytes));
+        }
+    }
+    out
+}
+
+/// The note that tells the job where the mail's files are.
+fn files_note(f: &FilesForJob) -> Option<String> {
+    if f.saved.is_empty() && f.left_out.is_empty() {
+        return None;
+    }
+    let mut s = String::new();
+    if !f.saved.is_empty() {
+        s.push_str("The mail's files are saved here; open the ones not shown above with your tools:\n");
+        for (path, mt, n) in &f.saved {
+            s.push_str(&format!("- {path} ({mt}, {})\n", util::human_bytes(*n as u64)));
+        }
+    }
+    if !f.left_out.is_empty() {
+        s.push_str(&format!("\nLeft out, so say so if they matter: {}\n", f.left_out.join("; ")));
+    }
+    Some(s)
+}
+
+/// A reply to a mailed question: a number picks that choice, anything else is the answer.
+fn answer_from(own: &str, choices: &[String]) -> String {
+    let own = own.trim();
+    let first = own.split_whitespace().next().unwrap_or("").trim_end_matches(['.', ')']);
+    match first.parse::<usize>() {
+        Ok(n) if n >= 1 && n <= choices.len() && own.split_whitespace().count() == 1 => choices[n - 1].clone(),
+        _ => own.to_string(),
+    }
+}
+
 impl Team {
     fn mail_path(&self) -> std::path::PathBuf {
         self.paths.root.join("mail.json")
@@ -191,7 +334,13 @@ impl Team {
         }
         let member = Self::is_you(&cfg, &mail.from).then(|| "you".to_string());
         let proven = member.is_some() && sender_proven(raw, &mail.from).await;
-        let route = rules::route(&RouteFacts { mail: mail.clone(), cookie_domain: cfg.domain.clone(), cookie_rcpt: rcpt, address, member, proven, asked_ok: false });
+        // A reply to a question Cookie mailed: only to you, only while the question still waits.
+        let token = address.question.as_deref().map(|q| q.trim_start_matches("ck_").to_string());
+        let asked_ok = token.as_ref().is_some_and(|t| {
+            let b = self.mail_book();
+            b.asked.get(t).is_some_and(|a| a.to.eq_ignore_ascii_case(&mail.from) && self.questions().iter().any(|q| q.id == a.question_id))
+        });
+        let route = rules::route(&RouteFacts { mail: mail.clone(), cookie_domain: cfg.domain.clone(), cookie_rcpt: rcpt, address, member, proven, asked_ok });
         match route {
             Route::Silent { .. } => Ok("silent"),
             Route::Outsider { sender_domain } => {
@@ -212,13 +361,30 @@ impl Team {
                 Ok("unproven")
             }
             Route::Draft { draft_id } => self.mail_draft_answer(&cfg, &mail, &draft_id, proven).await,
-            Route::Answers { .. } => Ok("silent"),
+            Route::Answers { run, own } => {
+                let t = run.trim_start_matches("ck_").to_string();
+                let mut b = self.mail_book();
+                let Some(asked) = b.asked.remove(&t) else { return Ok("silent") };
+                self.save_mail_book(&b);
+                self.answer_question(&asked.question_id, &answer_from(&own, &asked.choices), "mail")?;
+                Ok("answered")
+            }
             Route::Job { own, context, subject, .. } => {
                 let from = rules::from_line("email", &mail.from, "you");
                 let input = rules::input_for(&subject, &from, &own, None);
                 let outsiders: Vec<String> = rules::thread_people(&mail, &cfg.domain).into_iter().filter(|p| !Self::is_you(&cfg, p)).collect();
                 let ctx = rules::context_for(&outsiders, false, &context);
-                let attachments = if ctx.trim().is_empty() { Vec::new() } else { vec![crate::runtime::Attachment { name: "The rest of the thread (quoted)".into(), text: ctx }] };
+                let mut attachments = if ctx.trim().is_empty() { Vec::new() } else { vec![crate::runtime::Attachment::text("The rest of the thread (quoted)", ctx)] };
+                let files = files_of(raw);
+                if !files.is_empty() {
+                    let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+                    let folder = self.paths.work(crate::front::COOKIE_ID).join("mail").join(format!("{day} {}", safe_name(&util::clip(&subject, 60))));
+                    let f = files_for_job(files, &folder);
+                    attachments.extend(f.inline.iter().cloned());
+                    if let Some(note) = files_note(&f) {
+                        attachments.push(crate::runtime::Attachment::text("Files from the mail", note));
+                    }
+                }
                 let job = self.start_job(crate::front::COOKIE_ID, input, attachments, Trigger::Channel { channel: "mail".into(), chat: mail.from.clone() }).await?;
                 let mut b = self.mail_book();
                 b.jobs.insert(job, MailJob { mail, subject });
@@ -297,6 +463,34 @@ impl Team {
         }
     }
 
+    /// An agent asked you something during a job you started by mail: the question goes to you in
+    /// that thread, and your reply answers it. False when the job didn't come by mail.
+    pub(crate) async fn mail_question(&self, q: &crate::workbench::Question) -> bool {
+        let Some(cfg) = self.mail_config() else { return false };
+        let Some(job) = self.runs.lock().unwrap().get(&q.agent).map(|r| r.job.clone()) else { return false };
+        let mut b = self.mail_book();
+        let Some(mj) = b.jobs.get(&job).cloned() else { return false };
+        // Its own token, not the question's id: the reply address is all a reply needs to carry.
+        let token = util::random_hex(8);
+        let now = util::now();
+        b.asked.retain(|_, a| now.saturating_sub(a.at) < ASKED_KEEP);
+        b.asked.insert(token.clone(), AskedByMail { question_id: q.id.clone(), question: q.question.clone(), choices: q.choices.clone(), to: mj.mail.from.clone(), at: now });
+        self.save_mail_book(&b);
+        let mut text = format!("{} needs one thing from you before it carries on:\n\n{}\n", q.agent_name, q.question);
+        for (i, c) in q.choices.iter().enumerate() {
+            text.push_str(&format!("\n{}. {c}", i + 1));
+        }
+        text.push_str(if q.choices.is_empty() { "\n\nReply to this email with your answer." } else { "\n\nReply with a number, or write your own answer." });
+        text.push_str("\nIt waits 30 minutes, then carries on without it and says what's still open.");
+        text.push_str(&rules::signature(&cfg.name));
+        let reply_to = format!("{}+q_{token}@{}", cfg.local, cfg.domain);
+        let sent = self.smtp_send(&cfg, std::slice::from_ref(&mj.mail.from), &[], &rules::reply_subject(&mj.mail.subject), &text, Some(&reply_to), &mj.mail.message_id, &rules::thread_refs(&mj.mail)).await;
+        if let Err(e) = &sent {
+            self.notice(crate::front::COOKIE_ID, "Cookie couldn't mail a question", e, Some(&job), true);
+        }
+        sent.is_ok()
+    }
+
     /// One message out, from Cookie's address.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn smtp_send(&self, cfg: &MailConfig, to: &[String], cc: &[String], subject: &str, text: &str, reply_to: Option<&str>, in_reply_to: &str, references: &[String]) -> Result<(), String> {
@@ -330,7 +524,7 @@ impl Team {
 
     pub fn mail_status(&self) -> Value {
         let b = self.mail_book();
-        json!({"address": self.mail_config().map(|c| c.address()), "drafts": b.drafts.len(), "waiting_jobs": b.jobs.len()})
+        json!({"address": self.mail_config().map(|c| c.address()), "drafts": b.drafts.len(), "waiting_jobs": b.jobs.len(), "questions": b.asked.len()})
     }
 }
 
@@ -374,5 +568,101 @@ mod tests {
         let Route::Job { own, context, .. } = rules::route(&facts(Some("you"), true)) else { panic!("a proven job") };
         assert_eq!(own, "Can you pull the Q3 numbers?");
         assert!(context.contains("earlier text"), "the quoted part is context, never the job");
+    }
+    // A real multipart mail: a body, a CSV, a PNG, a PDF, and a logo without a file name.
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89";
+    fn multipart() -> Vec<u8> {
+        use base64::Engine as _;
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        format!(
+            "From: Ana <ana@acme.com>\r\nTo: me@cookie.example.com\r\nSubject: Q3 files\r\nMessage-ID: <m2@acme.com>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"B\"\r\n\r\n\
+--B\r\nContent-Type: text/plain\r\n\r\nNumbers attached.\r\n\
+--B\r\nContent-Type: text/csv\r\nContent-Disposition: attachment; filename=\"q3.csv\"\r\n\r\nregion,total\r\neu,12\r\n\
+--B\r\nContent-Type: image/png\r\nContent-Disposition: attachment; filename=\"chart.png\"\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n\
+--B\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"../../report.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n\
+--B\r\nContent-Type: image/png\r\nContent-Disposition: inline\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n\
+--B--\r\n",
+            b64(PNG),
+            b64(b"%PDF-1.4 fake"),
+            b64(PNG)
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn a_mails_files_are_read_and_its_inline_logo_is_not_one() {
+        let files = files_of(&multipart());
+        let names: Vec<(&str, &str)> = files.iter().map(|f| (f.name.as_str(), f.media_type.as_str())).collect();
+        assert_eq!(names, vec![("q3.csv", "text/csv"), ("chart.png", "image/png"), ("../../report.pdf", "application/pdf")]);
+        assert_eq!(files[1].bytes, PNG);
+        assert_eq!(parse(&multipart()).unwrap().text.trim(), "Numbers attached.", "the body stays the body");
+    }
+
+    #[test]
+    fn text_and_images_go_to_the_job_and_every_file_is_kept() {
+        let dir = std::env::temp_dir().join(format!("cookie-mail-{}", util::random_hex(4)));
+        let f = files_for_job(files_of(&multipart()), &dir);
+        assert_eq!(f.saved.len(), 3);
+        assert!(f.saved.iter().all(|(p, _, _)| std::path::Path::new(p).starts_with(&dir)), "a file name never climbs out of the folder");
+        assert!(dir.join("report.pdf").exists());
+        assert_eq!(f.inline.len(), 2, "the CSV as text, the PNG as an image; the PDF is opened with tools");
+        assert!(f.inline[0].text.contains("eu,12"));
+        assert_eq!(f.inline[1].media_type.as_deref(), Some("image/png"));
+        let note = files_note(&f).unwrap();
+        assert!(note.contains("report.pdf") && note.contains("application/pdf"));
+        // The same name again lands beside it, not over it.
+        let again = files_for_job(files_of(&multipart()), &dir);
+        assert!(again.saved.iter().any(|(p, _, _)| p.ends_with("report (2).pdf")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn too_many_or_too_large_files_are_left_out_and_said() {
+        let dir = std::env::temp_dir().join(format!("cookie-mail-{}", util::random_hex(4)));
+        let mut files: Vec<MailFile> = (0..12).map(|i| MailFile { name: format!("n{i}.txt"), media_type: "text/plain".into(), bytes: b"x".to_vec() }).collect();
+        files.insert(0, MailFile { name: "huge.bin".into(), media_type: "application/octet-stream".into(), bytes: vec![0; FILE_MAX + 1] });
+        let f = files_for_job(files, &dir);
+        assert_eq!(f.saved.len(), 9);
+        assert_eq!(f.left_out.len(), 4);
+        assert!(f.left_out[0].starts_with("huge.bin (too large"));
+        assert!(files_note(&f).unwrap().contains("Left out"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_names_are_safe_to_write() {
+        assert_eq!(safe_name("../../etc/passwd"), "passwd");
+        assert_eq!(safe_name("..\\evil.exe"), "evil.exe");
+        assert_eq!(safe_name(".hidden"), "hidden");
+        assert_eq!(safe_name("a:b*c?.txt"), "a_b_c_.txt");
+        assert_eq!(safe_name("   "), "file");
+    }
+
+    #[test]
+    fn a_reply_number_picks_a_choice_and_words_are_the_answer() {
+        let c = vec!["EU".to_string(), "US".to_string()];
+        assert_eq!(answer_from("2", &c), "US");
+        assert_eq!(answer_from("1.", &c), "EU");
+        assert_eq!(answer_from("3", &c), "3", "out of range is just text");
+        assert_eq!(answer_from("2 but only Q3", &c), "2 but only Q3", "a number with words is their own answer");
+        assert_eq!(answer_from("  Both, please ", &[]), "Both, please");
+    }
+
+    #[test]
+    fn a_reply_to_a_question_reaches_it_only_when_proven_and_still_asked() {
+        let mut mail = parse(RAW).unwrap();
+        mail.to = vec!["me+q_ab12cd@cookie.example.com".into()];
+        let facts = |proven, asked_ok| RouteFacts {
+            mail: mail.clone(),
+            cookie_domain: "cookie.example.com".into(),
+            cookie_rcpt: "me+q_ab12cd@cookie.example.com".into(),
+            address: rules::parse_address("me+q_ab12cd@cookie.example.com", "cookie.example.com").unwrap(),
+            member: Some("you".into()),
+            proven,
+            asked_ok,
+        };
+        assert!(matches!(rules::route(&facts(true, true)), Route::Answers { run, .. } if run == "ck_ab12cd"));
+        assert!(!matches!(rules::route(&facts(false, true)), Route::Answers { .. }), "unproven never answers");
+        assert!(!matches!(rules::route(&facts(true, false)), Route::Answers { .. }), "a question no longer waiting is not answered");
     }
 }

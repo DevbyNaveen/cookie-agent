@@ -23,10 +23,47 @@ pub(crate) struct Run {
 }
 
 /// A file the person attached: read in the window, given to the model as untrusted.
-#[derive(Debug, Clone, Deserialize)]
+/// Text comes as `text`; an image comes as `media_type` and base64 `data`.
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Attachment {
     pub name: String,
+    #[serde(default)]
     pub text: String,
+    #[serde(default)]
+    pub media_type: Option<String>,
+    #[serde(default)]
+    pub data: Option<String>,
+}
+
+/// Image types every provider reads, and the most one image may be.
+pub(crate) const IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+pub(crate) const IMAGE_MAX: usize = 5 * 1024 * 1024;
+
+impl Attachment {
+    pub fn text(name: impl Into<String>, text: impl Into<String>) -> Self {
+        Attachment { name: name.into(), text: text.into(), ..Default::default() }
+    }
+
+    pub fn image(name: impl Into<String>, media_type: &str, bytes: &[u8]) -> Self {
+        use base64::Engine as _;
+        Attachment { name: name.into(), media_type: Some(media_type.to_string()), data: Some(base64::engine::general_purpose::STANDARD.encode(bytes)), ..Default::default() }
+    }
+
+    /// What the model is given: an untrusted image, or untrusted text headed by the file's name.
+    fn messages(&self) -> Vec<Message> {
+        use base64::Engine as _;
+        if let (Some(mt), Some(data)) = (self.media_type.as_deref(), self.data.as_deref()) {
+            let bytes = base64::engine::general_purpose::STANDARD.decode(data.trim()).unwrap_or_default();
+            if IMAGE_TYPES.contains(&mt) && !bytes.is_empty() && bytes.len() <= IMAGE_MAX {
+                if let Ok(img) = Message::untrusted_image(mt, &bytes, Source::File) {
+                    return vec![Message::untrusted(format!("{} (an image, below)", self.name), Source::File), img];
+                }
+            }
+            return vec![Message::untrusted(format!("{}: an image that couldn't be read ({mt}).", self.name), Source::File)];
+        }
+        let body: String = self.text.chars().take(ATTACH_MAX).collect();
+        vec![Message::untrusted(format!("{}\n\n{body}", self.name), Source::File)]
+    }
 }
 
 /// Attached text the model may read, per file.
@@ -393,8 +430,7 @@ impl Team {
                 _ => Message::user(text.clone()),
             });
             for f in &attachments {
-                let body: String = f.text.chars().take(ATTACH_MAX).collect();
-                input.push(Message::untrusted(format!("{}\n\n{body}", f.name), Source::File));
+                input.extend(f.messages());
             }
             let (team, aid, jid) = (self.clone(), rec.id.clone(), job_id.clone());
             let (tu, us, mk, ca) = (tools_used.clone(), usage.clone(), marks.clone(), cache.clone());
@@ -908,5 +944,16 @@ mod tests {
         push_talk(&mut out, t("b"));
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].talk.as_ref().unwrap().messages.len(), 2);
+    }
+    #[test]
+    fn an_attached_image_reaches_the_model_as_an_untrusted_image() {
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89";
+        let m = Attachment::image("chart.png", "image/png", png).messages();
+        assert_eq!(m.len(), 2);
+        assert!(m[1].content().iter().any(|c| matches!(c, cookie_harness::message::Content::Image { media_type, .. } if media_type == "image/png")));
+        assert!(!matches!(m[1].origin(), cookie_harness::Origin::User), "an image someone sent is never the person's words");
+        let odd = Attachment { media_type: Some("image/tiff".into()), data: Some("AAAA".into()), ..Attachment::text("scan.tiff", "") }.messages();
+        assert!(odd[0].text().contains("couldn't be read"), "an image type no model reads is said, not sent");
+        assert!(Attachment::text("notes.txt", "hello").messages()[0].text().contains("hello"));
     }
 }

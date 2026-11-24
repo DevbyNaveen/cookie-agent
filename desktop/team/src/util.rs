@@ -19,6 +19,15 @@ pub fn new_id(name: &str) -> String {
     if slug.is_empty() { format!("x-{tail}") } else { format!("{slug}-{tail}") }
 }
 
+/// A size people read: 820 B, 14 KB, 3.2 MB.
+pub fn human_bytes(n: u64) -> String {
+    match n {
+        0..=999 => format!("{n} B"),
+        1_000..=999_999 => format!("{} KB", n / 1_000),
+        _ => format!("{:.1} MB", n as f64 / 1_000_000.0),
+    }
+}
+
 /// Random bytes as lowercase hex (tokens, codes).
 pub fn random_hex(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
