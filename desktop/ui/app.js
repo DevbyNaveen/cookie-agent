@@ -458,6 +458,7 @@ const TRIGGER_LABEL = {
   telegram: () => "From your phone",
   handoff: (t) => `Asked by ${agentById(t.from)?.name ?? "another agent"}`,
   peer: (t) => `From ${t.label}`,
+  contact: (t) => `From ${t.label}`,
   inbox: () => "Inbox scan",
   memory: () => "Woke: its memory changed",
 };
@@ -489,6 +490,8 @@ function onTeamEvent(ev) {
   switch (ev.kind) {
     case "job_started": {
       const job = { agent: ev.agent, trigger: ev.trigger, input: ev.input, acc: "", started: false, ui: null, mine: ev.trigger.kind === "chat" };
+      // Another agent asked this one: on its own, outside the chat; it folds into a conversation when done.
+      job.inbound = ["handoff", "peer", "contact"].includes(ev.trigger.kind);
       if (["test", "shadow"].includes(ev.trigger.kind)) return; // private runs: their panels follow them
       live.set(ev.job, job);
       busy.add(ev.agent);
@@ -585,7 +588,7 @@ function onTeamEvent(ev) {
         scrollDown();
         syncSend();
         // It talked with another agent: redraw from the record so the conversation sits where it happened.
-        if (job.talked && ev.status === "done") {
+        if ((job.talked && ev.status === "done") || job.inbound) {
           const r = agentById(ev.agent);
           call("history", { id: ev.agent }).then((lines) => { if (current?.id === ev.agent && view === "chat") { renderLog(r, lines); scrollDown(true); } }).catch(() => {});
         }

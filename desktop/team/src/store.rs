@@ -357,6 +357,11 @@ pub struct Job {
     /// Where it ran when not on this Mac: `cloud` (Enkeon, while the Mac was off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place: Option<String>,
+    /// For a job another agent started (a handoff, a peer, a contact): how many
+    /// messages this agent's own conversation held when it ended, so its chat
+    /// shows the exchange where it happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_message: Option<usize>,
     /// Input tokens sent fresh, read from the prompt cache, and written to it.
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub input_tokens: u64,

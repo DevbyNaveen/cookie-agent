@@ -378,7 +378,7 @@ impl Team {
         let mut added: Vec<Message> = Vec::new();
         self.mark_running(&rec.id, &job_id, &text, &trigger, started_at);
         // Tests and shadows don't touch the agent's real conversation.
-        let in_session = matches!(trigger, Trigger::Chat | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Inbox | Trigger::Memory { .. });
+        let in_session = in_session(&trigger);
 
         let result: Result<String, String> = async {
             let agent = self.build_agent(&rec, &trigger, mode, &job_id, &text, log.clone(), &mut built).await?;
@@ -450,6 +450,7 @@ impl Team {
         } else {
             Vec::new()
         };
+        let after_message = if inbound(&trigger) { Some(self.session_len(&rec.id).await) } else { None };
         let job = Job {
             id: job_id.clone(),
             agent: rec.id.clone(),
@@ -473,6 +474,7 @@ impl Team {
             lessons: built.lessons,
             recipe: built.recipe,
             place: None,
+            after_message,
             input_tokens: fresh_in,
             cache_read_tokens: cache_read,
             cache_write_tokens: cache_write,
@@ -539,13 +541,22 @@ impl Team {
     /// The agent's conversation, as the chat shows it.
     pub async fn history(&self, id: &str) -> Result<Vec<Line>, String> {
         let path = self.paths.session(id);
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-        let session = Session::load(&path).await.map_err(|e| e.to_string())?;
+        let session = if path.exists() { Session::load(&path).await.map_err(|e| e.to_string())? } else { Session::in_memory() };
         let me = self.agent(id).await.ok();
         let team = self.agents().await;
         let contacts = self.contacts();
+        // Conversations other agents started with this one ran outside its chat; each comes
+        // back here at the point it ended, oldest first.
+        let me_name = me.as_ref().map(|a| a.name.clone()).unwrap_or_default();
+        let mut inbound_jobs: Vec<Job> = util::read_jsonl::<Job>(&self.paths.jobs(id)).into_iter().filter(|j| inbound(&j.trigger)).collect();
+        inbound_jobs.sort_by_key(|j| j.finished_at.unwrap_or(j.started_at));
+        let anchors = anchor_inbound(&inbound_jobs, &util::read_jsonl::<Job>(&self.paths.jobs(id)), session.messages());
+        let mut incoming: Vec<(usize, Talk)> = inbound_jobs
+            .iter()
+            .zip(anchors)
+            .filter_map(|(j, at)| talk_in(j, &me_name, &team, &contacts).map(|t| (at, t)))
+            .collect();
+        incoming.reverse(); // popped from the end, oldest first
         let slugs: std::collections::BTreeMap<String, String> = self.net_config().agents.into_iter().map(|(id, n)| (id, n.slug)).collect();
         // Every tool answer, by call id, to pair with the call that asked.
         let mut results: HashMap<String, (String, bool)> = HashMap::new();
@@ -557,27 +568,23 @@ impl Team {
             }
         }
         let mut out: Vec<Line> = Vec::new();
-        for m in session.messages() {
+        for (i, m) in session.messages().iter().enumerate() {
+            while incoming.last().is_some_and(|(at, _)| *at <= i) {
+                let (_, t) = incoming.pop().expect("checked");
+                push_talk(&mut out, t);
+            }
             for (call_id, name, args) in m.tool_calls() {
                 let Some(mut talk) = talk_of(name, args, &team, &contacts, &slugs) else { continue };
                 let (answer, failed) = results.get(call_id).cloned().unwrap_or_default();
-                let me_name = me.as_ref().map(|a| a.name.clone()).unwrap_or_default();
                 let asked = talk.asked.clone();
                 // Keep only the answer itself, without the tool's "X answered:" lead-in.
                 let reply = answer.split_once(" answered:\n").map(|(_, r)| r.to_string()).unwrap_or(answer);
-                let mut msgs = vec![TalkMsg { who: me_name, mine: true, text: asked }];
+                let mut msgs = vec![TalkMsg { who: me_name.clone(), mine: true, text: asked }];
                 if !reply.trim().is_empty() {
                     msgs.push(TalkMsg { who: if failed { "Cookie".into() } else { talk.with_name.clone() }, mine: false, text: reply });
                 }
-                // Back-to-back exchanges with the same partner become one conversation.
-                if let Some(Line { talk: Some(prev), .. }) = out.last_mut() {
-                    if prev.with_name == talk.with_name && prev.kind == talk.kind {
-                        prev.messages.extend(msgs);
-                        continue;
-                    }
-                }
                 talk.messages = msgs;
-                out.push(Line { from: "talk", text: String::new(), talk: Some(talk) });
+                push_talk(&mut out, talk);
             }
             let text = m.text();
             let from = match (m.role(), m.origin()) {
@@ -591,7 +598,19 @@ impl Team {
                 out.push(Line { from, text, talk: None });
             }
         }
+        while let Some((_, t)) = incoming.pop() {
+            push_talk(&mut out, t);
+        }
         Ok(out)
+    }
+
+    /// How many messages the agent's own conversation holds now.
+    async fn session_len(&self, id: &str) -> usize {
+        let path = self.paths.session(id);
+        if !path.exists() {
+            return 0;
+        }
+        Session::load(&path).await.map(|s| s.messages().len()).unwrap_or(0)
     }
 
     /// Every job the agent ran, newest first.
@@ -720,6 +739,83 @@ pub struct TalkMsg {
     pub text: String,
 }
 
+/// Jobs that run in the agent's own conversation (the rest run on their own and leave it alone).
+fn in_session(trigger: &Trigger) -> bool {
+    matches!(trigger, Trigger::Chat | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Inbox | Trigger::Memory { .. })
+}
+
+/// Jobs another agent started: one of yours asking, another person's agent through an invite or a contact.
+fn inbound(trigger: &Trigger) -> bool {
+    matches!(trigger, Trigger::Handoff { .. } | Trigger::Peer { .. } | Trigger::Contact { .. })
+}
+
+/// Add a conversation to the transcript; back-to-back exchanges with the same partner become one.
+fn push_talk(out: &mut Vec<Line>, talk: Talk) {
+    if let Some(Line { talk: Some(prev), .. }) = out.last_mut() {
+        if prev.with_name == talk.with_name && prev.kind == talk.kind {
+            prev.messages.extend(talk.messages);
+            return;
+        }
+    }
+    out.push(Line { from: "talk", text: String::new(), talk: Some(talk) });
+}
+
+/// Where each inbound job sits in the conversation: the length it recorded when it ended, or,
+/// for one recorded before that was kept, just before the first request of the next job of its own.
+fn anchor_inbound(inbound_jobs: &[Job], all: &[Job], messages: &[Message]) -> Vec<usize> {
+    let requests: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| matches!(m.role(), cookie_harness::Role::User) && matches!(m.origin(), cookie_harness::Origin::User))
+        .map(|(i, _)| i)
+        .collect();
+    inbound_jobs
+        .iter()
+        .map(|j| {
+            j.after_message.unwrap_or_else(|| {
+                let ended = j.finished_at.unwrap_or(j.started_at);
+                let before = all.iter().filter(|o| in_session(&o.trigger) && o.started_at <= ended).count();
+                requests.get(before).copied().unwrap_or(messages.len())
+            })
+        })
+        .collect()
+}
+
+/// A conversation another agent started with this one, as this one's chat shows it.
+fn talk_in(job: &Job, me_name: &str, team: &[AgentRecord], contacts: &[crate::network::Contact]) -> Option<Talk> {
+    let mut talk = match &job.trigger {
+        Trigger::Handoff { from, .. } => {
+            let other = team.iter().find(|a| &a.id == from);
+            Talk { kind: "team", with_name: other.map(|a| a.name.clone()).unwrap_or_else(|| "Another agent".into()), with_id: from.clone(), with_sign: None, with_address: None, asked: String::new(), messages: Vec::new() }
+        }
+        Trigger::Contact { contact, label, .. } => {
+            let c = contacts.iter().find(|c| &c.id == contact || c.remote.to_string() == *contact);
+            Talk {
+                kind: "network",
+                with_name: c.map(|c| c.remote_name.clone()).unwrap_or_else(|| label.clone()),
+                with_id: c.and_then(|c| c.remote_agent_id.clone()).unwrap_or_else(|| contact.clone()),
+                with_sign: c.map(|c| c.sign.clone()),
+                with_address: c.map(|c| c.remote.to_string()),
+                asked: String::new(),
+                messages: Vec::new(),
+            }
+        }
+        Trigger::Peer { invite, label } => Talk { kind: "peer", with_name: label.clone(), with_id: invite.clone(), with_sign: None, with_address: None, asked: String::new(), messages: Vec::new() },
+        _ => return None,
+    };
+    let reply = match job.status {
+        JobStatus::Done => job.answer.clone(),
+        JobStatus::Stopped => "Stopped before answering.".into(),
+        JobStatus::Failed => format!("Couldn't answer: {}", job.error.as_deref().unwrap_or("it hit a problem")),
+        JobStatus::Running => String::new(),
+    };
+    talk.messages.push(TalkMsg { who: talk.with_name.clone(), mine: false, text: job.input.clone() });
+    if !reply.trim().is_empty() {
+        talk.messages.push(TalkMsg { who: me_name.to_string(), mine: true, text: reply });
+    }
+    Some(talk)
+}
+
 /// Which tool calls are conversations with another agent, and with whom.
 fn talk_of(name: &str, args: &serde_json::Value, team: &[AgentRecord], contacts: &[crate::network::Contact], slugs: &std::collections::BTreeMap<String, String>) -> Option<Talk> {
     let s = |k: &str| args[k].as_str().unwrap_or_default().to_string();
@@ -772,5 +868,45 @@ mod tests {
         assert!(s.contains("commit to nothing"));
         let p = instructions(&[], &rec, &Trigger::Chat, true);
         assert!(p.contains("probation"));
+    }
+    fn job(trigger: Trigger, started: u64, finished: u64, after: Option<usize>) -> Job {
+        Job { id: format!("j{started}"), agent: "me".into(), trigger, input: "Draft the launch note".into(), started_at: started, finished_at: Some(finished), status: JobStatus::Done, answer: "Here it is.".into(), after_message: after, ..Job::default() }
+    }
+
+    #[test]
+    fn an_inbound_conversation_sits_where_it_happened() {
+        // Two chats of its own: [note, request, note, request].
+        let msgs = vec![Message::harness_note("n"), Message::user("first"), Message::harness_note("n"), Message::user("second")];
+        let handoff = |s, f, a| job(Trigger::Handoff { from: "w".into(), chain: vec![] }, s, f, a);
+        let all = vec![job(Trigger::Chat, 10, 15, None), handoff(18, 20, None), job(Trigger::Chat, 30, 35, None), handoff(36, 40, None), handoff(41, 42, Some(2))];
+        let inbound: Vec<Job> = all.iter().filter(|j| inbound(&j.trigger)).cloned().collect();
+        // Recorded before the place was kept: just before the next chat's request, or at the end.
+        // Recorded since: exactly where it says.
+        assert_eq!(anchor_inbound(&inbound, &all, &msgs), vec![3, 4, 2]);
+    }
+
+    #[test]
+    fn the_asked_agent_sees_who_asked_and_what_it_answered() {
+        let writer: AgentRecord = serde_json::from_value(serde_json::json!({"id": "w", "name": "Writer", "model": "anthropic:x", "job": "Write", "created_at": 0})).unwrap();
+        let t = talk_in(&job(Trigger::Handoff { from: "w".into(), chain: vec![] }, 1, 2, Some(0)), "Research", &[writer], &[]).unwrap();
+        assert_eq!((t.kind, t.with_name.as_str(), t.with_id.as_str()), ("team", "Writer", "w"));
+        assert_eq!(t.messages, vec![
+            TalkMsg { who: "Writer".into(), mine: false, text: "Draft the launch note".into() },
+            TalkMsg { who: "Research".into(), mine: true, text: "Here it is.".into() },
+        ]);
+        let failed = Job { status: JobStatus::Failed, error: Some("no key".into()), ..job(Trigger::Peer { invite: "i".into(), label: "Alice's agent".into() }, 1, 2, None) };
+        let t = talk_in(&failed, "Research", &[], &[]).unwrap();
+        assert_eq!((t.kind, t.messages[1].text.as_str()), ("peer", "Couldn't answer: no key"));
+        assert!(talk_in(&job(Trigger::Chat, 1, 2, None), "Research", &[], &[]).is_none());
+    }
+
+    #[test]
+    fn back_to_back_talks_with_one_partner_become_one() {
+        let t = |text: &str| Talk { kind: "team", with_name: "Writer".into(), with_id: "w".into(), with_sign: None, with_address: None, asked: String::new(), messages: vec![TalkMsg { who: "Writer".into(), mine: false, text: text.into() }] };
+        let mut out = Vec::new();
+        push_talk(&mut out, t("a"));
+        push_talk(&mut out, t("b"));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].talk.as_ref().unwrap().messages.len(), 2);
     }
 }
