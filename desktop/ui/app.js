@@ -335,6 +335,7 @@ function openTalk(t) {
     name.style.color = m.mine ? Faces.color(me.id) : Faces.color(t.with_id, talkSalt(t));
     const bubble = el("div", "bubble md");
     bubble.innerHTML = Md.render(m.text);
+    if (m.mine) hydrateMd(bubble, me.id);
     const body = el("div", "talk-body");
     body.append(name, bubble);
     // The face sits beside the last message in each run, like a chat app.
@@ -358,6 +359,139 @@ function closeTalk() {
   v.classList.remove("open");
   setTimeout(() => { v.hidden = true; v.replaceChildren(); }, 180);
 }
+
+/* ---------- rich replies: pictures, recordings, videos and files an agent shows ---------- */
+const FILE_KIND = { image: "Image", video: "Video", audio: "Audio", pdf: "PDF", sheet: "Sheet", document: "Document", slides: "Slides", text: "Text", archive: "Archive", other: "File" };
+const fileCache = new Map();
+/** One file the agent named, from where it may read (`chat_file`); asked once per agent and path. */
+function chatFile(agentId, src) {
+  const key = `${agentId}\u0000${src}`;
+  if (!fileCache.has(key)) {
+    const p = call("chat_file", { id: agentId, path: src });
+    p.catch(() => fileCache.delete(key)); // a file made later is worth asking about again
+    fileCache.set(key, p);
+  }
+  return fileCache.get(key);
+}
+// An absolute or home path with an extension, in `code`: a file worth a card.
+const PATH_IN_CODE = /^(?:\/|~\/)[^\s`]+\.[A-Za-z0-9]{1,5}$/;
+
+/** A file as a card: what it is, and (on this computer) open it or show it in Finder. */
+function fileCard(agentId, f, label) {
+  const card = el("div", "file-card");
+  const ic = el("span", `file-ic k-${f.kind}`);
+  ic.append(icon(f.kind === "image" ? "sparkle" : f.kind === "video" || f.kind === "audio" ? "wave" : "file"));
+  const meta = el("div", "file-meta");
+  meta.append(el("div", "file-name", label && label !== f.name ? `${label} · ${f.name}` : f.name), el("div", "file-sub", `${FILE_KIND[f.kind] ?? "File"} · ${humanSize(f.size)}`));
+  card.append(ic, meta);
+  if (!Api.web) {
+    const acts = el("div", "file-acts");
+    if (f.openable) acts.append(button("Open", "quiet small", () => Api.openFile(agentId, f.path).catch((e) => toast("Couldn't open it", String(e), "error"))));
+    acts.append(button("Show in Finder", "quiet small", () => Api.openFile(agentId, f.path, true).catch((e) => toast("Couldn't show it", String(e), "error"))));
+    card.append(acts);
+  }
+  return card;
+}
+
+/** A picture to look at closely: the whole window, Esc or a click to close. */
+function lightbox(src, alt) {
+  const v = el("div", "lightbox");
+  v.setAttribute("role", "dialog");
+  v.setAttribute("aria-label", alt || "Image");
+  const img = el("img");
+  img.src = src;
+  img.alt = alt || "";
+  v.append(img);
+  const close = () => { v.remove(); removeEventListener("keydown", onKey, true); };
+  const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  v.onclick = close;
+  addEventListener("keydown", onKey, true);
+  document.body.append(v);
+}
+
+function mediaEl(f, alt) {
+  const src = `data:${f.media_type};base64,${f.data}`;
+  if (f.kind === "image") {
+    const img = el("img", "md-img");
+    img.src = src;
+    img.alt = alt || f.name;
+    img.loading = "lazy";
+    img.tabIndex = 0;
+    img.onclick = () => lightbox(src, img.alt);
+    img.onkeydown = (e) => { if (e.key === "Enter") lightbox(src, img.alt); };
+    return img;
+  }
+  const m = el(f.kind === "video" ? "video" : "audio", f.kind === "video" ? "md-video" : "md-audio");
+  m.controls = true;
+  m.preload = "metadata";
+  m.src = src;
+  return m;
+}
+
+/** A picture on the web: loads only when clicked, and tells the site nothing about where it was shown. */
+function remoteImage(url, alt) {
+  let host = url;
+  try { host = new URL(url).host; } catch {}
+  const b = el("button", "md-remote");
+  b.type = "button";
+  b.append(icon("eye"), el("span", null, `Show image from ${host}`));
+  b.title = url;
+  b.onclick = () => {
+    const img = el("img", "md-img");
+    img.referrerPolicy = "no-referrer";
+    img.alt = alt || "";
+    img.src = url;
+    img.onclick = () => lightbox(url, img.alt);
+    img.onerror = () => img.replaceWith(el("span", "md-missing", `The image from ${host} didn't load.`));
+    b.replaceWith(img);
+  };
+  return b;
+}
+
+/** A place, in reading order, right after `block` for something that arrives later. */
+function slotAfter(block) {
+  let box = block.nextElementSibling;
+  if (!box?.classList.contains("md-attach")) { box = el("div", "md-attach"); block.after(box); }
+  const slot = el("div", "md-slot");
+  box.append(slot);
+  return slot;
+}
+
+/** Fill in what a rendered reply points at: its pictures, recordings, videos and files. */
+function hydrateMd(root, agentId) {
+  if (!root || !agentId) return;
+  for (const ph of root.querySelectorAll(".md-media:not([data-done])")) {
+    ph.dataset.done = "1";
+    const { src, alt } = ph.dataset;
+    if (/^https?:\/\//.test(src)) { ph.replaceChildren(remoteImage(src, alt)); continue; }
+    chatFile(agentId, src).then((f) => ph.replaceChildren(f.data ? mediaEl(f, alt) : fileCard(agentId, f, alt)))
+      .catch((e) => ph.replaceChildren(el("span", "md-missing", `${alt || src}: ${String(e)}`)));
+  }
+  for (const ph of root.querySelectorAll(".md-file:not([data-done])")) {
+    ph.dataset.done = "1";
+    const label = ph.textContent;
+    const slot = slotAfter(ph.closest("p, li, td") ?? ph);
+    chatFile(agentId, ph.dataset.src).then((f) => slot.replaceWith(f.data ? mediaEl(f, label) : fileCard(agentId, f, label)))
+      .catch(() => slot.remove()); // not a file it can show: the words stay as words
+  }
+  let cards = 0;
+  for (const c of root.querySelectorAll("p code, li code")) {
+    const text = c.textContent.trim();
+    if (!PATH_IN_CODE.test(text) || c.dataset.done || cards >= 6) continue;
+    c.dataset.done = "1";
+    cards++;
+    const slot = slotAfter(c.closest("p, li") ?? c);
+    chatFile(agentId, text).then((f) => slot.replaceWith(f.data ? mediaEl(f) : fileCard(agentId, f))).catch(() => slot.remove());
+  }
+}
+
+// Copy a code block, from any reply.
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest?.(".md-copy");
+  if (!b) return;
+  const code = b.closest(".md-code")?.querySelector("pre")?.textContent ?? "";
+  try { await navigator.clipboard.writeText(code); b.textContent = "Copied"; setTimeout(() => (b.textContent = "Copy"), 1200); } catch {}
+});
 
 /* ---------- helpers: the read-only assistants a job sends out side by side ---------- */
 const HELPER_STATE = { waiting: "Waiting", working: "Working", done: "Done", failed: "Couldn't finish" };
@@ -414,7 +548,7 @@ function helpersCard(agentId) {
       r.st.replaceChildren(...(state === "done" ? [icon("check")] : state === "failed" ? [icon("x")] : []), HELPER_STATE[state] ?? state);
       r.btn.disabled = !note;
       r.btn.setAttribute("aria-label", `Helper ${n}: ${task || r.text.textContent}. ${HELPER_STATE[state] ?? state}${note ? ". Show its report" : ""}`);
-      if (note) r.report.innerHTML = Md.render(note);
+      if (note) { r.report.innerHTML = Md.render(note); hydrateMd(r.report, agentId); }
       tally();
     },
   };
@@ -430,13 +564,21 @@ function line(l) {
   if (l.from === "file") {
     const row = el("div", "msg file");
     const chip = el("div", "file-chip");
-    chip.append(icon("clip"), l.text.split("\n")[0]);
+    const name = l.text.split("\n")[0].replace(/ \(an image, below\)$/, "");
+    if (l.image) {
+      const img = el("img", "file-thumb");
+      img.src = l.image;
+      img.alt = name;
+      img.onclick = () => lightbox(l.image, name);
+      chip.append(img);
+    } else chip.append(icon("clip"));
+    chip.append(name);
     row.append(chip);
     return row;
   }
   const row = el("div", "msg " + l.from);
   const b = el("div", "bubble");
-  if (l.from === "agent") { b.classList.add("md"); b.innerHTML = Md.render(l.text); }
+  if (l.from === "agent") { b.classList.add("md"); b.innerHTML = Md.render(l.text); hydrateMd(b, current?.id); }
   else b.textContent = l.text;
   row.append(b, actions(l.text));
   return row;
@@ -663,7 +805,7 @@ function onTeamEvent(ev) {
       if (job.ui) {
         job.ui.face.stop();
         job.ui.status.remove();
-        if (ev.status === "done" && job.acc) job.ui.row.append(actions(job.acc));
+        if (ev.status === "done" && job.acc) { hydrateMd(job.ui.reply, ev.agent); job.ui.row.append(actions(job.acc)); }
         else job.ui.row.remove();
       }
       if (here) {
@@ -838,7 +980,7 @@ $("composer").onsubmit = async (e) => {
   $("input").value = "";
   autosize();
   $("log").append(line({ from: "you", text }));
-  for (const f of files) $("log").append(line({ from: "file", text: f.name }));
+  for (const f of files) $("log").append(line({ from: "file", text: f.name, image: f.data ? `data:${f.media_type};base64,${f.data}` : undefined }));
   scrollDown(true);
   try {
     await call("send", { id: agent.id, text, attachments: files });
@@ -850,11 +992,18 @@ $("composer").onsubmit = async (e) => {
 };
 
 /* ---------- attachments ---------- */
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 $("attach").onclick = () => $("file").click();
 async function addFiles(list) {
   for (const file of list) {
+    if (IMAGE_TYPES.includes(file.type)) {
+      if (file.size > 5_000_000) { $("log").append(event([`${file.name} is over 5 MB, so it was left out.`], "error")); continue; }
+      const data = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1] ?? ""); r.onerror = no; r.readAsDataURL(file); });
+      pending.push({ name: file.name, media_type: file.type, data });
+      continue;
+    }
     if (file.size > 2_000_000) { $("log").append(event([`${file.name} is over 2 MB, so it was left out.`], "error")); continue; }
-    if (file.type && !/^text\/|json|xml|yaml|toml|csv|javascript|markdown/.test(file.type)) { $("log").append(event([`${file.name} isn't a text file. Cookie reads text files for now.`], "error")); continue; }
+    if (file.type && !/^text\/|json|xml|yaml|toml|csv|javascript|markdown/.test(file.type)) { $("log").append(event([`${file.name} isn't something Cookie reads yet: text files and pictures (PNG, JPEG, GIF, WebP) are.`], "error")); continue; }
     pending.push({ name: file.name, text: await file.text() });
   }
   renderChips();
@@ -872,7 +1021,9 @@ $("chat").addEventListener("drop", (e) => { e.preventDefault(); dragDepth = 0; $
 function renderChips() {
   $("chips").hidden = pending.length === 0;
   $("chips").replaceChildren(...pending.map((f, i) => {
-    const c = el("span", "chip", f.name);
+    const c = el("span", "chip");
+    if (f.data) { const t = el("img", "chip-thumb"); t.src = `data:${f.media_type};base64,${f.data}`; t.alt = ""; c.append(t); }
+    c.append(f.name);
     const x = el("button");
     x.type = "button";
     x.setAttribute("aria-label", `Remove ${f.name}`);

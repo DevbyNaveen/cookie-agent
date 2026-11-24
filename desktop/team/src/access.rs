@@ -79,7 +79,7 @@ fn secret(path: &Path, home: Option<&Path>) -> bool {
 }
 
 /// Expand `~` and make a chosen folder absolute.
-fn expand(p: &str) -> PathBuf {
+pub(crate) fn expand(p: &str) -> PathBuf {
     let p = p.trim();
     match (p.strip_prefix("~/"), home()) {
         (Some(rest), Some(h)) => h.join(rest),
@@ -100,7 +100,7 @@ impl Access {
 
     /// `path` (absolute, or `~/…`) as a real path inside a root, or why not.
     /// For a file not yet made, its folder must exist and be inside.
-    fn resolve(&self, path: &str, must_exist: bool) -> Result<PathBuf, String> {
+    pub(crate) fn resolve(&self, path: &str, must_exist: bool) -> Result<PathBuf, String> {
         let roots = self.roots();
         if roots.is_empty() {
             return Err("You can only see your own folder. The person can give you more in Cookie's Settings → Your files.".into());

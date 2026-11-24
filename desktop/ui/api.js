@@ -42,6 +42,12 @@ const Api = (() => {
     return tauri.core.invoke("reveal", { path });
   }
 
+  /** A file an agent showed: in its own app, or (`reveal`) in Finder. Only on the runner's own computer. */
+  async function openFile(agent, path, reveal = false) {
+    if (!tauri) throw "Files open only on the runner's own computer.";
+    return tauri.core.invoke("open_file", { agent, path, reveal });
+  }
+
   /** An https page in the person's browser (the Enkeon Console, to pair). */
   async function openUrl(url) {
     if (!/^https:\/\//.test(url)) throw "Cookie opens only https pages.";
@@ -74,5 +80,5 @@ const Api = (() => {
     return body.ok;
   }
 
-  return { call, listen, reveal, openUrl, openWindow, pickFolder, openLink, pendingLink, web: !tauri, signedIn: () => !!tauri || !!token };
+  return { call, listen, reveal, openFile, openUrl, openWindow, pickFolder, openLink, pendingLink, web: !tauri, signedIn: () => !!tauri || !!token };
 })();

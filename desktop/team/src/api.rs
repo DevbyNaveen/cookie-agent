@@ -127,6 +127,7 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "end_link_sessions" => ok(team.end_link_sessions()?),
         "job_link" => ok(team.job_link(&arg::<String>(a, "id")?, &arg::<String>(a, "job")?).await),
         "mail_status" => ok(team.mail_status()),
+        "chat_file" => ok(team.chat_file(&arg::<String>(a, "id")?, &arg::<String>(a, "path")?)?),
         "file_changes" => ok(team.file_changes(opt::<String>(a, "id").as_deref())),
         "undo_file_change" => ok(team.undo_file_change(&arg::<String>(a, "change")?)?),
         "open_promises" => ok(team.open_promises().await),

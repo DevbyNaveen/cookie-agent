@@ -39,6 +39,37 @@ fn reveal(path: String, team: State<'_, Arc<Team>>) -> Result<(), String> {
     std::process::Command::new(opener).arg(&p).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// A file an agent showed in its chat, in its own app or in Finder. Only from where the agent
+/// may read (`chat_file_path`), and opening only documents and media, never something that runs.
+#[tauri::command]
+fn open_file(agent: String, path: String, reveal: bool, team: State<'_, Arc<Team>>) -> Result<(), String> {
+    let real = team.chat_file_path(&agent, &path)?;
+    if !reveal && !cookie_team::chatfiles::openable(&real) {
+        return Err("Cookie doesn't open that kind of file from a chat. Show it in Finder instead.".into());
+    }
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        if reveal {
+            c.arg("-R");
+        }
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("explorer");
+        if reveal {
+            c.arg("/select,");
+        }
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = std::process::Command::new("xdg-open");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let real = if reveal { real.parent().map(|p| p.to_path_buf()).unwrap_or(real) } else { real };
+    cmd.arg(&real).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// Open a web page in the person's browser: only https (pairing with Enkeon opens its Console).
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
@@ -190,7 +221,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![call, reveal, open_window, open_url, set_glass, pick_folder])
+        .invoke_handler(tauri::generate_handler![call, reveal, open_file, open_window, open_url, set_glass, pick_folder])
         .build(tauri::generate_context!())
         .expect("Cookie could not start");
     app.run(|app, event| {

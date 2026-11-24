@@ -12,6 +12,7 @@ pub mod bench;
 pub mod browser;
 pub mod challenge;
 pub mod channels;
+pub mod chatfiles;
 pub mod checker;
 pub mod cloud;
 pub mod code;
