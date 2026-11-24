@@ -970,3 +970,15 @@ footer.me { gap: 6px; }
 :root[data-theme="light"] .acro-shadow, :root[data-theme="white"] .acro-shadow { background: radial-gradient(closest-side, rgb(60 40 20 / .3), transparent); }
 @media (prefers-color-scheme: light) { :root:not([data-theme]) .acro-shadow { background: radial-gradient(closest-side, rgb(60 40 20 / .3), transparent); } }
 .crew-card { perspective: none; }
+
+/* Learning from its own work: the morning card, saved routine recipes, lessons. */
+.retro-card { padding: 14px 16px; }
+.retro-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.retro-head strong { font-size: 14px; }
+.retro-head small { margin-left: auto; }
+.retro-lines p { margin: 3px 0; font-size: 13.5px; line-height: 1.5; color: var(--text-2); }
+.retro-lines p.retro-sub { padding-left: 14px; color: var(--text-3); font-size: 13px; }
+.recipe-line { display: flex; align-items: center; gap: 10px; width: 100%; padding-top: 6px; }
+.recipe-line small { flex: 1; line-height: 1.45; }
+.row.faded { opacity: .55; }
+.pin-in { font-size: 22px; letter-spacing: .4em; text-align: center; max-width: 220px; margin: 14px auto 10px; display: block; }

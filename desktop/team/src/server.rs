@@ -128,6 +128,13 @@ pub fn router(team: Arc<Team>) -> Router {
         .route("/challenge", get(challenge_page).post(challenge_try))
         .route("/challenge/board", get(challenge_board))
         .route("/healthz", get(|| async { "ok" }))
+        // A job link from a message Cookie sent: the app opens it and asks for the PIN.
+        .route("/j/{token}", get(|path: Path<String>| async move { axum::response::Redirect::to(&format!("/#link={}", path.0)) }))
+        .route("/link/open", post(link_open))
+        // Channels that call Cookie (dark until connected; need a public address).
+        .route("/hooks/whatsapp", get(whatsapp_verify).post(whatsapp_hook))
+        .route("/hooks/teams", post(teams_hook))
+        .route("/hooks/mail", post(mail_hook))
         .with_state(state)
 }
 
@@ -159,8 +166,92 @@ fn same(a: &str, b: &str) -> bool {
 
 fn authorised(team: &Team, presented: Option<&str>) -> bool {
     match (team.keys.get("runner-token"), presented) {
-        (Some(t), Some(p)) => same(&t, p),
+        (Some(t), Some(p)) if same(&t, p) => true,
+        // A session opened with a job link and the PIN (`links`).
+        (_, Some(p)) if !p.is_empty() => team.session_ok(p),
         _ => false,
+    }
+}
+
+/* ---------- job links ---------- */
+
+async fn link_open(State(st): State<AppState>, Json(args): Json<Value>) -> Response {
+    let (token, pin) = (args["link"].as_str().unwrap_or_default(), args["pin"].as_str().unwrap_or_default());
+    match st.team.open_link(token, pin) {
+        Ok((session, link)) => Json(json!({"ok": {"session": session, "agent": link.agent, "job": link.job}})).into_response(),
+        Err(e) => (StatusCode::UNAUTHORIZED, Json(json!({"error": e}))).into_response(),
+    }
+}
+
+/* ---------- WhatsApp, Teams, mail ---------- */
+
+async fn whatsapp_verify(State(st): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let want = st.team.keys.get("channel:whatsapp:verify").unwrap_or_default();
+    let ok = !want.is_empty()
+        && st.team.channel_states().get("whatsapp").is_some_and(|s| s.enabled)
+        && q.get("hub.mode").map(String::as_str) == Some("subscribe")
+        && q.get("hub.verify_token").is_some_and(|t| crate::webhooks::same(t.as_bytes(), want.as_bytes()));
+    match (ok, q.get("hub.challenge")) {
+        (true, Some(c)) => c.clone().into_response(),
+        _ => StatusCode::FORBIDDEN.into_response(),
+    }
+}
+
+async fn whatsapp_hook(State(st): State<AppState>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    let team = st.team.clone();
+    if !team.channel_states().get("whatsapp").is_some_and(|s| s.enabled) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let secret = team.keys.get("channel:whatsapp:app_secret").unwrap_or_default();
+    let sig = headers.get("x-hub-signature-256").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if secret.is_empty() || !crate::webhooks::whatsapp_verified(&secret, sig, &body) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Ok(v) = serde_json::from_slice::<Value>(&body) else { return StatusCode::OK.into_response() };
+    for (phone, text) in crate::webhooks::whatsapp_messages(&v) {
+        let team = team.clone();
+        tokio::spawn(async move {
+            if let Some(reply) = team.channel_inbound("whatsapp", &phone, &text).await {
+                team.channel_say("whatsapp", &phone, &reply).await;
+            }
+        });
+    }
+    StatusCode::OK.into_response()
+}
+
+async fn teams_hook(State(st): State<AppState>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    let team = st.team.clone();
+    if !team.channel_states().get("teams").is_some_and(|s| s.enabled) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Ok(activity) = serde_json::from_slice::<Value>(&body) else { return StatusCode::BAD_REQUEST.into_response() };
+    let service = activity["serviceUrl"].as_str().unwrap_or_default();
+    if let Err(e) = team.teams_verified(bearer(&headers).unwrap_or_default(), service).await {
+        tracing::info!("teams: refused an activity: {e}");
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some((conversation, service, text)) = crate::webhooks::teams_message(&activity) else { return StatusCode::OK.into_response() };
+    team.teams_route(&conversation, &service);
+    tokio::spawn(async move {
+        if let Some(reply) = team.channel_inbound("teams", &conversation, &text).await {
+            team.channel_say("teams", &conversation, &reply).await;
+        }
+    });
+    StatusCode::OK.into_response()
+}
+
+/// Raw mail from the forwarder, with the secret Cookie showed once and,
+/// when it has them, the envelope recipients (`X-Cookie-Rcpt`, comma separated).
+async fn mail_hook(State(st): State<AppState>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    let want = st.team.keys.get("channel:mail:inbound").unwrap_or_default();
+    let given = headers.get("x-cookie-mail-secret").and_then(|v| v.to_str().ok()).unwrap_or("");
+    if want.is_empty() || !crate::webhooks::same(given.as_bytes(), want.as_bytes()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let rcpt: Vec<String> = headers.get("x-cookie-rcpt").and_then(|v| v.to_str().ok()).unwrap_or("").split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    match st.team.mail_inbound(&body, &rcpt).await {
+        Ok(what) => Json(json!({"ok": what})).into_response(),
+        Err(e) => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": e}))).into_response(),
     }
 }
 
@@ -244,7 +335,7 @@ async fn a2a(State(st): State<AppState>, Path(agent): Path<String>, headers: Hea
                 let job = done.unwrap_or_else(|e| Job {
                     id: jid.clone(), agent: agent.clone(), trigger: Trigger::Peer { invite: invite.id, label: invite.label }, input: String::new(),
                     started_at: util::now(), finished_at: Some(util::now()), status: JobStatus::Failed, answer: String::new(), error: Some(e),
-                    tools: vec![], approvals: vec![], promises: vec![], tokens: 0, microdollars: 0, grade: None, version: 0,
+                    tools: vec![], approvals: vec![], promises: vec![], tokens: 0, microdollars: 0, grade: None, version: 0, ..Default::default()
                 });
                 tasks.lock().unwrap().insert(jid, (agent, Some(job)));
             });

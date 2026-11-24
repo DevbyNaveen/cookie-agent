@@ -49,6 +49,8 @@ pub enum TeamEvent {
     Notice { agent: String, title: String, body: String, job: Option<String> },
     RosterChanged,
     RoutinesChanged,
+    /// The morning card was posted.
+    Retro,
     TestProgress { run: String, agent: String, done: usize, total: usize },
     TestFinished { run: String, agent: String, passed: usize, total: usize },
     Channel { name: String, status: String },

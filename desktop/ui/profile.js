@@ -142,11 +142,15 @@ const PANELS = {
   },
 
   async record(a) {
-    const [card, jobs] = await Promise.all([call("scorecard", { id: a.id }), call("jobs", { id: a.id })]);
+    const [card, jobs, rank, lessons, changes] = await Promise.all([
+      call("scorecard", { id: a.id }), call("jobs", { id: a.id }), call("rank", { id: a.id }),
+      call("lessons", { id: a.id }).catch(() => []), call("file_changes", { id: a.id }).catch(() => []),
+    ]);
+    const learned = [...rankPart(a, rank), ...lessonsPart(a, lessons), ...changesPart(changes)];
     if (!card.jobs) {
       const empty = el("div", "empty-box");
       empty.append(el("p", null, "No record yet."), el("p", "muted", "Every job it does shows up here: what it did, what it asked, what it promised, and what it cost."));
-      return [empty];
+      return [empty, ...learned];
     }
     const stats = el("div", "stat-grid");
     const stat = (n, label, cls = "") => { const s = el("div", "stat " + cls); s.append(el("b", null, String(n)), el("span", null, label)); return s; };
@@ -165,13 +169,30 @@ const PANELS = {
 
     const list = el("div", "job-list");
     for (const j of jobs.slice(0, 30)) list.append(jobRow(a, j));
-    return [stats, el("h3", "group-title", "Money and work"), money, el("h3", "group-title", "Recent jobs"), list];
+    return [stats, ...learned, el("h3", "group-title", "Money and work"), money, el("h3", "group-title", "Recent jobs"), list];
   },
 
   async routines(a) {
-    const all = await call("routines");
+    const [all, recipes, offers] = await Promise.all([call("routines"), call("procedures", { id: a.id }).catch(() => []), call("routine_offers").catch(() => [])]);
     const mine = all.filter((r) => r.agent === a.id);
     const list = el("div", "group");
+    const out = [];
+    const myOffers = offers.filter((o) => o.agent === a.id);
+    if (myOffers.length) {
+      const box = el("div", "group");
+      for (const o of myOffers) {
+        const sched = await call("describe_schedule", { schedule: o.schedule });
+        const r = setRow(o.task, `You asked this ${o.seen} times, ${sched}. Make it a routine?`, null);
+        const act = el("div", "row-actions");
+        act.append(
+          button("Make it a routine", "primary small", async () => { await call("answer_routine_offer", { offer: o.id, yes: true }); toast("Routine made", sched, "good"); refreshProfile(); }),
+          button("No, don't ask again", "quiet small", async () => { await call("answer_routine_offer", { offer: o.id, yes: false }); refreshProfile(); }),
+        );
+        r.append(act);
+        box.append(r);
+      }
+      out.push(el("h3", "group-title", "A routine to consider"), box);
+    }
     if (!mine.length) list.append(setRow("No routines yet", "A routine runs a job on a schedule, even with the window closed.", null));
     for (const r of mine) {
       const sched = await call("describe_schedule", { schedule: r.schedule });
@@ -180,6 +201,17 @@ const PANELS = {
       const more = el("div", "row-actions");
       more.append(button("Run now", "quiet small", () => call("run_routine_now", { id: r.id })), button("Delete", "quiet small danger", () => call("delete_routine", { id: r.id })));
       row.append(more);
+      // The recipe it kept from its last clean run.
+      const p = recipes.find((x) => x.routine === r.id);
+      if (p) {
+        const n = Array.isArray(p.steps) ? p.steps.length : 0;
+        const note = p.enabled
+          ? `Saved recipe: ${n} ${n === 1 ? "step" : "steps"} that worked, kept from its last clean run (${p.successes} clean so far).`
+          : p.failures >= 2 ? "Its saved recipe failed twice in a row and turned itself off; the next clean run learns a new one." : "Its saved recipe is off: it works the job out each time.";
+        const rec = el("div", "recipe-line");
+        rec.append(el("small", "muted", note), toggle(p.enabled, async (v) => { await call("set_procedure", { id: a.id, routine: r.id, on: v }); refreshProfile(); }, "Use saved recipe"));
+        row.append(rec);
+      }
       list.append(row);
     }
     const form = el("div", "group edit");
@@ -198,7 +230,7 @@ const PANELS = {
     });
     form.append(task, when);
     const end = el("div", "form-end"); end.append(add);
-    return [el("h3", "group-title", "Routines"), list, el("h3", "group-title", "New routine"), form, end];
+    return [...out, el("h3", "group-title", "Routines"), list, el("h3", "group-title", "New routine"), form, end];
   },
 
   async tests(a) {
@@ -353,6 +385,10 @@ function jobRow(a, j) {
   if (j.answer) { const ans = el("div", "md"); ans.innerHTML = Md.render(j.answer); body.append(ans); }
   if (j.error) body.append(el("p", "error-line", j.error));
   if (j.tools.length) body.append(el("p", "muted small", "Used: " + [...new Set(j.tools)].join(", ")));
+  const broke = (j.steps ?? []).filter((st) => st.failed && !["declined", "not_run", "blocked"].includes(st.kind));
+  if (broke.length) body.append(el("p", "muted small", "Didn't work: " + [...new Set(broke.map((st) => `${st.tool} (${FAILURE_WORDS[st.kind] ?? "failed"})`))].join(", ")));
+  const carried = (j.lessons ?? []).filter((l) => l.offered).length;
+  if (carried || j.recipe) body.append(el("p", "muted small", [carried ? `Carried ${carried} ${carried === 1 ? "lesson" : "lessons"} from earlier jobs` : "", j.recipe ? "followed its saved routine recipe" : ""].filter(Boolean).join(" · ")));
   for (const ap of j.approvals) body.append(el("p", "muted small", `${ap.outcome === "would" ? "Would have" : ap.outcome === "yes" ? "You approved" : "You denied"}: ${toolPhrase(ap.tool)}${ap.checker ? ` · checker: ${ap.checker}` : ""}`));
   j.promises.forEach((p, i) => {
     const r = el("div", "promise");
@@ -380,4 +416,57 @@ function jobRow(a, j) {
   body.append(bar);
   d.append(body);
   return d;
+}
+
+const FAILURE_WORDS = { refused: "needs a permission", unknown_tool: "no such tool", bad_arguments: "wrong arguments", upstream: "the app or site failed" };
+
+// Rank: worked out from its own record, never written into its instructions.
+function rankPart(a, r) {
+  if (a.id === "cookie" || !r) return [];
+  const g = el("div", "group");
+  const row = setRow(r.rank, `${r.basis}${r.since ? ` · since ${fmtDate(r.since)}` : ""}`, el("span", "tag" + (r.rank === "Associate" ? "" : " good"), "from its record"));
+  g.append(row);
+  if (r.next?.needs?.length) g.append(setRow(`To reach ${r.next.rank}`, r.next.needs.join("; "), null));
+  g.append(el("p", "set-note", "Rank never changes what asks you: every send, delete, payment and change to your things still waits for your yes."));
+  return [el("h3", "group-title", "Rank"), g];
+}
+
+// Lessons it learned from what went wrong, each with its record.
+function lessonsPart(a, lessons) {
+  const g = el("div", "group");
+  if (!lessons.length) {
+    g.append(setRow("No lessons yet", "When a job goes wrong in a way that would change the next one (a wrong tool, wrong arguments, a missing permission), it keeps one line about it. It's offered on jobs like it only while it keeps helping.", null));
+    return [el("h3", "group-title", "What it learned"), g];
+  }
+  for (const l of lessons.slice(0, 20)) {
+    const used = l.wins + l.losses;
+    const rec = used ? `Helped ${l.wins} of ${used} jobs it rode in${l.withheld ? `, held back ${l.withheld}` : ""}` : "Not used yet";
+    const state = l.state === "archived" ? " · archived" : l.state === "quiet" ? " · resting (unused 14 days)" : l.proven ? " · proven" : "";
+    const act = l.state === "archived"
+      ? button("Restore", "quiet small", async () => { await call("set_lesson", { id: a.id, lesson: l.id, state: "active" }); refreshProfile(); })
+      : button("Archive", "quiet small", async () => { await call("set_lesson", { id: a.id, lesson: l.id, state: "archived" }); refreshProfile(); });
+    const row = setRow(l.text, rec + state, act);
+    if (l.state === "archived") row.classList.add("faded");
+    g.append(row);
+  }
+  return [el("h3", "group-title", "What it learned"), g];
+}
+
+// Changes it made to your own files, and putting them back.
+function changesPart(changes) {
+  if (!changes.length) return [];
+  const g = el("div", "group");
+  for (const c of changes.slice(0, 15)) {
+    const what = `${c.created ? "Created" : "Changed"} ${fmtTime(c.at)}`;
+    let act;
+    if (c.undone_at) act = el("span", "tag", "put back");
+    else if (c.can_undo) act = button(c.created ? "Remove" : "Put back", "quiet small", async () => {
+      try { toast("Done", await call("undo_file_change", { change: c.id }), "good"); } catch (e) { toast("Couldn't put it back", String(e), "error"); }
+      refreshProfile();
+    });
+    else act = el("span", "tag", "edited since");
+    g.append(setRow(c.path.replace(/^\/Users\/[^/]+/, "~"), what, act));
+  }
+  g.append(el("p", "set-note", "Putting a file back works only while it still says what the agent wrote, so a later edit is never thrown away."));
+  return [el("h3", "group-title", "Changes to your files"), g];
 }

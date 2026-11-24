@@ -55,5 +55,17 @@ const Api = (() => {
     return tauri.core.invoke("pick_folder");
   }
 
-  return { call, listen, reveal, openWindow, pickFolder, web: !tauri, signedIn: () => !!tauri || !!token };
+  /** A job link Cookie sent (`/j/<token>` → `#link=`): asks for the PIN, then signs this browser in. */
+  const pendingLink = !tauri ? location.hash.match(/link=([0-9a-f]+)/)?.[1] ?? null : null;
+  async function openLink(pin) {
+    const r = await fetch("/link/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ link: pendingLink, pin }) });
+    const body = await r.json().catch(() => ({ error: `The runner answered ${r.status}.` }));
+    if (!r.ok || "error" in body) throw body.error ?? `The runner answered ${r.status}.`;
+    token = body.ok.session;
+    try { localStorage.setItem("cookie.runnerToken", token); } catch {}
+    history.replaceState(null, "", location.pathname + location.search);
+    return body.ok;
+  }
+
+  return { call, listen, reveal, openWindow, pickFolder, openLink, pendingLink, web: !tauri, signedIn: () => !!tauri || !!token };
 })();

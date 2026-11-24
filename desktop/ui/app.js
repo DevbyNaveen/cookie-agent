@@ -604,7 +604,8 @@ function onTeamEvent(ev) {
       break;
     }
     case "roster_changed": loadRoster(); loadAddresses(); break;
-    case "routines_changed": if (profileOpenFor(current?.id) && profileTab === "routines") refreshProfile(); break;
+    case "routines_changed": if (profileOpenFor(current?.id) && profileTab === "routines") refreshProfile(); if (view === "today") renderToday(); break;
+    case "retro": if (view === "today") renderToday(); break;
     case "test_progress":
     case "test_finished": if (profileOpenFor(ev.agent) && profileTab === "tests") refreshProfile(); if (ev.kind === "test_finished") toast("Tests finished", `${ev.passed} of ${ev.total} passed`, ev.passed === ev.total ? "good" : "", () => { openAgent(ev.agent).then(() => openProfile("tests")); }); break;
     case "channel": if ($("settings").open) refreshSettings(); break;
@@ -1252,6 +1253,12 @@ $("search").addEventListener("keydown", (e) => { if (e.key === "Escape") toggleS
 
 /* ---------- boot ---------- */
 async function boot() {
+  // Opened from a job link: the PIN first, then straight to that agent.
+  let fromLink = null;
+  if (Api.pendingLink) {
+    fromLink = await askLinkPin();
+    if (!fromLink) return;
+  }
   if (!Api.signedIn()) { document.body.classList.add("signed-out"); return; }
   applyPrefs();
   Api.listen(onTeamEvent);
@@ -1265,6 +1272,7 @@ async function boot() {
   await loadRoster();
   refreshNetBadge();
   loadAddresses();
+  if (fromLink && agentById(fromLink.agent)) { openAgent(fromLink.agent); return; }
   const only = new URLSearchParams(location.search).get("agent");
   if (only && agentById(only)) {
     // A window of its own: just this conversation, rail folded away.
@@ -1276,3 +1284,25 @@ async function boot() {
 }
 // After every script has loaded: the panels (profile, Today, settings) are defined in their own files.
 window.addEventListener("DOMContentLoaded", () => boot().catch((e) => toast("Cookie couldn't start", String(e), "error")));
+
+// The PIN for a job link, in place of the app until it's right.
+function askLinkPin() {
+  return new Promise((resolve) => {
+    document.body.classList.add("signed-out");
+    const box = document.querySelector(".signed-out-msg");
+    const pin = el("input", "text-in pin-in");
+    Object.assign(pin, { type: "password", inputMode: "numeric", maxLength: 6, autocomplete: "one-time-code", placeholder: "••••••" });
+    const err = el("p", "error-line"); err.hidden = true;
+    const go = button("Open", "primary", async () => {
+      err.hidden = true;
+      try {
+        const opened = await Api.openLink(pin.value.trim());
+        document.body.classList.remove("signed-out");
+        resolve(opened);
+      } catch (e) { err.textContent = String(e); err.hidden = false; pin.value = ""; pin.focus(); }
+    });
+    pin.onkeydown = (e) => { if (e.key === "Enter") go.click(); };
+    box.replaceChildren(el("h1", null, "Your PIN"), el("p", null, "This link opens your Cookie. Enter the six-digit PIN you set in Settings → Sharing."), pin, err, go);
+    pin.focus();
+  });
+}

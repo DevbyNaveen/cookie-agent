@@ -32,6 +32,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 tokio-util = "0.7"
 tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"
+# Mail to Cookie (`mail`): read the message, check DKIM on the raw bytes, send replies.
+mail-parser = { version = "0.11", features = ["full_encoding"] }
+mail-auth = { version = "0.13", default-features = false, features = ["ring"] }
+lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls", "ring", "webpki-roots"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std"] }
 
 [dev-dependencies]

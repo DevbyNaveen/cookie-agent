@@ -108,7 +108,7 @@ mod tests {
             status, answer: String::new(), error: None, tools: vec![],
             approvals: approvals.iter().map(|o| ApprovalRecord { tool: "t".into(), effect: "outbound".into(), preview: String::new(), outcome: o.to_string(), checker: None }).collect(),
             promises: promise.map(|(due, state)| vec![PromiseRecord { text: "p".into(), due: due.into(), state: state.into() }]).unwrap_or_default(),
-            tokens: 10, microdollars: 5, grade, version: 1,
+            tokens: 10, microdollars: 5, grade, version: 1, ..Default::default()
         }
     }
 

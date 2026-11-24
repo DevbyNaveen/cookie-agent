@@ -23,7 +23,7 @@ use crate::{util, Team};
 /// How deep a chain of agents asking agents may go.
 pub const MAX_CHAIN: usize = 3;
 
-pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger) -> Vec<Arc<dyn Tool>> {
+pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, job: &str) -> Vec<Arc<dyn Tool>> {
     let g = &rec.grants;
     let work = team.paths.work(&rec.id);
     let _ = std::fs::create_dir_all(&work);
@@ -83,7 +83,7 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger) 
     // The person's own files beyond its folder (Settings → Your files), never for
     // someone reaching it from outside: a contact can't read your Documents through it.
     if g.files && !outside {
-        out.extend(crate::access::tools(team, &rec.id));
+        out.extend(crate::access::tools(team, &rec.id, job));
     }
     // Cookie sees the whole team (who's working, what waits on the person).
     if rec.id == crate::front::COOKIE_ID && !outside {

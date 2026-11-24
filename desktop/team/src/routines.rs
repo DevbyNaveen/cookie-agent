@@ -153,6 +153,7 @@ impl Team {
 
     async fn tick(self: &Arc<Self>) {
         self.curate().await;
+        self.maybe_post_retro().await;
         let now = util::now();
         let due: Vec<Routine> = self.routines.read().await.iter().filter(|r| r.enabled && r.next_run.is_some_and(|t| t <= now)).cloned().collect();
         for r in due {
@@ -173,6 +174,87 @@ impl Team {
                 }
             }
         }
+    }
+}
+
+/* ---------- a job given again and again, offered once as a routine ---------- */
+//
+// Whether a job is one the person gives on a cadence (alike enough, regular
+// enough, never offered before) is the harness's (`lessons::routine`). The
+// offer is made once; declined, a job like it is never offered again.
+// Ported from the super console (gateway `cookie/routine.rs`).
+
+/// How far back the person's own jobs are read for a cadence.
+const OFFER_LOOKBACK_DAYS: u64 = 35;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct RoutineOffer {
+    pub id: String,
+    pub agent: String,
+    pub task: String,
+    pub schedule: Schedule,
+    /// Jobs alike it was seen in.
+    pub seen: usize,
+    /// `open`, `accepted` or `declined`.
+    pub state: String,
+    pub at: u64,
+}
+
+const WEEKDAYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+impl Team {
+    fn offers_path(&self) -> std::path::PathBuf {
+        self.paths.root.join("routine-offers.json")
+    }
+
+    pub fn routine_offers(&self) -> Vec<RoutineOffer> {
+        util::read_json(&self.offers_path())
+    }
+
+    /// After a job the person gave: is it one they give on a cadence?
+    pub(crate) async fn maybe_offer_routine(&self, agent: &str, job: &crate::store::Job) -> Option<RoutineOffer> {
+        if !matches!(job.trigger, Trigger::Chat | Trigger::Telegram { .. } | Trigger::Channel { .. }) || job.status != crate::store::JobStatus::Done {
+            return None;
+        }
+        let since = util::now().saturating_sub(OFFER_LOOKBACK_DAYS * 86_400);
+        let past: Vec<(String, f64)> = util::read_jsonl::<crate::store::Job>(&self.paths.jobs(agent))
+            .into_iter()
+            .filter(|j| j.started_at >= since && matches!(j.trigger, Trigger::Chat | Trigger::Telegram { .. } | Trigger::Channel { .. }))
+            .map(|j| (j.input, j.started_at as f64))
+            .collect();
+        let mut offers = self.routine_offers();
+        let mut known: Vec<String> = offers.iter().filter(|o| o.agent == agent).map(|o| o.task.clone()).collect();
+        known.extend(self.routines_of(agent).await.into_iter().map(|r| r.task));
+        let tz = Local::now().offset().local_minus_utc() as i64 / 60;
+        let found = cookie_harness::lessons::routine(&job.input, &past, tz, &known)?;
+        let at = format!("{:02}:{:02}", found.hour, found.minute);
+        let schedule = if found.cadence == "weekly" {
+            Schedule::Week { day: WEEKDAYS[(found.weekday.clamp(1, 7) - 1) as usize].into(), at }
+        } else {
+            Schedule::Day { at }
+        };
+        let offer = RoutineOffer { id: util::new_id("offer"), agent: agent.to_string(), task: job.input.clone(), schedule, seen: found.seen, state: "open".into(), at: util::now() };
+        offers.push(offer.clone());
+        util::write_json(&self.offers_path(), &offers).ok()?;
+        if let Ok(a) = self.agent(agent).await {
+            self.notice(agent, &format!("Make it a routine for {}?", a.name), &format!("You've asked this {} times, {}: \"{}\"", found.seen, describe(&offer.schedule), util::clip(&offer.task, 140)), Some(&job.id), false);
+        }
+        self.emit(TeamEvent::RoutinesChanged);
+        Some(offer)
+    }
+
+    /// The person answers an offer: yes makes the routine, no is never asked again.
+    pub async fn answer_routine_offer(&self, id: &str, yes: bool) -> Result<Option<Routine>, String> {
+        let mut offers = self.routine_offers();
+        let o = offers.iter_mut().find(|o| o.id == id).ok_or("No such offer.")?;
+        if o.state != "open" {
+            return Err("That offer was already answered.".into());
+        }
+        o.state = if yes { "accepted" } else { "declined" }.into();
+        let made = if yes { Some(self.add_routine(&o.agent, &o.task, o.schedule.clone()).await?) } else { None };
+        util::write_json(&self.offers_path(), &offers)?;
+        self.emit(TeamEvent::RoutinesChanged);
+        Ok(made)
     }
 }
 

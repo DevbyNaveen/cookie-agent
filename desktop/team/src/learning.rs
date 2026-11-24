@@ -668,6 +668,7 @@ impl Team {
             microdollars,
             grade: None,
             version: rec.version,
+            ..Default::default()
         };
         let _ = util::append_jsonl(&self.paths.jobs(&rec.id), &job);
         if !changes.is_empty() {

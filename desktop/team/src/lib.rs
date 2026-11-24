@@ -13,15 +13,25 @@ pub mod checker;
 pub mod code;
 pub mod evals;
 pub mod events;
+pub mod experience;
 pub mod front;
+pub mod hire_gap;
 pub mod inbox;
+pub mod journal;
 pub mod keys;
+pub mod lease;
+pub mod links;
 pub mod learning;
+pub mod mail;
 pub mod mac;
 pub mod memory;
 pub mod network;
+pub mod outcome;
 pub mod pack;
 pub mod peers;
+pub mod procedures;
+pub mod rank;
+pub mod retro;
 pub mod routines;
 pub mod runtime;
 pub mod scorecard;
@@ -34,6 +44,7 @@ pub mod telegram;
 pub mod tools;
 pub mod util;
 pub mod voice;
+pub mod webhooks;
 pub mod workbench;
 
 use std::collections::HashMap;
@@ -177,6 +188,7 @@ impl Team {
 
     /// Start the background work: routines, Telegram, and the HTTP server when enabled.
     pub fn start(self: &Arc<Self>) {
+        std::sync::LazyLock::force(&retro::STARTED);
         routines::spawn_scheduler(self.clone());
         telegram::spawn(self.clone());
         server::spawn_if_enabled(self.clone());
@@ -185,6 +197,9 @@ impl Team {
         // Cookie, the agent everyone starts with, once there is a model for it.
         let me = self.clone();
         tokio::spawn(async move { me.ensure_cookie().await });
+        // Jobs that were running when Cookie last stopped get an honest record.
+        let me = self.clone();
+        tokio::spawn(async move { me.recover_interrupted().await });
         // Memories of fired agents that Enkeon couldn't erase at the time.
         let me = self.clone();
         tokio::spawn(async move { me.retry_erasures().await });

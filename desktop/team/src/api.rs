@@ -103,6 +103,23 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "grade" => ok(team.grade(&arg::<String>(a, "id")?, &arg::<String>(a, "job")?, opt(a, "grade"))?),
         "mark_promise" => ok(team.mark_promise(&arg::<String>(a, "id")?, &arg::<String>(a, "job")?, arg(a, "index")?, &arg::<String>(a, "state")?)?),
         "scorecard" => ok(team.scorecard(&arg::<String>(a, "id")?)),
+        /* what it learned from its own work */
+        "rank" => ok(team.rank_view(&team.agent(&arg::<String>(a, "id")?).await?)),
+        "lessons" => ok(team.lessons_view(&arg::<String>(a, "id")?)),
+        "set_lesson" => ok(team.set_lesson(&arg::<String>(a, "id")?, &arg::<String>(a, "lesson")?, &arg::<String>(a, "state")?)?),
+        "procedures" => ok(team.procedures(&arg::<String>(a, "id")?).into_values().collect::<Vec<_>>()),
+        "set_procedure" => ok(team.set_procedure(&arg::<String>(a, "id")?, &arg::<String>(a, "routine")?, arg::<bool>(a, "on")?)?),
+        "routine_offers" => ok(team.routine_offers().into_iter().filter(|o| o.state == "open").collect::<Vec<_>>()),
+        "answer_routine_offer" => ok(team.answer_routine_offer(&arg::<String>(a, "offer")?, arg::<bool>(a, "yes")?).await?),
+        "retro" => ok(team.retro()),
+        /* job links and the PIN; mail to Cookie */
+        "links_status" => ok(team.links_status()),
+        "set_link_pin" => ok(team.set_link_pin(&arg::<String>(a, "pin")?)?),
+        "end_link_sessions" => ok(team.end_link_sessions()?),
+        "job_link" => ok(team.job_link(&arg::<String>(a, "id")?, &arg::<String>(a, "job")?).await),
+        "mail_status" => ok(team.mail_status()),
+        "file_changes" => ok(team.file_changes(opt::<String>(a, "id").as_deref())),
+        "undo_file_change" => ok(team.undo_file_change(&arg::<String>(a, "change")?)?),
         "open_promises" => ok(team.open_promises().await),
 
         /* approvals and attention */
@@ -177,7 +194,7 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
 
         /* channels: Slack, Discord, iMessage, Signal */
         "channels" => ok(team.channel_states().into_iter().map(|(k, s)| (k, json!({"enabled": s.enabled, "config": s.config, "chats": s.chats, "code": s.pending_code, "status": s.status}))).collect::<std::collections::BTreeMap<_, _>>()),
-        "channel_connect" => ok(team.channel_connect(&arg::<String>(a, "kind")?, opt(a, "secret"), a.get("config").cloned().unwrap_or(Value::Null)).await?.status),
+        "channel_connect" => ok(team.channel_connect(&arg::<String>(a, "kind")?, opt(a, "secret"), a.get("config").cloned().unwrap_or(Value::Null)).await?),
         "channel_disconnect" => ok(team.channel_disconnect(&arg::<String>(a, "kind")?).await?),
         "channel_code" => ok(team.channel_code(&arg::<String>(a, "kind")?).await?),
         "channel_unlink" => ok(team.channel_unlink(&arg::<String>(a, "kind")?, &arg::<String>(a, "chat")?)?),

@@ -32,6 +32,19 @@ pub struct Attachment {
 /// Attached text the model may read, per file.
 const ATTACH_MAX: usize = 200_000;
 
+/// What a job was built with, for its record.
+#[derive(Default)]
+pub(crate) struct Built {
+    pub(crate) lessons: Vec<cookie_harness::lessons::Picked>,
+    pub(crate) recipe: bool,
+    pub(crate) tools: Vec<String>,
+}
+
+/// The jobs that learn: the agent's own work, not tests, shadows or reviews.
+fn learns(trigger: &Trigger) -> bool {
+    !matches!(trigger, Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Review)
+}
+
 fn instructions(team_names: &[(String, String)], rec: &AgentRecord, trigger: &Trigger, probation: bool) -> String {
     let mut s = if rec.id == crate::front::COOKIE_ID { crate::front::COOKIE_OPENING.to_string() } else { format!(
         "You are {name}, one of the person's focused agents. Your one job: {job}\n\
@@ -127,7 +140,8 @@ impl Team {
             .sum()
     }
 
-    async fn build_agent(self: &Arc<Self>, rec: &AgentRecord, trigger: &Trigger, mode: Mode, job: &str, log: Arc<Mutex<Vec<crate::store::ApprovalRecord>>>) -> Result<Agent, String> {
+    #[allow(clippy::too_many_arguments)]
+    async fn build_agent(self: &Arc<Self>, rec: &AgentRecord, trigger: &Trigger, mode: Mode, job: &str, text: &str, log: Arc<Mutex<Vec<crate::store::ApprovalRecord>>>, built: &mut Built) -> Result<Agent, String> {
         let settings = self.settings().await;
         let names: Vec<(String, String)> = self.agents().await.into_iter().filter(|a| a.shadow_of.is_none()).map(|a| (a.id, a.name)).collect();
         let probation = rec.on_probation(util::now());
@@ -151,8 +165,30 @@ impl Team {
                 base.push_str(&n);
             }
         }
+        // What its own record says: lessons from jobs like this one, which tools
+        // have been working, its rank, and a routine's saved recipe.
+        let all_tools = crate::tools::for_agent(self, rec, trigger, job);
+        built.tools = all_tools.iter().map(|t| t.spec().name.clone()).collect();
+        if learns(trigger) {
+            let (picked, block) = self.pick_lessons(&rec.id, text);
+            built.lessons = picked;
+            for b in [block, crate::experience::tool_block(self, &rec.id)].into_iter().flatten() {
+                base.push_str("\n\n");
+                base.push_str(&b);
+            }
+            if rec.id != crate::front::COOKIE_ID {
+                let (rank, facts) = self.rank(rec);
+                base.push_str("\n\n");
+                base.push_str(&crate::rank::block(rank, &facts));
+            }
+            if let Some(r) = self.recipe_for(&rec.id, trigger, &built.tools) {
+                built.recipe = true;
+                base.push_str("\n\n");
+                base.push_str(&r);
+            }
+        }
         // Many tools: the rarely used ones wait behind tool_search.
-        let (tools, hidden_note) = crate::toolsearch::arrange(crate::tools::for_agent(self, rec, trigger));
+        let (tools, hidden_note) = crate::toolsearch::arrange(all_tools);
         if let Some(n) = hidden_note {
             base.push_str("\n\n");
             base.push_str(&n);
@@ -288,12 +324,18 @@ impl Team {
         let log = Arc::new(Mutex::new(Vec::new()));
         let tools_used = Arc::new(Mutex::new(Vec::<String>::new()));
         let usage = Arc::new(Mutex::new((0u64, 0u64)));
+        // Steered (the person added words) and cut off (it hit a limit).
+        let marks = Arc::new(Mutex::new((0u32, false)));
+        let mut built = Built::default();
+        let mut added: Vec<Message> = Vec::new();
+        self.mark_running(&rec.id, &job_id, &text, &trigger, started_at);
         // Tests and shadows don't touch the agent's real conversation.
         let in_session = matches!(trigger, Trigger::Chat | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Inbox);
 
         let result: Result<String, String> = async {
-            let agent = self.build_agent(&rec, &trigger, mode, &job_id, log.clone()).await?;
+            let agent = self.build_agent(&rec, &trigger, mode, &job_id, &text, log.clone(), &mut built).await?;
             let mut session = if in_session { Session::open(self.paths.session(&rec.id)).await.map_err(|e| e.to_string())? } else { Session::in_memory() };
+            let before = session.messages().len();
             let mut input = vec![match &trigger {
                 Trigger::Peer { label, .. } => Message::untrusted(text.clone(), Source::Agent(label.clone())),
                 Trigger::Handoff { from, .. } => Message::untrusted(text.clone(), Source::Agent(from.clone())),
@@ -305,14 +347,18 @@ impl Team {
                 input.push(Message::untrusted(format!("{}\n\n{body}", f.name), Source::File));
             }
             let (team, aid, jid) = (self.clone(), rec.id.clone(), job_id.clone());
-            let (tu, us) = (tools_used.clone(), usage.clone());
+            let (tu, us, mk) = (tools_used.clone(), usage.clone(), marks.clone());
             let mut forward = move |event: Event| match event {
                 Event::TextDelta(text) => team.emit(TeamEvent::Text { job: jid.clone(), agent: aid.clone(), text }),
                 Event::ToolCallStarted { name, .. } => {
                     tu.lock().unwrap().push(name.clone());
                     team.emit(TeamEvent::Tool { job: jid.clone(), agent: aid.clone(), name })
                 }
-                Event::Steered { text } => team.emit(TeamEvent::Steered { job: jid.clone(), agent: aid.clone(), text }),
+                Event::Steered { text } => {
+                    mk.lock().unwrap().0 += 1;
+                    team.emit(TeamEvent::Steered { job: jid.clone(), agent: aid.clone(), text })
+                }
+                Event::Closing { .. } => mk.lock().unwrap().1 = true,
                 Event::Usage(u) => {
                     let mut g = us.lock().unwrap();
                     g.0 += u.input_tokens + u.output_tokens + u.cache_write_tokens;
@@ -320,9 +366,12 @@ impl Team {
                 }
                 _ => {}
             };
-            agent.run_streaming_all(&mut session, input, &control, &mut forward).await.map_err(|e| e.to_string())
+            let r = agent.run_streaming_all(&mut session, input, &control, &mut forward).await.map_err(|e| e.to_string());
+            added = session.messages().get(before..).map(<[Message]>::to_vec).unwrap_or_default();
+            r
         }
         .await;
+        let calls = crate::outcome::calls_in(&added);
 
         self.runs.lock().unwrap().remove(&rec.id);
         self.save_trace_head(&rec.id);
@@ -332,6 +381,7 @@ impl Team {
             Err(e) => (JobStatus::Failed, String::new(), Some(e)),
         };
         let (tokens, microdollars) = *usage.lock().unwrap();
+        let (steered, cut_off) = *marks.lock().unwrap();
         let promises = if status == JobStatus::Done && mode == Mode::Ask {
             cookie_harness::cookie::promise::promises_in(&answer, util::now() as i64)
                 .into_iter()
@@ -357,8 +407,21 @@ impl Team {
             microdollars,
             grade: None,
             version: rec.version,
+            steps: calls.iter().map(|(s, _)| s.clone()).collect(),
+            steered,
+            cut_off,
+            lessons: built.lessons,
+            recipe: built.recipe,
         };
         let _ = util::append_jsonl(&self.paths.jobs(&rec.id), &job);
+        self.clear_running(&rec.id);
+        // What the job teaches: a lesson, a routine's recipe, its rank, a routine to offer.
+        if learns(&job.trigger) {
+            self.learn_from(&rec.id, &job);
+            self.after_routine(&rec.id, &job, &calls, &built.tools);
+            self.update_rank(&rec);
+            self.maybe_offer_routine(&rec.id, &job).await;
+        }
         self.emit(TeamEvent::JobFinished { job: job_id.clone(), agent: rec.id.clone(), status, answer: util::clip(&answer, 20_000), error, microdollars });
         self.after_job(&rec, &job).await;
         job
@@ -474,7 +537,15 @@ impl Team {
 
     /// The person grades a job (1 good, -1 not), or marks one of its promises.
     pub fn grade(&self, agent: &str, job: &str, grade: Option<i8>) -> Result<(), String> {
-        self.edit_job(agent, job, |j| j.grade = grade)
+        let before = util::read_jsonl::<Job>(&self.paths.jobs(agent)).into_iter().find(|j| j.id == job);
+        self.edit_job(agent, job, |j| j.grade = grade)?;
+        // Not good: the lessons it carried lose the win it gave them.
+        if let (Some(j), Some(-1)) = (before, grade) {
+            if j.grade != Some(-1) {
+                self.rescore_lessons(agent, &j);
+            }
+        }
+        Ok(())
     }
 
     pub fn mark_promise(&self, agent: &str, job: &str, index: usize, state: &str) -> Result<(), String> {
@@ -486,6 +557,57 @@ impl Team {
                 p.state = state.to_string();
             }
         })
+    }
+
+    /* ---------- a job cut off when Cookie closed ---------- */
+    //
+    // A job's record is written when it ends, so one running when Cookie quit
+    // (or crashed, or the Mac slept for good) would leave no trace. A marker
+    // is written as it starts and removed as it ends; one still there at the
+    // next start becomes an honest record: it failed, cut off. What it changed
+    // before then is in its receipts (the harness's action ledger, which never
+    // replays an action). Ported from the super console's `cookie/work.rs`
+    // recovery.
+
+    fn running_path(&self, agent: &str) -> std::path::PathBuf {
+        self.paths.agent(agent).join("running.json")
+    }
+
+    fn mark_running(&self, agent: &str, job: &str, text: &str, trigger: &Trigger, started_at: u64) {
+        let marker = serde_json::json!({"job": job, "input": util::clip(text, 4000), "trigger": trigger, "started_at": started_at});
+        let _ = util::write_json(&self.running_path(agent), &marker);
+    }
+
+    fn clear_running(&self, agent: &str) {
+        let _ = std::fs::remove_file(self.running_path(agent));
+    }
+
+    /// At start: jobs that were running when Cookie stopped.
+    pub(crate) async fn recover_interrupted(&self) {
+        for a in self.agents().await {
+            let path = self.running_path(&a.id);
+            let Ok(bytes) = std::fs::read(&path) else { continue };
+            let _ = std::fs::remove_file(&path);
+            let Ok(m) = serde_json::from_slice::<serde_json::Value>(&bytes) else { continue };
+            let id = m["job"].as_str().unwrap_or_default().to_string();
+            if id.is_empty() || util::read_jsonl::<Job>(&self.paths.jobs(&a.id)).iter().any(|j| j.id == id) {
+                continue;
+            }
+            let job = Job {
+                id: id.clone(),
+                agent: a.id.clone(),
+                trigger: serde_json::from_value(m["trigger"].clone()).unwrap_or_default(),
+                input: m["input"].as_str().unwrap_or_default().to_string(),
+                started_at: m["started_at"].as_u64().unwrap_or(0),
+                finished_at: Some(util::now()),
+                status: JobStatus::Failed,
+                error: Some("Cookie closed while this job was running, so it didn't finish. Anything it changed before then is in its record; nothing is done again on its own.".into()),
+                version: a.version,
+                ..Default::default()
+            };
+            let _ = util::append_jsonl(&self.paths.jobs(&a.id), &job);
+            self.notice(&a.id, &format!("{}'s job was cut off", a.name), &util::clip(&job.input, 160), Some(&id), false);
+        }
     }
 
     fn edit_job(&self, agent: &str, job: &str, f: impl FnOnce(&mut Job)) -> Result<(), String> {

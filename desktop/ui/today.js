@@ -26,6 +26,38 @@ async function renderToday() {
   hello.append(el("h1", null, hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"), el("p", "muted", summaryLine()));
   parts.push(hello);
 
+  // The morning card: what happened since yesterday, from the record (no card on a quiet day).
+  const [retro, offers] = await Promise.all([call("retro").catch(() => null), call("routine_offers").catch(() => [])]);
+  if (view !== "today") return;
+  if (retro && Date.now() / 1000 - retro.at < 36 * 3600) {
+    const [head, ...lines] = retro.text.split("\n");
+    const card = el("div", "group retro-card");
+    const top = el("div", "retro-head");
+    const f = Faces.create("cookie", 26);
+    top.append(f.el, el("strong", null, head), el("small", "muted", fmtTime(retro.at)));
+    card.append(top);
+    const body = el("div", "retro-lines");
+    for (const l of lines) body.append(el("p", l.startsWith("  ") ? "retro-sub" : null, l.replace(/^\s*[-·]\s*/, "")));
+    card.append(body);
+    parts.push(card);
+  }
+
+  // A job you keep giving: offered once as a routine.
+  for (const o of offers.slice(0, 2)) {
+    const who = agentById(o.agent);
+    if (!who) continue;
+    const sched = await call("describe_schedule", { schedule: o.schedule }).catch(() => "");
+    const r = setRow(`Make it a routine for ${who.name}?`, `You've asked this ${o.seen} times, ${sched}: "${plain(o.task).slice(0, 120)}"`, null);
+    const acts = el("div", "row-actions");
+    acts.append(
+      button("Yes, " + sched, "primary small", async () => { await call("answer_routine_offer", { offer: o.id, yes: true }); toast("Routine made", `${who.name}, ${sched}`, "good"); renderToday(); }),
+      button("No, don't ask again", "quiet small", async () => { await call("answer_routine_offer", { offer: o.id, yes: false }); renderToday(); }),
+    );
+    r.append(acts);
+    const g = el("div", "group"); g.append(r);
+    parts.push(g);
+  }
+
   // Needs your yes.
   if (approvals.length) {
     parts.push(el("h2", "today-h", `Needs your yes (${approvals.length})`));

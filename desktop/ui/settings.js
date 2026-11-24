@@ -125,6 +125,19 @@ const SETTINGS = {
       );
       out.push(el("h3", "group-title", "Your link"), open, acts);
     }
+    // Job links: opening Cookie from a link it sent, with a PIN.
+    const ls = await call("links_status").catch(() => null);
+    if (ls) {
+      const pin = el("div", "group edit");
+      pin.append(setRow(ls.pin_set ? "PIN is set" : "Set a PIN for job links", "Links in Cookie's messages open this team on another device only with your six-digit PIN. Five wrong tries end a link; three in a row lock it for 15 minutes.", ls.sessions ? button(`Sign out ${ls.sessions} device${ls.sessions === 1 ? "" : "s"}`, "quiet small danger", async () => { await call("end_link_sessions"); refreshSettings(); }) : null));
+      const p = input("", "Six digits", { type: "password", inputmode: "numeric", maxlength: 6 });
+      pin.append(p);
+      const pe = el("div", "form-end");
+      pe.append(button(ls.pin_set ? "Change PIN" : "Set PIN", "quiet small", async () => {
+        try { await call("set_link_pin", { pin: p.value }); toast("PIN saved", "Devices opened with a link sign in again.", "good"); refreshSettings(); } catch (e) { toast("Couldn't save it", String(e), "error"); }
+      }));
+      out.push(el("h3", "group-title", "Job links"), pin, pe);
+    }
     const runner = el("div", "group");
     runner.append(setRow("Always on, with this computer asleep", "Run the same team on an old Mac or a small server: `cookie-team serve --bind 0.0.0.0 --public-url https://…` (see desktop/RUNNER.md). Open its link from anywhere.", null));
     out.push(el("h3", "group-title", "Home or cloud runner"), runner);

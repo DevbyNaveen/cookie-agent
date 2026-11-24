@@ -200,7 +200,7 @@ pub(crate) fn note(access: &Access) -> Option<String> {
 }
 
 /// The file tools for an agent with the Files permission, when it may see more than its folder.
-pub(crate) fn tools(team: &Arc<Team>, agent: &str) -> Vec<Arc<dyn Tool>> {
+pub(crate) fn tools(team: &Arc<Team>, agent: &str, job: &str) -> Vec<Arc<dyn Tool>> {
     let access = team.access();
     if access.level == "own" || access.roots().is_empty() {
         return Vec::new();
@@ -208,6 +208,10 @@ pub(crate) fn tools(team: &Arc<Team>, agent: &str) -> Vec<Arc<dyn Tool>> {
     let a = Arc::new(access);
     let backups = team.paths.agent(agent).join("backups");
     let (la, sa, ra, wa) = (a.clone(), a.clone(), a.clone(), a.clone());
+    // What this job read of each file, so it never overwrites a newer version (`lease`).
+    let seen = crate::lease::Seen::default();
+    let (rseen, wseen) = (seen.clone(), seen);
+    let (team_w, agent_w, job_w) = (Arc::downgrade(team), agent.to_string(), job.to_string());
     vec![
         Arc::new(tool(
             "mac_files_list",
@@ -254,10 +258,13 @@ pub(crate) fn tools(team: &Arc<Team>, agent: &str) -> Vec<Arc<dyn Tool>> {
             }, "required": ["path"]}),
             Effect::Read,
             move |args: Value| {
-                let a = ra.clone();
+                let (a, seen) = (ra.clone(), rseen.clone());
                 async move {
                     let p = a.resolve(args["path"].as_str().unwrap_or_default(), true)?;
                     let from = args["from"].as_u64().unwrap_or(0) as usize;
+                    if p.is_file() {
+                        seen.read(&p);
+                    }
                     tokio::task::spawn_blocking(move || read(&p, from)).await.map_err(|e| e.to_string())?
                 }
             },
@@ -273,14 +280,24 @@ pub(crate) fn tools(team: &Arc<Team>, agent: &str) -> Vec<Arc<dyn Tool>> {
                 }, "required": ["path", "content"]}),
                 Effect::Write,
                 move |args: Value| {
-                    let (a, backups) = (wa.clone(), backups.clone());
+                    let (a, backups, seen) = (wa.clone(), backups.clone(), wseen.clone());
+                    let (team, agent, job) = (team_w.clone(), agent_w.clone(), job_w.clone());
                     async move {
                         let p = a.resolve(args["path"].as_str().unwrap_or_default(), false)?;
                         let content = args["content"].as_str().unwrap_or_default().to_string();
                         if content.len() > 2_000_000 {
                             return Err("That's over 2 MB; split it.".into());
                         }
-                        tokio::task::spawn_blocking(move || write(&p, &content, &backups)).await.map_err(|e| e.to_string())?
+                        let hold = seen.hold(&p)?;
+                        let (p2, bytes) = (p.clone(), content.clone().into_bytes());
+                        let (said, kept) = tokio::task::spawn_blocking(move || write(&p, &content, &backups)).await.map_err(|e| e.to_string())??;
+                        seen.wrote(&p2);
+                        drop(hold);
+                        // Kept so the person can put it back (`journal`).
+                        if let Some(t) = team.upgrade() {
+                            t.journal_write(&agent, &job, &p2, kept.as_deref(), &bytes);
+                        }
+                        Ok(said)
                     }
                 },
             )
@@ -391,8 +408,10 @@ fn read(path: &Path, from: usize) -> Result<String, String> {
     Ok(if end < total { format!("{part}\n\n[characters {from}–{end} of {total}; read on with from: {end}]") } else { part })
 }
 
-fn write(path: &Path, content: &str, backups: &Path) -> Result<String, String> {
+/// Write the file, keeping the old version first. Returns what it said and where the old version is.
+fn write(path: &Path, content: &str, backups: &Path) -> Result<(String, Option<PathBuf>), String> {
     let existed = path.exists();
+    let mut kept_at = None;
     if existed {
         if path.is_dir() {
             return Err("That's a folder.".into());
@@ -402,11 +421,12 @@ fn write(path: &Path, content: &str, backups: &Path) -> Result<String, String> {
         let kept = backups.join(format!("{}-{}", util::now(), name));
         std::fs::copy(path, &kept).map_err(|e| format!("Couldn't keep the old version, so nothing was changed: {e}"))?;
         let _ = std::fs::write(kept.with_extension("from"), path.to_string_lossy().as_bytes());
+        kept_at = Some(kept);
     }
     let tmp = path.with_extension("cookie-tmp");
     std::fs::write(&tmp, content).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
-    Ok(format!("{} {} ({} bytes){}.", if existed { "Replaced" } else { "Created" }, tilde(path), content.len(), if existed { "; the old version is kept" } else { "" }))
+    Ok((format!("{} {} ({} bytes){}.", if existed { "Replaced" } else { "Created" }, tilde(path), content.len(), if existed { "; the old version is kept" } else { "" }), kept_at))
 }
 
 #[cfg(test)]
@@ -438,7 +458,7 @@ mod tests {
         assert!(a.resolve(&format!("{}/../other.md", mine.display()), true).is_err(), "no climbing out");
         let backups = root.join("backups");
         let p = a.resolve(&mine.join("plan.md").to_string_lossy(), false).unwrap();
-        assert!(write(&p, "v2", &backups).unwrap().starts_with("Replaced"));
+        assert!(write(&p, "v2", &backups).unwrap().0.starts_with("Replaced"));
         assert_eq!(std::fs::read_to_string(mine.join("plan.md")).unwrap(), "v2");
         let kept = std::fs::read_dir(&backups).unwrap().flatten().find(|e| e.file_name().to_string_lossy().ends_with("plan.md")).unwrap();
         assert_eq!(std::fs::read_to_string(kept.path()).unwrap(), "v1");

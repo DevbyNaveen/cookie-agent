@@ -214,9 +214,10 @@ impl Default for Settings {
 }
 
 /// What started a job.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Trigger {
+    #[default]
     Chat,
     Routine { routine: String },
     /// Another of your agents asked; `chain` is who asked whom, to stop loops.
@@ -238,9 +239,10 @@ pub enum Trigger {
     Channel { channel: String, chat: String },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
+    #[default]
     Running,
     Done,
     Stopped,
@@ -267,7 +269,7 @@ pub struct PromiseRecord {
 }
 
 /// One job, as its agent's record keeps it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Job {
     pub id: String,
     pub agent: String,
@@ -297,6 +299,25 @@ pub struct Job {
     /// The setup version that ran it.
     #[serde(default)]
     pub version: u32,
+    /// Every tool call, in order, and how it ended (`outcome`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<crate::outcome::Step>,
+    /// Times the person added words while it worked (a correction mid-job).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub steered: u32,
+    /// It stopped at a limit and wrote its answer from what it had.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cut_off: bool,
+    /// Lessons that matched it, and whether each was given (`experience`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lessons: Vec<cookie_harness::lessons::Picked>,
+    /// A routine's saved recipe rode in it (`procedures`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recipe: bool,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// When a routine runs, in this computer's local time.

@@ -51,6 +51,9 @@ enum Sender {
     Discord { token: String },
     IMessage,
     Signal { account: String, cli: String },
+    /// Needs a public address (`webhooks`): Meta and Microsoft call Cookie.
+    WhatsApp { token: String, phone_id: String },
+    Teams { app_id: String, password: String },
 }
 
 #[derive(Default)]
@@ -59,7 +62,7 @@ pub struct Channels {
     senders: Mutex<HashMap<String, Sender>>,
     /// Jobs started from a chat: job → (channel, chat), to send the answer back.
     jobs: Mutex<HashMap<String, (String, String)>>,
-    http: reqwest::Client,
+    pub(crate) http: reqwest::Client,
 }
 
 fn short(id: &str) -> String {
@@ -146,6 +149,59 @@ impl Team {
                     s.config = json!({"account": account});
                 })?;
             }
+            "whatsapp" | "teams" | "mail" => {
+                let public = self.settings().await.server.public_url.ok_or("This needs a public address: run Cookie as a cloud runner (or a home runner behind a tunnel) and set its public URL in Settings → Runner.")?;
+                let public = public.trim_end_matches('/').to_string();
+                match kind {
+                    "whatsapp" => {
+                        let token = secret.filter(|t| !t.trim().is_empty()).or_else(|| self.keys.get("channel:whatsapp")).ok_or("Paste the WhatsApp access token (Meta for Developers → your app → WhatsApp → API setup).")?;
+                        let phone_id = config["phone_id"].as_str().map(str::trim).filter(|p| !p.is_empty()).ok_or("Give the phone number ID (WhatsApp → API setup).")?.to_string();
+                        let app_secret = config["app_secret"].as_str().map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).or_else(|| self.keys.get("channel:whatsapp:app_secret")).ok_or("Give the app secret (App settings → Basic): Cookie checks every message is from Meta with it.")?;
+                        let number = self.whatsapp_check(token.trim(), &phone_id).await?;
+                        let verify = util::random_hex(12);
+                        self.keys.set("channel:whatsapp", token.trim())?;
+                        self.keys.set("channel:whatsapp:app_secret", &app_secret)?;
+                        self.keys.set("channel:whatsapp:verify", &verify)?;
+                        self.save_channel("whatsapp", |s| {
+                            s.enabled = true;
+                            s.config = json!({"phone_id": phone_id, "number": number["display_phone_number"], "webhook": format!("{public}/hooks/whatsapp"), "verify_token": verify});
+                        })?;
+                    }
+                    "teams" => {
+                        let password = secret.filter(|t| !t.trim().is_empty()).or_else(|| self.keys.get("channel:teams")).ok_or("Paste the bot's client secret (Azure → your bot → Configuration).")?;
+                        let app_id = config["app_id"].as_str().map(str::trim).filter(|p| !p.is_empty()).ok_or("Give the bot's Microsoft App ID.")?.to_string();
+                        self.teams_token(&app_id, password.trim()).await?;
+                        self.keys.set("channel:teams", password.trim())?;
+                        self.save_channel("teams", |s| {
+                            s.enabled = true;
+                            s.config = json!({"app_id": app_id, "webhook": format!("{public}/hooks/teams"), "routes": {}});
+                        })?;
+                    }
+                    _ => {
+                        let password = secret.filter(|t| !t.trim().is_empty()).or_else(|| self.keys.get("channel:mail")).ok_or("Paste the SMTP password for Cookie's address.")?;
+                        let cfg: crate::mail::MailConfig = serde_json::from_value(config.clone()).map_err(|e| e.to_string())?;
+                        if cfg.domain.is_empty() || cfg.local.is_empty() || cfg.smtp_host.is_empty() || cfg.smtp_user.is_empty() {
+                            return Err("Give Cookie's address (local part and domain), your own addresses, and the SMTP server, user and password it sends with.".into());
+                        }
+                        if cfg.you.is_empty() {
+                            return Err("List your own addresses: only mail from them, proven by DKIM, can give Cookie a job.".into());
+                        }
+                        let inbound = util::random_hex(24);
+                        self.keys.set("channel:mail", password.trim())?;
+                        self.keys.set("channel:mail:inbound", &inbound)?;
+                        let mut c = config.clone();
+                        c["webhook"] = json!(format!("{public}/hooks/mail"));
+                        self.save_channel("mail", |s| {
+                            s.enabled = true;
+                            s.config = c;
+                        })?;
+                        // Shown once: the forwarder sends it with every message.
+                        let mut st = self.channel_states().get("mail").cloned().unwrap_or_default();
+                        st.config["inbound_secret"] = json!(inbound);
+                        return Ok(st);
+                    }
+                }
+            }
             _ => return Err("Unknown channel.".into()),
         }
         self.spawn_channels();
@@ -201,6 +257,18 @@ impl Team {
                     self.chans.senders.lock().unwrap().insert(kind.clone(), Sender::IMessage);
                     tokio::spawn(async move { team.run_imessage(gen).await });
                 }
+                "whatsapp" => {
+                    if let (Some(token), Some(phone_id)) = (self.keys.get("channel:whatsapp"), st.config["phone_id"].as_str().map(str::to_string)) {
+                        self.chans.senders.lock().unwrap().insert(kind.clone(), Sender::WhatsApp { token, phone_id });
+                        self.set_status(&kind, "waiting for Meta to call");
+                    }
+                }
+                "teams" => {
+                    if let (Some(password), Some(app_id)) = (self.keys.get("channel:teams"), st.config["app_id"].as_str().map(str::to_string)) {
+                        self.chans.senders.lock().unwrap().insert(kind.clone(), Sender::Teams { app_id, password });
+                        self.set_status(&kind, "waiting for Teams to call");
+                    }
+                }
                 "signal" => {
                     if let (Some(cli), Some(account)) = (which("signal-cli"), st.config["account"].as_str().map(str::to_string)) {
                         self.chans.senders.lock().unwrap().insert(kind.clone(), Sender::Signal { account: account.clone(), cli: cli.clone() });
@@ -251,11 +319,28 @@ impl Team {
                     .map_err(|e| e.to_string()),
                 Sender::IMessage => imessage_send(chat, &part).await,
                 Sender::Signal { account, cli } => tokio::process::Command::new(cli).args(["-a", account, "send", "-m", &part, chat]).output().await.map(|_| ()).map_err(|e| e.to_string()),
+                Sender::WhatsApp { token, phone_id } => self.whatsapp_send(token, phone_id, chat, &part).await,
+                Sender::Teams { app_id, password } => {
+                    // The service address a verified activity named for this chat.
+                    let service = self.channel_states().get("teams").and_then(|s| s.config["routes"][chat].as_str().map(str::to_string)).unwrap_or_default();
+                    self.teams_send(app_id, password, &service, chat, &part).await
+                }
             };
             if let Err(e) = r {
                 tracing::warn!("{kind}: couldn't send: {e}");
             }
         }
+    }
+
+    /// Teams: remember where to answer a chat (from a verified activity only).
+    pub(crate) fn teams_route(&self, conversation: &str, service_url: &str) {
+        let (c, u) = (conversation.to_string(), service_url.to_string());
+        let _ = self.save_channel("teams", |s| {
+            if !s.config["routes"].is_object() {
+                s.config["routes"] = json!({});
+            }
+            s.config["routes"][c] = json!(u);
+        });
     }
 
     /// One message arrived on a channel. Returns what to answer right away, if anything.
@@ -347,10 +432,15 @@ impl Team {
             let states = self.channel_states();
             let linked: Vec<(String, String)> = states.iter().filter(|(_, s)| s.enabled).flat_map(|(k, s)| s.chats.keys().map(move |c| (k.clone(), c.clone()))).collect();
             match ev {
-                TeamEvent::JobFinished { job, answer, error, .. } => {
+                TeamEvent::JobFinished { job, answer, error, agent, .. } => {
+                    self.mail_job_finished(&job, &agent, &answer).await;
                     let target = self.chans.jobs.lock().unwrap().remove(&job);
                     if let Some((kind, chat)) = target {
-                        let text = if answer.is_empty() { error.unwrap_or_else(|| "Stopped.".into()) } else { answer };
+                        let mut text = if answer.is_empty() { error.unwrap_or_else(|| "Stopped.".into()) } else { answer };
+                        // On a runner with a public address and a PIN: how it worked it out.
+                        if let Some(link) = self.job_link(&agent, &job).await {
+                            text.push_str(&format!("\n\n{link}"));
+                        }
                         self.channel_say(&kind, &chat, &text).await;
                     }
                 }
