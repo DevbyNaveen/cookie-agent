@@ -59,7 +59,12 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "data_dir" => ok(team.paths.root.to_string_lossy()),
         "providers" => ok(Keys::present()),
         "key_providers" => ok(crate::keys::PROVIDERS.iter().map(|(id, label, var)| json!({"id": id, "label": label, "env": var, "set": std::env::var(var).is_ok_and(|v| !v.is_empty())})).collect::<Vec<_>>()),
-        "set_key" => ok(team.keys.set_provider(&arg::<String>(a, "provider")?, &arg::<String>(a, "value")?)?),
+        "set_key" => {
+            team.keys.set_provider(&arg::<String>(a, "provider")?, &arg::<String>(a, "value")?)?;
+            // A first model key is enough to bring Cookie in.
+            team.ensure_cookie().await;
+            ok(())
+        }
 
         /* roster */
         "list_agents" => ok(team.rows().await),
@@ -176,6 +181,10 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "channel_disconnect" => ok(team.channel_disconnect(&arg::<String>(a, "kind")?).await?),
         "channel_code" => ok(team.channel_code(&arg::<String>(a, "kind")?).await?),
         "channel_unlink" => ok(team.channel_unlink(&arg::<String>(a, "kind")?, &arg::<String>(a, "chat")?)?),
+
+        /* your files */
+        "access" => ok(team.access()),
+        "set_access" => ok(team.set_access(&arg::<String>(a, "level")?, opt::<Vec<String>>(a, "folders").unwrap_or_default())?),
 
         /* what an agent knows */
         "memory" => ok(team.memory(&arg::<String>(a, "id")?).await?),

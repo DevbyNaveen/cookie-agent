@@ -32,7 +32,7 @@ const busy = new Set();        // agent ids with a job in flight
 const live = new Map();        // job id -> { agent, trigger, input, acc, started, ui }
 const statusOf = new Map();    // agent id -> what it is doing, for the sidebar
 const faces = new Map();       // agent id -> roster face
-let pillFace = null, hireFace = null;
+let pillFace = null;
 
 /* ---------- small shared pieces ---------- */
 const fmtTime = (secs) => {
@@ -171,16 +171,19 @@ function renderRoster() {
     return li;
   };
   const head = (text) => { const h = el("li", "roster-head", text); h.setAttribute("role", "presentation"); return h; };
-  // Pinned first, then everything else by latest activity, then each section in name order.
-  const pinned = shown.filter((r) => r.pinned);
-  const loose = shown.filter((r) => !r.pinned && !r.section);
-  const sections = [...new Set(shown.filter((r) => !r.pinned && r.section).map((r) => r.section))].sort((a, b) => a.localeCompare(b));
+  // Cookie, the front door, always on top; then pinned, then everything else by latest activity, then each section in name order.
+  const cookie = shown.find((r) => r.id === "cookie");
+  const rest = shown.filter((r) => r.id !== "cookie");
+  const pinned = rest.filter((r) => r.pinned);
+  const loose = rest.filter((r) => !r.pinned && !r.section);
+  const sections = [...new Set(rest.filter((r) => !r.pinned && r.section).map((r) => r.section))].sort((a, b) => a.localeCompare(b));
   const out = [];
+  if (cookie) { const li = item(cookie); li.classList.add("roster-cookie"); out.push(li); }
   if (pinned.length) { if (!q) out.push(head("Pinned")); out.push(...pinned.map(item)); }
   if (loose.length) { if (!q && (pinned.length || sections.length)) out.push(head("Recent")); out.push(...loose.map(item)); }
   for (const name of sections) {
     if (!q) out.push(head(name));
-    out.push(...shown.filter((r) => !r.pinned && r.section === name).map(item));
+    out.push(...rest.filter((r) => !r.pinned && r.section === name).map(item));
   }
   const hiddenCount = rows.filter((r) => r.hidden).length;
   if (!q && hiddenCount) {
@@ -208,10 +211,23 @@ function show(v) {
   view = v;
   for (const id of ["chat", "hire", "today", "network"]) $(id).hidden = id !== v;
   if (v !== "chat") closeProfile();
+  if (v !== "hire") stopCrew();
   renderTodayRow();
 }
 
 const drafts = new Map(); // agent id -> unsent text, kept when you switch
+
+// Your bubbles take the colour of the agent you're talking to (a yellow agent, a
+// yellow bubble), with dark or light words, whichever reads better on it.
+function paintYou(id) {
+  const c = Faces.color(id);
+  const [r, g, b] = (c.match(/\d+/g) ?? [173, 92, 39]).map(Number);
+  const lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const lum = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  const chat = $("chat");
+  chat.style.setProperty("--you-bg", c);
+  chat.style.setProperty("--you-ink", lum > 0.36 ? "#1c140a" : "#fff");
+}
 
 async function openAgent(id) {
   const r = agentById(id);
@@ -219,6 +235,7 @@ async function openAgent(id) {
   if (current && current.id !== id) drafts.set(current.id, $("input").value);
   closeTalk();
   current = r;
+  paintYou(r.id);
   if (r.unread) { r.unread = 0; call("mark_read", { id }).catch(() => {}); }
   $("input").value = drafts.get(id) ?? "";
   autosize();
@@ -418,8 +435,20 @@ function setStatus(id, text) {
 }
 
 function setMood(id, mood) {
-  faces.get(id)?.setMood(mood);
-  if (current?.id === id) pillFace?.setMood(mood);
+  // Every face of this agent on screen moves together: the list, the header, a call.
+  const all = new Set([faces.get(id), current?.id === id ? pillFace : null, ...Faces.of(id)].filter(Boolean));
+  all.forEach((f) => f.setMood(mood));
+}
+const allFaces = (id, fn) => new Set([faces.get(id), current?.id === id ? pillFace : null, ...Faces.of(id)].filter(Boolean)).forEach(fn);
+
+/** A handoff: the asking agent glances at the one it asked, who turns to look back. */
+function glanceBetween(fromId, toId) {
+  const a = faces.get(fromId), b = faces.get(toId);
+  if (!a || !b) return;
+  const ra = a.rect(), rb = b.rect();
+  if (!ra.width || !rb.width) return;
+  a.glanceAt(rb.left + rb.width / 2, rb.top + rb.height / 2, 1600);
+  setTimeout(() => b.glanceAt(ra.left + ra.width / 2, ra.top + ra.height / 2, 1300), 260);
 }
 
 const TRIGGER_LABEL = {
@@ -464,6 +493,7 @@ function onTeamEvent(ev) {
       if (row) { row.last_at = Math.floor(Date.now() / 1000); renderRoster(); }
       setStatus(ev.agent, "Thinking…");
       setMood(ev.agent, "received");
+      if (ev.trigger.kind === "handoff" && ev.trigger.from) glanceBetween(ev.trigger.from, ev.agent);
       if (current?.id === ev.agent) { $("suggest").hidden = true; attachLive(job); syncSend(); }
       break;
     }
@@ -472,7 +502,7 @@ function onTeamEvent(ev) {
       if (!job) return;
       job.acc += ev.text;
       if (typeof Voice !== "undefined") Voice.onText(ev);
-      if (!job.started) { job.started = true; setMood(ev.agent, "working"); setStatus(ev.agent, "Writing…"); }
+      if (!job.started || job.toolOn) { job.started = true; job.toolOn = false; setMood(ev.agent, "writing"); allFaces(ev.agent, (f) => f.tool(null)); setStatus(ev.agent, "Writing…"); }
       if (job.ui && current?.id === ev.agent) {
         if (job.ui.status.isConnected) { job.ui.status.replaceWith(job.ui.row); job.ui.face.stop(); }
         job.ui.reply.innerHTML = Md.render(job.acc);
@@ -486,6 +516,9 @@ function onTeamEvent(ev) {
       job.statusText = TALK_TOOLS.has(ev.name) ? "Talking with another agent" : toolPhrase(ev.name);
       if (TALK_TOOLS.has(ev.name)) job.talked = true;
       setMood(ev.agent, "working");
+      job.toolOn = true;
+      allFaces(ev.agent, (f) => f.tool(ev.name));
+      if (job.ui) job.ui.face.tool?.(ev.name);
       setStatus(ev.agent, job.statusText + "…");
       if (job.ui) { job.ui.text.textContent = job.statusText; job.ui.face.setMood("working"); }
       break;
@@ -504,6 +537,9 @@ function onTeamEvent(ev) {
     case "learned": onLearned(ev); break;
     case "answered": {
       if (onQuestionAnswered(ev)) break;
+      const was = approvals.find((a) => a.id === ev.id);
+      // A yes to something that goes out into the world: a small celebration, in its colours.
+      if (ev.yes && was && was.effect === "outbound") allFaces(was.agent, (f) => f.celebrate());
       approvals = approvals.filter((a) => a.id !== ev.id);
       document.querySelectorAll(`[data-approval="${ev.id}"]`).forEach((c) => {
         c.replaceWith(event([ev.yes ? "Approved" : ev.by === "stopped" ? "No longer needed" : "Denied", ev.by === "telegram" ? " from your phone" : ""]));
@@ -527,6 +563,10 @@ function onTeamEvent(ev) {
       if (!job) { if (profileOpenFor(ev.agent)) refreshProfile(); return; }
       live.delete(ev.job);
       busy.delete(ev.agent);
+      allFaces(ev.agent, (f) => f.tool(null));
+      if (ev.status === "failed") setTimeout(() => allFaces(ev.agent, (f) => f.error()), 60);
+      // A routine reporting in: a hop, so a morning of reports reads as a standup down the list.
+      if (job.trigger?.kind === "routine" && ev.status === "done") setTimeout(() => allFaces(ev.agent, (f) => f.perk()), 900);
       setStatus(ev.agent, null);
       const here = current?.id === ev.agent && view === "chat";
       if (job.ui) {
@@ -690,6 +730,11 @@ $("composer").onsubmit = async (e) => {
     }
   }
   if (!text) return;
+  // Named with @: each agent named hops, wherever its face is.
+  for (const m of text.matchAll(/@([a-z0-9][a-z0-9-]*)(?![\w/-])/gi)) {
+    const hit = addressBook.find((x) => x.kind === "team" && x.address.toLowerCase() === "@" + m[1].toLowerCase());
+    if (hit) allFaces(hit.id, (f) => f.perk());
+  }
   $("suggest").hidden = true;
   drafts.delete(agent.id);
   const files = pending;
@@ -744,75 +789,216 @@ function renderChips() {
 }
 
 /* ---------- hire ---------- */
+/* ---------- hire: faces doing tricks; pick one, hire it ---------- */
+// Each face loops its own tricks. A 2D body never turns like a card: it jumps (a crouch,
+// a stretch up, a squash on landing), its face rolls round it mid-air, and a shadow on
+// the ground shrinks as it rises. Cartwheels and twirls turn in the picture's own plane.
+function jumpFrames(h, extra = () => "") {
+  return [
+    { transform: `translateY(0) scale(1,1) ${extra(0)}` },
+    { transform: `translateY(0) scale(1.16,.84) ${extra(0)}`, offset: 0.13 },
+    { transform: `translateY(${-h * 0.45}%) scale(.88,1.14) ${extra(0.25)}`, offset: 0.24 },
+    { transform: `translateY(${-h}%) scale(1,1) ${extra(0.5)}`, offset: 0.5, easing: "cubic-bezier(.5,0,.75,0)" },
+    { transform: `translateY(${-h * 0.12}%) scale(.94,1.07) ${extra(0.85)}`, offset: 0.84 },
+    { transform: `translateY(0) scale(1.18,.82) ${extra(1)}`, offset: 0.91 },
+    { transform: `translateY(0) scale(.97,1.03) ${extra(1)}`, offset: 0.96 },
+    { transform: `translateY(0) scale(1,1) ${extra(1)}` },
+  ];
+}
+function shadowFrames(h) {
+  const at = (k) => `scale(${1 - 0.5 * k}) `;
+  return [
+    { transform: at(0), opacity: 0.55 }, { transform: "scale(1.12)", opacity: 0.62, offset: 0.13 },
+    { transform: at(0.45), opacity: 0.4, offset: 0.24 }, { transform: at(1), opacity: 0.18, offset: 0.5 },
+    { transform: at(0.12), opacity: 0.5, offset: 0.84 }, { transform: "scale(1.15)", opacity: 0.62, offset: 0.91 },
+    { transform: at(0), opacity: 0.55 },
+  ].map((f) => (h < 20 ? { ...f, opacity: Math.max(0.35, f.opacity) } : f));
+}
+// [jump height %, ms, the face's roll (front/back/double/spin/spin2) or null, in-plane turn]
+const TRICKS = {
+  frontflip: [46, 980, "front"],
+  backflip: [46, 980, "back"],
+  doubleflip: [70, 1300, "double"],
+  spin: [26, 860, "spin"],
+  doublespin: [40, 1100, "spin2"],
+  cartwheel: [38, 1150, null, (k) => `rotate(${-360 * k}deg)`],
+  twirl: [30, 1050, null, (k) => `rotate(${720 * k}deg)`],
+  hops: null,
+  jelly: null,
+  moonwalk: null,
+};
+const GROUND_TRICKS = {
+  hops: [[{ transform: "translateY(0) scale(1,1)" }, { transform: "translateY(0) scale(1.15,.85)", offset: 0.08 }, { transform: "translateY(-30%) scale(.92,1.08)", offset: 0.2 }, { transform: "translateY(0) scale(1.12,.88)", offset: 0.33 }, { transform: "translateY(-24%) scale(.94,1.06)", offset: 0.48 }, { transform: "translateY(0) scale(1.1,.9)", offset: 0.62 }, { transform: "translateY(-16%) scale(.96,1.04)", offset: 0.78 }, { transform: "translateY(0) scale(1,1)" }], 1150],
+  jelly: [[{ transform: "scale(1,1)" }, { transform: "scale(1.25,.75)", offset: 0.2 }, { transform: "scale(.82,1.18)", offset: 0.4 }, { transform: "scale(1.12,.9)", offset: 0.6 }, { transform: "scale(.96,1.04)", offset: 0.8 }, { transform: "scale(1,1)" }], 850],
+  moonwalk: [[{ transform: "translateX(0) rotate(0deg)" }, { transform: "translateX(-16%) rotate(-8deg)", offset: 0.2 }, { transform: "translateX(-28%) rotate(4deg)", offset: 0.4 }, { transform: "translateX(-10%) rotate(-6deg)", offset: 0.6 }, { transform: "translateX(8%) rotate(5deg)", offset: 0.8 }, { transform: "translateX(0) rotate(0deg)" }], 1200],
+};
+const TRICK_NAMES = Object.keys(TRICKS);
+const noMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let crew = [], picked = null, crewTimers = [];
+
+function trick(c, name) {
+  if (noMotion || c.busy) return;
+  const n = name ?? TRICK_NAMES.filter((t) => t !== c.last)[Math.floor(Math.random() * (TRICK_NAMES.length - 1))];
+  c.last = n; c.busy = true;
+  let anim;
+  if (TRICKS[n]) {
+    const [h, ms, roll, turn] = TRICKS[n];
+    anim = c.acro.animate(jumpFrames(h, turn ? (k) => turn(k) : undefined), { duration: ms });
+    c.shadow.animate(shadowFrames(h), { duration: ms });
+    // The face rolls while it's in the air: after the take-off, done before the landing.
+    if (roll) setTimeout(() => c.face.flip(roll, ms * 0.6), ms * 0.2);
+    else c.face.perk();
+  } else {
+    const [frames, ms] = GROUND_TRICKS[n];
+    anim = c.acro.animate(frames, { duration: ms, easing: "cubic-bezier(.34,.12,.3,1)" });
+    c.face.perk();
+  }
+  anim.onfinish = anim.oncancel = () => {
+    c.busy = false;
+    if (Math.random() < 0.35) c.face.setMood("done");
+  };
+}
+
+// One face per role for this session: come back and the one you liked is still there.
+const crewIds = new Map();
+function slugId(name) {
+  if (crewIds.has(name)) return crewIds.get(name);
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "agent";
+  const hex = Array.from(crypto.getRandomValues(new Uint8Array(3)), (b) => b.toString(16).padStart(2, "0")).join("");
+  const id = `${slug}-${hex}`;
+  crewIds.set(name, id);
+  return id;
+}
+
+function stopCrew() {
+  crewTimers.forEach(clearTimeout); crewTimers = [];
+  crew.forEach((c) => c.face?.stop());
+  crew = [];
+}
+
+function renderStarters() {
+  stopCrew();
+  const taken = new Set(rows.map((r) => r.name.toLowerCase()));
+  const roles = STARTERS.filter((s) => !taken.has(s.name.toLowerCase()));
+  const cards = roles.map((s) => {
+    const id = slugId(s.name);
+    const face = Faces.create(id, 108);
+    return { ...s, id, face };
+  });
+  cards.push({ own: true, name: "Your own" });
+  $("starter-list").replaceChildren(...cards.map((c, i) => {
+    const li = el("li");
+    const b = el("button", "crew-card" + (c.own ? " own" : ""));
+    b.type = "button";
+    b.setAttribute("role", "option");
+    b.setAttribute("aria-selected", "false");
+    const acro = el("span", "acro");
+    const shadow = el("span", "acro-shadow");
+    if (c.own) { const plus = el("span", "plus-face"); plus.append(icon("plus")); acro.append(plus); }
+    else acro.append(c.face.el);
+    const stage = el("span", "acro-stage");
+    stage.append(c.own ? acro : shadow, ...(c.own ? [] : [acro]));
+    b.append(stage, el("span", "crew-name", c.name));
+    c.card = b; c.acro = acro; c.shadow = shadow;
+    b.onmouseenter = () => !c.own && trick(c);
+    b.onclick = () => pick(c);
+    b.ondblclick = () => !c.own && hireNow();
+    li.append(b);
+    // Its own rhythm: a first trick soon, then one every few seconds.
+    if (!c.own) {
+      const loop = () => { trick(c); crewTimers.push(setTimeout(loop, 2600 + Math.random() * 3800)); };
+      crewTimers.push(setTimeout(loop, 500 + i * 380 + Math.random() * 900));
+    }
+    return li;
+  }));
+  crew = cards;
+}
+
+function pick(c) {
+  picked = c;
+  for (const x of crew) { x.card.classList.toggle("on", x === c); x.card.setAttribute("aria-selected", String(x === c)); }
+  $("hire-form").hidden = !c.own || false;
+  if (c.own) { $("hire-form").hidden = false; $("hire-form").name.focus(); }
+  else { $("hire-form").hidden = true; trick(c, "doubleflip"); setTimeout(() => c.face.celebrate?.(), 650); }
+  syncHireBtn();
+}
+
+function syncHireBtn() {
+  const f = $("hire-form");
+  const ready = picked && (!picked.own || (f.name.value.trim() && f.job.value.trim()));
+  $("hire-btn").disabled = !ready;
+  $("hire-btn").textContent = picked && !picked.own ? `Hire ${picked.name}` : picked?.own && f.name.value.trim() ? `Hire ${f.name.value.trim()}` : "Hire";
+}
+
+function defaultModel() {
+  return localStorage.getItem("cookie.lastModel") || rows.find((r) => r.id !== "cookie")?.model || rows[0]?.model || suggestions()[0] || "";
+}
+
 async function openHire(prefill) {
   current = null;
   closePops();
   show("hire");
   renderRoster();
+  picked = null;
   const form = $("hire-form");
   form.reset();
-  if (prefill) { form.name.value = prefill.name; form.job.value = prefill.job; }
-  form.model.value = localStorage.getItem("cookie.lastModel") || suggestions()[0] || "";
+  form.hidden = true;
+  form.model.value = defaultModel();
+  // The model only asks to be chosen when there's none to use.
+  form.model.hidden = !!form.model.value;
   $("hire-error").hidden = true;
   $("hire-cancel").hidden = rows.length === 0;
+  $("hire-title").textContent = rows.filter((r) => r.id !== "cookie").length ? "Hire" : "Build your team";
+  renderStarters();
   const handovers = await call("handovers").catch(() => []);
-  $("handover-field").hidden = handovers.length === 0;
-  form.handover.replaceChildren(el("option", null, "None"), ...handovers.map((h) => { const o = el("option", null, h.title); o.value = h.file; return o; }));
+  form.handover.hidden = handovers.length === 0;
+  form.handover.replaceChildren(el("option", null, "No handover note"), ...handovers.map((h) => { const o = el("option", null, h.title); o.value = h.file; return o; }));
   form.handover.options[0].value = "";
-  updateHirePreview();
-  if (prefill) { form.scrollIntoView({ behavior: "smooth", block: "center" }); (form.model.value ? form.job : form.model).focus(); }
-  else { $("hire").scrollTop = 0; form.name.focus({ preventScroll: true }); }
+  if (prefill) {
+    const own = crew.find((c) => c.own);
+    pick(own);
+    form.name.value = prefill.name; form.job.value = prefill.job;
+    syncHireBtn();
+  }
+  syncHireBtn();
+  $("hire").scrollTop = 0;
 }
 
 function suggestions() {
   return providers.flatMap((p) => MODELS[p] || []);
 }
 
-function updateHirePreview() {
-  const name = $("hire-form").name.value.trim();
-  $("hire-title").textContent = name || (rows.length ? "Hire an agent" : "Build your team");
-  hireFace?.stop();
-  hireFace = Faces.create(name ? name.toLowerCase() : "cookie", 112);
-  $("hire-face").replaceChildren(hireFace.el);
-}
+$("hire-form").addEventListener("input", syncHireBtn);
+$("hire-form").onsubmit = (e) => { e.preventDefault(); hireNow(); };
 
-$("hire-form").name.addEventListener("input", updateHirePreview);
-
-$("hire-form").onsubmit = async (e) => {
-  e.preventDefault();
-  const form = e.target;
+async function hireNow() {
+  if (!picked) return;
+  const form = $("hire-form");
+  const model = form.model.value.trim() || defaultModel();
   $("hire-error").hidden = true;
+  if (!model) { form.hidden = false; form.model.hidden = false; form.model.focus(); $("hire-error").textContent = "Add a model key in Settings → Models first."; $("hire-error").hidden = false; return; }
+  const hire = picked.own
+    ? { name: form.name.value, job: form.job.value, model, handover: form.handover.value || null }
+    : { name: picked.name, job: picked.job, model, id: picked.id };
+  $("hire-btn").disabled = true;
   try {
-    const agent = await call("hire_agent", { hire: {
-      name: form.name.value, model: form.model.value, job: form.job.value,
-      probation_days: +form.probation.value || 0, handover: form.handover.value || null,
-    } });
+    const agent = await call("hire_agent", { hire });
+    crewIds.delete(hire.name);
     try { localStorage.setItem("cookie.lastModel", agent.model); } catch {}
+    stopCrew();
     await loadRoster();
     openAgent(agent.id);
+    setTimeout(() => allFaces(agent.id, (f) => f.celebrate()), 400);
   } catch (err) {
     $("hire-error").textContent = String(err);
     $("hire-error").hidden = false;
+    syncHireBtn();
   }
-};
-
-$("hire-cancel").onclick = () => rows.length && openAgent(rows[0].id);
-$("new-agent").onclick = () => openHire();
-
-function renderStarters() {
-  $("starter-list").replaceChildren(...STARTERS.map((s) => {
-    const li = el("li");
-    const b = el("button");
-    b.type = "button";
-    const f = Faces.create(s.name.toLowerCase(), 44);
-    const t = el("div");
-    t.append(el("strong", null, s.name), el("span", null, s.job));
-    b.append(f.el, t);
-    b.onclick = () => openHire(s);
-    li.append(b);
-    return li;
-  }));
 }
+
+$("hire-btn").onclick = hireNow;
+$("hire-cancel").onclick = () => { stopCrew(); rows.length && openAgent(rows[0].id); };
+$("new-agent").onclick = () => openHire();
 
 /* ---------- fire ---------- */
 async function fireCurrent(agent) {
@@ -1074,10 +1260,6 @@ async function boot() {
   $("me-name").textContent = name || "You";
   $("me-initials").textContent = (name || "You").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
   $("models").replaceChildren(...Object.values(MODELS).flat().map((m) => { const o = el("option"); o.value = m; return o; }));
-  const note = $("model-note");
-  if (providers.some((p) => MODELS[p])) note.textContent = `Keys found for ${providers.filter((p) => MODELS[p]).join(", ")}. Type any provider:model you like.`;
-  else { note.innerHTML = "No model key yet. Add one in Settings → Models, or use a local <code>ollama:</code> model."; note.classList.add("warn"); }
-  renderStarters();
   await loadApprovals();
   await loadQuestions();
   await loadRoster();

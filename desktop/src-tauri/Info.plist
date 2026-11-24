@@ -6,5 +6,13 @@
   <string>Cookie listens only while you hold the mic, to turn what you say into a message. It stays on this Mac.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>Agents you allow can read and add reminders, notes and events, and send iMessages you approve.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Agents read the folders you choose in Settings → Your files. Every change they want to make asks you first.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Agents read the folders you choose in Settings → Your files. Every change they want to make asks you first.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Agents read the folders you choose in Settings → Your files. Every change they want to make asks you first.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Agents read the folders you choose in Settings → Your files. Every change they want to make asks you first.</string>
 </dict>
 </plist>

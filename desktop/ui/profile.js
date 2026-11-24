@@ -138,7 +138,7 @@ const PANELS = {
     danger.onclick = fireCurrent;
     return [el("h3", "group-title", "Setup"), form, end, el("h3", "group-title", "What it can use"), access,
       el("h3", "group-title", "Limits"), limits, limitsEnd, el("h3", "group-title", "Probation"), prob,
-      el("h3", "group-title", "About"), facts, danger];
+      el("h3", "group-title", "About"), facts, ...(a.id === "cookie" ? [el("p", "set-note", "Cookie stays: it's your front door. Change its model or what it can use above.")] : [danger])];
   },
 
   async record(a) {

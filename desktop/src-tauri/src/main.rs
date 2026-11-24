@@ -65,6 +65,31 @@ async fn open_window(app: tauri::AppHandle, agent: String, title: String) -> Res
     builder.build().map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// The Mac's own folder chooser, for Settings → Your files. None when cancelled.
+#[tauri::command]
+async fn pick_folder() -> Result<Option<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let out = tauri::async_runtime::spawn_blocking(|| {
+            std::process::Command::new("osascript")
+                .args(["-e", "POSIX path of (choose folder with prompt \"Choose a folder your agents may see\")"])
+                .output()
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Ok(None); // cancelled
+        }
+        let path = String::from_utf8_lossy(&out.stdout).trim().trim_end_matches('/').to_string();
+        Ok((!path.is_empty()).then_some(path))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(None)
+    }
+}
+
 /// The Glass theme: the window itself turns to frosted glass (macOS vibrancy), so the
 /// desktop shows through, blurred, wherever the page leaves it uncovered.
 #[tauri::command]
@@ -150,7 +175,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![call, reveal, open_window, set_glass])
+        .invoke_handler(tauri::generate_handler![call, reveal, open_window, set_glass, pick_folder])
         .build(tauri::generate_context!())
         .expect("Cookie could not start");
     app.run(|app, event| {

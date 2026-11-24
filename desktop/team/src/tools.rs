@@ -80,6 +80,15 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger) 
         }
     }
     out.extend(crate::workbench::tools(team, &rec.id, &rec.name, trigger));
+    // The person's own files beyond its folder (Settings → Your files), never for
+    // someone reaching it from outside: a contact can't read your Documents through it.
+    if g.files && !outside {
+        out.extend(crate::access::tools(team, &rec.id));
+    }
+    // Cookie sees the whole team (who's working, what waits on the person).
+    if rec.id == crate::front::COOKIE_ID && !outside {
+        out.push(crate::front::overview_tool(Arc::downgrade(team)));
+    }
     // The Mac's own apps, never for someone reaching it from outside.
     if g.mac && !outside {
         out.extend(crate::mac::tools());

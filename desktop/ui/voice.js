@@ -237,7 +237,9 @@ const Voice = (() => {
       c.state = s;
       state.textContent = LABEL[s];
       box.dataset.state = s;
-      face.setMood(s === "speaking" ? "working" : s === "thinking" || s === "writing" ? "thinking" : "idle");
+      // Speaking, the mouth follows the voice (below); listening, a small "o".
+      face.setMood(s === "thinking" || s === "writing" ? "thinking" : "idle");
+      face.listen(s === "hearing");
     };
     c.set = set;
 
@@ -277,7 +279,10 @@ const Voice = (() => {
         ring.style.transform = `scale(${k.toFixed(3)})`;
         ring.style.opacity = (0.16 + c.glow * (0.5 - i * 0.12)).toFixed(3);
       });
-      face.el.style.transform = c.state === "speaking" || c.state === "hearing" ? `translateY(${(-c.glow * 3).toFixed(2)}px) scale(${(1 + c.glow * 0.06).toFixed(3)})` : "";
+      // Lip-sync: the mouth opens with the reply's real loudness (ElevenLabs' audio), syllable by syllable.
+      const mouthLevel = c.state === "speaking" ? Math.min(1, shown * 22) : 0;
+      face.talk(mouthLevel);
+      allFaces(c.agent.id, (f) => f !== face && f.talk(mouthLevel));
       c.raf = requestAnimationFrame(loop);
     };
     c.raf = requestAnimationFrame(loop);
@@ -375,6 +380,8 @@ const Voice = (() => {
     c.speech?.cancel();
     c.take?.stop();
     c.mic.close();
+    c.face.talk(0); c.face.listen(false);
+    allFaces(c.agent.id, (f) => f.talk(0));
     c.face.stop();
     const box = $("voice-call");
     box.classList.remove("on");

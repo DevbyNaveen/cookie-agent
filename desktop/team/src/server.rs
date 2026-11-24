@@ -114,6 +114,7 @@ pub fn router(team: Arc<Team>) -> Router {
         .route("/today.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], UI_TODAY) }))
         .route("/network.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], UI_NETWORK) }))
         .route("/learn.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], UI_LEARN) }))
+        .route("/access.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], UI_ACCESS) }))
         .route("/memory.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], UI_MEMORY) }))
         .route("/dropdown.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], UI_DROPDOWN) }))
         .route("/voice.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], UI_VOICE) }))
@@ -140,6 +141,7 @@ const UI_PROFILE: &str = include_str!("../../ui/profile.js");
 const UI_TODAY: &str = include_str!("../../ui/today.js");
 const UI_NETWORK: &str = include_str!("../../ui/network.js");
 const UI_LEARN: &str = include_str!("../../ui/learn.js");
+const UI_ACCESS: &str = include_str!("../../ui/access.js");
 const UI_MEMORY: &str = include_str!("../../ui/memory.js");
 const UI_DROPDOWN: &str = include_str!("../../ui/dropdown.js");
 const UI_VOICE: &str = include_str!("../../ui/voice.js");

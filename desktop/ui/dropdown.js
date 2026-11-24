@@ -28,6 +28,8 @@
     w.text.textContent = label(select);
     w.button.disabled = select.disabled;
     w.button.title = select.title || "";
+    // A hidden select hides its button too.
+    w.wrap.hidden = select.hidden;
   }
 
   function enhance(select) {
@@ -52,7 +54,7 @@
     const proto = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
     Object.defineProperty(select, "value", { configurable: true, get() { return proto.get.call(this); }, set(v) { proto.set.call(this, v); refresh(this); } });
     select.addEventListener("change", () => refresh(select));
-    new MutationObserver(() => refresh(select)).observe(select, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled"] });
+    new MutationObserver(() => refresh(select)).observe(select, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled", "hidden"] });
 
     button.onclick = (e) => { e.stopPropagation(); open?.select === select ? close() : show(select); };
     button.onkeydown = (e) => {

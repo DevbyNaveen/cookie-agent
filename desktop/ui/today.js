@@ -11,6 +11,13 @@ function openToday() {
 }
 
 async function renderToday() {
+  // The agents with news since you last looked hop in turn down the list: a standup.
+  try {
+    const seenAt = Number(sessionStorage.getItem("cookie.today.seen") || 0);
+    const fresh = [...new Set(notices.filter((n) => n.at > seenAt && agentById(n.agent)).map((n) => n.agent))];
+    if (fresh.length) setTimeout(() => Faces.wave(fresh, 180), 250);
+    sessionStorage.setItem("cookie.today.seen", String(Date.now()));
+  } catch {}
   if (view !== "today") return;
   const box = $("today-body");
   const parts = [];

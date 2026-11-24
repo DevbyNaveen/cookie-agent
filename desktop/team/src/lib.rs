@@ -4,6 +4,7 @@
 //! a headless home runner and a cloud runner all drive the same `Team`; every
 //! surface listens to one stream of [`TeamEvent`]s.
 
+pub mod access;
 pub mod api;
 pub mod approvals;
 pub mod challenge;
@@ -12,6 +13,7 @@ pub mod checker;
 pub mod code;
 pub mod evals;
 pub mod events;
+pub mod front;
 pub mod inbox;
 pub mod keys;
 pub mod learning;
@@ -60,6 +62,10 @@ pub struct Hire {
     /// A predecessor's handover note to start from (its file name).
     #[serde(default)]
     pub handover: Option<String>,
+    /// The id it was shown with before hiring (its face is drawn from its id), so
+    /// the face picked is the face hired. Used when free and well formed; else a new one.
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 /// A change to an agent's setup. Fields left out stay as they are.
@@ -176,6 +182,9 @@ impl Team {
         server::spawn_if_enabled(self.clone());
         self.spawn_net();
         self.spawn_channels();
+        // Cookie, the agent everyone starts with, once there is a model for it.
+        let me = self.clone();
+        tokio::spawn(async move { me.ensure_cookie().await });
         // Memories of fired agents that Enkeon couldn't erase at the time.
         let me = self.clone();
         tokio::spawn(async move { me.retry_erasures().await });
@@ -327,8 +336,15 @@ impl Team {
             None => None,
         };
         let now = util::now();
+        let wanted = h.id.as_deref().map(str::trim).filter(|i| {
+            i.len() >= 3 && i.len() <= 64 && i.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') && *i != front::COOKIE_ID
+        });
+        let id = match wanted {
+            Some(i) if self.agent(i).await.is_err() && !self.paths.agent(i).exists() => i.to_string(),
+            _ => util::new_id(&name),
+        };
         let record = AgentRecord {
-            id: util::new_id(&name),
+            id,
             name,
             model,
             job,
@@ -342,7 +358,10 @@ impl Team {
             origin: None,
             version: 1,
         };
-        self.add_agent(record).await
+        let hired = self.add_agent(record).await?;
+        // The first hire's model can run Cookie too.
+        self.ensure_cookie().await;
+        Ok(hired)
     }
 
     pub(crate) async fn add_agent(&self, record: AgentRecord) -> Result<AgentRecord, String> {
@@ -392,6 +411,9 @@ impl Team {
     /// Fire an agent: optionally it writes a handover note first, then its
     /// folder, conversation, record, routines and forks are all deleted.
     pub async fn fire(self: &Arc<Self>, id: &str, handover: bool) -> Result<Option<String>, String> {
+        if id == front::COOKIE_ID {
+            return Err("Cookie stays: it's your front door. Change its model or rules, or hide it, instead.".into());
+        }
         let agent = self.agent(id).await?;
         self.stop(id);
         let note = if handover && self.paths.session(id).exists() { self.write_handover(&agent).await.ok() } else { None };

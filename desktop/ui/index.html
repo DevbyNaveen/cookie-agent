@@ -134,39 +134,22 @@
     <!-- Hire -->
     <section id="hire" class="view hire" hidden>
       <div class="hire-inner">
-        <div class="hire-hero">
-          <span id="hire-face" class="hire-face"></span>
-          <h1 id="hire-title">Hire an agent</h1>
-          <p class="lede">One agent, one job. It gets its own folder and its own memory of your conversations, and nothing it does is shared with your other agents.</p>
-        </div>
-
-        <div class="starters">
-          <h2>Start from a role</h2>
-          <ul id="starter-list" class="starter-list"></ul>
-        </div>
-        <h2 class="own">Or write your own</h2>
-        <form id="hire-form" class="hire-form" autocomplete="off">
-          <label class="field"><span>Name</span><input name="name" required maxlength="40" placeholder="Inbox Triage"></label>
-          <label class="field"><span>Its one job</span><textarea name="job" rows="3" required maxlength="400" placeholder="Sort my inbox every morning and draft replies to the threads that need me."></textarea></label>
-          <label class="field"><span>Model</span>
-            <input name="model" list="models" required placeholder="anthropic:claude-sonnet-4-6" spellcheck="false">
+        <h1 id="hire-title" class="hire-title">Hire</h1>
+        <ul id="starter-list" class="crew" role="listbox" aria-label="Agents to hire"></ul>
+        <form id="hire-form" class="hire-own" autocomplete="off" hidden>
+          <input name="name" required maxlength="40" placeholder="Name" aria-label="Name">
+          <textarea name="job" rows="2" required maxlength="400" placeholder="Its one job" aria-label="Its one job"></textarea>
+          <div class="hire-more">
+            <input name="model" list="models" required placeholder="provider:model" spellcheck="false" aria-label="Model">
             <datalist id="models"></datalist>
-          </label>
-          <div class="field-row">
-            <label class="field"><span>Start on probation</span>
-              <select name="probation" class="pick wide"><option value="0">No, it's real from the start</option><option value="3">3 days in shadow</option><option value="7">7 days in shadow</option></select>
-            </label>
-            <label class="field" id="handover-field" hidden><span>Start from a handover note</span>
-              <select name="handover" class="pick wide"></select>
-            </label>
-          </div>
-          <p id="model-note" class="note-line"></p>
-          <p id="hire-error" class="error-line" role="alert" hidden></p>
-          <div class="hire-actions">
-            <button type="button" id="hire-cancel" class="btn quiet" hidden>Cancel</button>
-            <button type="submit" class="btn primary">Hire</button>
+            <select name="handover" class="pick" aria-label="Start from a handover note" hidden></select>
           </div>
         </form>
+        <p id="hire-error" class="error-line" role="alert" hidden></p>
+        <div class="hire-go">
+          <button type="button" id="hire-cancel" class="btn quiet" hidden>Cancel</button>
+          <button type="button" id="hire-btn" class="btn primary hire-btn" disabled>Hire</button>
+        </div>
       </div>
     </section>
   </main>
@@ -220,6 +203,7 @@
   <script src="settings.js"></script>
   <script src="learn.js"></script>
   <script src="memory.js"></script>
+  <script src="access.js"></script>
   <script src="voice.js"></script>
   <script src="channels.js"></script>
   <script src="dropdown.js"></script>

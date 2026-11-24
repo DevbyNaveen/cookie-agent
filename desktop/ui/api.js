@@ -49,5 +49,11 @@ const Api = (() => {
     if (!w) throw "The browser blocked the new window.";
   }
 
-  return { call, listen, reveal, openWindow, web: !tauri, signedIn: () => !!tauri || !!token };
+  /** The Mac's own folder chooser; null when cancelled or in a browser. */
+  async function pickFolder() {
+    if (!tauri) return null;
+    return tauri.core.invoke("pick_folder");
+  }
+
+  return { call, listen, reveal, openWindow, pickFolder, web: !tauri, signedIn: () => !!tauri || !!token };
 })();

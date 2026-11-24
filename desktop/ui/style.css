@@ -133,7 +133,8 @@ button svg, .search-wrap svg, .menu svg { width: 18px; height: 18px; fill: none;
 .you + .agent, .event + .agent { margin-top: 14px; }
 .bubble { max-width: min(680px, 86%); padding: 7px 13px; border-radius: var(--r-bubble); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 15.5px; line-height: 1.52; }
 .agent .bubble { background: var(--raise); }
-.you .bubble { background: var(--accent); color: var(--accent-ink); border-radius: 22px; }
+.you .bubble { background: var(--you-bg, var(--accent)); color: var(--you-ink, var(--accent-ink)); border-radius: 22px; transition: background .25s ease; }
+.you .bubble a { color: inherit; text-decoration: underline; }
 .file-chip { align-self: flex-end; display: inline-flex; gap: 8px; align-items: center; margin-top: 6px; padding: 7px 12px; border-radius: 12px; background: var(--raise); font-size: 13.5px; color: var(--text-2); max-width: 70%; }
 .msg.file { justify-content: flex-end; }
 .file-chip svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; flex: none; }
@@ -911,3 +912,61 @@ footer.me { gap: 6px; }
 .mem-edit-row small { flex: 1; font-size: 12px; }
 @media (hover: none) { .mem-tools { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .mem-item, .mem-note.shimmer { transition: none; animation: none; } }
+
+/* ---------- Your files (Settings → Privacy) ---------- */
+.access-kinds { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.access-kind { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px; background: var(--raise); text-align: left; transition: background .15s, box-shadow .15s; }
+.access-kind:hover { background: var(--raise-2); }
+.access-kind.on { box-shadow: inset 0 0 0 1.5px var(--accent); background: var(--accent-soft); }
+.access-kind .row-text { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.access-kind .row-text > span { font-weight: 550; display: flex; align-items: center; gap: 8px; }
+.access-kind small { color: var(--text-3); font-size: 12.5px; line-height: 1.45; }
+.access-tag { font-style: normal; font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: 6px; background: var(--raise-2); color: var(--text-2); }
+.access-ic { width: 32px; height: 32px; flex: none; border-radius: 10px; display: grid; place-items: center; background: var(--raise-2); color: var(--text-2); }
+.access-kind.on .access-ic { background: var(--accent); color: var(--accent-ink); }
+.access-ic svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.access-dot { width: 18px; height: 18px; flex: none; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--line-2); transition: box-shadow .15s; }
+.access-kind.on .access-dot { box-shadow: inset 0 0 0 5px var(--accent); }
+.access-folder .row-text > span { font: 13px/1.4 ui-monospace, "SF Mono", Menlo, monospace; overflow-wrap: anywhere; }
+.roster-cookie { margin-bottom: 4px; }
+
+/* The header strip lets clicks through to the chat; its menus must still take them. */
+.pill-row .pop { pointer-events: auto; }
+
+/* ---------- hire: a crew of faces doing tricks ---------- */
+.hire-inner { max-width: 760px; padding: 72px 28px 40px; display: flex; flex-direction: column; align-items: center; min-height: 100%; }
+.hire-title { margin: 0 0 30px; font-size: 30px; font-weight: 700; letter-spacing: -.025em; text-align: center; }
+.crew { list-style: none; margin: 0; padding: 0; width: 100%; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 8px; }
+.crew-card { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 26px 8px 16px; border-radius: 26px; background: transparent; transition: background .2s, box-shadow .2s, transform .15s; perspective: 520px; }
+.crew-card:hover { background: var(--raise); }
+.crew-card:active { transform: scale(.97); }
+.crew-card.on { background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); }
+.acro { display: grid; place-items: center; width: 108px; height: 108px; transform-style: preserve-3d; will-change: transform; transform-origin: 50% 55%; }
+.crew-name { font-size: 14.5px; font-weight: 600; color: var(--text-2); text-align: center; transition: color .2s; }
+.crew-card:hover .crew-name, .crew-card.on .crew-name { color: var(--text); }
+.plus-face { width: 84px; height: 84px; border-radius: 50%; display: grid; place-items: center; color: var(--text-3); box-shadow: inset 0 0 0 2px var(--line-2); transition: color .2s, box-shadow .2s, transform .2s; }
+.plus-face svg { width: 30px; height: 30px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.crew-card.own:hover .plus-face, .crew-card.own.on .plus-face { color: var(--accent-text); box-shadow: inset 0 0 0 2px var(--accent); transform: rotate(90deg); }
+.hire-own { width: 100%; max-width: 520px; display: flex; flex-direction: column; gap: 8px; margin-top: 18px; animation: pop .2s var(--ease); }
+.hire-own[hidden] { display: none; }
+.hire-own input, .hire-own textarea { font: inherit; font-size: 15px; color: var(--text); background: var(--raise); border: 0; border-radius: 14px; padding: 12px 14px; outline: none; resize: none; transition: background .15s, box-shadow .15s; }
+.hire-own input:focus, .hire-own textarea:focus { background: var(--raise-2); box-shadow: 0 0 0 2px var(--focus); }
+.hire-own input[hidden] { display: none; }
+.hire-more { display: flex; gap: 8px; }
+.hire-more input { flex: 1; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13.5px; }
+.hire-go { position: sticky; bottom: 0; margin-top: auto; padding-top: 26px; display: flex; gap: 8px; justify-content: center; }
+.hire-btn { min-width: 200px; height: 46px; font-size: 15.5px; border-radius: 23px; transition: transform .15s, opacity .2s; }
+.hire-btn:not(:disabled):hover { transform: translateY(-1px); }
+.hire-btn:disabled { opacity: .35; }
+#hire-error { margin-top: 12px; text-align: center; }
+@media (prefers-reduced-motion: reduce) { .plus-face { transition: none; } }
+.dd[hidden] { display: none !important; }
+
+/* the tricks' stage: room to jump, and a soft shadow on the ground */
+.acro-stage { position: relative; width: 108px; height: 108px; display: grid; place-items: center; }
+.acro-stage > * { grid-area: 1 / 1; }
+.acro { transform-style: flat; transform-origin: 50% 85%; }
+.acro-shadow { align-self: end; width: 70px; height: 12px; margin-bottom: -6px; border-radius: 50%; background: radial-gradient(closest-side, rgb(0 0 0 / .55), transparent); opacity: .55; transform-origin: 50% 50%; pointer-events: none; }
+:root[data-theme="light"] .acro-shadow, :root[data-theme="white"] .acro-shadow { background: radial-gradient(closest-side, rgb(60 40 20 / .3), transparent); }
+@media (prefers-color-scheme: light) { :root:not([data-theme]) .acro-shadow { background: radial-gradient(closest-side, rgb(60 40 20 / .3), transparent); } }
+.crew-card { perspective: none; }
