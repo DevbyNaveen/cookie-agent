@@ -5,7 +5,9 @@
 <h1 align="center">Cookie</h1>
 <p align="center"><b>by <a href="https://enkeon.com">Enkeon</a></b></p>
 
-<h3 align="center">A team of AI agents that works on your computer, and asks before it acts.</h3>
+<h3 align="center">Beyond assistants. Agents that grow up.</h3>
+
+<p align="center">A team of AI agents that works on your computer, learns on the job, and asks before it acts.</p>
 
 <p align="center">
   <a href="#the-app">The app</a> ·
