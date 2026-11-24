@@ -1208,8 +1208,6 @@ function setRail(w, save = true) {
   const width = collapsed ? RAIL.collapsed : Math.min(RAIL.max, Math.max(RAIL.min, w));
   document.body.style.setProperty("--rail-w", width + "px");
   document.body.classList.toggle("rail-collapsed", collapsed);
-  $("rail-toggle").title = collapsed ? "Expand sidebar (⌘\\)" : "Collapse sidebar (⌘\\)";
-  $("rail-toggle").setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
   if (collapsed) { $("search-wrap").hidden = true; closePops(); }
   if (save) try { localStorage.setItem("cookie.rail", String(width)); if (!collapsed) localStorage.setItem("cookie.railOpen", String(width)); } catch {}
 }
@@ -1219,7 +1217,6 @@ function toggleRail() {
   try { open = +localStorage.getItem("cookie.railOpen") || 272; } catch {}
   setRail(collapsed ? open : 0);
 }
-$("rail-toggle").onclick = toggleRail;
 $("rail-resize").ondblclick = toggleRail;
 $("rail-resize").onpointerdown = (e) => {
   e.preventDefault();
