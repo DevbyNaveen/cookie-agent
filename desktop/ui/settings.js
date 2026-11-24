@@ -247,6 +247,11 @@ async function openEnkeon() {
   const p = st.pairing;
   if (st.paired) {
     out.push(el("p", "set-note", `Paired with “${st.paired.project_name}”${st.paired.by ? ` as ${st.paired.by}` : ""}. Every agent keeps its own space there, and reads your shared material.`));
+    const [cl, s] = await Promise.all([call("cloud").catch(() => null), call("settings")]);
+    const g = el("div", "group");
+    g.append(setRow("Keep approvals, notices and answers in Enkeon", "So your phone and the Console see them, and you can say yes or no from there. Only the words: never your files.", toggle(!!s.cloud?.store, (v) => call("update_settings", { patch: { cloud_store: v } }), "Cloud store")));
+    if (cl) g.append(setRow("Last contact", cl.last_error ? `Not reached: ${cl.last_error}` : cl.last_ok ? new Date(cl.last_ok * 1000).toLocaleString() : "Not yet", null));
+    out.push(g);
     out.push(button("Unpair this computer", "quiet small danger", async () => {
       try { const r = await call("unpair"); toast("Unpaired", r.note); openEnkeon(); } catch (e) { toast("Couldn't unpair", String(e), "err"); }
     }));

@@ -437,6 +437,7 @@ impl Team {
             cut_off,
             lessons: built.lessons,
             recipe: built.recipe,
+            place: None,
         };
         let _ = util::append_jsonl(&self.paths.jobs(&rec.id), &job);
         self.clear_running(&rec.id);

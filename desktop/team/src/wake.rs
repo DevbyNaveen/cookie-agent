@@ -256,7 +256,8 @@ impl Team {
             let _ = util::write_json(&self.paths.agent(agent).join("held-wake.json"), &(w.id.clone(), text));
         }
         let _ = util::append_jsonl(&self.wakes_path(), &w);
-        self.emit(crate::events::TeamEvent::Notice { agent: agent.into(), title: format!("Woke: {}", n.title), body: w.why.clone(), job: w.job.clone() });
+        // Within the person's daily cap on interruptions, like any other news.
+        self.notice(agent, &format!("Woke: {}", n.title), &w.why, w.job.as_deref(), false);
     }
 
     /// A wake that was held while the agent slept or worked.

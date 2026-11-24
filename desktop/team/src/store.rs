@@ -198,6 +198,18 @@ pub struct Settings {
     pub scout_dismissed: Vec<String>,
     /// Wake agents when their memory changes (`wake`). On by default.
     pub wake: bool,
+    /// The cloud: which agents run there while this Mac is off, and the one store (`cloud`).
+    pub cloud: CloudCfg,
+}
+
+/// What Cookie does with Enkeon's cloud (`cloud`). Both off until you say.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct CloudCfg {
+    /// Keep waiting approvals, notices and answers in Enkeon's store, for your phone.
+    pub store: bool,
+    /// Agents that run in the cloud while this Mac is off (Cookie credits).
+    pub run_when_off: Vec<String>,
 }
 
 impl Default for Settings {
@@ -214,6 +226,7 @@ impl Default for Settings {
             challenge_model: None,
             scout_dismissed: Vec::new(),
             wake: true,
+            cloud: CloudCfg::default(),
         }
     }
 }
@@ -321,6 +334,9 @@ pub struct Job {
     /// A routine's saved recipe rode in it (`procedures`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub recipe: bool,
+    /// Where it ran when not on this Mac: `cloud` (Enkeon, while the Mac was off).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<String>,
 }
 
 fn is_zero(n: &u32) -> bool {

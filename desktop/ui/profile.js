@@ -311,8 +311,8 @@ const PANELS = {
   },
 
   async computer(a) {
-    const [asleep, cage, browser, snaps] = await Promise.all([
-      call("asleep", { id: a.id }), call("cage", { id: a.id }), call("browser", { id: a.id }), call("snapshots", { id: a.id }),
+    const [asleep, cage, browser, snaps, cloud] = await Promise.all([
+      call("asleep", { id: a.id }), call("cage", { id: a.id }), call("browser", { id: a.id }), call("snapshots", { id: a.id }), call("cloud").catch(() => null),
     ]);
     const out = [];
     // Awake or asleep.
@@ -324,6 +324,13 @@ const PANELS = {
         if (asleep) await call("wake_agent", { id: a.id }); else await call("sleep_agent", { id: a.id });
         loadRoster(); refreshProfile();
       })));
+    // The cloud, while this Mac is off.
+    const inCloud = !!cloud?.run_when_off?.includes(a.id);
+    life.append(setRow("Run in the cloud when this Mac is off",
+      !cloud?.paired ? "Pair this computer with Enkeon first (Connect apps → Enkeon)."
+        : inCloud ? "When your Mac has been off for five minutes, its routines run in Enkeon as this agent, on Cookie credits: with your team's context, the web and connected apps, but not this Mac's files, commands, browser or Mac apps. Answers come back here."
+        : "Its routines wait for your Mac. Turn on to let them run in Enkeon while it's off (Cookie credits).",
+      cloud?.paired ? toggle(inCloud, async (v) => { await call("set_cloud_agent", { id: a.id, on: v }).catch((e) => toast("Couldn't change that", String(e), "error")); refreshProfile(); }, "Run in the cloud") : null));
     out.push(el("h3", "group-title", "Life"), life);
 
     // The cage.

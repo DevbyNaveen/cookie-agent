@@ -82,7 +82,8 @@ impl Session {
         self.path.as_deref()
     }
 
-    pub(crate) async fn append(&mut self, message: Message) -> Result<()> {
+    /// Add one message to the end, written whole (a host adding a note between runs).
+    pub async fn append(&mut self, message: Message) -> Result<()> {
         if let Some(path) = &self.path {
             let mut line = serde_json::to_string(&message)?;
             line.push('\n');

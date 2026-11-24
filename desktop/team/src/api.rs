@@ -31,6 +31,7 @@ fn apply_settings(s: &mut Settings, p: &Value) {
     if let Some(v) = p.get("daily_notices").and_then(Value::as_i64) { s.daily_notices = v.clamp(0, 50); }
     if let Some(v) = p.get("market_url") { s.market_url = v.as_str().map(str::trim).filter(|m| !m.is_empty()).map(str::to_string); }
     if let Some(v) = p.get("wake").and_then(Value::as_bool) { s.wake = v; }
+    if let Some(v) = p.get("cloud_store").and_then(Value::as_bool) { s.cloud.store = v; }
     if let Some(v) = p.get("challenge_model") { s.challenge_model = v.as_str().map(str::trim).filter(|m| !m.is_empty()).map(str::to_string); }
     if let Some(v) = p.get("server") {
         if let Some(b) = v.get("enabled").and_then(Value::as_bool) { s.server.enabled = b; }
@@ -199,6 +200,8 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "browser_forget" => ok(team.browser_forget(&arg::<String>(a, "id")?).await?),
         "set_cage" => ok(team.set_cage(&arg::<String>(a, "id")?, a.get("patch").unwrap_or(&Value::Null)).await?),
         "wakes" => ok(team.wake_status()),
+        "cloud" => ok(team.cloud_status().await),
+        "set_cloud_agent" => ok(team.set_cloud_agent(&arg::<String>(a, "id")?, arg::<bool>(a, "on")?).await?),
         "label_wake" => ok(team.label_wake(&arg::<String>(a, "id")?, &arg::<String>(a, "label")?)?),
         "sleep_agent" => ok(team.sleep_agent(&arg::<String>(a, "id")?).await?),
         "wake_agent" => ok(team.wake_agent(&arg::<String>(a, "id")?).await?),

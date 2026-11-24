@@ -12,6 +12,7 @@ pub mod browser;
 pub mod challenge;
 pub mod channels;
 pub mod checker;
+pub mod cloud;
 pub mod code;
 pub mod evals;
 pub mod events;
@@ -205,6 +206,8 @@ impl Team {
         wake::spawn(self.clone());
         // Agents' browsers close when idle.
         browser::spawn_reaper();
+        // With this Mac paired: the cloud runs its agents while it's off, and one store.
+        cloud::spawn(self.clone());
         // Cookie, the agent everyone starts with, once there is a model for it.
         let me = self.clone();
         tokio::spawn(async move { me.ensure_cookie().await });

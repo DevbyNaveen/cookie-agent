@@ -87,7 +87,7 @@ impl Team {
         self.routines.read().await.iter().filter(|r| r.agent == agent).cloned().collect()
     }
 
-    async fn save_routines(&self, rs: &[Routine]) -> Result<(), String> {
+    pub(crate) async fn save_routines(&self, rs: &[Routine]) -> Result<(), String> {
         util::write_json(&self.paths.routines(), rs)?;
         self.emit(TeamEvent::RoutinesChanged);
         Ok(())
@@ -160,6 +160,11 @@ impl Team {
         let ids: Vec<String> = self.agents().await.into_iter().filter(|a| a.shadow_of.is_none()).map(|a| a.id).collect();
         self.daily_snapshots(&ids);
         for r in due {
+            // An agent that may also run in the cloud waits for the first sync,
+            // so a turn the cloud took while the Mac was off isn't run twice.
+            if !crate::cloud::first_sync_done() && self.settings().await.cloud.run_when_off.contains(&r.agent) {
+                continue;
+            }
             // An asleep agent's routine skips its turn quietly: the schedule moves on.
             if self.is_asleep(&r.agent) {
                 let mut rs = self.routines.write().await;
