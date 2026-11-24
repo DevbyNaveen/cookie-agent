@@ -21,6 +21,7 @@ pub mod events;
 pub mod evolve;
 pub mod experience;
 pub mod front;
+pub mod helpers;
 pub mod hire_gap;
 pub mod inbox;
 pub mod inherit;

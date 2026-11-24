@@ -359,8 +359,74 @@ function closeTalk() {
   setTimeout(() => { v.hidden = true; v.replaceChildren(); }, 180);
 }
 
+/* ---------- helpers: the read-only assistants a job sends out side by side ---------- */
+const HELPER_STATE = { waiting: "Waiting", working: "Working", done: "Done", failed: "Couldn't finish" };
+
+/** A card of the helpers one job sent: each task while it works, then its report, a click away. */
+function helpersCard(agentId) {
+  const card = el("div", "helpers");
+  const head = el("div", "helpers-head");
+  const face = Faces.create(agentId, 18);
+  const title = el("span", "helpers-title");
+  const count = el("span", "helpers-count");
+  head.append(face.el, title, count);
+  const list = el("ol", "helpers-list");
+  card.append(head, list);
+  const rows = new Map();
+  const name = agentById(agentId)?.name ?? "It";
+  const tally = () => {
+    const all = [...rows.values()];
+    const done = all.filter((r) => r.state === "done" || r.state === "failed").length;
+    title.textContent = `${name} sent ${all.length} helper${all.length === 1 ? "" : "s"}`;
+    count.textContent = done === all.length ? "" : `${done} of ${all.length} back`;
+    card.classList.toggle("busy", done < all.length);
+  };
+  return {
+    el: card,
+    /** Add or move on helper `n`: its task, `waiting` / `working` / `done` / `failed`, and its report. */
+    set(n, task, state, note = "") {
+      let r = rows.get(n);
+      if (!r) {
+        const li = el("li", "helper");
+        const btn = el("button", "helper-row");
+        btn.type = "button";
+        const num = el("span", "helper-n", String(n));
+        const text = el("span", "helper-task", task);
+        const st = el("span", "helper-state");
+        btn.append(num, text, st);
+        const report = el("div", "helper-report md");
+        report.hidden = true;
+        btn.onclick = () => {
+          if (!r.note) return;
+          report.hidden = !report.hidden;
+          li.classList.toggle("open", !report.hidden);
+          btn.setAttribute("aria-expanded", String(!report.hidden));
+        };
+        li.append(btn, report);
+        list.append(li);
+        r = { li, btn, st, report, text, state: "", note: "" };
+        rows.set(n, r);
+      }
+      if (task) r.text.textContent = task;
+      r.state = state;
+      r.note = note;
+      r.li.className = `helper ${state}${r.report.hidden ? "" : " open"}`;
+      r.st.replaceChildren(...(state === "done" ? [icon("check")] : state === "failed" ? [icon("x")] : []), HELPER_STATE[state] ?? state);
+      r.btn.disabled = !note;
+      r.btn.setAttribute("aria-label", `Helper ${n}: ${task || r.text.textContent}. ${HELPER_STATE[state] ?? state}${note ? ". Show its report" : ""}`);
+      if (note) r.report.innerHTML = Md.render(note);
+      tally();
+    },
+  };
+}
+
 function line(l) {
   if (l.from === "talk") return talkPill(l.talk);
+  if (l.from === "helpers") {
+    const c = helpersCard(current?.id);
+    l.helpers.forEach((h, i) => c.set(i + 1, h.task, h.failed ? "failed" : "done", h.report));
+    return c.el;
+  }
   if (l.from === "file") {
     const row = el("div", "msg file");
     const chip = el("div", "file-chip");
@@ -482,8 +548,19 @@ function attachLive(job) {
   if (job.acc) { reply.innerHTML = Md.render(job.acc); $("log").append(row); }
   else $("log").append(status);
   job.ui = { status, face, text, row, reply, announced: true };
+  if (job.helpers) for (const h of job.helpers.values()) placeHelpers(job).set(h.n, h.task, h.state, h.note);
   renderTodos(job.agent);
   scrollDown();
+}
+
+/** The job's helpers card, in the chat just above where its answer is coming. */
+function placeHelpers(job) {
+  if (!job.ui.helpers?.el.isConnected) {
+    job.ui.helpers = helpersCard(job.agent);
+    const before = job.ui.status.isConnected ? job.ui.status : job.ui.row.isConnected ? job.ui.row : null;
+    if (before) before.before(job.ui.helpers.el); else $("log").append(job.ui.helpers.el);
+  }
+  return job.ui.helpers;
 }
 
 function onTeamEvent(ev) {
@@ -519,7 +596,7 @@ function onTeamEvent(ev) {
     case "tool": {
       const job = live.get(ev.job);
       if (!job) return;
-      job.statusText = TALK_TOOLS.has(ev.name) ? "Talking with another agent" : toolPhrase(ev.name);
+      job.statusText = TALK_TOOLS.has(ev.name) ? "Talking with another agent" : ev.name === "helper" ? "Sending out helpers" : toolPhrase(ev.name);
       if (TALK_TOOLS.has(ev.name)) job.talked = true;
       setMood(ev.agent, "working");
       job.toolOn = true;
@@ -536,6 +613,14 @@ function onTeamEvent(ev) {
       setMood(ev.approval.agent, "waiting");
       if (current?.id === ev.approval.agent && view === "chat") { $("log").append(approvalCard(ev.approval)); scrollDown(true); }
       if (view === "today") renderToday();
+      break;
+    }
+    case "helper": {
+      const job = live.get(ev.job);
+      if (!job) return;
+      (job.helpers ??= new Map()).set(ev.n, ev);
+      if (ev.state === "working" || ev.state === "waiting") { job.statusText = "Working with helpers"; setStatus(ev.agent, "Working with helpers…"); if (job.ui?.status) job.ui.text.textContent = job.statusText; }
+      if (job.ui && current?.id === ev.agent && view === "chat") { placeHelpers(job).set(ev.n, ev.task, ev.state, ev.note); scrollDown(); }
       break;
     }
     case "question": onQuestion(ev.question); break;

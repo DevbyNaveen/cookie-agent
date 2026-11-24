@@ -38,6 +38,8 @@ pub enum TeamEvent {
     JobStarted { job: String, agent: String, trigger: Trigger, input: String },
     Text { job: String, agent: String, text: String },
     Tool { job: String, agent: String, name: String },
+    /// A helper the job sent: its number in the job, its task, `waiting`, `working`, `done` or `failed`, and its report or error.
+    Helper { job: String, agent: String, n: usize, task: String, state: String, note: String },
     Steered { job: String, agent: String, text: String },
     Asked { approval: Approval },
     Answered { id: String, agent: String, yes: bool, by: String },

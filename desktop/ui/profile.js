@@ -136,6 +136,7 @@ const GRANT_INFO = [
   ["memory", "Memory", "Keep notes, or use Enkeon when you're signed in."],
   ["routines", "Set routines", "Set up its own standing jobs (asks you first)."],
   ["team", "Ask teammates", "Hand tasks to your other agents."],
+  ["helpers", "Helpers", "Send up to 4 helpers at once to look things up side by side. They only read, and use its budget."],
   ["apps", "Connected apps", "Use the apps you connected in Enkeon (Gmail, Slack, …). Each call is billed per call by the connector; Record counts them."],
   ["mac", "Mac apps", "Reminders, Notes, Calendar, Contacts; send iMessages (each asks you). macOS asks once per app."],
 ];
@@ -168,7 +169,7 @@ const PANELS = {
     const access = el("div", "group");
     let grants = { ...a.grants };
     for (const [k, title, note] of GRANT_INFO) {
-      access.append(setRow(title, note, toggle(k === "apps" ? grants[k] !== false : !!grants[k], async (v) => {
+      access.append(setRow(title, note, toggle(k === "apps" || k === "helpers" ? grants[k] !== false : !!grants[k], async (v) => {
         grants = { ...grants, [k]: v };
         await call("update_agent", { id: a.id, patch: { grants } }).catch((e) => toast("Couldn't change that", String(e), "error"));
         loadRoster();

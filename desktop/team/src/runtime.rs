@@ -238,6 +238,9 @@ impl Team {
             log,
         });
         let all_tools = crate::tools::for_agent(self, rec, trigger, job, Some(broker.clone()));
+        // Helpers to send out side by side are made of these same tools (see the end).
+        let helpers_may = crate::helpers::allowed(rec, trigger, probation) && mode == Mode::Ask && !crate::bench::is_probe(&rec.id);
+        let for_helpers = if helpers_may { all_tools.clone() } else { Vec::new() };
         built.tools = all_tools.iter().map(|t| t.spec().name.clone()).collect();
         if learns(trigger) {
             let mut notes: Vec<String> = Vec::new();
@@ -314,6 +317,11 @@ impl Team {
             }
         } else {
             agent = agent.without_enkeon();
+        }
+        if helpers_may {
+            // Its own space in Enkeon too, read only: never what saves, sends or calls an app.
+            let enkeon = if rec.grants.memory { self.enkeon_for(&rec.id, "agent", rec.grants.web && cookie_harness::local::Search::from_env().is_some()) } else { None };
+            agent = agent.tools(crate::helpers::tool(self, rec, job, &for_helpers, price, enkeon));
         }
         Ok(agent)
     }
@@ -610,6 +618,16 @@ impl Team {
                 push_talk(&mut out, t);
             }
             for (call_id, name, args) in m.tool_calls() {
+                if name == crate::helpers::NAME {
+                    let (report, failed) = results.get(call_id).cloned().unwrap_or_default();
+                    let h = HelperLine { task: args["task"].as_str().unwrap_or_default().to_string(), report, failed };
+                    // Helpers sent together stay together.
+                    match out.last_mut() {
+                        Some(Line { helpers: Some(group), .. }) => group.push(h),
+                        _ => out.push(Line { from: "helpers", text: String::new(), talk: None, helpers: Some(vec![h]) }),
+                    }
+                    continue;
+                }
                 let Some(mut talk) = talk_of(name, args, &team, &contacts, &slugs) else { continue };
                 let (answer, failed) = results.get(call_id).cloned().unwrap_or_default();
                 let asked = talk.asked.clone();
@@ -631,7 +649,7 @@ impl Team {
                 _ => "agent",
             };
             if !text.trim().is_empty() {
-                out.push(Line { from, text, talk: None });
+                out.push(Line { from, text, talk: None, helpers: None });
             }
         }
         while let Some((_, t)) = incoming.pop() {
@@ -743,11 +761,23 @@ impl Team {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Line {
     /// "you", "agent", "file" (something the person attached; untrusted to the
-    /// model), or "talk" (a conversation with another agent, in `talk`).
+    /// model), "talk" (a conversation with another agent, in `talk`), or
+    /// "helpers" (helpers it sent side by side, in `helpers`).
     pub from: &'static str,
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub talk: Option<Talk>,
+    /// "helpers": the helpers it sent together, each with its task and report.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub helpers: Option<Vec<HelperLine>>,
+}
+
+/// One helper, as the chat keeps it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct HelperLine {
+    pub task: String,
+    pub report: String,
+    pub failed: bool,
 }
 
 /// A conversation this agent had with another agent during a job.
@@ -793,7 +823,7 @@ fn push_talk(out: &mut Vec<Line>, talk: Talk) {
             return;
         }
     }
-    out.push(Line { from: "talk", text: String::new(), talk: Some(talk) });
+    out.push(Line { from: "talk", text: String::new(), talk: Some(talk), helpers: None });
 }
 
 /// Where each inbound job sits in the conversation: the length it recorded when it ended, or,

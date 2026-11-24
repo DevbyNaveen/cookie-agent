@@ -48,6 +48,10 @@ pub struct Grants {
     /// Apps connected through Enkeon (Composio): each call is billed per call.
     #[serde(skip_serializing_if = "is_true")]
     pub apps: bool,
+    /// Send short-lived read-only helpers to research side by side (`helpers`). Left out of the JSON
+    /// when on, so packs signed before it still verify.
+    #[serde(skip_serializing_if = "is_true")]
+    pub helpers: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -60,14 +64,14 @@ fn is_true(b: &bool) -> bool {
 
 impl Default for Grants {
     fn default() -> Self {
-        Self { files: true, web: true, shell: false, memory: true, routines: true, team: true, peers: Vec::new(), mac: false, browser: false, worlds: false, apps: true }
+        Self { files: true, web: true, shell: false, memory: true, routines: true, team: true, peers: Vec::new(), mac: false, browser: false, worlds: false, apps: true, helpers: true }
     }
 }
 
 impl Grants {
     /// Nothing at all: what an imported agent starts with.
     pub fn none() -> Self {
-        Self { files: false, web: false, shell: false, memory: false, routines: false, team: false, peers: Vec::new(), mac: false, browser: false, worlds: false, apps: false }
+        Self { files: false, web: false, shell: false, memory: false, routines: false, team: false, peers: Vec::new(), mac: false, browser: false, worlds: false, apps: false, helpers: false }
     }
 }
 
