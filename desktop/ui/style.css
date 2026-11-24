@@ -987,3 +987,5 @@ footer.me { gap: 6px; }
 .pair-code { font: 600 30px/1.2 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: .18em; text-align: center; padding: 18px 0 6px; color: var(--text); user-select: all; }
 .row-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .btn.danger { color: var(--danger); }
+.phone-qr { display: grid; place-items: center; padding: 14px 0 4px; }
+.phone-qr svg { width: 180px; height: 180px; background: #fff; padding: 10px; border-radius: 12px; }

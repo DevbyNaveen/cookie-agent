@@ -125,6 +125,16 @@ const SETTINGS = {
         button("New link", "quiet small danger", async () => { await call("runner_token", { rotate: true }); refreshSettings(); }),
       );
       out.push(el("h3", "group-title", "Your link"), open, acts);
+      // The phone app: scan once, and it keeps the address and the key in its own secure storage.
+      const pairUrl = `cookie://pair?u=${encodeURIComponent(base)}&t=${encodeURIComponent(token)}`;
+      const qr = await call("net_qr", { text: pairUrl }).catch(() => null);
+      if (qr) {
+        const phone = el("div", "group edit");
+        const box = el("div", "phone-qr");
+        box.innerHTML = qr;
+        phone.append(setRow("Cookie on your phone", st.public_url ? "Open Cookie on your phone and scan this. Anyone who scans it controls your team: show it only to your own phone." : "Set a public address above (behind HTTPS) so your phone can reach this computer away from home, then scan this with Cookie on your phone.", null), box);
+        out.push(el("h3", "group-title", "Phone"), phone);
+      }
     }
     // Job links: opening Cookie from a link it sent, with a PIN.
     const ls = await call("links_status").catch(() => null);
