@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 use crate::runtime::Attachment;
-use crate::store::{Schedule, Settings, Trigger};
+use crate::store::{Schedule, Settings};
 use crate::{keys::Keys, util, Hire, Patch, Team};
 
 fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T, String> {
@@ -103,7 +103,8 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "history" => ok(team.history(&arg::<String>(a, "id")?).await?),
         "send" => {
             let attachments: Vec<Attachment> = opt(a, "attachments").unwrap_or_default();
-            ok(team.start_job(&arg::<String>(a, "id")?, arg(a, "text")?, attachments, Trigger::Chat).await?)
+            // An @ in the message brings that agent in to answer here (`mention`).
+            ok(team.send_in_chat(&arg::<String>(a, "id")?, arg(a, "text")?, attachments).await?)
         }
         "stop" => ok(team.stop(&arg::<String>(a, "id")?)),
         "steer" => ok(team.steer(&arg::<String>(a, "id")?, &arg::<String>(a, "text")?)),

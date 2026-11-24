@@ -277,6 +277,8 @@ pub enum Trigger {
     Review,
     /// The person wrote from Slack, Discord, iMessage or Signal.
     Channel { channel: String, chat: String },
+    /// The person named it with @ in another agent's chat (`chat`): it answers there (`mention`).
+    Mention { chat: String },
     /// Its memory changed enough to be worth its attention (`wake`).
     Memory { subject: String },
     /// Getting ready, while idle, for a routine due soon (`prep`): changes recorded, not made.

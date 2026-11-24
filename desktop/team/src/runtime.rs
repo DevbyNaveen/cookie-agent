@@ -120,6 +120,10 @@ fn instructions(team_names: &[(String, String)], rec: &AgentRecord, trigger: &Tr
     match trigger {
         Trigger::Routine { .. } => s.push_str("\nThis is one of your routines, running on its own: do it, and finish with what the person should know (or 'Nothing new.')."),
         Trigger::Handoff { from, .. } => s.push_str(&format!("\nAnother agent ({from}) asked you this. Answer it directly; it will pass your answer on.")),
+        Trigger::Mention { chat } => s.push_str(&format!(
+            "\nThe person brought you into another agent's chat ({chat}) by naming you with @, and wrote this to you. What was said there before comes \
+             as information. Answer them directly, as yourself; your answer appears in that chat."
+        )),
         Trigger::Telegram { .. } => s.push_str("\nThe person wrote from Telegram on their phone: keep the answer short."),
         Trigger::Channel { channel, .. } => s.push_str(&format!("\nThe person wrote from {channel}: keep the answer short and plain (no tables).")),
         Trigger::Peer { label, .. } => s.push_str(&format!(
@@ -624,7 +628,7 @@ impl Team {
                     // Helpers sent together stay together.
                     match out.last_mut() {
                         Some(Line { helpers: Some(group), .. }) => group.push(h),
-                        _ => out.push(Line { from: "helpers", text: String::new(), talk: None, helpers: Some(vec![h]) }),
+                        _ => out.push(Line { from: "helpers", text: String::new(), talk: None, helpers: Some(vec![h]), by: None }),
                     }
                     continue;
                 }
@@ -641,6 +645,13 @@ impl Team {
                 push_talk(&mut out, talk);
             }
             let text = m.text();
+            // Another of your agents answering here, brought in with @ (`mention`).
+            if let cookie_harness::Origin::Untrusted(Source::Agent(by)) = m.origin() {
+                if team.iter().any(|a| &a.id == by) && !text.trim().is_empty() {
+                    out.push(Line { from: "guest", text, talk: None, helpers: None, by: Some(by.clone()) });
+                    continue;
+                }
+            }
             let from = match (m.role(), m.origin()) {
                 // A job's own note is for the agent, not the transcript.
                 (cookie_harness::Role::User, cookie_harness::Origin::System) => continue,
@@ -649,7 +660,7 @@ impl Team {
                 _ => "agent",
             };
             if !text.trim().is_empty() {
-                out.push(Line { from, text, talk: None, helpers: None });
+                out.push(Line { from, text, talk: None, helpers: None, by: None });
             }
         }
         while let Some((_, t)) = incoming.pop() {
@@ -770,6 +781,9 @@ pub struct Line {
     /// "helpers": the helpers it sent together, each with its task and report.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub helpers: Option<Vec<HelperLine>>,
+    /// "guest": which of your agents said it (brought in with @).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
 }
 
 /// One helper, as the chat keeps it.
@@ -812,7 +826,7 @@ fn in_session(trigger: &Trigger) -> bool {
 
 /// Jobs another agent started: one of yours asking, another person's agent through an invite or a contact.
 fn inbound(trigger: &Trigger) -> bool {
-    matches!(trigger, Trigger::Handoff { .. } | Trigger::Peer { .. } | Trigger::Contact { .. })
+    matches!(trigger, Trigger::Handoff { .. } | Trigger::Peer { .. } | Trigger::Contact { .. } | Trigger::Mention { .. })
 }
 
 /// Add a conversation to the transcript; back-to-back exchanges with the same partner become one.
@@ -823,7 +837,7 @@ fn push_talk(out: &mut Vec<Line>, talk: Talk) {
             return;
         }
     }
-    out.push(Line { from: "talk", text: String::new(), talk: Some(talk), helpers: None });
+    out.push(Line { from: "talk", text: String::new(), talk: Some(talk), helpers: None, by: None });
 }
 
 /// Where each inbound job sits in the conversation: the length it recorded when it ended, or,
@@ -867,6 +881,17 @@ fn talk_in(job: &Job, me_name: &str, team: &[AgentRecord], contacts: &[crate::ne
             }
         }
         Trigger::Peer { invite, label } => Talk { kind: "peer", with_name: label.clone(), with_id: invite.clone(), with_sign: None, with_address: None, asked: String::new(), messages: Vec::new() },
+        // You asked it in another agent's chat: the pill names that chat, and the words are yours.
+        Trigger::Mention { chat } => {
+            let host = team.iter().find(|a| &a.id == chat);
+            let mut t = Talk { kind: "mention", with_name: host.map(|a| format!("{}'s chat", a.name)).unwrap_or_else(|| "another chat".into()), with_id: chat.clone(), with_sign: None, with_address: None, asked: String::new(), messages: Vec::new() };
+            t.messages.push(TalkMsg { who: "You".into(), mine: false, text: job.input.clone() });
+            let reply = if job.status == JobStatus::Done { job.answer.clone() } else { format!("Couldn't answer: {}", job.error.as_deref().unwrap_or("it stopped")) };
+            if !reply.trim().is_empty() {
+                t.messages.push(TalkMsg { who: me_name.to_string(), mine: true, text: reply });
+            }
+            return Some(t);
+        }
         _ => return None,
     };
     let reply = match job.status {

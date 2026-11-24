@@ -38,6 +38,8 @@ pub enum TeamEvent {
     JobStarted { job: String, agent: String, trigger: Trigger, input: String },
     Text { job: String, agent: String, text: String },
     Tool { job: String, agent: String, name: String },
+    /// Something new was written into this agent's chat from outside a job of its own (an answer from an agent brought in with @).
+    ChatChanged { agent: String },
     /// A helper the job sent: its number in the job, its task, `waiting`, `working`, `done` or `failed`, and its report or error.
     Helper { job: String, agent: String, n: usize, task: String, state: String, note: String },
     Steered { job: String, agent: String, text: String },

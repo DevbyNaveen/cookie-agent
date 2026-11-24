@@ -605,6 +605,17 @@ function line(l) {
     row.append(chip);
     return row;
   }
+  // Another of your agents, brought in with @: its face and name over its answer.
+  if (l.from === "guest") {
+    const row = el("div", "msg agent guest");
+    const col = el("div", "guest-col");
+    const b = el("div", "bubble md");
+    b.innerHTML = Md.render(l.text);
+    hydrateMd(b, l.by);
+    col.append(guestHead(l.by), b);
+    row.append(col, actions(l.text));
+    return row;
+  }
   const row = el("div", "msg " + l.from);
   const b = el("div", "bubble");
   if (l.from === "agent") { b.classList.add("md"); b.innerHTML = Md.render(l.text); hydrateMd(b, current?.id); }
@@ -700,22 +711,33 @@ const TRIGGER_LABEL = {
   memory: () => "Woke: its memory changed",
 };
 
+/** The chat a job shows in: its own agent's, or, for an agent brought in with @, the chat it was asked in. */
+const chatOf = (job) => (job.trigger?.kind === "mention" ? job.trigger.chat : job.agent);
+
+/** A reply's header in a chat it is a guest in: its face and name, like a group chat. */
+function guestHead(agentId) {
+  const h = el("div", "guest-head");
+  h.append(Faces.create(agentId, 18).el, el("span", null, agentById(agentId)?.name ?? "An agent"));
+  return h;
+}
+
 /** Give a job in flight its place in the open chat: a status line, then its answer. */
 function attachLive(job) {
-  if (current?.id !== job.agent || view !== "chat") return;
+  if (current?.id !== chatOf(job) || view !== "chat") return;
+  const guest = chatOf(job) !== job.agent;
   job.ui?.status?.remove();
-  const label = TRIGGER_LABEL[job.trigger.kind];
+  const label = guest ? null : TRIGGER_LABEL[job.trigger.kind];
   if (label && !job.ui?.announced) {
     $("log").append(event([icon("sparkle"), strong(label(job.trigger)), ": ", plain(job.input).slice(0, 160)]));
   }
   const status = el("div", "status");
   const face = Faces.create(job.agent, 22);
   face.setMood(job.acc ? "working" : "thinking");
-  const text = el("span", null, job.statusText ?? "Thinking it through");
+  const text = el("span", null, guest ? `${agentById(job.agent)?.name ?? "It"} is answering` : job.statusText ?? "Thinking it through");
   status.append(face.el, text);
-  const row = el("div", "msg agent");
+  const row = el("div", "msg agent" + (guest ? " guest" : ""));
   const reply = el("div", "bubble md");
-  row.append(reply);
+  if (guest) { const col = el("div", "guest-col"); col.append(guestHead(job.agent), reply); row.append(col); } else row.append(reply);
   if (job.acc) { reply.innerHTML = Md.render(job.acc); $("log").append(row); }
   else $("log").append(status);
   job.ui = { status, face, text, row, reply, announced: true };
@@ -739,7 +761,7 @@ function onTeamEvent(ev) {
     case "job_started": {
       const job = { agent: ev.agent, trigger: ev.trigger, input: ev.input, acc: "", started: false, ui: null, mine: ev.trigger.kind === "chat" };
       // Another agent asked this one: on its own, outside the chat; it folds into a conversation when done.
-      job.inbound = ["handoff", "peer", "contact"].includes(ev.trigger.kind);
+      job.inbound = ["handoff", "peer", "contact", "mention"].includes(ev.trigger.kind);
       if (["test", "shadow"].includes(ev.trigger.kind)) return; // private runs: their panels follow them
       live.set(ev.job, job);
       busy.add(ev.agent);
@@ -748,7 +770,7 @@ function onTeamEvent(ev) {
       setStatus(ev.agent, "Thinking…");
       setMood(ev.agent, "received");
       if (ev.trigger.kind === "handoff" && ev.trigger.from) glanceBetween(ev.trigger.from, ev.agent);
-      if (current?.id === ev.agent) { $("suggest").hidden = true; attachLive(job); syncSend(); }
+      if (current?.id === chatOf(job)) { $("suggest").hidden = true; attachLive(job); syncSend(); }
       break;
     }
     case "text": {
@@ -757,7 +779,7 @@ function onTeamEvent(ev) {
       job.acc += ev.text;
       if (typeof Voice !== "undefined") Voice.onText(ev);
       if (!job.started || job.toolOn) { job.started = true; job.toolOn = false; setMood(ev.agent, "writing"); allFaces(ev.agent, (f) => f.tool(null)); setStatus(ev.agent, "Writing…"); }
-      if (job.ui && current?.id === ev.agent) {
+      if (job.ui && current?.id === chatOf(job)) {
         if (job.ui.status.isConnected) { job.ui.status.replaceWith(job.ui.row); job.ui.face.stop(); }
         job.ui.reply.innerHTML = Md.render(job.acc);
         scrollDown();
@@ -792,6 +814,14 @@ function onTeamEvent(ev) {
       (job.helpers ??= new Map()).set(ev.n, ev);
       if (ev.state === "working" || ev.state === "waiting") { job.statusText = "Working with helpers"; setStatus(ev.agent, "Working with helpers…"); if (job.ui?.status) job.ui.text.textContent = job.statusText; }
       if (job.ui && current?.id === ev.agent && view === "chat") { placeHelpers(job).set(ev.n, ev.task, ev.state, ev.note); scrollDown(); }
+      break;
+    }
+    case "chat_changed": {
+      // An answer from an agent brought in with @ was kept: redraw from the record.
+      if (current?.id === ev.agent && view === "chat") {
+        const r = agentById(ev.agent);
+        call("history", { id: ev.agent }).then((lines) => { if (current?.id === ev.agent && view === "chat") { renderLog(r, lines); scrollDown(true); renderDesk(r.id); } }).catch(() => {});
+      }
       break;
     }
     case "question": onQuestion(ev.question); break;
@@ -981,7 +1011,9 @@ $("composer").onsubmit = async (e) => {
   }
   const agent = current;
   const text = $("input").value.trim();
-  if (busy.has(agent.id)) {
+  // Naming another of your agents brings it in to answer here, even while this one works.
+  const naming = [...text.matchAll(/(?:^|[^\w.])@([a-z0-9][a-z0-9-]*)(?![\w/-])/gi)].some((m) => addressBook.some((x) => x.kind === "team" && x.id !== agent.id && x.address.toLowerCase() === "@" + m[1].toLowerCase()));
+  if (busy.has(agent.id) && !naming) {
     if (!text) { await call("stop", { id: agent.id }); return; }
     // Mid-job: the words join the job in flight instead of starting a new one.
     if (await call("steer", { id: agent.id, text })) {
