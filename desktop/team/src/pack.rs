@@ -40,7 +40,7 @@ fn canonical(body: &Body) -> Vec<u8> {
     sorted(&v).to_string().into_bytes()
 }
 
-fn sorted(v: &serde_json::Value) -> serde_json::Value {
+pub(crate) fn sorted(v: &serde_json::Value) -> serde_json::Value {
     match v {
         serde_json::Value::Object(m) => {
             let mut keys: Vec<&String> = m.keys().collect();
@@ -52,15 +52,15 @@ fn sorted(v: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-fn hex(b: &[u8]) -> String {
+pub(crate) fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-fn unhex(s: &str) -> Option<Vec<u8>> {
+pub(crate) fn unhex(s: &str) -> Option<Vec<u8>> {
     (s.len() % 2 == 0).then(|| (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect::<Option<Vec<u8>>>())?
 }
 
-fn key_pair(team: &Team) -> Result<Ed25519KeyPair, String> {
+pub(crate) fn key_pair(team: &Team) -> Result<Ed25519KeyPair, String> {
     let path = team.paths.root.join("pack.key");
     let seed = match std::fs::read_to_string(&path) {
         Ok(s) => unhex(s.trim()).filter(|b| b.len() == 32).ok_or("The pack signing key is damaged.")?,

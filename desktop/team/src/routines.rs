@@ -154,6 +154,11 @@ impl Team {
     async fn tick(self: &Arc<Self>) {
         self.curate().await;
         self.maybe_post_retro().await;
+        // The nightly exam loop, when it is on and its hour has come.
+        self.maybe_evolve().await;
+        // Idle agents get ready for routines due soon; local models stay loaded while used.
+        self.maybe_prepare().await;
+        self.keep_local_models_warm().await;
         let now = util::now();
         let due: Vec<Routine> = self.routines.read().await.iter().filter(|r| r.enabled && r.next_run.is_some_and(|t| t <= now)).cloned().collect();
         // One snapshot a day of each agent that worked today (`sleep`).

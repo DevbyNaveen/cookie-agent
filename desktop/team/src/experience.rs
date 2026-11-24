@@ -105,12 +105,12 @@ impl Team {
         util::read_json(&self.lessons_path(agent))
     }
 
-    fn save_lessons(&self, agent: &str, l: &[Lesson]) -> Result<(), String> {
+    pub(crate) fn save_lessons(&self, agent: &str, l: &[Lesson]) -> Result<(), String> {
         util::write_json(&self.lessons_path(agent), &l)
     }
 
     /// The agent's own jobs that carried no lesson, last 30 days: its baseline.
-    fn baseline(&self, agent: &str, text: &str) -> Arm {
+    pub(crate) fn baseline(&self, agent: &str, text: &str) -> Arm {
         let since = util::now().saturating_sub(BASELINE_DAYS * 86_400);
         let jobs: Vec<Job> = util::read_jsonl(&self.paths.jobs(agent));
         let history: Vec<(String, bool)> = jobs

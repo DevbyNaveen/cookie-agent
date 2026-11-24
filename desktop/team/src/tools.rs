@@ -23,7 +23,7 @@ use crate::{util, Team};
 /// How deep a chain of agents asking agents may go.
 pub const MAX_CHAIN: usize = 3;
 
-pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, job: &str) -> Vec<Arc<dyn Tool>> {
+pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, job: &str, approver: Option<Arc<dyn cookie_harness::Approver>>) -> Vec<Arc<dyn Tool>> {
     let g = &rec.grants;
     let work = team.paths.work(&rec.id);
     let _ = std::fs::create_dir_all(&work);
@@ -107,7 +107,7 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
     }
     // Code that calls its read-only tools (only with "Run commands" on, never for outsiders).
     if g.shell && !outside {
-        if let Some(t) = crate::code::run_code_tool(&work, &out, team.cage(&rec.id)) {
+        if let Some(t) = crate::code::run_code_tool(&work, &out, team.cage(&rec.id), approver) {
             out.push(t);
         }
     }

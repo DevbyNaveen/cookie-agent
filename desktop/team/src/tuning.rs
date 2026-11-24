@@ -31,11 +31,13 @@ pub struct Tuning {
     pub effort: Option<String>,
     /// Standing instructions the exam proved help this agent.
     pub habits: Vec<String>,
+    /// Prepare for its routines while idle (`prep`). Off by default: each prep is a job.
+    pub prepare: bool,
 }
 
 impl Default for Tuning {
     fn default() -> Self {
-        Self { cache: "auto".into(), clear_tool_results_after: 8, summarize_above_tokens: 120_000, keep_recent_turns: 4, effort: None, habits: Vec::new() }
+        Self { cache: "auto".into(), clear_tool_results_after: 8, summarize_above_tokens: 120_000, keep_recent_turns: 4, effort: None, habits: Vec::new(), prepare: false }
     }
 }
 
@@ -108,7 +110,10 @@ pub struct Change {
     pub model_after: Option<String>,
     /// The exam it passed: pass rate and cost per case, before and after.
     pub exam: Option<serde_json::Value>,
-    /// `kept` · `undone`
+    /// A lesson it added (a teammate's teaching): Undo takes it out again.
+    pub lesson: Option<String>,
+    /// `kept` · `undone` · `dropped` (tried, the exam said no) · `proposed`
+    /// (offered, yours to accept) · `accepted` · `declined`
     pub state: String,
 }
 
@@ -137,6 +142,47 @@ impl Team {
                 cache_ttl_for(&gaps)
             }
         }
+    }
+
+    /// The prompt cache and the read cache over the last 30 days: hit rate and
+    /// what they saved, from the jobs' own token counts and the model's price.
+    pub async fn cache_view(&self, agent: &str) -> serde_json::Value {
+        let since = util::now().saturating_sub(30 * 86_400);
+        let jobs: Vec<crate::store::Job> = util::read_jsonl(&self.paths.jobs(agent));
+        let (mut fresh, mut read, mut write, mut counted) = (0u64, 0u64, 0u64, 0usize);
+        for j in jobs.iter().filter(|j| j.started_at >= since && (j.input_tokens + j.cache_read_tokens + j.cache_write_tokens) > 0) {
+            fresh += j.input_tokens;
+            read += j.cache_read_tokens;
+            write += j.cache_write_tokens;
+            counted += 1;
+        }
+        let total_in = fresh + read + write;
+        let model = self.agent(agent).await.map(|a| a.model).unwrap_or_default();
+        let price = self.settings().await.prices.get(&model).copied();
+        // Saved: cached reads at the read price instead of the input price, less what writing cost over plain input.
+        let saved = price.map(|p| (read as f64 * (p.input - p.cache_read) - write as f64 * (p.cache_write - p.input)).round() as i64);
+        let (hits, fetched) = self.read_cache_counts(agent, 30);
+        let ttl = self.cache_ttl(agent);
+        serde_json::json!({
+            "jobs": counted,
+            "input_tokens": fresh, "cache_read_tokens": read, "cache_write_tokens": write,
+            "hit_rate": (total_in > 0).then(|| read as f64 / total_in as f64),
+            "saved_microdollars": saved,
+            "ttl": ttl,
+            "ttl_setting": self.tuning(agent).cache,
+            "reads_from_cache": hits,
+            "reads_fetched": fetched,
+        })
+    }
+
+    /// Its career stage and what it has earned, from the record.
+    pub async fn career(&self, agent: &str) -> Result<serde_json::Value, String> {
+        let rec = self.agent(agent).await?;
+        let (rank, facts) = self.rank(&rec);
+        let jobs: Vec<crate::store::Job> = util::read_jsonl(&self.paths.jobs(agent));
+        let real = jobs.iter().filter(|j| crate::experience::real(j)).count();
+        let (stage, means) = crate::evolve::stage(rank, rec.on_probation(util::now()), real);
+        Ok(serde_json::json!({"stage": stage, "means": means, "rank": rank.label(), "jobs": real, "tenure_days": facts.tenure_days}))
     }
 
     pub fn evolution(&self, agent: &str) -> Vec<Change> {
@@ -170,6 +216,7 @@ impl Team {
             model_before,
             model_after: model,
             exam,
+            lesson: None,
             state: "kept".into(),
         };
         util::append_jsonl(&self.evolution_path(agent), &c)?;
@@ -181,8 +228,12 @@ impl Team {
     pub async fn undo_change(&self, agent: &str, id: &str) -> Result<Change, String> {
         let mut all: Vec<Change> = util::read_jsonl(&self.evolution_path(agent));
         let c = all.iter_mut().find(|c| c.id == id).ok_or("No such change.")?;
-        if c.state == "undone" {
-            return Err("That change was already undone.".into());
+        if c.state != "kept" {
+            return Err("Only a kept change can be undone.".into());
+        }
+        if let Some(lesson) = &c.lesson {
+            let left: Vec<_> = self.lessons(agent).into_iter().filter(|l| &l.id != lesson).collect();
+            self.save_lessons(agent, &left)?;
         }
         if let Some(t) = &c.before {
             util::write_json(&self.tuning_path(agent), t)?;
@@ -214,6 +265,9 @@ impl Team {
         }
         if let Some(v) = patch.get("keep_recent_turns").and_then(|v| v.as_u64()) {
             t.keep_recent_turns = v as usize;
+        }
+        if let Some(v) = patch.get("prepare").and_then(|v| v.as_bool()) {
+            t.prepare = v;
         }
         if let Some(h) = patch.get("remove_habit").and_then(|v| v.as_str()) {
             t.habits.retain(|x| x != h);
@@ -263,7 +317,7 @@ mod tests {
         assert_eq!(t.tuning("a1").habits.len(), 1);
         t.undo_change("a1", &c.id).await.unwrap();
         assert!(t.tuning("a1").habits.is_empty());
-        assert!(t.undo_change("a1", &c.id).await.is_err(), "once");
+        assert!(t.undo_change("a1", &c.id).await.is_err(), "only once");
         assert_eq!(t.evolution("a1")[0].state, "undone");
     }
 }

@@ -17,13 +17,16 @@ pub mod cloud;
 pub mod code;
 pub mod evals;
 pub mod events;
+pub mod evolve;
 pub mod experience;
 pub mod front;
 pub mod hire_gap;
 pub mod inbox;
+pub mod inherit;
 pub mod journal;
 pub mod keys;
 pub mod lease;
+pub mod localmodels;
 pub mod links;
 pub mod learning;
 pub mod mail;
@@ -32,8 +35,10 @@ pub mod memory;
 pub mod network;
 pub mod outcome;
 pub mod pair;
+pub mod passport;
 pub mod pack;
 pub mod peers;
+pub mod prep;
 pub mod procedures;
 pub mod rank;
 pub mod readcache;
@@ -86,6 +91,9 @@ pub struct Hire {
     /// the face picked is the face hired. Used when free and well formed; else a new one.
     #[serde(default)]
     pub id: Option<String>,
+    /// A retired agent's archive to start from (`inherit`): its lessons, skills, tests, habits and handover.
+    #[serde(default)]
+    pub inherit: Option<String>,
 }
 
 /// A change to an agent's setup. Fields left out stay as they are.
@@ -363,7 +371,12 @@ impl Team {
         }
         // Fails here, at hiring, when the model id is malformed or its key is missing.
         cookie_harness::Agent::new(&model).map_err(|e| e.to_string())?;
-        let handover = match h.handover {
+        // Starting from a retired agent: its handover note comes with the rest.
+        let inherited_note = match h.inherit.as_deref() {
+            Some(a) if !a.contains('/') && !a.contains("..") => util::read_json::<crate::inherit::Archive>(&self.paths.handovers().join("archive").join(a).join("archive.json")).handover,
+            _ => None,
+        };
+        let handover = match h.handover.or(inherited_note) {
             Some(file) => Some(std::fs::read_to_string(self.paths.handovers().join(util::inside(&self.paths.handovers(), &file).map(|_| file.clone()).ok_or("No such handover note.")?)).map_err(|e| e.to_string())?),
             None => None,
         };
@@ -391,6 +404,9 @@ impl Team {
             version: 1,
         };
         let hired = self.add_agent(record).await?;
+        if let Some(a) = h.inherit.as_deref() {
+            self.inherit_into(a, &hired.id)?;
+        }
         // The first hire's model can run Cookie too.
         self.ensure_cookie().await;
         Ok(hired)

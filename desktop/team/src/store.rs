@@ -200,6 +200,8 @@ pub struct Settings {
     pub wake: bool,
     /// The cloud: which agents run there while this Mac is off, and the one store (`cloud`).
     pub cloud: CloudCfg,
+    /// The nightly exam loop (`evolve`). Off until you turn it on.
+    pub evolve: crate::evolve::EvolveCfg,
 }
 
 /// What Cookie does with Enkeon's cloud (`cloud`). Both off until you say.
@@ -227,6 +229,7 @@ impl Default for Settings {
             scout_dismissed: Vec::new(),
             wake: true,
             cloud: CloudCfg::default(),
+            evolve: crate::evolve::EvolveCfg::default(),
         }
     }
 }
@@ -257,6 +260,8 @@ pub enum Trigger {
     Channel { channel: String, chat: String },
     /// Its memory changed enough to be worth its attention (`wake`).
     Memory { subject: String },
+    /// Getting ready, while idle, for a routine due soon (`prep`): changes recorded, not made.
+    Prep { routine: String },
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

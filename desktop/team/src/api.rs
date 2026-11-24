@@ -32,6 +32,13 @@ fn apply_settings(s: &mut Settings, p: &Value) {
     if let Some(v) = p.get("market_url") { s.market_url = v.as_str().map(str::trim).filter(|m| !m.is_empty()).map(str::to_string); }
     if let Some(v) = p.get("wake").and_then(Value::as_bool) { s.wake = v; }
     if let Some(v) = p.get("cloud_store").and_then(Value::as_bool) { s.cloud.store = v; }
+    if let Some(e) = p.get("evolve") {
+        if let Some(v) = e.get("nightly").and_then(Value::as_bool) { s.evolve.nightly = v; }
+        if let Some(v) = e.get("hour").and_then(Value::as_u64) { s.evolve.hour = v.min(23) as u32; }
+        if let Some(v) = e.get("cases").and_then(Value::as_u64) { s.evolve.cases = v.clamp(3, 20) as usize; }
+        if let Some(v) = e.get("max_dollars").and_then(Value::as_f64) { s.evolve.max_dollars = v.clamp(0.0, 100.0); }
+        if let Some(v) = e.get("max_exams").and_then(Value::as_u64) { s.evolve.max_exams = v.clamp(1, 50) as usize; }
+    }
     if let Some(v) = p.get("challenge_model") { s.challenge_model = v.as_str().map(str::trim).filter(|m| !m.is_empty()).map(str::to_string); }
     if let Some(v) = p.get("server") {
         if let Some(b) = v.get("enabled").and_then(Value::as_bool) { s.server.enabled = b; }
@@ -195,6 +202,41 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "enkeon_status" => ok(crate::pair::enkeon().is_some()),
         "enkeon" => ok(team.enkeon_status()),
         "cage" => ok(team.cage_view(&arg::<String>(a, "id")?)),
+        /* the bench, exams and evolution */
+        "bench" => ok(team.bench_view()),
+        "build_bench" => ok(team.build_bench().await?),
+        "drop_bench_case" => ok(team.drop_bench_case(&arg::<String>(a, "case")?)?),
+        "exams" => ok(team.exams(&arg::<String>(a, "id")?)),
+        "exam" => {
+            let id: String = arg(a, "id")?;
+            let cases = crate::evolve::pick_cases(team.bench_for(&id), opt::<usize>(a, "cases").unwrap_or(6).clamp(1, 20), util::now() / 86_400);
+            let variant = crate::bench::Variant { model: opt::<String>(a, "model"), tuning: None };
+            let what = variant.model.as_ref().map(|m| format!("Model: {m}")).unwrap_or_else(|| "As it is".into());
+            ok(team.exam(&id, &what, cases, variant).await?)
+        }
+        "tuning" => ok(team.tuning(&arg::<String>(a, "id")?)),
+        "set_tuning" => ok(team.set_tuning(&arg::<String>(a, "id")?, a.get("patch").unwrap_or(&Value::Null)).await?),
+        "evolution" => ok(team.evolution(&arg::<String>(a, "id")?)),
+        "undo_change" => ok(team.undo_change(&arg::<String>(a, "id")?, &arg::<String>(a, "change")?).await?),
+        "accept_change" => ok(team.accept_change(&arg::<String>(a, "id")?, &arg::<String>(a, "change")?).await?),
+        "decline_change" => ok(team.decline_change(&arg::<String>(a, "id")?, &arg::<String>(a, "change")?)?),
+        "evolve_status" => ok(team.evolve_status()),
+        "evolve_now" => {
+            let cfg = team.settings().await.evolve;
+            let t = team.clone();
+            tokio::spawn(async move { t.night(cfg).await });
+            ok(true)
+        }
+        "decline_offer" => ok(team.decline_offer(&arg::<String>(a, "offer")?)?),
+        "accept_split" => ok(team.accept_split(&arg::<String>(a, "offer")?, &arg::<String>(a, "name")?, &arg::<String>(a, "job")?, opt::<String>(a, "parent_job")).await?),
+        "accept_retire" => ok(team.accept_retire(&arg::<String>(a, "offer")?).await?),
+        "retire" => ok(team.retire(&arg::<String>(a, "id")?).await?),
+        "archives" => ok(team.archives()),
+        "career" => ok(team.career(&arg::<String>(a, "id")?).await?),
+        "passport" => ok(team.passport(&arg::<String>(a, "id")?).await?),
+        "verify_passport" => ok(crate::passport::verify(&arg::<crate::passport::Passport>(a, "passport")?)?),
+        "cache_view" => ok(team.cache_view(&arg::<String>(a, "id")?).await),
+        "local_models" => ok(team.local_models_status().await),
         "browser" => ok(team.browser_view(&arg::<String>(a, "id")?).await),
         "browser_login" => ok(team.browser_login(&arg::<String>(a, "id")?, opt::<String>(a, "url")).await?),
         "browser_forget" => ok(team.browser_forget(&arg::<String>(a, "id")?).await?),

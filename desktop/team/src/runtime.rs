@@ -62,7 +62,7 @@ mod note_tests {
 
 /// The jobs that learn: the agent's own work, not tests, shadows or reviews.
 fn learns(trigger: &Trigger) -> bool {
-    !matches!(trigger, Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Review)
+    !matches!(trigger, Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Review | Trigger::Prep { .. })
 }
 
 fn instructions(team_names: &[(String, String)], rec: &AgentRecord, trigger: &Trigger, probation: bool) -> String {
@@ -191,7 +191,16 @@ impl Team {
         // from job to job, so they ride in the job's own note (see `run_job`),
         // never in the instructions: the instructions and tools stay byte-for-byte
         // the same between jobs and stay in the provider's prompt cache.
-        let all_tools = crate::tools::for_agent(self, rec, trigger, job);
+        // One approver for the job: the agent's own calls and its scripts' calls ask through it.
+        let broker: Arc<dyn cookie_harness::Approver> = Arc::new(Broker {
+            team: Arc::downgrade(self),
+            agent: rec.id.clone(),
+            agent_name: rec.name.clone(),
+            job: job.to_string(),
+            mode: if probation { Mode::Record } else { mode },
+            log,
+        });
+        let all_tools = crate::tools::for_agent(self, rec, trigger, job, Some(broker.clone()));
         built.tools = all_tools.iter().map(|t| t.spec().name.clone()).collect();
         if learns(trigger) {
             let mut notes: Vec<String> = Vec::new();
@@ -205,6 +214,10 @@ impl Team {
             if let Some(r) = self.recipe_for(&rec.id, trigger, &built.tools) {
                 built.recipe = true;
                 notes.push(r);
+            }
+            // What it prepared for this routine while it was idle (`prep`).
+            if let Trigger::Routine { routine } = trigger {
+                notes.extend(self.brief_for(&rec.id, routine));
             }
             built.note = job_note(&notes);
         }
@@ -229,14 +242,7 @@ impl Team {
             .close_with_answer()
             // A change to the person's own files is put to them every time.
             .policy(cookie_harness::policy::Policy::default().always_ask(crate::access::WRITE_TOOL))
-            .approver(Broker {
-                team: Arc::downgrade(self),
-                agent: rec.id.clone(),
-                agent_name: rec.name.clone(),
-                job: job.to_string(),
-                mode: if probation { Mode::Record } else { mode },
-                log,
-            });
+            .shared_approver(broker);
         let price = settings.prices.get(&rec.model).map(|p| Price { input: p.input, output: p.output, cache_read: p.cache_read, cache_write: p.cache_write });
         let budget = Budget { max_steps: rec.limits.steps.max(1), max_tokens: rec.limits.tokens.max(1_000), max_dollars: price.and(rec.limits.job_dollars) };
         agent = agent.budget(budget);
@@ -339,7 +345,7 @@ impl Team {
             self.emit(TeamEvent::Todos { agent: rec.id.clone(), items: Vec::new() });
         }
         let mode = match trigger {
-            Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Room { .. } => Mode::Record,
+            Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Room { .. } | Trigger::Prep { .. } => Mode::Record,
             Trigger::Contact { ref level, .. } if level == "talk" => Mode::Record,
             _ => Mode::Ask,
         };

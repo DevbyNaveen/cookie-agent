@@ -124,6 +124,13 @@ impl Agent {
         self
     }
 
+    /// An approver the host shares with its own tools (one that runs code and
+    /// must ask the same person, through the same card, for the same calls).
+    pub fn shared_approver(mut self, approver: Arc<dyn Approver>) -> Self {
+        self.approver = Some(approver);
+        self
+    }
+
     pub fn budget(mut self, budget: Budget) -> Self {
         self.budget = budget;
         self
