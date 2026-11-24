@@ -173,7 +173,7 @@ impl Message {
 
     /// A note from the harness itself (not the person, not a tool): followed
     /// like the developer's instructions.
-    pub(crate) fn harness_note(text: impl Into<String>) -> Self {
+    pub fn harness_note(text: impl Into<String>) -> Self {
         Self { role: Role::User, content: vec![Content::Text { text: text.into() }], origin: Origin::System, summary_of: None }
     }
 

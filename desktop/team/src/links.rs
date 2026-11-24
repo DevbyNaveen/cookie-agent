@@ -31,6 +31,7 @@ const WRONG_PER_LINK: u32 = 5;
 const WRONG_IN_A_ROW: u32 = 3;
 const LOCK_SECS: u64 = 15 * 60;
 const PBKDF2_ROUNDS: u32 = 210_000;
+#[cfg_attr(test, allow(dead_code))]
 const PIN_KEY: &str = "link-pin";
 
 fn digest(token: &str) -> String {

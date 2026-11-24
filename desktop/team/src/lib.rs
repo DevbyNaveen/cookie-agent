@@ -27,6 +27,7 @@ pub mod mac;
 pub mod memory;
 pub mod network;
 pub mod outcome;
+pub mod pair;
 pub mod pack;
 pub mod peers;
 pub mod procedures;
@@ -189,6 +190,8 @@ impl Team {
     /// Start the background work: routines, Telegram, and the HTTP server when enabled.
     pub fn start(self: &Arc<Self>) {
         std::sync::LazyLock::force(&retro::STARTED);
+        // Enkeon's key, if this computer was paired (before anything reads memory).
+        self.load_pairing();
         routines::spawn_scheduler(self.clone());
         telegram::spawn(self.clone());
         server::spawn_if_enabled(self.clone());

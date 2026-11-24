@@ -227,6 +227,61 @@ async function openSettings(tab = "general") {
 }
 $("set-nav").onclick = (e) => { const t = e.target.closest("[data-tab]")?.dataset.tab; if (t) openSettings(t); };
 
+/* ---------- Enkeon pairing ---------- */
+const PAIR_WORDS = {
+  waiting: "Confirm this code in the browser window that opened.",
+  expired: "The code expired before it was confirmed. Pair again.",
+  denied: "The sign-in was turned down in the browser.",
+};
+let pairTimer = null;
+
+/** Pair this computer with Enkeon: a code, the browser, then a key kept in the Keychain. */
+async function openEnkeon() {
+  clearTimeout(pairTimer);
+  const d = $("connect");
+  const body = $("connect-body");
+  let st;
+  try { st = await call("enkeon"); } catch (e) { body.replaceChildren(el("p", "error-line", String(e))); if (!d.open) d.showModal(); return; }
+  const out = [el("h2", null, "Enkeon")];
+  const p = st.pairing;
+  if (st.paired) {
+    out.push(el("p", "set-note", `Paired with “${st.paired.project_name}”${st.paired.by ? ` as ${st.paired.by}` : ""}. Every agent keeps its own space there, and reads your shared material.`));
+    out.push(button("Unpair this computer", "quiet small danger", async () => {
+      try { const r = await call("unpair"); toast("Unpaired", r.note); openEnkeon(); } catch (e) { toast("Couldn't unpair", String(e), "err"); }
+    }));
+  } else if (st.source === "cli" || st.source === "env") {
+    out.push(el("p", "set-note", st.source === "cli" ? "Connected through the Enkeon CLI's sign-in on this computer. Pairing here gives Cookie its own key instead." : "Connected through ENKEON_API_KEY. Pairing here gives Cookie its own key instead."));
+  } else {
+    out.push(el("p", "set-note", "Pair once and every agent gets memory with proof, and Gmail, Drive, Slack and more through Enkeon's connectors."));
+  }
+  if (p && p.state === "waiting") {
+    const code = el("div", "pair-code", p.user_code);
+    out.push(code, el("p", "set-note", PAIR_WORDS.waiting));
+    out.push(el("div", "row-actions", button("Open the browser again", "quiet small", () => Api.openUrl(p.url).catch((e) => toast("Couldn't open it", String(e), "err"))), button("Cancel", "quiet small", async () => { await call("pair_cancel"); openEnkeon(); })));
+    pairTimer = setTimeout(() => { if (d.open) openEnkeon(); }, 2500);
+  } else if (p && p.state === "choose") {
+    out.push(el("p", "set-note", "Which memory should this computer use?"));
+    for (const proj of p.projects) {
+      out.push(button(proj.name, "quiet", async () => {
+        try { await call("pair_choose", { project: proj.id }); toast("Paired", `Cookie now uses “${proj.name}”.`); openEnkeon(); }
+        catch (e) { toast("Couldn't pair", String(e), "err"); }
+      }));
+    }
+  } else if (p && p.state === "done") {
+    out.push(el("p", "set-note ok", "Paired."));
+  } else if (p && (p.state === "failed" || p.state === "expired" || p.state === "denied")) {
+    out.push(el("p", "error-line", p.error || PAIR_WORDS[p.state]));
+  }
+  if (!st.paired && !(p && (p.state === "waiting" || p.state === "choose"))) {
+    out.push(button(st.connected ? "Pair Cookie with its own key" : "Pair with Enkeon", "primary", async () => {
+      try { const r = await call("pair_start"); if (r.url) await Api.openUrl(r.url).catch(() => {}); openEnkeon(); }
+      catch (e) { toast("Couldn't start pairing", String(e), "err"); }
+    }));
+  }
+  body.replaceChildren(...out);
+  if (!d.open) d.showModal();
+}
+
 /* ---------- connect apps ---------- */
 const APPS = [
   ["Enkeon", "Memory with proof, and Gmail, Drive, Slack and more through its connectors", "Connected", "#d97706", "enkeon"],
@@ -270,7 +325,7 @@ async function openConnect(filter = "All", q = "") {
       tile.style.background = color;
       const t = el("div", "row-text"); t.append(el("span", null, name), el("small", null, what));
       let b;
-      if (kind === "enkeon") b = live.enkeon ? el("span", "status-pill ok", "Connected") : button("How", "quiet small", () => toast("Connect Enkeon", "In a terminal: enkeon connect. Then connect Gmail and others at enkeon.com, and restart Cookie.", ""));
+      if (kind === "enkeon") b = button(live.enkeon ? "Manage" : "Pair", "quiet small", () => { d.close(); openEnkeon(); });
       else if (kind === "telegram") b = button(live.telegram ? "Manage" : "Connect", "quiet small", () => { d.close(); openSettings("channels"); });
       else if (kind === "peers") b = button("Open", "quiet small", () => { d.close(); if (current) openProfile("share"); else openSettings("sharing"); });
       else if (kind === "channel") b = button("Set up", "quiet small", () => { d.close(); openSettings("channels"); });

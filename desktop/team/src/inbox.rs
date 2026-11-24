@@ -48,7 +48,7 @@ fn schema() -> serde_json::Value {
 impl Team {
     /// Read mail through Enkeon and sort who waits on whom. Read only.
     pub async fn inbox_scan(&self, model: &str) -> Result<Waiting, String> {
-        let enkeon = cookie_harness::enkeon::Enkeon::from_env().ok_or(
+        let enkeon = crate::pair::enkeon().ok_or(
             "Mail is read through Enkeon. Sign in with `enkeon connect` in a terminal (or set ENKEON_API_KEY), connect Gmail there, then try again.",
         )?;
         let agent = Agent::new(model)

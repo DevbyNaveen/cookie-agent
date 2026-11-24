@@ -89,7 +89,7 @@ fn pending_file(team: &Team) -> PathBuf {
 }
 
 fn enkeon() -> Option<Enkeon> {
-    Enkeon::from_env()
+    crate::pair::enkeon()
 }
 
 /// The text of an Enkeon tool reply, or why it failed.

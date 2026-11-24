@@ -39,6 +39,21 @@ fn reveal(path: String, team: State<'_, Arc<Team>>) -> Result<(), String> {
     std::process::Command::new(opener).arg(&p).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// Open a web page in the person's browser: only https (pairing with Enkeon opens its Console).
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") || url.chars().any(|c| c.is_control() || c == ' ') {
+        return Err("Cookie opens only https pages.".into());
+    }
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(target_os = "windows")]
+    let opener = "explorer";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let opener = "xdg-open";
+    std::process::Command::new(opener).arg(&url).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// A second window on one agent, so two conversations can sit side by side.
 #[tauri::command]
 async fn open_window(app: tauri::AppHandle, agent: String, title: String) -> Result<(), String> {
@@ -175,7 +190,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![call, reveal, open_window, set_glass, pick_folder])
+        .invoke_handler(tauri::generate_handler![call, reveal, open_window, open_url, set_glass, pick_folder])
         .build(tauri::generate_context!())
         .expect("Cookie could not start");
     app.run(|app, event| {

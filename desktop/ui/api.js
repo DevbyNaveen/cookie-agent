@@ -42,6 +42,13 @@ const Api = (() => {
     return tauri.core.invoke("reveal", { path });
   }
 
+  /** An https page in the person's browser (the Enkeon Console, to pair). */
+  async function openUrl(url) {
+    if (!/^https:\/\//.test(url)) throw "Cookie opens only https pages.";
+    if (tauri) return tauri.core.invoke("open_url", { url });
+    window.open(url, "_blank", "noopener");
+  }
+
   /** One agent in a window of its own. */
   async function openWindow(agent, title) {
     if (tauri) return tauri.core.invoke("open_window", { agent, title });
@@ -67,5 +74,5 @@ const Api = (() => {
     return body.ok;
   }
 
-  return { call, listen, reveal, openWindow, pickFolder, openLink, pendingLink, web: !tauri, signedIn: () => !!tauri || !!token };
+  return { call, listen, reveal, openUrl, openWindow, pickFolder, openLink, pendingLink, web: !tauri, signedIn: () => !!tauri || !!token };
 })();

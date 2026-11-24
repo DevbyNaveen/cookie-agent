@@ -38,6 +38,26 @@ pub(crate) struct Built {
     pub(crate) lessons: Vec<cookie_harness::lessons::Picked>,
     pub(crate) recipe: bool,
     pub(crate) tools: Vec<String>,
+    /// What changes from job to job (lessons, tool record, rank, recipe),
+    /// sent as this job's note rather than in the cached instructions.
+    pub(crate) note: Option<String>,
+}
+
+/// One note for the job from its blocks, or none when there is nothing to say.
+fn job_note(blocks: &[String]) -> Option<String> {
+    let body: Vec<&str> = blocks.iter().map(|b| b.trim()).filter(|b| !b.is_empty()).collect();
+    (!body.is_empty()).then(|| format!("<job-notes>\nNotes for this job from your own record. Use them; don't mention them unless asked.\n\n{}\n</job-notes>", body.join("\n\n")))
+}
+
+#[cfg(test)]
+mod note_tests {
+    #[test]
+    fn a_job_note_holds_only_what_has_words() {
+        assert_eq!(super::job_note(&[]), None);
+        assert_eq!(super::job_note(&["  ".into()]), None);
+        let n = super::job_note(&["Lessons: a".into(), "Rank: b".into()]).unwrap();
+        assert!(n.starts_with("<job-notes>") && n.contains("Lessons: a\n\nRank: b") && n.ends_with("</job-notes>"));
+    }
 }
 
 /// The jobs that learn: the agent's own work, not tests, shadows or reviews.
@@ -166,26 +186,26 @@ impl Team {
             }
         }
         // What its own record says: lessons from jobs like this one, which tools
-        // have been working, its rank, and a routine's saved recipe.
+        // have been working, its rank, and a routine's saved recipe. These change
+        // from job to job, so they ride in the job's own note (see `run_job`),
+        // never in the instructions: the instructions and tools stay byte-for-byte
+        // the same between jobs and stay in the provider's prompt cache.
         let all_tools = crate::tools::for_agent(self, rec, trigger, job);
         built.tools = all_tools.iter().map(|t| t.spec().name.clone()).collect();
         if learns(trigger) {
+            let mut notes: Vec<String> = Vec::new();
             let (picked, block) = self.pick_lessons(&rec.id, text);
             built.lessons = picked;
-            for b in [block, crate::experience::tool_block(self, &rec.id)].into_iter().flatten() {
-                base.push_str("\n\n");
-                base.push_str(&b);
-            }
+            notes.extend([block, crate::experience::tool_block(self, &rec.id)].into_iter().flatten());
             if rec.id != crate::front::COOKIE_ID {
                 let (rank, facts) = self.rank(rec);
-                base.push_str("\n\n");
-                base.push_str(&crate::rank::block(rank, &facts));
+                notes.push(crate::rank::block(rank, &facts));
             }
             if let Some(r) = self.recipe_for(&rec.id, trigger, &built.tools) {
                 built.recipe = true;
-                base.push_str("\n\n");
-                base.push_str(&r);
+                notes.push(r);
             }
+            built.note = job_note(&notes);
         }
         // Many tools: the rarely used ones wait behind tool_search.
         let (tools, hidden_note) = crate::toolsearch::arrange(all_tools);
@@ -336,12 +356,14 @@ impl Team {
             let agent = self.build_agent(&rec, &trigger, mode, &job_id, &text, log.clone(), &mut built).await?;
             let mut session = if in_session { Session::open(self.paths.session(&rec.id)).await.map_err(|e| e.to_string())? } else { Session::in_memory() };
             let before = session.messages().len();
-            let mut input = vec![match &trigger {
+            // This job's note first, then the request itself, so the request is the last thing read.
+            let mut input: Vec<Message> = built.note.take().map(Message::harness_note).into_iter().collect();
+            input.push(match &trigger {
                 Trigger::Peer { label, .. } => Message::untrusted(text.clone(), Source::Agent(label.clone())),
                 Trigger::Handoff { from, .. } => Message::untrusted(text.clone(), Source::Agent(from.clone())),
                 Trigger::Contact { label, .. } | Trigger::Room { label, .. } => Message::untrusted(text.clone(), Source::Agent(label.clone())),
                 _ => Message::user(text.clone()),
-            }];
+            });
             for f in &attachments {
                 let body: String = f.text.chars().take(ATTACH_MAX).collect();
                 input.push(Message::untrusted(format!("{}\n\n{body}", f.name), Source::File));
@@ -517,6 +539,8 @@ impl Team {
             }
             let text = m.text();
             let from = match (m.role(), m.origin()) {
+                // A job's own note is for the agent, not the transcript.
+                (cookie_harness::Role::User, cookie_harness::Origin::System) => continue,
                 (cookie_harness::Role::User, cookie_harness::Origin::User) => "you",
                 (cookie_harness::Role::User, _) => "file",
                 _ => "agent",

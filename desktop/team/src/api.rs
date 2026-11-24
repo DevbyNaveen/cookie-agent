@@ -190,7 +190,12 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
             ok(team.update_settings(|s| if !s.scout_dismissed.contains(&id) { s.scout_dismissed.push(id) }).await.map(|_| ())?)
         }
         "inbox_scan" => ok(team.inbox_scan(&arg::<String>(a, "model")?).await?),
-        "enkeon_status" => ok(cookie_harness::enkeon::Enkeon::from_env().is_some()),
+        "enkeon_status" => ok(crate::pair::enkeon().is_some()),
+        "enkeon" => ok(team.enkeon_status()),
+        "pair_start" => ok(team.pair_start(opt::<String>(a, "gateway")).await?),
+        "pair_choose" => ok(team.pair_choose(&arg::<String>(a, "project")?).await?),
+        "pair_cancel" => { team.pair_cancel(); ok(team.enkeon_status()) }
+        "unpair" => ok(team.unpair()?),
 
         /* channels: Slack, Discord, iMessage, Signal */
         "channels" => ok(team.channel_states().into_iter().map(|(k, s)| (k, json!({"enabled": s.enabled, "config": s.config, "chats": s.chats, "code": s.pending_code, "status": s.status}))).collect::<std::collections::BTreeMap<_, _>>()),

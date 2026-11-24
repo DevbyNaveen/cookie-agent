@@ -51,6 +51,8 @@ pub enum TeamEvent {
     RoutinesChanged,
     /// The morning card was posted.
     Retro,
+    /// This computer was paired with Enkeon, or unpaired.
+    EnkeonChanged,
     TestProgress { run: String, agent: String, done: usize, total: usize },
     TestFinished { run: String, agent: String, passed: usize, total: usize },
     Channel { name: String, status: String },
