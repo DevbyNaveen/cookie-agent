@@ -41,6 +41,8 @@ pub struct Agent {
     /// `gen_ai.provider.name` on spans, when known.
     pub(crate) provider_name: Option<String>,
     pub(crate) reasoning: Option<Effort>,
+    /// The cached prefix's lifetime this agent asked for (`prompt_cache_ttl`).
+    pub(crate) prefix_ttl: Option<&'static str>,
     pub(crate) output_schema: Option<serde_json::Value>,
     /// Tools whose working is not proof of the result (an update in someone
     /// else's app): a run that used one and read nothing after is asked,
@@ -357,7 +359,7 @@ impl Agent {
             } else {
                 meter.begin_call(&budget)?;
             }
-            let request = ModelRequest { model: &self.model, system: &system, messages: &view, tools: specs.clone(), reasoning: self.reasoning, output_schema: self.output_schema.as_ref() };
+            let request = ModelRequest { model: &self.model, system: &system, messages: &view, tools: specs.clone(), reasoning: self.reasoning, output_schema: self.output_schema.as_ref(), prefix_ttl: self.prefix_ttl };
             let mut fell_back: Vec<(String, String)> = Vec::new();
             let mut forward = |event: ProviderEvent| {
                 on_event(match event {

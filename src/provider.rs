@@ -81,6 +81,10 @@ pub struct ModelRequest<'a> {
     pub reasoning: Option<Effort>,
     /// A JSON Schema the final answer must follow.
     pub output_schema: Option<&'a serde_json::Value>,
+    /// How long the cached prefix should live: `"1h"`, or `None` for the
+    /// provider's default (5 minutes). Honoured only where the model supports
+    /// it; `COOKIE_PROMPT_CACHE_TTL` still applies when this is `None`.
+    pub prefix_ttl: Option<&'static str>,
 }
 
 /// Is `answer` JSON, and does it have the schema's top-level shape (an
@@ -131,6 +135,17 @@ pub fn prefix_cache_ttl(model: &str) -> Option<&'static str> {
     (wanted.trim() == "1h" && hour_cache_supported(model)).then_some("1h")
 }
 
+/// The prefix TTL for one request: the agent's own choice when it asked for
+/// the hour and the model supports it, else the process-wide setting.
+pub fn request_prefix_ttl(request: &ModelRequest) -> Option<&'static str> {
+    match request.prefix_ttl {
+        Some("1h") if hour_cache_supported(request.model) => Some("1h"),
+        // "5m" (or anything else) pinned by the agent: the default, never the env's hour.
+        Some(_) => None,
+        None => prefix_cache_ttl(request.model),
+    }
+}
+
 /// Claude 4.5 and later, by id: `claude-sonnet-4-6`, `eu.anthropic.claude-opus-5-5`, …
 /// (the families Bedrock's prompt-caching table lists with a 1-hour TTL).
 pub fn hour_cache_supported(model: &str) -> bool {
@@ -174,6 +189,16 @@ pub trait Provider: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_agent_picks_its_own_prefix_ttl_where_the_model_has_one() {
+        let hour = super::ModelRequest { model: "claude-sonnet-4-6", prefix_ttl: Some("1h"), ..Default::default() };
+        assert_eq!(super::request_prefix_ttl(&hour), Some("1h"));
+        let old = super::ModelRequest { model: "claude-3-5-haiku", prefix_ttl: Some("1h"), ..Default::default() };
+        assert_eq!(super::request_prefix_ttl(&old), None, "no hour on a model without it");
+        let five = super::ModelRequest { model: "claude-sonnet-4-6", prefix_ttl: Some("5m"), ..Default::default() };
+        assert_eq!(super::request_prefix_ttl(&five), None);
+    }
+
     use super::*;
     use serde_json::json;
 

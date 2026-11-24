@@ -75,6 +75,7 @@ impl Provider for Fallback {
                 tools: request.tools.clone(),
                 reasoning: request.reasoning,
                 output_schema: request.output_schema,
+                prefix_ttl: request.prefix_ttl,
             };
             let reply = provider
                 .stream(attempt, &mut |event| {

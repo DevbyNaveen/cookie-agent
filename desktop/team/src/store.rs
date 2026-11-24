@@ -337,9 +337,20 @@ pub struct Job {
     /// Where it ran when not on this Mac: `cloud` (Enkeon, while the Mac was off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place: Option<String>,
+    /// Input tokens sent fresh, read from the prompt cache, and written to it.
+    #[serde(default, skip_serializing_if = "is_zero64")]
+    pub input_tokens: u64,
+    #[serde(default, skip_serializing_if = "is_zero64")]
+    pub cache_read_tokens: u64,
+    #[serde(default, skip_serializing_if = "is_zero64")]
+    pub cache_write_tokens: u64,
 }
 
 fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+fn is_zero64(n: &u64) -> bool {
     *n == 0
 }
 

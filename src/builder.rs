@@ -46,6 +46,7 @@ impl Agent {
             enkeon: if cfg!(test) { None } else { Enkeon::from_env().map(Arc::new) },
             provider_name: None,
             reasoning: None,
+            prefix_ttl: None,
             output_schema: None,
             check_after: Vec::new(),
             verification: Vec::new(),
@@ -182,6 +183,18 @@ impl Agent {
 
     /// How hard the model thinks; its reasoning is kept for the provider
     /// that wrote it and never shown as the answer.
+    /// Keep this agent's cached prefix for an hour (`"1h"`) or the default
+    /// five minutes (`"5m"`). An hour costs 2× to write instead of 1.25×, so it
+    /// pays when this agent's calls come 5 to 60 minutes apart. Ignored by
+    /// models without the hour TTL.
+    pub fn prompt_cache_ttl(mut self, ttl: &str) -> Self {
+        self.prefix_ttl = match ttl.trim() {
+            "1h" => Some("1h"),
+            _ => Some("5m"),
+        };
+        self
+    }
+
     pub fn reasoning(mut self, effort: Effort) -> Self {
         self.reasoning = Some(effort);
         self

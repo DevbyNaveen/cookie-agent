@@ -35,7 +35,7 @@ pub fn worth_retrying(e: &Error) -> bool {
 }
 
 fn on_backup<'a>(request: &ModelRequest<'a>, model: &'a str) -> ModelRequest<'a> {
-    ModelRequest { model, system: request.system, messages: request.messages, tools: request.tools.clone(), reasoning: request.reasoning, output_schema: request.output_schema }
+    ModelRequest { model, system: request.system, messages: request.messages, tools: request.tools.clone(), reasoning: request.reasoning, output_schema: request.output_schema, prefix_ttl: request.prefix_ttl }
 }
 
 #[async_trait]
@@ -100,7 +100,7 @@ mod tests {
 
     async fn ask(f: &Failover) -> Result<ModelResponse> {
         let messages = [Message::user("hi")];
-        f.complete(ModelRequest { model: "claude-a", system: "", messages: &messages, tools: Vec::new(), reasoning: None, output_schema: None }).await
+        f.complete(ModelRequest { model: "claude-a", system: "", messages: &messages, tools: Vec::new(), reasoning: None, output_schema: None, prefix_ttl: None }).await
     }
 
     #[tokio::test]

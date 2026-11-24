@@ -118,48 +118,61 @@ impl Team {
         // The candidate runs as a throwaway copy: same tools and walls, nothing real.
         let mut probe = rec.clone();
         probe.id = format!("{}--test", rec.id);
-        let answer = match self.run_probe(&probe, &case.input, Trigger::Test { case: case.id.clone() }).await {
-            Ok(a) => a,
+        let job = match self.run_probe_job(&probe, &case.input, Trigger::Test { case: case.id.clone() }, None).await {
+            Ok(j) if j.status == crate::JobStatus::Done => j,
+            Ok(j) => return TestResult { case: case.id.clone(), pass: false, reason: format!("It didn't finish: {}", j.error.unwrap_or_else(|| "stopped".into())), answer: String::new() },
             Err(e) => return TestResult { case: case.id.clone(), pass: false, reason: format!("It didn't finish: {e}"), answer: String::new() },
         };
+        let (pass, reason) = self.judge_answer(judge_model, &case.input, &case.expect, case.reference.as_deref(), &job.answer).await;
+        TestResult { case: case.id.clone(), pass, reason, answer: util::clip(&job.answer, 8000) }
+    }
+
+    /// A judge's grade of one answer against what a good one must do (and a reference, if any).
+    pub(crate) async fn judge_answer(&self, judge_model: &str, input: &str, expect: &str, reference: Option<&str>, answer: &str) -> (bool, String) {
         let judge = match Agent::new(judge_model) {
             Ok(a) => a.instructions(JUDGE).without_enkeon(),
-            Err(e) => return TestResult { case: case.id.clone(), pass: false, reason: format!("The judge couldn't start: {e}"), answer },
+            Err(e) => return (false, format!("The judge couldn't start: {e}")),
         };
         let mut s = Session::in_memory();
         let prompt = format!(
             "The task:\n{}\n\nWhat a good answer must do:\n{}\n\n{}The answer to grade:\n{}",
-            case.input,
-            case.expect,
-            case.reference.as_ref().map(|r| format!("An answer graded good before (for reference, not to copy):\n{}\n\n", util::clip(r, 4000))).unwrap_or_default(),
-            util::clip(&answer, 8000)
+            input,
+            expect,
+            reference.map(|r| format!("An answer graded good before (for reference, not to copy):\n{}\n\n", util::clip(r, 4000))).unwrap_or_default(),
+            util::clip(answer, 8000)
         );
-        let verdict = judge.run_in(&mut s, Message::user(prompt), &cookie_harness::CancellationToken::new()).await.map_err(|e| e.to_string()).and_then(|raw| parse_verdict(&raw).ok_or_else(|| "the judge's answer couldn't be read".to_string()));
-        match verdict {
-            Ok((pass, reason)) => TestResult { case: case.id.clone(), pass, reason, answer: util::clip(&answer, 8000) },
-            Err(e) => TestResult { case: case.id.clone(), pass: false, reason: format!("Not graded: {e}"), answer: util::clip(&answer, 8000) },
+        match judge.run_in(&mut s, Message::user(prompt), &cookie_harness::CancellationToken::new()).await.map_err(|e| e.to_string()).and_then(|raw| parse_verdict(&raw).ok_or_else(|| "the judge's answer couldn't be read".to_string())) {
+            Ok(v) => v,
+            Err(e) => (false, format!("Not graded: {e}")),
         }
     }
 
-    /// One run of a temporary copy: in memory, every change recorded and refused.
-    async fn run_probe(self: &Arc<Self>, probe: &AgentRecord, input: &str, trigger: Trigger) -> Result<String, String> {
-        // Its folder is a scratch copy: a test can read the agent's files but never change them.
-        let real = self.paths.work(probe.id.trim_end_matches("--test"));
-        let scratch = self.paths.work(&probe.id);
-        let _ = std::fs::remove_dir_all(&scratch);
-        copy_dir(&real, &scratch).map_err(|e| e.to_string())?;
+    /// One run of a temporary copy (a probe): a scratch copy of its folder,
+    /// skills and notes; every change it would make recorded and refused;
+    /// `tuning` when the copy runs with other settings.
+    pub(crate) async fn run_probe_job(self: &Arc<Self>, probe: &AgentRecord, input: &str, trigger: Trigger, tuning: Option<crate::tuning::Tuning>) -> Result<crate::store::Job, String> {
+        let original = crate::bench::original(&probe.id).to_string();
+        let home = self.paths.agent(&probe.id);
+        let _ = std::fs::remove_dir_all(&home);
+        copy_dir(&self.paths.work(&original), &self.paths.work(&probe.id)).map_err(|e| e.to_string())?;
+        for part in ["skills", "NOTES.md"] {
+            let src = self.paths.agent(&original).join(part);
+            if src.exists() {
+                let _ = crate::sleep::clone_path(&src, &home.join(part));
+            }
+        }
+        if let Some(t) = &tuning {
+            util::write_json(&home.join("tuning.json"), t)?;
+        }
         let mut agents = self.agents.write().await;
         agents.retain(|a| a.id != probe.id);
         agents.push(probe.clone());
         drop(agents);
         let job = self.run_and_wait(&probe.id, input.to_string(), Vec::new(), trigger).await;
         self.agents.write().await.retain(|a| a.id != probe.id);
-        let _ = std::fs::remove_dir_all(self.paths.agent(&probe.id));
-        let job = job?;
-        match job.status {
-            crate::JobStatus::Done => Ok(job.answer),
-            _ => Err(job.error.unwrap_or_else(|| "stopped".into())),
-        }
+        let _ = std::fs::remove_dir_all(&home);
+        self.traces.lock().unwrap().remove(&probe.id);
+        job
     }
 
     /* ---------- forks ---------- */

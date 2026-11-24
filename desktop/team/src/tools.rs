@@ -53,10 +53,9 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
             if let Ok(cmd) = cookie_harness::sandbox::command_tool("run_command", cage, &work) {
                 let net = if cfg.network { "It can reach the internet." } else { "It has no network." };
                 let about = format!(
-                    "Run a shell command (sh -c) in your own folder, {}, inside your cage: it may read the system and your folder only, \
+                    "Run a shell command (sh -c) in your own folder (it is the working directory), inside your cage: it may read the system and your folder only, \
                      write only your folder (HOME and TMPDIR are your own), and use at most {} CPU seconds. {net} \
                      Returns the exit code, stdout and stderr.",
-                    work.display(),
                     cfg.cpu_seconds
                 );
                 out.push(Arc::new(cmd.describe(about).timeout(std::time::Duration::from_secs(cfg.timeout_seconds.into()))));
@@ -118,7 +117,8 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
     if read_only {
         out.retain(|t| t.spec().effect == Effect::Read);
     }
-    out
+    // The same web read twice in ten minutes is answered from the first (`readcache`).
+    crate::readcache::wrap(team, &rec.id, out)
 }
 
 fn write_file(root: PathBuf) -> impl Tool {

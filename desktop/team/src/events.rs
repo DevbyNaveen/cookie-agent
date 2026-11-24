@@ -53,6 +53,8 @@ pub enum TeamEvent {
     Retro,
     /// This computer was paired with Enkeon, or unpaired.
     EnkeonChanged,
+    /// An agent's tuning or model changed (kept, or undone), in words.
+    Evolved { agent: String, what: String },
     TestProgress { run: String, agent: String, done: usize, total: usize },
     TestFinished { run: String, agent: String, passed: usize, total: usize },
     Channel { name: String, status: String },

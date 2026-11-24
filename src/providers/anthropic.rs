@@ -126,7 +126,7 @@ impl AnthropicProvider {
 
     fn body(&self, request: &ModelRequest) -> Value {
         let exact = std::env::var("COOKIE_SCREEN_IMAGES_EXACT").is_ok_and(|v| v == "1");
-        let mut body = request_body_with_ttl(request, self.max_tokens, self.caching, crate::provider::prefix_cache_ttl(request.model), exact);
+        let mut body = request_body_with_ttl(request, self.max_tokens, self.caching, crate::provider::request_prefix_ttl(request), exact);
         if let Some(edits) = &self.context_editing {
             body["context_management"] = json!({"edits": [edits.edit()]});
         }

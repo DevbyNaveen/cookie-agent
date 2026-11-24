@@ -76,7 +76,7 @@ fn instructions(team_names: &[(String, String)], rec: &AgentRecord, trigger: &Tr
         name = rec.name,
         job = rec.job
     ) };
-    let others: Vec<String> = team_names.iter().filter(|(id, _)| id != &rec.id).map(|(_, n)| n.clone()).collect();
+    let others: Vec<String> = team_names.iter().filter(|(id, _)| id != &rec.id && id.as_str() != crate::bench::original(&rec.id)).map(|(_, n)| n.clone()).collect();
     if rec.grants.team && !others.is_empty() {
         s.push_str(&format!("\nYour teammates (write to them with `message`, by their @address, when their job fits): {}.", others.join(", ")));
     }
@@ -163,7 +163,8 @@ impl Team {
     #[allow(clippy::too_many_arguments)]
     async fn build_agent(self: &Arc<Self>, rec: &AgentRecord, trigger: &Trigger, mode: Mode, job: &str, text: &str, log: Arc<Mutex<Vec<crate::store::ApprovalRecord>>>, built: &mut Built) -> Result<Agent, String> {
         let settings = self.settings().await;
-        let names: Vec<(String, String)> = self.agents().await.into_iter().filter(|a| a.shadow_of.is_none()).map(|a| (a.id, a.name)).collect();
+        // Teammates by name: never the throwaway copies an exam runs (`is_probe`).
+        let names: Vec<(String, String)> = self.agents().await.into_iter().filter(|a| a.shadow_of.is_none() && !crate::bench::is_probe(&a.id)).map(|a| (a.id, a.name)).collect();
         let probation = rec.on_probation(util::now());
         let mut base = instructions(&names, rec, trigger, probation || matches!(trigger, Trigger::Test { .. } | Trigger::Shadow { .. }));
         // What it knows about the person, and the skills it has built up.
@@ -207,6 +208,12 @@ impl Team {
             }
             built.note = job_note(&notes);
         }
+        // Its tuning: proven habits (stable, so cached), compaction, effort, cache lifetime.
+        let tuning = self.tuning(&rec.id);
+        if let Some(h) = tuning.habits_block() {
+            base.push_str("\n\n");
+            base.push_str(&h);
+        }
         // Many tools: the rarely used ones wait behind tool_search.
         let (tools, hidden_note) = crate::toolsearch::arrange(all_tools);
         if let Some(n) = hidden_note {
@@ -217,7 +224,8 @@ impl Team {
             .map_err(|e| e.to_string())?
             .instructions(base)
             .tools(tools)
-            .compaction(Compaction { clear_tool_results_after: 8, summarize_above_tokens: 120_000, keep_recent_turns: 4, within_turn: true, ..Compaction::default() })
+            .compaction(Compaction { clear_tool_results_after: tuning.clear_tool_results_after, summarize_above_tokens: tuning.summarize_above_tokens, keep_recent_turns: tuning.keep_recent_turns, within_turn: true, ..Compaction::default() })
+            .prompt_cache_ttl(self.cache_ttl(&rec.id))
             .close_with_answer()
             // A change to the person's own files is put to them every time.
             .policy(cookie_harness::policy::Policy::default().always_ask(crate::access::WRITE_TOOL))
@@ -232,6 +240,9 @@ impl Team {
         let price = settings.prices.get(&rec.model).map(|p| Price { input: p.input, output: p.output, cache_read: p.cache_read, cache_write: p.cache_write });
         let budget = Budget { max_steps: rec.limits.steps.max(1), max_tokens: rec.limits.tokens.max(1_000), max_dollars: price.and(rec.limits.job_dollars) };
         agent = agent.budget(budget);
+        if let Some(e) = tuning.effort() {
+            agent = agent.reasoning(e);
+        }
         if let Some(p) = price {
             agent = agent.prices(p);
         }
@@ -248,7 +259,11 @@ impl Team {
         }
         if rec.grants.memory {
             // Its own space in Enkeon (see `memory`), or its own notes on this computer.
-            match self.enkeon_for(&rec.id, "agent", rec.grants.web && cookie_harness::local::Search::from_env().is_some()) {
+            // A probe (a test or exam copy) reads the agent's own space and saves nothing.
+            let probe = crate::bench::is_probe(&rec.id);
+            let space_of = if probe { crate::bench::original(&rec.id) } else { rec.id.as_str() };
+            match self.enkeon_for(space_of, "agent", rec.grants.web && cookie_harness::local::Search::from_env().is_some()) {
+                Some(e) if probe => agent = agent.enkeon(e.without("remember").without("connector_call")),
                 Some(e) => agent = agent.enkeon(e),
                 None => agent = agent.without_enkeon().notes(self.paths.notes(&rec.id)),
             }
@@ -347,6 +362,8 @@ impl Team {
         let log = Arc::new(Mutex::new(Vec::new()));
         let tools_used = Arc::new(Mutex::new(Vec::<String>::new()));
         let usage = Arc::new(Mutex::new((0u64, 0u64)));
+        // Fresh input, cache read, cache write: the record's hit rate and savings.
+        let cache = Arc::new(Mutex::new((0u64, 0u64, 0u64)));
         // Steered (the person added words) and cut off (it hit a limit).
         let marks = Arc::new(Mutex::new((0u32, false)));
         let mut built = Built::default();
@@ -372,7 +389,7 @@ impl Team {
                 input.push(Message::untrusted(format!("{}\n\n{body}", f.name), Source::File));
             }
             let (team, aid, jid) = (self.clone(), rec.id.clone(), job_id.clone());
-            let (tu, us, mk) = (tools_used.clone(), usage.clone(), marks.clone());
+            let (tu, us, mk, ca) = (tools_used.clone(), usage.clone(), marks.clone(), cache.clone());
             let mut forward = move |event: Event| match event {
                 Event::TextDelta(text) => team.emit(TeamEvent::Text { job: jid.clone(), agent: aid.clone(), text }),
                 Event::ToolCallStarted { name, .. } => {
@@ -385,6 +402,12 @@ impl Team {
                 }
                 Event::Closing { .. } => mk.lock().unwrap().1 = true,
                 Event::Usage(u) => {
+                    {
+                        let mut c = ca.lock().unwrap();
+                        c.0 += u.input_tokens;
+                        c.1 += u.cache_read_tokens;
+                        c.2 += u.cache_write_tokens;
+                    }
                     let mut g = us.lock().unwrap();
                     g.0 += u.input_tokens + u.output_tokens + u.cache_write_tokens;
                     g.1 += team.price_of(&aid, &u);
@@ -406,6 +429,7 @@ impl Team {
             Err(e) => (JobStatus::Failed, String::new(), Some(e)),
         };
         let (tokens, microdollars) = *usage.lock().unwrap();
+        let (fresh_in, cache_read, cache_write) = *cache.lock().unwrap();
         let (steered, cut_off) = *marks.lock().unwrap();
         let promises = if status == JobStatus::Done && mode == Mode::Ask {
             cookie_harness::cookie::promise::promises_in(&answer, util::now() as i64)
@@ -438,6 +462,9 @@ impl Team {
             lessons: built.lessons,
             recipe: built.recipe,
             place: None,
+            input_tokens: fresh_in,
+            cache_read_tokens: cache_read,
+            cache_write_tokens: cache_write,
         };
         let _ = util::append_jsonl(&self.paths.jobs(&rec.id), &job);
         self.clear_running(&rec.id);

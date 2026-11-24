@@ -541,7 +541,7 @@ impl BedrockProvider {
 
     fn prepare(&self, request: &ModelRequest) -> Result<(String, Vec<u8>)> {
         let region = region_for_model(self.region.as_deref(), request.model)?;
-        let body = converse_body_with_ttl(request, self.max_tokens, self.caching, crate::provider::prefix_cache_ttl(request.model));
+        let body = converse_body_with_ttl(request, self.max_tokens, self.caching, crate::provider::request_prefix_ttl(request));
         check_first_turn(&body)?;
         check_images(&body)?;
         Ok((region, serde_json::to_vec(&body)?))
