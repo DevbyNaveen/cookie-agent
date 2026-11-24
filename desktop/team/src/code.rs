@@ -63,8 +63,13 @@ def call(tool, **args):
 }
 
 /// The `run_code` tool, built from the agent's own tools for this job.
-pub(crate) fn run_code_tool(work: &Path, tools: &[Arc<dyn Tool>]) -> Option<Arc<dyn Tool>> {
-    let sandbox = cookie_harness::sandbox::detect().filter(|s| s.confines())?;
+/// `cage`: the agent's own (`cage`); `None` uses the harness's plain sandbox.
+pub(crate) fn run_code_tool(work: &Path, tools: &[Arc<dyn Tool>], cage: Option<Arc<crate::cage::Cage>>) -> Option<Arc<dyn Tool>> {
+    let sandbox: Arc<dyn cookie_harness::sandbox::Sandbox> = match cage {
+        // Scripts reach the outside only through the tools they are given.
+        Some(c) => Arc::new(crate::cage::Cage { cfg: crate::cage::CageCfg { network: false, ..c.cfg.clone() }, ..(*c).clone() }),
+        None => cookie_harness::sandbox::detect().filter(|s| s.confines())?,
+    };
     if !Path::new("/usr/bin/python3").exists() && which_python().is_none() {
         return None;
     }
@@ -178,7 +183,7 @@ mod tests {
             async move { std::fs::read_to_string(root.join(a["path"].as_str().unwrap_or(""))).map_err(|e| e.to_string()) }
         }));
         let sender: Arc<dyn Tool> = Arc::new(tool("messages_send", "send", json!({"type": "object"}), Effect::Outbound, |_a: Value| async { Ok("sent".to_string()) }));
-        let Some(t) = run_code_tool(&work, &[reader, sender]) else { return }; // no sandbox on this machine
+        let Some(t) = run_code_tool(&work, &[reader, sender], None) else { return }; // no sandbox on this machine
         let code = "from cookie_tools import *\nprint('total', sum(len(read_file(path=p)) for p in ['a.txt', 'b.txt']))\ntry:\n    call('messages_send')\nexcept Exception as e:\n    print('refused', 'available' in str(e))\n";
         let out = t.call(json!({"code": code})).await.unwrap();
         assert!(out.contains("total 9"), "{out}");

@@ -297,6 +297,9 @@ impl Team {
         if text.is_empty() {
             return Err("Say what you need.".into());
         }
+        if self.is_asleep(&rec.id) {
+            return Err(format!("{} is asleep. Wake it first.", rec.name));
+        }
         if let (Some(cap), Some(_)) = (rec.limits.month_dollars, self.settings().await.prices.get(&rec.model)) {
             if self.month_spend(&rec.id) as f64 / 1e6 >= cap {
                 return Err(format!("{} reached its monthly limit of ${cap:.2}. Raise it in its profile to continue.", rec.name));
@@ -350,7 +353,7 @@ impl Team {
         let mut added: Vec<Message> = Vec::new();
         self.mark_running(&rec.id, &job_id, &text, &trigger, started_at);
         // Tests and shadows don't touch the agent's real conversation.
-        let in_session = matches!(trigger, Trigger::Chat | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Inbox);
+        let in_session = matches!(trigger, Trigger::Chat | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Inbox | Trigger::Memory { .. });
 
         let result: Result<String, String> = async {
             let agent = self.build_agent(&rec, &trigger, mode, &job_id, &text, log.clone(), &mut built).await?;

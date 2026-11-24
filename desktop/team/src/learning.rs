@@ -540,7 +540,7 @@ impl Team {
 
     /// Count a finished conversation; review when enough has happened since the last one.
     pub(crate) fn maybe_review(self: &Arc<Self>, rec: &AgentRecord, job: &Job) {
-        if !matches!(job.trigger, Trigger::Chat | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Routine { .. } | Trigger::Inbox) || job.status != JobStatus::Done {
+        if !matches!(job.trigger, Trigger::Chat | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Routine { .. } | Trigger::Inbox | Trigger::Memory { .. }) || job.status != JobStatus::Done {
             return;
         }
         if !rec.grants.memory || rec.shadow_of.is_some() || rec.on_probation(util::now()) || !self.learning_enabled(&rec.id) {

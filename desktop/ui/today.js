@@ -42,6 +42,25 @@ async function renderToday() {
     parts.push(card);
   }
 
+  // Agents that woke because their memory changed: label them so the next wake is better judged.
+  const wk = await call("wakes").catch(() => null);
+  if (view !== "today") return;
+  const recent = (wk?.wakes || []).filter((w) => !w.label && Date.now() / 1000 - w.at < 3 * 86400 && agentById(w.agent)).slice(0, 3);
+  if (recent.length) {
+    const g = el("div", "group");
+    for (const w of recent) {
+      const who = agentById(w.agent);
+      const r = setRow(`${who.name} woke: ${w.title}`, w.held ? `${w.why} It was asleep or busy, so it starts when it can.` : w.why, null);
+      const acts = el("div", "row-actions");
+      const lab = (label, text) => button(text, "quiet small", async () => { await call("label_wake", { id: w.id, label }); renderToday(); });
+      if (w.job) acts.append(button("Open", "quiet small", () => openAgent(w.agent)));
+      acts.append(lab("useful", "Useful"), lab("not_useful", "Not useful"), lab("wrong", "Wrong"));
+      r.append(acts);
+      g.append(r);
+    }
+    parts.push(el("h3", "group-title", "Woke on their own"), g);
+  }
+
   // A job you keep giving: offered once as a routine.
   for (const o of offers.slice(0, 2)) {
     const who = agentById(o.agent);

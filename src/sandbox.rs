@@ -281,6 +281,13 @@ pub fn command_tool(name: &str, sandbox: Arc<dyn Sandbox>, workdir: impl AsRef<P
 }
 
 impl CommandTool {
+    /// Say what this sandbox allows, in place of the default description
+    /// (a host whose sandbox allows the network, say, must not claim it has none).
+    pub fn describe(mut self, description: impl Into<String>) -> Self {
+        self.spec.description = description.into();
+        self
+    }
+
     /// How long a command may run before it is killed (default 60 s).
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;

@@ -47,11 +47,24 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
         out.push(Arc::new(write_file(work.clone())));
     }
     if g.shell {
-        if let Some(sandbox) = cookie_harness::sandbox::detect() {
-            if let Ok(cmd) = cookie_harness::sandbox::command_tool("run_command", sandbox, &work) {
-                out.push(Arc::new(cmd.timeout(std::time::Duration::from_secs(120))));
+        // Its own cage (`cage`): its folder, its own home and temp, its limits.
+        if let Some(cage) = team.cage(&rec.id) {
+            let cfg = cage.cfg.clone();
+            if let Ok(cmd) = cookie_harness::sandbox::command_tool("run_command", cage, &work) {
+                let net = if cfg.network { "It can reach the internet." } else { "It has no network." };
+                let about = format!(
+                    "Run a shell command (sh -c) in your own folder, {}, inside your cage: it may read the system and your folder only, \
+                     write only your folder (HOME and TMPDIR are your own), and use at most {} CPU seconds. {net} \
+                     Returns the exit code, stdout and stderr.",
+                    work.display(),
+                    cfg.cpu_seconds
+                );
+                out.push(Arc::new(cmd.describe(about).timeout(std::time::Duration::from_secs(cfg.timeout_seconds.into()))));
             }
         }
+    }
+    if g.browser {
+        out.extend(crate::browser::tools(team, &rec.id));
     }
     if g.routines {
         out.extend(routine_tools(Arc::downgrade(team), rec.id.clone()));
@@ -95,7 +108,7 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
     }
     // Code that calls its read-only tools (only with "Run commands" on, never for outsiders).
     if g.shell && !outside {
-        if let Some(t) = crate::code::run_code_tool(&work, &out) {
+        if let Some(t) = crate::code::run_code_tool(&work, &out, team.cage(&rec.id)) {
             out.push(t);
         }
     }

@@ -6,7 +6,9 @@
 
 pub mod access;
 pub mod api;
+pub mod cage;
 pub mod approvals;
+pub mod browser;
 pub mod challenge;
 pub mod channels;
 pub mod checker;
@@ -37,6 +39,7 @@ pub mod routines;
 pub mod runtime;
 pub mod scorecard;
 pub mod scout;
+pub mod sleep;
 pub mod server;
 pub mod store;
 pub mod talk;
@@ -45,6 +48,7 @@ pub mod telegram;
 pub mod tools;
 pub mod util;
 pub mod voice;
+pub mod wake;
 pub mod webhooks;
 pub mod workbench;
 
@@ -197,6 +201,10 @@ impl Team {
         server::spawn_if_enabled(self.clone());
         self.spawn_net();
         self.spawn_channels();
+        // Agents wake when their memory changes (with Enkeon connected).
+        wake::spawn(self.clone());
+        // Agents' browsers close when idle.
+        browser::spawn_reaper();
         // Cookie, the agent everyone starts with, once there is a model for it.
         let me = self.clone();
         tokio::spawn(async move { me.ensure_cookie().await });
@@ -266,7 +274,7 @@ impl Team {
             .filter(|a| a.shadow_of.is_none())
             .map(|agent| {
                 let jobs: Vec<Job> = util::read_jsonl(&self.paths.jobs(&agent.id));
-                let visible = |j: &&Job| matches!(j.trigger, Trigger::Chat | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Peer { .. } | Trigger::Handoff { .. } | Trigger::Inbox);
+                let visible = |j: &&Job| matches!(j.trigger, Trigger::Chat | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Peer { .. } | Trigger::Handoff { .. } | Trigger::Inbox | Trigger::Memory { .. });
                 let last_job = jobs.iter().rev().find(visible);
                 let mut last = last_job.map(|j| if j.answer.is_empty() { j.error.clone().unwrap_or_default() } else { j.answer.clone() });
                 let mut last_at = last_job.map(|j| j.finished_at.unwrap_or(j.started_at));

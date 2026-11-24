@@ -39,18 +39,20 @@ pub struct Grants {
     pub peers: Vec<String>,
     /// The Mac's own apps: Reminders, Notes, Calendar, Contacts, Messages.
     pub mac: bool,
+    /// A browser of its own, with the sign-ins you gave it (`browser`). Clicks and typing ask you.
+    pub browser: bool,
 }
 
 impl Default for Grants {
     fn default() -> Self {
-        Self { files: true, web: true, shell: false, memory: true, routines: true, team: true, peers: Vec::new(), mac: false }
+        Self { files: true, web: true, shell: false, memory: true, routines: true, team: true, peers: Vec::new(), mac: false, browser: false }
     }
 }
 
 impl Grants {
     /// Nothing at all: what an imported agent starts with.
     pub fn none() -> Self {
-        Self { files: false, web: false, shell: false, memory: false, routines: false, team: false, peers: Vec::new(), mac: false }
+        Self { files: false, web: false, shell: false, memory: false, routines: false, team: false, peers: Vec::new(), mac: false, browser: false }
     }
 }
 
@@ -194,6 +196,8 @@ pub struct Settings {
     pub challenge_model: Option<String>,
     /// Scout proposals the person waved away.
     pub scout_dismissed: Vec<String>,
+    /// Wake agents when their memory changes (`wake`). On by default.
+    pub wake: bool,
 }
 
 impl Default for Settings {
@@ -209,6 +213,7 @@ impl Default for Settings {
             runner_url: None,
             challenge_model: None,
             scout_dismissed: Vec::new(),
+            wake: true,
         }
     }
 }
@@ -237,6 +242,8 @@ pub enum Trigger {
     Review,
     /// The person wrote from Slack, Discord, iMessage or Signal.
     Channel { channel: String, chat: String },
+    /// Its memory changed enough to be worth its attention (`wake`).
+    Memory { subject: String },
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

@@ -156,7 +156,19 @@ impl Team {
         self.maybe_post_retro().await;
         let now = util::now();
         let due: Vec<Routine> = self.routines.read().await.iter().filter(|r| r.enabled && r.next_run.is_some_and(|t| t <= now)).cloned().collect();
+        // One snapshot a day of each agent that worked today (`sleep`).
+        let ids: Vec<String> = self.agents().await.into_iter().filter(|a| a.shadow_of.is_none()).map(|a| a.id).collect();
+        self.daily_snapshots(&ids);
         for r in due {
+            // An asleep agent's routine skips its turn quietly: the schedule moves on.
+            if self.is_asleep(&r.agent) {
+                let mut rs = self.routines.write().await;
+                if let Some(x) = rs.iter_mut().find(|x| x.id == r.id) {
+                    x.next_run = next_after(&x.schedule, now);
+                }
+                let _ = self.save_routines(&rs).await;
+                continue;
+            }
             let started = self.start_job(&r.agent, r.task.clone(), Vec::new(), Trigger::Routine { routine: r.id.clone() }).await;
             if started.is_err() && self.runs.lock().unwrap().contains_key(&r.agent) {
                 continue; // busy: try again on the next tick

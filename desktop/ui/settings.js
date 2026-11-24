@@ -25,6 +25,7 @@ const SETTINGS = {
     cap.classList.add("num-in");
     cap.onchange = () => call("update_settings", { patch: { daily_notices: +cap.value } });
     attention.append(setRow("News per day", "Interruptions from routines and other agents, across your team. A request for your yes always gets through.", cap));
+    attention.append(setRow("Wake agents when their memory changes", "With Enkeon: when something worth their attention lands in an agent's memory, it starts a job on it. Each agent wakes a few times a day at most.", toggle(s.wake !== false, (v) => call("update_settings", { patch: { wake: v } }), "Wake agents")));
     return [el("h2", null, "General"), el("h3", "group-title", "Account"), acct, el("h3", "group-title", "Appearance"), look, el("h3", "group-title", "Attention"), attention];
   },
 

@@ -1,7 +1,7 @@
 // The agent's profile: its setup and walls, its record, its routines, its
 // tests and forks, its folder, and who else may talk to it.
 let profileFace = null, profileTab = "about";
-const TABS = [["about", "About"], ["skills", "Skills"], ["record", "Record"], ["routines", "Routines"], ["tests", "Tests"], ["files", "Files"], ["share", "Share"]];
+const TABS = [["about", "About"], ["skills", "Skills"], ["record", "Record"], ["routines", "Routines"], ["tests", "Tests"], ["files", "Files"], ["computer", "Computer"], ["share", "Share"]];
 
 $("who").onclick = () => ($("profile").hidden ? openProfile() : closeProfile());
 
@@ -60,7 +60,8 @@ const fact = (k, v) => { const r = el("div", "row"); r.append(el("span", null, k
 const GRANT_INFO = [
   ["files", "Files in its folder", "Read, search and write files in its own folder."],
   ["web", "The web", "Read pages, and search when a search key is set."],
-  ["shell", "Run commands", "Sandboxed to its folder: no network, no keys."],
+  ["shell", "Run commands", "Inside its cage: its own folder and home, no keys, network only if you allow it (Computer)."],
+  ["browser", "Its own browser", "A browser with the sign-ins you give it (Computer). Each click and each thing it types asks you."],
   ["memory", "Memory", "Keep notes, or use Enkeon when you're signed in."],
   ["routines", "Set routines", "Set up its own standing jobs (asks you first)."],
   ["team", "Ask teammates", "Hand tasks to your other agents."],
@@ -309,6 +310,76 @@ const PANELS = {
     return out;
   },
 
+  async computer(a) {
+    const [asleep, cage, browser, snaps] = await Promise.all([
+      call("asleep", { id: a.id }), call("cage", { id: a.id }), call("browser", { id: a.id }), call("snapshots", { id: a.id }),
+    ]);
+    const out = [];
+    // Awake or asleep.
+    const life = el("div", "group");
+    life.append(setRow(asleep ? "Asleep" : "Awake",
+      asleep ? `Since ${new Date(asleep.since * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}. Nothing runs for it: no chats, no routines, no wakes. Its folder and record are kept as they are.`
+             : "Put it to sleep to stop everything it does on its own. A snapshot is taken first.",
+      button(asleep ? "Wake it" : "Put to sleep", asleep ? "primary small" : "quiet small", async () => {
+        if (asleep) await call("wake_agent", { id: a.id }); else await call("sleep_agent", { id: a.id });
+        loadRoster(); refreshProfile();
+      })));
+    out.push(el("h3", "group-title", "Life"), life);
+
+    // The cage.
+    const c = cage.cfg;
+    const cg = el("div", "group");
+    if (!cage.available) cg.append(el("p", "set-note", "This computer can't run a sandbox, so this agent is never offered commands."));
+    const save = (patch) => call("set_cage", { id: a.id, patch }).then(refreshProfile).catch((e) => toast("Couldn't change the cage", String(e), "error"));
+    cg.append(setRow("Its folder", `${cage.folder} · ${humanSize(cage.bytes)}`, Api.web ? null : button("Open", "quiet small", () => Api.reveal(cage.folder))));
+    cg.append(setRow("Network", c.network ? "Its commands can reach the internet. They still can't read or write outside its cage." : "Its commands have no network.", toggle(c.network, (v) => save({ network: v }), "Network")));
+    const num = (v, min, max) => input(v, "", { type: "number", min, max, step: 1 });
+    const cpu = num(c.cpu_seconds, 5, 3600), file = num(c.file_mb, 1, 20000), wall = num(c.timeout_seconds, 10, 3600);
+    for (const i of [cpu, file, wall]) i.classList.add("num-in");
+    cg.append(
+      setRow("CPU seconds per command", "Enforced by the kernel.", cpu),
+      setRow("Largest file it may write (MB)", "", file),
+      setRow("Longest a command may run (s)", cage.memory_capped ? "" : "macOS can't cap a command's memory; this time limit bounds it.", wall),
+    );
+    const cageEnd = el("div", "form-end");
+    cageEnd.append(button("Save cage", "quiet small", () => save({ cpu_seconds: +cpu.value, file_mb: +file.value, timeout_seconds: +wall.value })));
+    cg.append(cageEnd);
+    out.push(el("h3", "group-title", "Cage"), cg);
+
+    // Its browser.
+    const br = el("div", "group");
+    if (!browser.available) br.append(el("p", "set-note", "Install Chrome, Chromium, Brave or Edge to give agents a browser."));
+    else {
+      const on = !!a.grants.browser;
+      br.append(setRow("Browser", on ? `Uses ${browser.browser}, with a profile of its own${browser.has_profile ? ` (${humanSize(browser.bytes)})` : ""}. ${browser.running ? "Open now." : ""}` : "Turn on “Its own browser” in About to let it use one.", null));
+      br.append(setRow("Sign it in", browser.signing_in ? "Its browser window is open. Sign in, then close the window." : "Opens its browser in a window. Sign in to the sites it should use; close the window when done. Cookie never sees the passwords.",
+        button("Open its browser", "quiet small", async () => { await call("browser_login", { id: a.id }); toast("Its browser is open", "Sign in where it should work, then close the window."); refreshProfile(); })));
+      if (browser.has_profile) br.append(setRow("Sign out of everything", "Deletes its browser profile: every sign-in and cookie.",
+        button("Forget", "quiet small danger", async () => { await call("browser_forget", { id: a.id }); toast("Signed out", `${a.name}'s browser starts fresh.`); refreshProfile(); })));
+    }
+    out.push(el("h3", "group-title", "Browser"), br);
+
+    // Snapshots.
+    const sn = el("div", "group");
+    sn.append(setRow("Take a snapshot", "Its folder, conversation, notes, skills and lessons as they are now. Its record of past jobs is never rolled back.",
+      button("Snapshot now", "quiet small", async () => { await call("snapshot", { id: a.id }); refreshProfile(); })));
+    for (const s of snaps) {
+      const when = new Date(s.at * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+      const why = s.why === "you" ? "by you" : s.why;
+      const acts = el("div", "row-actions");
+      acts.append(
+        button("Restore", "quiet small", async () => {
+          if (!confirm(`Put ${a.name} back as it was on ${when}? Its present state is snapshotted first, so you can undo this.`)) return;
+          await call("restore_snapshot", { id: a.id, snapshot: s.id }); toast("Restored", `${a.name} is as it was on ${when}.`, "good"); refreshProfile();
+        }),
+        button("Delete", "quiet small", async () => { await call("delete_snapshot", { id: a.id, snapshot: s.id }); refreshProfile(); }),
+      );
+      sn.append(setRow(`${when} · ${why}`, humanSize(s.bytes), acts));
+    }
+    out.push(el("h3", "group-title", "Snapshots"), sn);
+    return out;
+  },
+
   async files(a) {
     const ws = await call("agent_workspace", { id: a.id });
     const open = el("button", "btn quiet full");
@@ -377,7 +448,7 @@ const PANELS = {
 function jobRow(a, j) {
   const d = el("details", "job " + j.status);
   const s = el("summary");
-  const kind = { chat: "Chat", routine: "Routine", telegram: "Phone", handoff: "Asked by a teammate", peer: "Another agent", inbox: "Inbox", handover: "Handover", shadow: "Shadow", test: "Test" }[j.trigger.kind] ?? j.trigger.kind;
+  const kind = { chat: "Chat", routine: "Routine", telegram: "Phone", handoff: "Asked by a teammate", peer: "Another agent", inbox: "Inbox", memory: "Woke on its memory", channel: "Channel", handover: "Handover", shadow: "Shadow", test: "Test" }[j.trigger.kind] ?? j.trigger.kind;
   s.append(el("span", "job-when", fmtTime(j.started_at)), el("span", "job-kind", kind), el("span", "job-input", plain(j.input).slice(0, 90)));
   if (j.status !== "done") s.append(el("span", "tag bad", j.status));
   d.append(s);

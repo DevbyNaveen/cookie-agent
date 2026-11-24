@@ -30,6 +30,7 @@ fn apply_settings(s: &mut Settings, p: &Value) {
     if let Some(v) = p.get("checker_model") { s.checker_model = v.as_str().map(str::trim).filter(|m| !m.is_empty()).map(str::to_string); }
     if let Some(v) = p.get("daily_notices").and_then(Value::as_i64) { s.daily_notices = v.clamp(0, 50); }
     if let Some(v) = p.get("market_url") { s.market_url = v.as_str().map(str::trim).filter(|m| !m.is_empty()).map(str::to_string); }
+    if let Some(v) = p.get("wake").and_then(Value::as_bool) { s.wake = v; }
     if let Some(v) = p.get("challenge_model") { s.challenge_model = v.as_str().map(str::trim).filter(|m| !m.is_empty()).map(str::to_string); }
     if let Some(v) = p.get("server") {
         if let Some(b) = v.get("enabled").and_then(Value::as_bool) { s.server.enabled = b; }
@@ -192,6 +193,20 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "inbox_scan" => ok(team.inbox_scan(&arg::<String>(a, "model")?).await?),
         "enkeon_status" => ok(crate::pair::enkeon().is_some()),
         "enkeon" => ok(team.enkeon_status()),
+        "cage" => ok(team.cage_view(&arg::<String>(a, "id")?)),
+        "browser" => ok(team.browser_view(&arg::<String>(a, "id")?).await),
+        "browser_login" => ok(team.browser_login(&arg::<String>(a, "id")?, opt::<String>(a, "url")).await?),
+        "browser_forget" => ok(team.browser_forget(&arg::<String>(a, "id")?).await?),
+        "set_cage" => ok(team.set_cage(&arg::<String>(a, "id")?, a.get("patch").unwrap_or(&Value::Null)).await?),
+        "wakes" => ok(team.wake_status()),
+        "label_wake" => ok(team.label_wake(&arg::<String>(a, "id")?, &arg::<String>(a, "label")?)?),
+        "sleep_agent" => ok(team.sleep_agent(&arg::<String>(a, "id")?).await?),
+        "wake_agent" => ok(team.wake_agent(&arg::<String>(a, "id")?).await?),
+        "asleep" => ok(team.asleep(&arg::<String>(a, "id")?)),
+        "snapshots" => ok(team.snapshots(&arg::<String>(a, "id")?)),
+        "snapshot" => ok(team.snapshot(&arg::<String>(a, "id")?, "you")?),
+        "restore_snapshot" => ok(team.restore_snapshot(&arg::<String>(a, "id")?, &arg::<String>(a, "snapshot")?).await?),
+        "delete_snapshot" => ok(team.delete_snapshot(&arg::<String>(a, "id")?, &arg::<String>(a, "snapshot")?)?),
         "pair_start" => ok(team.pair_start(opt::<String>(a, "gateway")).await?),
         "pair_choose" => ok(team.pair_choose(&arg::<String>(a, "project")?).await?),
         "pair_cancel" => { team.pair_cancel(); ok(team.enkeon_status()) }

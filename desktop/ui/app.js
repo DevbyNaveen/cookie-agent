@@ -457,6 +457,7 @@ const TRIGGER_LABEL = {
   handoff: (t) => `Asked by ${agentById(t.from)?.name ?? "another agent"}`,
   peer: (t) => `From ${t.label}`,
   inbox: () => "Inbox scan",
+  memory: () => "Woke: its memory changed",
 };
 
 /** Give a job in flight its place in the open chat: a status line, then its answer. */

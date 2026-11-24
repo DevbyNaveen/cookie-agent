@@ -197,7 +197,7 @@ impl Team {
                             withheld: 0,
                             last_used_at: None,
                             created_at: util::now() as f64,
-                            outside: !matches!(job.trigger, Trigger::Chat | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Inbox),
+                            outside: !matches!(job.trigger, Trigger::Chat | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Inbox | Trigger::Memory { .. }),
                             kind: "lesson".into(),
                         };
                         held.push(l.clone());
