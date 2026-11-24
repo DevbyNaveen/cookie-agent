@@ -241,7 +241,7 @@ impl Engine for Blocks {
                         let points: Vec<Value> = t["rows"].as_array().into_iter().flatten().filter_map(|r| r[y].as_f64().map(|n| json!([r[x].clone(), n]))).collect();
                         json!({"name": y, "points": points})
                     }).collect();
-                    return Ok(json!({"kind": "chart", "chart": v["kind"], "x": x, "series": series}));
+                    return Ok(json!({"kind": "chart", "chart": v["kind"], "source": v["source"], "x": x, "y": v["y"], "series": series}));
                 }
                 Ok(json!({"kind": b.kind, "title": b.title, "path": b.path, "data": v}))
             }

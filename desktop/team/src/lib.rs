@@ -15,6 +15,7 @@ pub mod channels;
 pub mod checker;
 pub mod cloud;
 pub mod code;
+pub mod computer;
 pub mod evals;
 pub mod events;
 pub mod evolve;
@@ -94,6 +95,9 @@ pub struct Hire {
     /// A retired agent's archive to start from (`inherit`): its lessons, skills, tests, habits and handover.
     #[serde(default)]
     pub inherit: Option<String>,
+    /// A ready workspace to start with (`computer`): "gym-trainer".
+    #[serde(default)]
+    pub template: Option<String>,
 }
 
 /// A change to an agent's setup. Fields left out stay as they are.
@@ -152,6 +156,8 @@ pub struct Team {
     pub paths: Paths,
     pub keys: keys::Keys,
     pub(crate) agents: RwLock<Vec<AgentRecord>>,
+    /// Parallax, opened on first use (`computer`).
+    pub(crate) px: std::sync::OnceLock<Arc<parallax::Parallax>>,
     pub(crate) settings: RwLock<Settings>,
     pub(crate) routines: RwLock<Vec<Routine>>,
     pub(crate) runs: std::sync::Mutex<HashMap<String, runtime::Run>>,
@@ -188,6 +194,7 @@ impl Team {
             paths,
             keys,
             agents: RwLock::new(agents),
+            px: std::sync::OnceLock::new(),
             settings: RwLock::new(settings),
             routines: RwLock::new(routines),
             runs: Default::default(),
@@ -406,6 +413,9 @@ impl Team {
         let hired = self.add_agent(record).await?;
         if let Some(a) = h.inherit.as_deref() {
             self.inherit_into(a, &hired.id)?;
+        }
+        if let Some(t) = h.template.as_deref() {
+            self.workspace_template(&hired.id, t).await?;
         }
         // The first hire's model can run Cookie too.
         self.ensure_cookie().await;

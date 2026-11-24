@@ -23,6 +23,9 @@ pub struct Body {
     pub tests: Vec<TestCase>,
     pub record: serde_json::Value,
     pub made_at: u64,
+    /// Its own software (`computer`): blocks and their shape, never the person's data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub software: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -108,6 +111,7 @@ impl Team {
             tests: self.tests(agent),
             record: serde_json::to_value(&card).unwrap_or_default(),
             made_at: util::now(),
+            software: self.software_of(agent).await,
         };
         let kp = key_pair(self)?;
         let sig = kp.sign(&canonical(&body));
@@ -143,6 +147,9 @@ impl Team {
         let rec = self.add_agent(rec).await?;
         if !pack.body.tests.is_empty() {
             util::write_json(&self.paths.tests(&rec.id), &pack.body.tests)?;
+        }
+        if let Some(sw) = &pack.body.software {
+            self.install_software(&rec.id, sw).await?;
         }
         Ok(rec)
     }
@@ -192,7 +199,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let team = Team::open(dir.path()).unwrap();
         let kp = key_pair(&team).unwrap();
-        let body = Body { format: FORMAT.into(), name: "Scout".into(), job: "Find things".into(), model: "anthropic:x".into(), asks_for: Grants::default(), tests: vec![], record: serde_json::json!({}), made_at: 1 };
+        let body = Body { format: FORMAT.into(), name: "Scout".into(), job: "Find things".into(), model: "anthropic:x".into(), asks_for: Grants::default(), tests: vec![], record: serde_json::json!({}), made_at: 1, software: None };
         let pack = Pack { signature: hex(kp.sign(&canonical(&body)).as_ref()), publisher_key: hex(kp.public_key().as_ref()), body };
         assert!(verify(&pack).is_ok());
         let mut bad = pack.clone();

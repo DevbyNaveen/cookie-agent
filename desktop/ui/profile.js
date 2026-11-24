@@ -25,6 +25,7 @@ async function openProfile(tab = profileTab, keepScroll = false) {
   const a = agentById(current.id) ?? current;
   const box = $("profile");
   const scroll = keepScroll ? box.scrollTop : 0;
+  closeWorkspace();
   document.querySelector(".pane").classList.add("with-profile");
   box.hidden = false;
   profileFace?.stop();
@@ -71,6 +72,8 @@ const GRANT_INFO = [
   ["memory", "Memory", "Keep notes, or use Enkeon when you're signed in."],
   ["routines", "Set routines", "Set up its own standing jobs (asks you first)."],
   ["team", "Ask teammates", "Hand tasks to your other agents."],
+  ["worlds", "Worlds", "Copies of its folder to try things in first: undo any step, race attempts, rewind. You watch them in Worlds and keep only what worked; anything that leaves a world asks you."],
+  ["apps", "Connected apps", "Use the apps you connected in Enkeon (Gmail, Slack, …). Each call is billed per call by the connector; Record counts them."],
   ["mac", "Mac apps", "Reminders, Notes, Calendar, Contacts; send iMessages (each asks you). macOS asks once per app."],
 ];
 
@@ -102,7 +105,7 @@ const PANELS = {
     const access = el("div", "group");
     let grants = { ...a.grants };
     for (const [k, title, note] of GRANT_INFO) {
-      access.append(setRow(title, note, toggle(!!grants[k], async (v) => {
+      access.append(setRow(title, note, toggle(k === "apps" ? grants[k] !== false : !!grants[k], async (v) => {
         grants = { ...grants, [k]: v };
         await call("update_agent", { id: a.id, patch: { grants } }).catch((e) => toast("Couldn't change that", String(e), "error"));
         loadRoster();
@@ -173,6 +176,9 @@ const PANELS = {
     money.append(fact("This month", card.month_microdollars ? dollars(card.month_microdollars) : "no price set"), fact("All time", card.microdollars ? dollars(card.microdollars) : "no price set"), fact("Tokens", card.tokens.toLocaleString()));
     if (card.would) money.append(fact("Would have done (probation)", String(card.would)));
     if (card.handoffs_in || card.handoffs_out) money.append(fact("Teamwork", `${card.handoffs_out} asked, ${card.handoffs_in} answered`));
+    // Connected apps (Composio, through Enkeon) bill per call, so the calls are counted here.
+    const apps = await call("app_calls", { id: a.id }).catch(() => null);
+    if (apps && apps.last_30_days) money.append(fact("Connected-app calls", `${apps.today} today · ${apps.last_30_days} in 30 days (billed per call)`));
 
     const cache = await call("cache_view", { id: a.id }).catch(() => null);
     const cacheG = el("div", "group");

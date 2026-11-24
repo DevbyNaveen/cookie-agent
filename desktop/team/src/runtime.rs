@@ -270,6 +270,8 @@ impl Team {
             let space_of = if probe { crate::bench::original(&rec.id) } else { rec.id.as_str() };
             match self.enkeon_for(space_of, "agent", rec.grants.web && cookie_harness::local::Search::from_env().is_some()) {
                 Some(e) if probe => agent = agent.enkeon(e.without("remember").without("connector_call")),
+                // Apps off: Enkeon's connected apps (Composio) aren't offered at all.
+                Some(e) if !rec.grants.apps => agent = agent.enkeon(e.without("connector_actions").without("connector_call")),
                 Some(e) => agent = agent.enkeon(e),
                 None => agent = agent.without_enkeon().notes(self.paths.notes(&rec.id)),
             }
@@ -400,6 +402,9 @@ impl Team {
                 Event::TextDelta(text) => team.emit(TeamEvent::Text { job: jid.clone(), agent: aid.clone(), text }),
                 Event::ToolCallStarted { name, .. } => {
                     tu.lock().unwrap().push(name.clone());
+                    if name == "connector_call" {
+                        team.count_app_call(&aid);
+                    }
                     team.emit(TeamEvent::Tool { job: jid.clone(), agent: aid.clone(), name })
                 }
                 Event::Steered { text } => {

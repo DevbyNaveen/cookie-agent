@@ -66,6 +66,10 @@ pub enum TeamEvent {
     Question { question: crate::workbench::Question },
     /// An agent's plan for its current job.
     Todos { agent: String, items: Vec<crate::workbench::Todo> },
+    /// An agent's workspace (its own software) changed.
+    Workspace { agent: String },
+    /// Parallax changed: a world, or something waiting at the wall.
+    Worlds,
 }
 
 impl TeamEvent {
@@ -80,7 +84,8 @@ impl TeamEvent {
             | TeamEvent::JobFinished { agent, .. }
             | TeamEvent::Notice { agent, .. }
             | TeamEvent::TestProgress { agent, .. }
-            | TeamEvent::TestFinished { agent, .. } => Some(agent),
+            | TeamEvent::TestFinished { agent, .. }
+            | TeamEvent::Workspace { agent, .. } => Some(agent),
             TeamEvent::Asked { approval } => Some(&approval.agent),
             TeamEvent::Handoff { from, .. } => Some(from),
             _ => None,

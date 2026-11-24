@@ -41,18 +41,33 @@ pub struct Grants {
     pub mac: bool,
     /// A browser of its own, with the sign-ins you gave it (`browser`). Clicks and typing ask you.
     pub browser: bool,
+    /// Parallax worlds of its own: copies to try things in, undo, race, rewind (`computer`).
+    /// Left out of the JSON when off, so packs signed before it still verify.
+    #[serde(skip_serializing_if = "is_false")]
+    pub worlds: bool,
+    /// Apps connected through Enkeon (Composio): each call is billed per call.
+    #[serde(skip_serializing_if = "is_true")]
+    pub apps: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 impl Default for Grants {
     fn default() -> Self {
-        Self { files: true, web: true, shell: false, memory: true, routines: true, team: true, peers: Vec::new(), mac: false, browser: false }
+        Self { files: true, web: true, shell: false, memory: true, routines: true, team: true, peers: Vec::new(), mac: false, browser: false, worlds: false, apps: true }
     }
 }
 
 impl Grants {
     /// Nothing at all: what an imported agent starts with.
     pub fn none() -> Self {
-        Self { files: false, web: false, shell: false, memory: false, routines: false, team: false, peers: Vec::new(), mac: false, browser: false }
+        Self { files: false, web: false, shell: false, memory: false, routines: false, team: false, peers: Vec::new(), mac: false, browser: false, worlds: false, apps: false }
     }
 }
 

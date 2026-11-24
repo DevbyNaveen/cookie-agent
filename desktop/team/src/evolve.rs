@@ -446,7 +446,7 @@ impl Team {
         let mut offers = self.offers();
         let o = offers.iter().find(|o| o.id == id && o.kind == "split" && o.state == "open").cloned().ok_or("No such offer.")?;
         let parent = self.agent(&o.agent).await?;
-        let child = self.hire(crate::Hire { name: name.into(), job: job.into(), model: parent.model.clone(), grants: Some(parent.grants.clone()), probation_days: 0, handover: None, id: None, inherit: None }).await?;
+        let child = self.hire(crate::Hire { name: name.into(), job: job.into(), model: parent.model.clone(), grants: Some(parent.grants.clone()), probation_days: 0, handover: None, id: None, inherit: None, template: None }).await?;
         let kind_b = o.kinds.get(1).cloned().unwrap_or_default().join(" ");
         // Its skills, and the lessons and tests alike to its work.
         let skills = self.paths.agent(&parent.id).join("skills");

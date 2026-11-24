@@ -65,6 +65,13 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
     if g.browser {
         out.extend(crate::browser::tools(team, &rec.id));
     }
+    // Its own software, beside the chat (`computer`); worlds of its own with "Worlds" on.
+    if !matches!(trigger, Trigger::Contact { .. } | Trigger::Room { .. } | Trigger::Peer { .. }) {
+        out.extend(crate::computer::workspace_tools(team, &rec.id));
+        if g.worlds {
+            out.extend(crate::computer::tools(team, &rec.id));
+        }
+    }
     if g.routines {
         out.extend(routine_tools(Arc::downgrade(team), rec.id.clone()));
     }

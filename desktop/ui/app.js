@@ -20,6 +20,8 @@ const STARTERS = [
   { name: "Research Scout", job: "Answer research questions with sources. Every fact names the page it came from, and you say plainly when you could not find something." },
   { name: "Invoice Chaser", job: "Keep track of invoices I tell you about and draft polite reminders for the ones that are overdue." },
   { name: "Chief of Staff", job: "Help me plan the week: what matters, what can wait, and what I promised people. Ask before assuming." },
+  // Comes with its own software (a plan, a workout log, a body tracker, a progress chart, a check-in form).
+  { name: "Gym Trainer", template: "gym-trainer", job: "Be my gym coach. Plan my week in the plan calendar, log every workout I tell you about in the workout log, keep my body tracker up to date, and read the progress chart before you change my plan. Keep it safe: never push through pain." },
 ];
 
 let rows = [];
@@ -209,8 +211,8 @@ function renderTodayRow() {
 /* ---------- views ---------- */
 function show(v) {
   view = v;
-  for (const id of ["chat", "hire", "today", "network"]) $(id).hidden = id !== v;
-  if (v !== "chat") closeProfile();
+  for (const id of ["chat", "hire", "today", "network", "worlds"]) $(id).hidden = id !== v;
+  if (v !== "chat") { closeProfile(); closeWorkspace(); }
   if (v !== "hire") stopCrew();
   renderTodayRow();
 }
@@ -249,6 +251,7 @@ async function openAgent(id) {
   $("who-face").replaceChildren(pillFace.el);
   $("who-name").textContent = r.name;
   if (!$("profile").hidden) openProfile();
+  else if (!$("workspace").hidden) openWorkspace();
   const lines = await call("history", { id: r.id });
   if (current?.id !== id) return;
   renderLog(r, lines);
@@ -608,6 +611,8 @@ function onTeamEvent(ev) {
     case "routines_changed": if (profileOpenFor(current?.id) && profileTab === "routines") refreshProfile(); if (view === "today") renderToday(); break;
     case "retro": if (view === "today") renderToday(); break;
     case "evolved": if (profileOpenFor(ev.agent)) refreshProfile(); break;
+    case "workspace": refreshWorkspace(ev.agent); break;
+    case "worlds": if (view === "worlds") renderWatch(); break;
     case "test_progress":
     case "test_finished": if (profileOpenFor(ev.agent) && profileTab === "tests") refreshProfile(); if (ev.kind === "test_finished") toast("Tests finished", `${ev.passed} of ${ev.total} passed`, ev.passed === ev.total ? "good" : "", () => { openAgent(ev.agent).then(() => openProfile("tests")); }); break;
     case "channel": if ($("settings").open) refreshSettings(); break;
@@ -986,7 +991,7 @@ async function hireNow() {
     ? (form.handover.value.startsWith("archive:")
         ? { name: form.name.value, job: form.job.value, model, inherit: form.handover.value.slice("archive:".length) }
         : { name: form.name.value, job: form.job.value, model, handover: form.handover.value || null })
-    : { name: picked.name, job: picked.job, model, id: picked.id };
+    : { name: picked.name, job: picked.job, model, id: picked.id, template: picked.template ?? null };
   $("hire-btn").disabled = true;
   try {
     const agent = await call("hire_agent", { hire });
