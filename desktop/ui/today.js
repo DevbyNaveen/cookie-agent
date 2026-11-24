@@ -26,6 +26,9 @@ async function renderToday() {
   hello.append(el("h1", null, hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"), el("p", "muted", summaryLine()));
   parts.push(hello);
 
+  // Anything an agent tried to send, pay or put live from one of its worlds waits here for your yes.
+  if (typeof wallWaiting !== "undefined" && wallWaiting.length) parts.push(el("h2", "today-h", "From worlds, waiting for your yes"), wallGroup(wallWaiting));
+
   // The morning card: what happened since yesterday, from the record (no card on a quiet day).
   const [retro, offers] = await Promise.all([call("retro").catch(() => null), call("routine_offers").catch(() => [])]);
   if (view !== "today") return;

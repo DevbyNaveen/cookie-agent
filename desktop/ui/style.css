@@ -104,7 +104,6 @@ button svg, .search-wrap svg, .menu svg { width: 18px; height: 18px; fill: none;
 
 /* Main pane */
 .pane { position: relative; min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
-.pane.with-profile { grid-template-columns: minmax(0, 1fr) 340px; }
 .pane > .view { grid-column: 1; grid-row: 1; }
 .drag { position: absolute; inset: 0 0 auto 0; height: 64px; z-index: 5; }
 .view { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
@@ -1064,11 +1063,8 @@ footer.me { gap: 6px; }
 
 /* ---------- Worlds: the watch window ---------- */
 .today-inner.watch { max-width: 1240px; }
-.wall { padding: 6px 14px 10px; margin-bottom: 14px; box-shadow: inset 0 0 0 1px rgb(217 128 66 / .35); }
-.wall .group-title { margin: 8px 0 6px; color: var(--accent-text); }
-.wall-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
-.wall-row > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 14px; }
-.wall-row .muted { font-size: 12.5px; }
+.wall { box-shadow: inset 0 0 0 1px rgb(217 128 66 / .32); margin-bottom: 14px; }
+.wall-row .row-text > span { font-weight: 550; }
 .watch-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 14px; }
 .chip-btn { height: 30px; padding: 0 12px; border-radius: 15px; background: var(--raise); color: var(--text-2); font-size: 13px; transition: background .15s, color .15s; }
 .chip-btn:hover { color: var(--text); }
@@ -1100,3 +1096,34 @@ footer.me { gap: 6px; }
 .diff-file .add { color: #8fc98a; }
 .diff-file .del { color: var(--danger); }
 .pair-diff { margin-top: 14px; padding: 12px 14px; }
+
+/* Agent profile: a sheet in the middle of the window, like Settings */
+.profile-sheet[open] { width: min(920px, 94vw); height: min(700px, 88vh); display: grid; grid-template-columns: 236px minmax(0, 1fr); }
+.pf-nav { background: var(--bg); padding: 30px 12px 16px; display: flex; flex-direction: column; gap: 24px; overflow-y: auto; }
+.pf-who { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: 0 6px; min-width: 0; }
+.pf-who .face { margin-bottom: 8px; }
+.pf-name { margin: 0; max-width: 100%; font-size: 18px; font-weight: 650; letter-spacing: -.015em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-addr { max-width: 100%; height: 26px; padding: 0 11px; border-radius: 13px; background: var(--raise); color: var(--text-2); font: 12.5px/26px ui-monospace, "SF Mono", Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: background .15s, color .15s; }
+.pf-addr:hover { background: var(--raise-2); color: var(--text); }
+.pf-addr.none { font-family: inherit; color: var(--accent-text); background: var(--accent-soft); }
+.pf-tabs { display: flex; flex-direction: column; gap: 2px; }
+.pf-tabs button { display: flex; align-items: center; gap: 11px; padding: 9px 12px; border-radius: 10px; font-size: 14.5px; color: var(--text-2); text-align: left; transition: background .15s, color .15s; }
+.pf-tabs button:hover { color: var(--text); background: var(--raise); }
+.pf-tabs button.on { color: var(--text); background: var(--raise-2); }
+.pf-tabs svg { width: 17px; height: 17px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.pf-main { overflow-y: auto; padding: 28px 34px 34px; }
+.pf-title { margin: 0 0 22px; font-size: 21px; font-weight: 650; letter-spacing: -.015em; }
+.pf-section { margin: 36px 0 14px; padding-top: 24px; border-top: 1px solid var(--line); font-size: 16px; font-weight: 650; letter-spacing: -.01em; }
+.profile-body > .group-title:first-child { margin-top: 0; }
+@media (max-width: 680px) {
+  .profile-sheet[open] { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .pf-nav { padding: 18px 12px 10px; gap: 12px; }
+  .pf-tabs { flex-direction: row; overflow-x: auto; }
+  .pf-tabs button { flex: none; }
+  .pf-main { padding: 20px 18px 24px; }
+}
+
+/* Rows: the text takes the room, the control keeps its shape (no "Put / to / sleep"). */
+.group .row > .row-text { flex: 1; }
+.group .row > .btn, .group .row > .row-actions .btn, .form-end .btn { flex: none; white-space: nowrap; }
+.group .row > .row-actions { margin-top: 0; flex-wrap: nowrap; }

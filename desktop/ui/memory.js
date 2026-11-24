@@ -3,7 +3,6 @@
 // teach it a fact, correct a memory (Enkeon keeps the old words as history),
 // or forget one for good. With Enkeon each agent has its own space; it also
 // reads the person's shared memory, and no other agent can read its space.
-TABS.splice(2, 0, ["memory", "Memory"]);
 
 const KIND_LABEL = { fact: "fact", decision: "decision", preference: "preference", plan: "plan", requirement: "rule", opinion: "opinion", procedure: "how-to", correction: "correction", insight: "insight", metric: "number", definition: "term", episode: "moment" };
 const BY_LABEL = { agent: "it learned", review: "learned on review", you: "you told it" };

@@ -344,80 +344,91 @@ function historyCard(id, history) {
   return card;
 }
 
-/* ---------- the watch window ---------- */
+/* ---------- worlds: in each agent's profile (Computer), the wall in Today ---------- */
 let watchSel = new Set(), watchScrub = new Map();
+let wallWaiting = [], wallWorlds = [];
 
-async function openWatch() {
-  current = null;
-  closePops();
-  closeWorkspace();
-  show("worlds");
-  renderRoster();
-  await renderWatch();
+/** What waits at the wall, for Today and the badge. */
+async function refreshWall() {
+  try { const w = await call("watch"); wallWaiting = w.waiting || []; wallWorlds = w.worlds || []; } catch { return; }
+  renderTodayRow();
+  if (view === "today") renderToday();
 }
 
-async function renderWatch() {
-  const root = $("worlds-body");
-  let w;
-  try { w = await call("watch"); } catch (e) { root.replaceChildren(el("h1", null, "Worlds"), el("p", "error-line", String(e))); return; }
-  const live = w.worlds.filter((x) => x.state === "awake" || x.state === "asleep").sort((a, b) => b.touched_at - a.touched_at);
-  for (const id of [...watchSel]) if (!live.some((x) => x.id === id)) watchSel.delete(id);
-  if (!watchSel.size) live.slice(0, 2).forEach((x) => watchSel.add(x.id));
-  const head = el("div", "today-hero");
-  head.append(el("h1", null, "Worlds"), el("p", "muted", `${w.status.awake} awake · ${w.status.asleep} asleep (saved to disk) · ${w.status.turns_free} turns free on this Mac`));
-  const parts = [head];
-  if (w.waiting.length) {
-    const wall = el("section", "group wall");
-    wall.append(el("h3", "group-title", "Waiting at the wall"));
-    for (const e of w.waiting) {
-      const r = el("div", "wall-row");
-      const owner = live.find((x) => x.id === e.world)?.owner;
-      const who = agentById(owner)?.name ?? owner ?? "";
-      const t = el("div");
-      t.append(el("b", null, e.preview), el("span", "muted", `${who ? who + " · " : ""}${e.engine}.${e.action} · ${fmtTime(e.at)}`));
-      r.append(t, button("No", "quiet small", () => wallDecide(e.id, false)), button("Yes", "primary small", () => wallDecide(e.id, true)));
-      wall.append(r);
-    }
-    parts.push(wall);
+/** Each thing trying to leave a world, with Yes and No. */
+function wallGroup(entries) {
+  const g = el("div", "group wall");
+  for (const e of entries) {
+    const owner = wallWorlds.find((x) => x.id === e.world)?.owner;
+    const who = agentById(owner)?.name ?? owner ?? "";
+    const r = el("div", "row wall-row");
+    const t = el("div", "row-text");
+    t.append(el("span", null, e.preview), el("small", null, `${who ? who + " · " : ""}${e.engine}.${e.action} · ${fmtTime(e.at)}`));
+    const acts = el("div", "row-actions");
+    acts.append(button("No", "quiet small", () => wallDecide(e.id, false)), button("Yes", "primary small", () => wallDecide(e.id, true)));
+    r.append(t, acts);
+    g.append(r);
   }
-  if (!live.length) {
-    const e = el("div", "empty-box");
-    e.append(el("p", null, "No worlds yet."), el("p", "muted", "Turn on “Worlds” for an agent (About), and it tries things in copies of its folder first: you watch them here, side by side, and keep only what worked."));
-    parts.push(e);
-    $("worlds-body").replaceChildren(...parts);
-    return;
-  }
-  const chips = el("div", "watch-chips");
-  for (const x of live) {
-    const b = el("button", "chip-btn" + (watchSel.has(x.id) ? " on" : ""), `${agentById(x.owner)?.name ?? x.owner} · ${x.name}`);
-    b.title = x.id;
-    b.onclick = () => { watchSel.has(x.id) ? watchSel.delete(x.id) : watchSel.add(x.id); renderWatch(); };
-    chips.append(b);
-  }
-  parts.push(chips);
-  const grid = el("div", "watch-grid");
-  const sel = live.filter((x) => watchSel.has(x.id)).slice(0, 3);
-  const cols = await Promise.all(sel.map((x) => worldColumn(x)));
-  grid.append(...cols);
-  grid.style.setProperty("--n", String(Math.max(1, cols.length)));
-  parts.push(grid);
-  if (sel.length === 2) parts.push(await pairDiff(sel[0], sel[1]));
-  $("worlds-body").replaceChildren(...parts);
+  return g;
 }
 
 async function wallDecide(entry, yes) {
   try { await call("decide_wall", { entry, yes }); toast(yes ? "Done" : "Refused", yes ? "It went through the wall." : "Nothing left the world."); }
   catch (e) { toast("Couldn't decide that", String(e), "error"); }
-  renderWatch();
+  await refreshWall();
+  refreshProfile();
 }
+
+/** The Worlds part of an agent's Computer tab: its switch, its worlds side by side, a timeline to scrub back. */
+PANELS.worlds = async (a) => {
+  const w = await call("watch");
+  wallWaiting = w.waiting || []; wallWorlds = w.worlds || [];
+  const on = !!a.grants.worlds;
+  const sw = el("div", "group");
+  sw.append(setRow(on ? "On" : "Off",
+    on ? "It tries things in copies of its folder first. Every step can be undone; anything that leaves a world waits for your yes."
+       : "Let it try things in copies of its folder first: undo any step, race attempts, rewind, and keep only what worked.",
+    toggle(on, async (v) => {
+      try { await call("update_agent", { id: a.id, patch: { grants: { ...a.grants, worlds: v } } }); } catch (e) { toast("Couldn't change that", String(e), "error"); }
+      await loadRoster(); current = agentById(a.id) ?? current; refreshProfile();
+    }, "Worlds")));
+  const out = [sw];
+  const mine = w.worlds.filter((x) => x.owner === a.id && (x.state === "awake" || x.state === "asleep")).sort((x, y) => y.touched_at - x.touched_at);
+  const ids = new Set(mine.map((x) => x.id));
+  const waiting = wallWaiting.filter((e) => ids.has(e.world));
+  if (waiting.length) out.push(el("h3", "group-title", "Waiting for your yes"), wallGroup(waiting));
+  if (!mine.length) {
+    if (on) out.push(el("p", "set-note", "No worlds right now. When it starts one for a job, it shows here: what changed, a timeline to scrub back, and Keep or Throw away."));
+    return out;
+  }
+  for (const id of [...watchSel]) if (!w.worlds.some((x) => x.id === id)) watchSel.delete(id);
+  if (!mine.some((x) => watchSel.has(x.id))) mine.slice(0, 2).forEach((x) => watchSel.add(x.id));
+  if (mine.length > 1) {
+    const chips = el("div", "watch-chips");
+    for (const x of mine) {
+      const b = el("button", "chip-btn" + (watchSel.has(x.id) ? " on" : ""), x.name);
+      b.type = "button";
+      b.title = x.id;
+      b.onclick = () => { watchSel.has(x.id) ? watchSel.delete(x.id) : watchSel.add(x.id); refreshProfile(); };
+      chips.append(b);
+    }
+    out.push(chips);
+  }
+  const sel = mine.filter((x) => watchSel.has(x.id)).slice(0, 2);
+  const grid = el("div", "watch-grid");
+  grid.append(...(await Promise.all(sel.map((x) => worldColumn(x)))));
+  grid.style.setProperty("--n", String(Math.max(1, sel.length)));
+  out.push(grid);
+  if (sel.length === 2) out.push(await pairDiff(sel[0], sel[1]));
+  return out;
+};
 
 async function worldColumn(w) {
   const col = el("section", "world-col");
   const t = await call("world_timeline", { world: w.id }).catch(() => ({ timeline: [] }));
   const tl = t.timeline || [];
-  const owner = agentById(w.owner)?.name ?? w.owner;
   const head = el("div", "world-head");
-  head.append(el("b", null, w.name), el("span", "muted", `${owner} · ${w.state}${w.origin ? " · from " + w.origin.split("/").pop() : ""}`));
+  head.append(el("b", null, w.name), el("span", "muted", `${w.state}${w.origin ? " · from " + w.origin.split("/").pop() : ""}`));
   col.append(head);
   // The scrubber: every checkpoint on the timeline, the present at the right end.
   const cps = tl.filter((e) => e.checkpoint != null && (e.kind === "checkpoint" || e.kind === "do" || e.kind === "rewind")).map((e) => e.checkpoint);
@@ -456,7 +467,8 @@ async function worldColumn(w) {
 async function worldAct(tool, args, note) {
   if (!confirm(note)) return;
   try { await call("world_call", { tool, args }); } catch (e) { toast("Couldn't do that", String(e), "error"); }
-  renderWatch();
+  await refreshWall();
+  refreshProfile();
 }
 
 function timelineList(tl) {
@@ -492,5 +504,3 @@ async function pairDiff(a, b) {
   return s;
 }
 
-$("worlds-mini").onclick = openWatch;
-$("worlds-btn").onclick = openWatch;

@@ -201,7 +201,7 @@ function renderRoster() {
 }
 
 function renderTodayRow() {
-  const n = approvals.length + (typeof questions === "undefined" ? 0 : questions.length);
+  const n = approvals.length + (typeof questions === "undefined" ? 0 : questions.length) + (typeof wallWaiting === "undefined" ? 0 : wallWaiting.length);
   $("today-badge").hidden = n === 0;
   $("today-badge").textContent = String(n);
   $("today-row").classList.toggle("active", view === "today");
@@ -211,7 +211,7 @@ function renderTodayRow() {
 /* ---------- views ---------- */
 function show(v) {
   view = v;
-  for (const id of ["chat", "hire", "today", "network", "worlds"]) $(id).hidden = id !== v;
+  for (const id of ["chat", "hire", "today", "network"]) $(id).hidden = id !== v;
   if (v !== "chat") { closeProfile(); closeWorkspace(); }
   if (v !== "hire") stopCrew();
   renderTodayRow();
@@ -250,8 +250,7 @@ async function openAgent(id) {
   if (busy.has(r.id)) pillFace.setMood("working");
   $("who-face").replaceChildren(pillFace.el);
   $("who-name").textContent = r.name;
-  if (!$("profile").hidden) openProfile();
-  else if (!$("workspace").hidden) openWorkspace();
+  if (!$("workspace").hidden) openWorkspace();
   const lines = await call("history", { id: r.id });
   if (current?.id !== id) return;
   renderLog(r, lines);
@@ -608,13 +607,13 @@ function onTeamEvent(ev) {
       break;
     }
     case "roster_changed": loadRoster(); loadAddresses(); break;
-    case "routines_changed": if (profileOpenFor(current?.id) && profileTab === "routines") refreshProfile(); if (view === "today") renderToday(); break;
+    case "routines_changed": if (profileOpenFor(current?.id) && profileTab === "skills") refreshProfile(); if (view === "today") renderToday(); break;
     case "retro": if (view === "today") renderToday(); break;
     case "evolved": if (profileOpenFor(ev.agent)) refreshProfile(); break;
     case "workspace": refreshWorkspace(ev.agent); break;
-    case "worlds": if (view === "worlds") renderWatch(); break;
+    case "worlds": refreshWall(); if (profileOpenFor(current?.id) && profileTab === "computer") refreshProfile(); break;
     case "test_progress":
-    case "test_finished": if (profileOpenFor(ev.agent) && profileTab === "tests") refreshProfile(); if (ev.kind === "test_finished") toast("Tests finished", `${ev.passed} of ${ev.total} passed`, ev.passed === ev.total ? "good" : "", () => { openAgent(ev.agent).then(() => openProfile("tests")); }); break;
+    case "test_finished": if (profileOpenFor(ev.agent) && profileTab === "evolution") refreshProfile(); if (ev.kind === "test_finished") toast("Tests finished", `${ev.passed} of ${ev.total} passed`, ev.passed === ev.total ? "good" : "", () => { openAgent(ev.agent).then(() => openProfile("tests")); }); break;
     case "channel": if ($("settings").open) refreshSettings(); break;
     case "network": onNetworkEvent(ev.what); if (ev.what === "contacts") loadAddresses(); break;
   }
@@ -1146,7 +1145,7 @@ $("row-menu").addEventListener("keydown", (e) => {
 document.addEventListener("keydown", (e) => {
   const mod = e.metaKey || e.ctrlKey;
   if (e.key === "Escape" && !$("talk-view").hidden) { closeTalk(); return; }
-  if (e.key === "Escape") { closePops(); if (!$("profile").hidden && !document.querySelector("dialog[open]")) closeProfile(); }
+  if (e.key === "Escape") closePops();
   if (mod && e.key === "n") { e.preventDefault(); openHire(); }
   if (mod && e.key === "f") { e.preventDefault(); toggleSearch(true); }
   if (mod && e.key === ",") { e.preventDefault(); openSettings("general"); }
@@ -1279,6 +1278,7 @@ async function boot() {
   await loadQuestions();
   await loadRoster();
   refreshNetBadge();
+  refreshWall();
   loadAddresses();
   if (fromLink && agentById(fromLink.agent)) { openAgent(fromLink.agent); return; }
   const only = new URLSearchParams(location.search).get("agent");

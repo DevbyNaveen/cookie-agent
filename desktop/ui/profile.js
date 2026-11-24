@@ -1,65 +1,126 @@
-// The agent's profile: its setup and walls, its record, its routines, its
-// tests and forks, its folder, and who else may talk to it.
-let profileFace = null, profileTab = "about";
-const TABS = [["about", "About"], ["skills", "Skills"], ["record", "Record"], ["routines", "Routines"], ["tests", "Tests"], ["files", "Files"], ["evolution", "Evolution"], ["computer", "Computer"], ["share", "Share"]];
+// The agent's profile: a sheet in the middle of the window, opened from its
+// pill. Seven tabs; what used to be a tab of its own now sits inside one.
+let profileFace = null, profileTab = "about", profileShellFor = null;
+const TABS = [
+  ["about", "About", "info"], ["skills", "Skills", "tool"], ["memory", "Memory", "book"], ["record", "Record", "chart"],
+  ["evolution", "Evolution", "leaf"], ["computer", "Computer", "cpu"], ["share", "Share", "share"],
+];
+const TAB_ALIAS = { routines: "skills", tests: "evolution", files: "memory", worlds: "computer" };
+// A tab made of several panels, each after the first under its own heading.
+const TAB_PARTS = {
+  skills: [["skills"], ["routines", "Routines"]],
+  memory: [["memory"], ["files", "Its files"]],
+  evolution: [["evolution"], ["tests", "Tests and forks"]],
+  computer: [["computer"], ["worlds", "Worlds"]],
+};
 
-$("who").onclick = () => ($("profile").hidden ? openProfile() : closeProfile());
+$("who").onclick = () => openProfile();
+$("profile").addEventListener("close", () => { profileFace?.stop(); profileFace = null; profileShellFor = null; });
 
 function profileOpenFor(id) {
-  return id && !$("profile").hidden && current?.id === id;
+  return id && $("profile").open && current?.id === id;
 }
 
 function refreshProfile() {
-  if (!$("profile").hidden && current) openProfile(profileTab, true);
+  if ($("profile").open && current) openProfile(profileTab, true);
 }
 
 function closeProfile() {
-  $("profile").hidden = true;
-  document.querySelector(".pane").classList.remove("with-profile");
+  if ($("profile").open) $("profile").close();
+}
+
+function profileShell(a) {
+  const d = $("profile");
   profileFace?.stop();
+  profileFace = Faces.create(a.id, 64);
+  if (busy.has(a.id)) profileFace.setMood("working");
+  const who = el("div", "pf-who");
+  const addr = el("button", "pf-addr");
+  addr.type = "button";
+  who.append(profileFace.el, el("h2", "pf-name", a.name), addr);
+  if (a.origin) who.append(el("span", "tag", "hired from a pack"));
+  const tabs = el("div", "pf-tabs");
+  tabs.setAttribute("role", "tablist");
+  for (const [k, label, ic] of TABS) {
+    const b = el("button");
+    b.type = "button";
+    b.dataset.tab = k;
+    b.setAttribute("role", "tab");
+    b.append(icon(ic), el("span", null, label));
+    b.onclick = () => openProfile(k);
+    tabs.append(b);
+  }
+  const nav = el("nav", "pf-nav");
+  nav.append(who, tabs);
+  const main = el("div", "pf-main");
+  main.append(el("h2", "pf-title"), el("div", "profile-body"));
+  const x = el("button", "sheet-x round soft");
+  x.type = "button";
+  x.setAttribute("aria-label", "Close");
+  x.append(icon("x"));
+  x.onclick = closeProfile;
+  d.replaceChildren(nav, main, x);
+  profileShellFor = a.id;
+  fillAddress(a, addr);
+}
+
+/** Its address on the Cookie Network (click to copy), or the way to get one. */
+async function fillAddress(a, box) {
+  let s = netStatus;
+  if (!s?.agents) { try { s = netStatus = await call("net_status"); } catch { s = null; } }
+  const row = s?.agents?.find((x) => x.id === a.id);
+  if (row?.address) {
+    box.textContent = row.address;
+    box.title = "Copy its address";
+    box.onclick = () => copy(row.address, "Address copied");
+  } else {
+    box.textContent = "Give it an address";
+    box.classList.add("none");
+    box.title = "Join the Cookie Network to get @you and an address for each agent";
+    box.onclick = () => { closeProfile(); openNetwork(); };
+  }
 }
 
 async function openProfile(tab = profileTab, keepScroll = false) {
   if (!current) return;
+  tab = TAB_ALIAS[tab] ?? tab;
+  if (!TABS.some(([k]) => k === tab)) tab = "about";
   profileTab = tab;
   const a = agentById(current.id) ?? current;
-  const box = $("profile");
-  const scroll = keepScroll ? box.scrollTop : 0;
-  closeWorkspace();
-  document.querySelector(".pane").classList.add("with-profile");
-  box.hidden = false;
-  profileFace?.stop();
-  profileFace = Faces.create(a.id, 84);
-  if (busy.has(a.id)) profileFace.setMood("working");
-  const x = el("button", "round soft profile-x");
-  x.setAttribute("aria-label", "Close profile");
-  x.append(icon("x"));
-  x.onclick = closeProfile;
-  const head = el("div", "profile-head");
-  head.append(profileFace.el, el("h2", null, a.name), el("p", "profile-model", a.model));
-  if (a.origin) head.append(el("span", "tag", "hired from a pack"));
-  const tabs = el("div", "seg tabs-wrap");
-  for (const [k, label] of TABS) {
-    const b = el("button", k === tab ? "on" : "", label);
-    b.onclick = () => openProfile(k);
-    tabs.append(b);
+  const d = $("profile");
+  if (!d.open || profileShellFor !== a.id) profileShell(a);
+  d.querySelector(".pf-name").textContent = a.name;
+  for (const b of d.querySelectorAll(".pf-tabs button")) {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", String(on));
   }
-  const body = el("div", "profile-body");
-  box.replaceChildren(x, head, tabs, body);
-  try {
-    const parts = await PANELS[tab](a);
-    if (current?.id !== a.id || profileTab !== tab) return;
-    body.append(...parts);
-  } catch (err) {
-    body.append(el("p", "error-line", String(err)));
-  }
-  box.scrollTop = scroll;
+  d.querySelector(".pf-title").textContent = TABS.find(([k]) => k === tab)[1];
+  const main = d.querySelector(".pf-main");
+  const body = d.querySelector(".profile-body");
+  const scroll = keepScroll ? main.scrollTop : 0;
+  if (!keepScroll) body.replaceChildren();
+  if (!d.open) d.showModal();
+  const parts = TAB_PARTS[tab] ?? [[tab]];
+  const done = await Promise.all(parts.map(async ([k, title]) => {
+    try { return [...(title ? [el("h2", "pf-section", title)] : []), ...(await PANELS[k](a))]; }
+    catch (err) { return [el("p", "error-line", String(err))]; }
+  }));
+  if (current?.id !== a.id || profileTab !== tab || !d.open) return;
+  body.replaceChildren(...done.flat());
+  main.scrollTop = scroll;
 }
 
 /** Cost before → after, in dollars when priced, else tokens. */
 function costLine(b, a) {
   if (b.microdollars && a.microdollars) return `${dollars(b.microdollars)} → ${dollars(a.microdollars)}`;
   return `${(b.tokens || 0).toLocaleString()} → ${(a.tokens || 0).toLocaleString()} tokens`;
+}
+
+/** ~/…/agents/cookie/work: home as ~, the middle folded away when it's long. */
+function shortPath(p) {
+  const parts = String(p).replace(/^\/Users\/[^/]+/, "~").split("/");
+  return parts.length > 5 ? [parts[0], "…", ...parts.slice(-3)].join("/") : parts.join("/");
 }
 
 const fact = (k, v) => { const r = el("div", "row"); r.append(el("span", null, k), el("span", "muted", v)); return r; };
@@ -72,7 +133,6 @@ const GRANT_INFO = [
   ["memory", "Memory", "Keep notes, or use Enkeon when you're signed in."],
   ["routines", "Set routines", "Set up its own standing jobs (asks you first)."],
   ["team", "Ask teammates", "Hand tasks to your other agents."],
-  ["worlds", "Worlds", "Copies of its folder to try things in first: undo any step, race attempts, rewind. You watch them in Worlds and keep only what worked; anything that leaves a world asks you."],
   ["apps", "Connected apps", "Use the apps you connected in Enkeon (Gmail, Slack, …). Each call is billed per call by the connector; Record counts them."],
   ["mac", "Mac apps", "Reminders, Notes, Calendar, Contacts; send iMessages (each asks you). macOS asks once per app."],
 ];
@@ -145,7 +205,7 @@ const PANELS = {
     if (a.handover) facts.append(fact("Started from", "a predecessor's handover note"));
     if (a.origin) facts.append(fact("Signed by", a.origin.publisher_key.slice(0, 16) + "…"));
     const danger = el("button", "btn quiet danger full", "Fire this agent");
-    danger.onclick = fireCurrent;
+    danger.onclick = () => { closeProfile(); fireCurrent(); };
     return [el("h3", "group-title", "Setup"), form, end, el("h3", "group-title", "What it can use"), access,
       el("h3", "group-title", "Limits"), limits, limitsEnd, el("h3", "group-title", "Probation"), prob,
       el("h3", "group-title", "About"), facts, ...(a.id === "cookie" ? [el("p", "set-note", "Cookie stays: it's your front door. Change its model or what it can use above.")] : [danger])];
@@ -430,7 +490,7 @@ const PANELS = {
     const cg = el("div", "group");
     if (!cage.available) cg.append(el("p", "set-note", "This computer can't run a sandbox, so this agent is never offered commands."));
     const save = (patch) => call("set_cage", { id: a.id, patch }).then(refreshProfile).catch((e) => toast("Couldn't change the cage", String(e), "error"));
-    cg.append(setRow("Its folder", `${cage.folder} · ${humanSize(cage.bytes)}`, Api.web ? null : button("Open", "quiet small", () => Api.reveal(cage.folder))));
+    cg.append(setRow("Its folder", `${shortPath(cage.folder)} · ${humanSize(cage.bytes)}`, Api.web ? null : button("Open", "quiet small", () => Api.reveal(cage.folder))));
     cg.append(setRow("Network", c.network ? "Its commands can reach the internet. They still can't read or write outside its cage." : "Its commands have no network.", toggle(c.network, (v) => save({ network: v }), "Network")));
     const num = (v, min, max) => input(v, "", { type: "number", min, max, step: 1 });
     const cpu = num(c.cpu_seconds, 5, 3600), file = num(c.file_mb, 1, 20000), wall = num(c.timeout_seconds, 10, 3600);
