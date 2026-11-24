@@ -1,0 +1,37 @@
+[package]
+name = "parallax"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A computer built for agents: worlds that copy instantly, rewind, race, screenless engines, and four verbs (Preview, Do, Undo, Branch) over MCP."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "parallax"
+path = "src/main.rs"
+
+[dependencies]
+async-trait = "0.1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+base64 = "0.22"
+futures = "0.3"
+libc = "0.2"
+lopdf = { version = "0.34", default-features = false, features = ["nom_parser"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+ring = { version = "0.17", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "net", "io-util", "io-std"] }
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect"] }
+wasmi = { version = "0.40", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+# A full disk: no debug info and no incremental cache (as the desktop workspace).
+[profile.dev]
+debug = 0
+incremental = false
