@@ -44,15 +44,62 @@ fi
 I
 chmod 755 /usr/local/bin/cookie-idle
 
-# The vault image: minimal Ubuntu, a hidden desktop, two apps, parallax (its guest agent) and hands.
+# Vault networking: the internet only. Kept in a service so it comes back after every wake.
+cat > /usr/local/bin/cookie-vaultnet <<'N'
+#!/bin/sh
+# Vaults (pxt* taps, 172.30.0.0/16) reach the internet through NAT and nothing else:
+# not the instance's metadata (its credentials), the private network, each other, or this host.
+sysctl -qw net.ipv4.ip_forward=1
+OUT=$(ip route show default | awk '{print $5; exit}')
+iptables -t nat -C POSTROUTING -s 172.30.0.0/16 -o "$OUT" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 172.30.0.0/16 -o "$OUT" -j MASQUERADE
+iptables -N COOKIE-VAULT 2>/dev/null || iptables -F COOKIE-VAULT
+for net in 169.254.0.0/16 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 127.0.0.0/8 224.0.0.0/4; do iptables -A COOKIE-VAULT -d "$net" -j DROP; done
+iptables -A COOKIE-VAULT -o "$OUT" -j ACCEPT
+iptables -A COOKIE-VAULT -j DROP
+iptables -C FORWARD -i pxt+ -j COOKIE-VAULT 2>/dev/null || iptables -I FORWARD 1 -i pxt+ -j COOKIE-VAULT
+iptables -C FORWARD -o pxt+ -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -o pxt+ -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -C FORWARD -o pxt+ -j DROP 2>/dev/null || iptables -A FORWARD -o pxt+ -j DROP
+iptables -C INPUT -i pxt+ -j DROP 2>/dev/null || iptables -I INPUT 1 -i pxt+ -j DROP
+N
+chmod 755 /usr/local/bin/cookie-vaultnet
+cat > /etc/systemd/system/cookie-vaultnet.service <<'U'
+[Unit]
+Description=Vault networking: the internet only
+After=network-online.target
+Before=parallax.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/cookie-vaultnet
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+U
+systemctl daemon-reload && systemctl enable --now cookie-vaultnet.service >/dev/null 2>&1
+say "vault network rules: $(iptables -S COOKIE-VAULT 2>/dev/null | wc -l) in the vault chain"
+
+# The vault image: minimal Ubuntu, a hidden desktop, Firefox, LibreOffice, Mousepad, Zenity, parallax (its guest agent) and hands.
 IMG=/var/lib/parallax/images/rootfs.ext4
 if [ ! -f "$IMG" ] || [ "${REBUILD_IMAGE:-0}" = 1 ]; then
   T0=$(date +%s)
   apt-get install -y -qq debootstrap e2fsprogs >/dev/null 2>&1
-  rm -f "$IMG.new"; truncate -s 4G "$IMG.new" && mkfs.ext4 -q -F "$IMG.new"
+  rm -f "$IMG.new"; truncate -s 8G "$IMG.new" && mkfs.ext4 -q -F "$IMG.new"
   mkdir -p /mnt/vroot && mount -o loop "$IMG.new" /mnt/vroot
   debootstrap --variant=minbase --components=main,universe noble /mnt/vroot http://eu-north-1.ec2.archive.ubuntu.com/ubuntu > /root/debootstrap.log 2>&1; say "debootstrap exit $?"
-  chroot /mnt/vroot /bin/sh -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq --no-install-recommends xvfb at-spi2-core libatk-adaptor dbus dbus-x11 zenity mousepad fonts-dejavu-core procps ca-certificates >/dev/null 2>&1; echo apt $?' | sed 's/^/COOKIE chroot /'
+  # Firefox from Mozilla's own repository (Ubuntu's is a snap, which can't run in a vault).
+  mkdir -p /mnt/vroot/etc/apt/keyrings /mnt/vroot/etc/apt/preferences.d
+  curl -fsSL https://packages.mozilla.org/apt/repo-signing-key.gpg -o /mnt/vroot/etc/apt/keyrings/packages.mozilla.org.asc
+  echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" > /mnt/vroot/etc/apt/sources.list.d/mozilla.list
+  printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' > /mnt/vroot/etc/apt/preferences.d/mozilla
+  cp /etc/resolv.conf /mnt/vroot/etc/resolv.conf
+  # Certificates first: Mozilla's repository is only reachable over https.
+  chroot /mnt/vroot /bin/sh -c 'export DEBIAN_FRONTEND=noninteractive; mv /etc/apt/sources.list.d/mozilla.list /root/; apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates >/dev/null 2>&1; mv /root/mozilla.list /etc/apt/sources.list.d/'
+  chroot /mnt/vroot /bin/sh -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates xvfb at-spi2-core libatk-adaptor dbus dbus-x11 zenity mousepad fonts-dejavu-core procps iproute2 iputils-ping curl firefox libreoffice-calc libreoffice-writer libreoffice-gtk3 >/dev/null 2>&1; echo apt $?' | sed 's/^/COOKIE chroot /'
+  say "in the image: $(chroot /mnt/vroot sh -c 'for c in firefox libreoffice mousepad zenity ip; do command -v $c >/dev/null && printf "%s " $c; done; firefox --version 2>&1 | head -1')"
+  # Firefox starts working at once: no welcome tour, no telemetry, no default-browser question.
+  mkdir -p /mnt/vroot/etc/firefox/policies
+  cat > /mnt/vroot/etc/firefox/policies/policies.json <<'POL'
+{"policies": {"DisableTelemetry": true, "DisableFirefoxStudies": true, "DontCheckDefaultBrowser": true, "OverrideFirstRunPage": "", "OverridePostUpdatePage": "", "UserMessaging": {"SkipOnboarding": true, "WhatsNew": false, "ExtensionRecommendations": false, "FeatureRecommendations": false, "MoreFromMozilla": false}}}
+POL
   install -m755 /usr/local/bin/parallax /mnt/vroot/usr/local/bin/parallax
   install -m755 /usr/local/bin/hands /mnt/vroot/usr/local/bin/hands
   cat > /mnt/vroot/sbin/init <<'INIT'
@@ -61,7 +108,15 @@ if [ ! -f "$IMG" ] || [ "${REBUILD_IMAGE:-0}" = 1 ]; then
 mount -t proc proc /proc; mount -t sysfs sys /sys; mount -t devtmpfs dev /dev 2>/dev/null
 mkdir -p /dev/pts /dev/shm; mount -t devpts devpts /dev/pts; mount -t tmpfs tmpfs /run; mount -t tmpfs tmpfs /dev/shm; mount -t tmpfs tmpfs /tmp
 hostname vault
-export HOME=/root DISPLAY=:0 XDG_RUNTIME_DIR=/run/user0 GTK_MODULES=gail:atk-bridge PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+ip link set lo up 2>/dev/null
+# Its network, when it was made with one: cookie.net=<its address>/<the host's>.
+NET=$(sed -n 's/.*cookie\.net=\([^ ]*\).*/\1/p' /proc/cmdline)
+if [ -n "$NET" ]; then
+  ip addr add "${NET%/*}/30" dev eth0 && ip link set eth0 up && ip route add default via "${NET#*/}"
+  echo "nameserver 1.1.1.1" > /etc/resolv.conf
+  echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+fi
+export HOME=/root DISPLAY=:0 XDG_RUNTIME_DIR=/run/user0 GTK_MODULES=gail:atk-bridge GNOME_ACCESSIBILITY=1 MOZ_ENABLE_WAYLAND=0 PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
 mkdir -p /run/dbus && dbus-daemon --system --fork --nopidfile 2>/dev/null
 dbus-daemon --session --address=unix:path=/run/session-bus --fork --nopidfile

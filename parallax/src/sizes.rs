@@ -127,6 +127,15 @@ pub struct VaultImage {
     pub mem_mib: u32,
 }
 
+/// A vault's link to the internet: its own tap device on the host and a /30 of its own.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VaultNet {
+    pub tap: String,
+    pub guest_mac: String,
+    pub host_ip: String,
+    pub guest_ip: String,
+}
+
 /// One microVM, driven through Firecracker's API socket.
 pub struct Vault {
     pub id: String,
@@ -169,7 +178,7 @@ async fn api(sock: &Path, method: &str, path: &str, body: &Value) -> Result<Stri
 #[cfg(unix)]
 impl Vault {
     /// Boot a vault from an image, or restore it from a snapshot (memory + state) when given one.
-    pub async fn start(id: &str, runtime_dir: &Path, image: &VaultImage, snapshot: Option<(&Path, &Path)>) -> Result<Vault, String> {
+    pub async fn start(id: &str, runtime_dir: &Path, image: &VaultImage, snapshot: Option<(&Path, &Path)>, net: Option<&VaultNet>) -> Result<Vault, String> {
         let bin = vault_available()?;
         let dir = runtime_dir.join(id);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -189,7 +198,15 @@ impl Vault {
                 api(&api_sock, "PUT", "/snapshot/load", &json!({"snapshot_path": state, "mem_backend": {"backend_type": "File", "backend_path": mem}, "resume_vm": true})).await?;
             }
             None => {
-                api(&api_sock, "PUT", "/boot-source", &json!({"kernel_image_path": image.kernel, "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"})).await?;
+                // The vault's own first program reads its address from here (`cookie.net=guest/host`).
+                let args = match net {
+                    Some(n) => format!("console=ttyS0 reboot=k panic=1 pci=off cookie.net={}/{}", n.guest_ip, n.host_ip),
+                    None => "console=ttyS0 reboot=k panic=1 pci=off".to_string(),
+                };
+                api(&api_sock, "PUT", "/boot-source", &json!({"kernel_image_path": image.kernel, "boot_args": args})).await?;
+                if let Some(n) = net {
+                    api(&api_sock, "PUT", "/network-interfaces/eth0", &json!({"iface_id": "eth0", "guest_mac": n.guest_mac, "host_dev_name": n.tap})).await?;
+                }
                 api(&api_sock, "PUT", "/drives/rootfs", &json!({"drive_id": "rootfs", "path_on_host": image.rootfs, "is_root_device": true, "is_read_only": false})).await?;
                 api(&api_sock, "PUT", "/machine-config", &json!({"vcpu_count": image.vcpus.max(1), "mem_size_mib": image.mem_mib.max(128)})).await?;
                 api(&api_sock, "PUT", "/vsock", &json!({"guest_cid": 3, "uds_path": vsock})).await?;

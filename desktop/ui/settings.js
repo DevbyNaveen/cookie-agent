@@ -327,6 +327,8 @@ const SETTINGS = {
       comp.append(head,
         setRow("This month", `${pc.hours} hours awake · about ${money(pc.dollars)}`, null),
         setRow("Sleeps by itself", "After 15 minutes with nothing to do. Its disk keeps every world while it sleeps; agents wake it when they need a full computer.", null));
+      if (pc.market === "on-demand") comp.append(setRow("At full price for now", "AWS had no Spot room, so it moved to full price (about $0.15 an hour while awake) with all its worlds. Move it back when you like: it takes about five minutes.",
+        button("Back to Spot", "quiet small", async (e) => { e.target.disabled = true; e.target.textContent = "Moving…"; try { await call("computer_move", { market: "spot" }); toast("Back on Spot", "Same disk, same worlds; about $0.02 an hour while awake.", "good"); } catch (err) { toast("Couldn't move it", String(err), "error"); } openSettings("usage"); })));
       if (pc.error) comp.append(el("p", "error-line", pc.error));
     } else comp.append(setRow("Not set up", "A machine in the cloud where agents work with the Mac closed. It wakes when they need it and sleeps after 15 idle minutes.", null));
     comp.append(setRow("Worlds on this Mac", `${u.worlds_here || 0} · free: they run on your own computer`, null));

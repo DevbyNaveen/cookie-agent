@@ -74,8 +74,22 @@ pub struct CloudComputer {
     /// Dollars an hour while it runs (its Spot price, as set up).
     pub hourly: f64,
     pub kind: String,
+    /// "spot" or "on-demand": where it runs now.
+    pub market: String,
     /// Each time it ran: [woke, slept]; slept is 0 while it runs.
     pub sessions: Vec<[u64; 2]>,
+}
+
+/// Dollars an hour (AWS's price list, eu-north-1, 2026-11-25): Spot moves with demand.
+const SPOT_HOURLY: f64 = 0.02;
+const ON_DEMAND_HOURLY: f64 = 0.1477;
+
+/// The first `<name>…</name>` in an EC2 answer, after `from`.
+fn field<'a>(xml: &'a str, name: &str, from: usize) -> Option<&'a str> {
+    let open = format!("<{name}>");
+    let i = xml[from..].find(&open)? + from + open.len();
+    let j = xml[i..].find(&format!("</{name}>"))? + i;
+    Some(&xml[i..j])
 }
 
 fn month_bounds(month: &str) -> Option<(u64, u64)> {
@@ -173,8 +187,16 @@ impl Team {
                         tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                         wait = (wait * 2).min(60);
                     }
+                    Err(e) if e.contains("capacity") && c.market != "on-demand" => {
+                        // Spot has had no room for five minutes: move to full price (same disk) and wake there.
+                        self.computer_move("on-demand").await?;
+                        let c2 = self.computer().ok_or("The cloud computer went missing.")?;
+                        aws::ec2(&cr, "StartInstances", &[("InstanceId.1".into(), c2.instance.clone())]).await?;
+                        self.notice(crate::front::COOKIE_ID, "Cloud computer at full price", "AWS had no Spot room for five minutes, so the cloud computer moved to full price (about $0.15 an hour while awake) with all its worlds. Move it back to Spot in Settings → Usage.", None, false);
+                        break;
+                    }
                     Err(e) if e.contains("capacity") => {
-                        return Err("AWS has had no spare capacity for the cloud computer for five minutes; try again soon.".into());
+                        return Err("AWS has had no capacity for the cloud computer for five minutes; try again soon.".into());
                     }
                     Err(e) => return Err(e),
                 }
@@ -246,6 +268,111 @@ impl Team {
         }
     }
 
+    async fn wait_state(cr: &Creds, instance: &str, want: &str, secs: u64) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        loop {
+            if aws::state(cr, instance).await? == want {
+                return Ok(());
+            }
+            if std::time::Instant::now() > deadline {
+                return Err(format!("{instance} didn't reach {want}."));
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        }
+    }
+
+    async fn wait_volume(cr: &Creds, volume: &str, want: &str) -> Result<(), String> {
+        for _ in 0..60 {
+            let x = aws::ec2(cr, "DescribeVolumes", &[("VolumeId.1".into(), volume.into())]).await?;
+            if field(&x, "status", 0) == Some(want) {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+        Err(format!("{volume} didn't become {want}."))
+    }
+
+    /// Move the cloud computer to Spot or to full price, keeping its disk: a new
+    /// machine of the same kind is made in the same zone, its own disk swapped for
+    /// this one's, and the old machine let go. Every world and vault comes along.
+    pub async fn computer_move(&self, market: &str) -> Result<Value, String> {
+        let market = if market == "spot" { "spot" } else { "on-demand" };
+        let mut c = self.computer().ok_or("There's no cloud computer set up.")?;
+        let cr = self.computer_creds(&c.region)?;
+        let old = c.instance.clone();
+        let x = aws::ec2(&cr, "DescribeInstances", &[("InstanceId.1".into(), old.clone())]).await?;
+        let image = field(&x, "imageId", 0).ok_or("No image id.")?.to_string();
+        let subnet = field(&x, "subnetId", 0).ok_or("No subnet.")?.to_string();
+        let group = field(&x, "groupId", 0).ok_or("No security group.")?.to_string();
+        let kind = field(&x, "instanceType", 0).unwrap_or("r8i.large").to_string();
+        let spot_request = field(&x, "spotInstanceRequestId", 0).map(str::to_string);
+        let at = x.find("<deviceName>/dev/sda1</deviceName>").ok_or("No root disk.")?;
+        let disk = field(&x, "volumeId", at).ok_or("No root disk.")?.to_string();
+        // 1. The old machine stops (its vaults go to disk first, on the host's own way down).
+        if aws::state(&cr, &old).await? != "stopped" {
+            aws::ec2(&cr, "StopInstances", &[("InstanceId.1".into(), old.clone())]).await?;
+            Self::wait_state(&cr, &old, "stopped", 600).await?;
+        }
+        self.note_state("stopped");
+        // 2. A new machine of the same kind, in the same zone, then stopped.
+        let mut p: Vec<(String, String)> = vec![
+            ("ImageId".into(), image),
+            ("InstanceType".into(), kind.clone()),
+            ("MinCount".into(), "1".into()),
+            ("MaxCount".into(), "1".into()),
+            ("SubnetId".into(), subnet),
+            ("SecurityGroupId.1".into(), group),
+            ("IamInstanceProfile.Name".into(), "cookie-parallax-host".into()),
+            ("CpuOptions.NestedVirtualization".into(), "enabled".into()),
+            ("MetadataOptions.HttpTokens".into(), "required".into()),
+            ("InstanceInitiatedShutdownBehavior".into(), "stop".into()),
+        ];
+        let mut n = 1;
+        for (kind_of, name) in [("instance", "cookie-parallax-host"), ("volume", "cookie-parallax-swap")] {
+            p.push((format!("TagSpecification.{n}.ResourceType"), kind_of.into()));
+            p.push((format!("TagSpecification.{n}.Tag.1.Key"), "project".into()));
+            p.push((format!("TagSpecification.{n}.Tag.1.Value"), "cookie-parallax".into()));
+            p.push((format!("TagSpecification.{n}.Tag.2.Key"), "Name".into()));
+            p.push((format!("TagSpecification.{n}.Tag.2.Value"), name.into()));
+            n += 1;
+        }
+        if market == "spot" {
+            p.push(("InstanceMarketOptions.MarketType".into(), "spot".into()));
+            p.push(("InstanceMarketOptions.SpotOptions.SpotInstanceType".into(), "persistent".into()));
+            p.push(("InstanceMarketOptions.SpotOptions.InstanceInterruptionBehavior".into(), "stop".into()));
+            p.push((format!("TagSpecification.{n}.ResourceType"), "spot-instances-request".into()));
+            p.push((format!("TagSpecification.{n}.Tag.1.Key"), "project".into()));
+            p.push((format!("TagSpecification.{n}.Tag.1.Value"), "cookie-parallax".into()));
+        }
+        let made = aws::ec2(&cr, "RunInstances", &p).await?;
+        let new = field(&made, "instanceId", 0).ok_or("AWS didn't say the new machine's id.")?.to_string();
+        Self::wait_state(&cr, &new, "running", 300).await?;
+        aws::ec2(&cr, "StopInstances", &[("InstanceId.1".into(), new.clone())]).await?;
+        Self::wait_state(&cr, &new, "stopped", 300).await?;
+        // 3. Its own disk out, this one in.
+        let nx = aws::ec2(&cr, "DescribeInstances", &[("InstanceId.1".into(), new.clone())]).await?;
+        let at = nx.find("<deviceName>/dev/sda1</deviceName>").ok_or("The new machine has no root disk.")?;
+        let spare = field(&nx, "volumeId", at).ok_or("The new machine has no root disk.")?.to_string();
+        aws::ec2(&cr, "DetachVolume", &[("VolumeId".into(), spare.clone())]).await?;
+        aws::ec2(&cr, "DetachVolume", &[("VolumeId".into(), disk.clone())]).await?;
+        Self::wait_volume(&cr, &disk, "available").await?;
+        aws::ec2(&cr, "AttachVolume", &[("VolumeId".into(), disk.clone()), ("InstanceId".into(), new.clone()), ("Device".into(), "/dev/sda1".into())]).await?;
+        Self::wait_volume(&cr, &disk, "in-use").await?;
+        // 4. The old machine goes (its Spot request first, or it would come back), and the spare disk.
+        if let Some(r) = spot_request {
+            let _ = aws::ec2(&cr, "CancelSpotInstanceRequests", &[("SpotInstanceRequestId.1".into(), r)]).await;
+        }
+        aws::ec2(&cr, "TerminateInstances", &[("InstanceId.1".into(), old.clone())]).await?;
+        Self::wait_volume(&cr, &spare, "available").await?;
+        let _ = aws::ec2(&cr, "DeleteVolume", &[("VolumeId".into(), spare)]).await;
+        c.instance = new.clone();
+        c.market = market.to_string();
+        c.hourly = if market == "spot" { SPOT_HOURLY } else { ON_DEMAND_HOURLY };
+        c.kind = format!("{kind} {}", if market == "spot" { "Spot" } else { "on-demand" });
+        self.save_computer(&c)?;
+        Ok(json!({"moved": true, "market": market, "instance": new, "was": old, "disk": disk}))
+    }
+
     /// The month's hours and their cost, from the sessions Cookie saw.
     pub(crate) fn cloud_computer_usage(&self, month: &str) -> Value {
         let Some(c) = self.computer() else {
@@ -254,7 +381,7 @@ impl Team {
         let secs = seconds_in(&c.sessions, month, util::now());
         let hours = secs as f64 / 3600.0;
         json!({
-            "set_up": true, "instance": c.instance, "region": c.region, "kind": c.kind, "hourly": c.hourly,
+            "set_up": true, "instance": c.instance, "region": c.region, "kind": c.kind, "hourly": c.hourly, "market": if c.market.is_empty() { "spot" } else { c.market.as_str() },
             "hours": (hours * 100.0).round() / 100.0, "dollars": (hours * c.hourly * 100.0).round() / 100.0,
             "running_since": c.sessions.last().filter(|s| s[1] == 0).map(|s| s[0]),
         })
