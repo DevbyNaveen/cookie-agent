@@ -6,6 +6,8 @@ const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
 const icon = (name) => { const s = document.createElementNS("http://www.w3.org/2000/svg", "svg"); s.innerHTML = `<use href="#i-${name}"/>`; return s; };
 const strong = (t) => el("strong", null, t);
+/** An element holding other elements (el() takes text only). */
+const box = (tag, cls, ...kids) => { const n = el(tag, cls); n.append(...kids.filter((k) => k != null)); return n; };
 
 // The project's own model ids (README, examples, the Swift app): suggestions, never a default.
 const MODELS = {
@@ -1064,7 +1066,11 @@ function onTeamEvent(ev) {
     case "worlds": refreshWall(); if (profileOpenFor(current?.id) && profileTab === "computer") refreshProfile(); break;
     case "test_progress":
     case "test_finished": if (profileOpenFor(ev.agent) && profileTab === "evolution") refreshProfile(); if (ev.kind === "test_finished") toast("Tests finished", `${ev.passed} of ${ev.total} passed`, ev.passed === ev.total ? "good" : "", () => { openAgent(ev.agent).then(() => openProfile("tests")); }); break;
-    case "channel": if ($("settings").open) refreshSettings(); break;
+    case "channel":
+      if ($("settings").open) refreshSettings();
+      if (String(ev.name).startsWith("slack:") && profileTab === "slack") refreshProfile();
+      break;
+    case "enkeon_changed": onEnkeonChanged(); break;
     case "network": onNetworkEvent(ev.what); if (ev.what === "contacts") loadAddresses(); break;
   }
 }
@@ -1790,6 +1796,8 @@ async function boot() {
   refreshWall();
   loadAddresses();
   if (fromLink && agentById(fromLink.agent)) { openAgent(fromLink.agent); return; }
+  // First launch: the welcome (sign in, apps, hire) before anything else.
+  if (await maybeWelcome()) return;
   const only = new URLSearchParams(location.search).get("agent");
   if (only && agentById(only)) {
     // A window of its own: just this conversation, rail folded away.

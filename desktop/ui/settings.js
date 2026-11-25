@@ -302,6 +302,9 @@ async function openEnkeon() {
     g.append(setRow("Keep approvals, notices and answers in Enkeon", "So your phone and the Console see them, and you can say yes or no from there. Only the words: never your files.", toggle(!!s.cloud?.store, (v) => call("update_settings", { patch: { cloud_store: v } }), "Cloud store")));
     if (cl) g.append(setRow("Last contact", cl.last_error ? `Not reached: ${cl.last_error}` : cl.last_ok ? new Date(cl.last_ok * 1000).toLocaleString() : "Not yet", null));
     out.push(g);
+    const grid = el("div", "apps-grid compact");
+    out.push(el("h3", "group-title", "Apps your agents use"), grid);
+    setTimeout(() => renderApps(grid), 0);
     out.push(button("Unpair this computer", "quiet small danger", async () => {
       try { const r = await call("unpair"); toast("Unpaired", r.note); openEnkeon(); } catch (e) { toast("Couldn't unpair", String(e), "err"); }
     }));
@@ -313,7 +316,7 @@ async function openEnkeon() {
   if (p && p.state === "waiting") {
     const code = el("div", "pair-code", p.user_code);
     out.push(code, el("p", "set-note", PAIR_WORDS.waiting));
-    out.push(el("div", "row-actions", button("Open the browser again", "quiet small", () => Api.openUrl(p.url).catch((e) => toast("Couldn't open it", String(e), "err"))), button("Cancel", "quiet small", async () => { await call("pair_cancel"); openEnkeon(); })));
+    out.push(box("div", "row-actions", button("Open the browser again", "quiet small", () => Api.openUrl(p.url).catch((e) => toast("Couldn't open it", String(e), "err"))), button("Cancel", "quiet small", async () => { await call("pair_cancel"); openEnkeon(); })));
     pairTimer = setTimeout(() => { if (d.open) openEnkeon(); }, 2500);
   } else if (p && p.state === "choose") {
     out.push(el("p", "set-note", "Which memory should this computer use?"));

@@ -8,6 +8,7 @@ pub mod access;
 pub mod api;
 pub mod cage;
 pub mod approvals;
+pub mod apps;
 pub mod bench;
 pub mod boards;
 pub mod browser;
@@ -54,6 +55,7 @@ pub mod runtime;
 pub mod scorecard;
 pub mod scout;
 pub mod sleep;
+pub mod slack_agents;
 pub mod server;
 pub mod store;
 pub mod talk;
@@ -227,6 +229,8 @@ impl Team {
         server::spawn_if_enabled(self.clone());
         self.spawn_net();
         self.spawn_channels();
+        // Agents with their own Slack account.
+        self.spawn_agent_slacks();
         // Agents wake when their memory changes (with Enkeon connected).
         wake::spawn(self.clone());
         // Agents' browsers close when idle.

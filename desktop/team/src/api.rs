@@ -320,6 +320,21 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "pair_cancel" => { team.pair_cancel(); ok(team.enkeon_status()) }
         "unpair" => ok(team.unpair()?),
 
+        /* apps through Enkeon */
+        "apps" => ok(team.apps().await?),
+        "apps_signin" => ok(team.apps_signin().await?),
+        "app_connect" => ok(team.app_connect(&arg::<String>(a, "slug")?).await?),
+
+        /* each agent in Slack */
+        "agent_slack" => ok(team.agent_slack(&arg::<String>(a, "agent")?).await?),
+        "agent_slack_voice" => ok(team.agent_slack_voice(&arg::<String>(a, "agent")?, arg::<bool>(a, "on")?, &opt::<String>(a, "shape").unwrap_or_default()).await?),
+        "slack_config_token" => ok(team.slack_config_token(&arg::<String>(a, "token")?, opt::<String>(a, "refresh").as_deref()).await?),
+        "agent_slack_create" => ok(team.agent_slack_create(&arg::<String>(a, "agent")?, &opt::<String>(a, "color").unwrap_or_default()).await?),
+        "agent_slack_token" => ok(team.agent_slack_token(&arg::<String>(a, "agent")?, &arg::<String>(a, "token")?).await?),
+        "agent_slack_code" => ok(team.agent_slack_code(&arg::<String>(a, "agent")?).await?),
+        "agent_slack_unlink" => ok(team.agent_slack_unlink(&arg::<String>(a, "agent")?, &arg::<String>(a, "user")?).await?),
+        "agent_slack_disconnect" => ok(team.agent_slack_disconnect(&arg::<String>(a, "agent")?).await?),
+
         /* channels: Slack, Discord, iMessage, Signal */
         "channels" => ok(team.channel_states().into_iter().map(|(k, s)| (k, json!({"enabled": s.enabled, "config": s.config, "chats": s.chats, "code": s.pending_code, "status": s.status}))).collect::<std::collections::BTreeMap<_, _>>()),
         "channel_connect" => ok(team.channel_connect(&arg::<String>(a, "kind")?, opt(a, "secret"), a.get("config").cloned().unwrap_or(Value::Null)).await?),

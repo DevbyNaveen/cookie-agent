@@ -1413,3 +1413,88 @@ footer.me { gap: 6px; }
 .look:active { transform: scale(.94); }
 .look.on { background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); }
 .looks-more { font-size: 13px; }
+
+/* ---------- Welcome: meet the crew, sign in, apps, hire ---------- */
+.welcome { position: fixed; inset: 0; z-index: 1500; display: grid; place-items: center; background: var(--bg); overflow: auto; padding: 48px 24px; animation: wl-in .5s var(--ease); }
+.welcome.leaving { animation: wl-out .38s var(--ease) forwards; }
+@keyframes wl-in { from { opacity: 0; } }
+@keyframes wl-out { to { opacity: 0; transform: scale(1.02); } }
+.wl-aurora { position: fixed; inset: -20%; z-index: 0; pointer-events: none; opacity: .5; filter: blur(80px) saturate(1.2);
+  background: conic-gradient(from 0deg at 50% 45%, #f59e0b33, #ec489933, #6366f133, #10b98133, #f59e0b33); animation: wl-turn 28s linear infinite; }
+@keyframes wl-turn { to { transform: rotate(360deg); } }
+.wl-dots { position: fixed; top: 22px; left: 50%; transform: translateX(-50%); z-index: 2; display: flex; gap: 8px; }
+.wl-dots i { width: 7px; height: 7px; border-radius: 99px; background: var(--line-2); transition: width .3s var(--ease), background .3s; }
+.wl-dots i.done { background: var(--text-3); }
+.wl-dots i.on { width: 22px; background: var(--accent); }
+.wl-card { position: relative; z-index: 1; width: 100%; max-width: 720px; display: flex; flex-direction: column; align-items: center; text-align: center; animation: pop .4s var(--ease); }
+.wl-crew { display: flex; align-items: flex-end; justify-content: center; gap: 6px; height: 190px; margin-bottom: 18px; }
+.wl-slot { display: grid; place-items: end center; width: 84px; height: 120px; animation: wl-drop .7s cubic-bezier(.2, 1.4, .3, 1) backwards; animation-delay: calc(var(--i) * 90ms + 120ms); }
+.wl-slot.big { width: 118px; height: 150px; }
+@keyframes wl-drop { from { opacity: 0; transform: translateY(-60px) scale(.6); } }
+.wl-hero { display: grid; place-items: center; height: 150px; }
+.wl-title { margin: 0; font-size: 52px; font-weight: 750; letter-spacing: -.04em; line-height: 1.02;
+  background: linear-gradient(180deg, var(--text), color-mix(in srgb, var(--text) 62%, transparent)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.wl-title.sm { font-size: 34px; letter-spacing: -.03em; }
+.wl-tag { margin: 6px 0 0; font-size: 26px; font-weight: 650; letter-spacing: -.02em;
+  background: linear-gradient(90deg, #f59e0b, #ec4899 45%, #8b5cf6); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.wl-sub { max-width: 520px; margin: 16px 0 0; font-size: 15.5px; line-height: 1.55; color: var(--text-2); }
+.wl-actions { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 30px; }
+.wl-go { min-width: 260px; height: 48px; font-size: 15.5px; border-radius: 999px; box-shadow: 0 10px 40px -10px color-mix(in srgb, var(--accent) 70%, transparent); }
+.wl-skip { font-size: 13.5px; color: var(--text-3); }
+.wl-status { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 26px; min-height: 120px; }
+.wl-code { display: flex; gap: 8px; user-select: all; }
+.wl-code span { display: grid; place-items: center; width: 44px; height: 56px; border-radius: 14px; font: 650 28px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--text);
+  background: var(--raise); box-shadow: inset 0 0 0 1px var(--line), 0 0 24px -8px color-mix(in srgb, var(--accent) 60%, transparent); animation: pop .35s var(--ease) backwards; }
+.wl-code span:nth-child(2) { animation-delay: .04s; } .wl-code span:nth-child(3) { animation-delay: .08s; } .wl-code span:nth-child(4) { animation-delay: .12s; }
+.wl-code span:nth-child(5) { animation-delay: .16s; } .wl-code span:nth-child(6) { animation-delay: .2s; } .wl-code span:nth-child(7) { animation-delay: .24s; } .wl-code span:nth-child(8) { animation-delay: .28s; }
+.wl-code span.dash { width: 14px; background: none; box-shadow: none; color: var(--text-3); }
+.wl-code.small span { width: 30px; height: 38px; font-size: 18px; border-radius: 10px; }
+.wl-code.small span.dash { width: 10px; }
+.wl-hint { margin: 0; font-size: 14px; color: var(--text-2); }
+.wl-ok { display: flex; align-items: center; gap: 10px; font-size: 15px; color: var(--text); padding: 12px 18px; border-radius: 999px; background: var(--raise); animation: pop .3s var(--ease); }
+.wl-ok svg { width: 18px; height: 18px; color: #22c55e; }
+.wl-brains { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; width: 100%; max-width: 520px; }
+.wl-brain { display: flex; align-items: center; gap: 12px; padding: 16px 18px; border-radius: 18px; background: var(--raise); font-size: 15px; font-weight: 600; color: var(--text); text-align: left; transition: transform .15s var(--ease), box-shadow .15s; }
+.wl-brain:hover { transform: translateY(-2px); box-shadow: inset 0 0 0 2px var(--accent); }
+.wl-brain-dot { width: 12px; height: 12px; border-radius: 99px; background: conic-gradient(#f59e0b, #ec4899, #8b5cf6, #10b981, #f59e0b); box-shadow: 0 0 12px #ec489988; }
+
+/* The apps grid: welcome and Settings → Enkeon. */
+.apps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; width: 100%; margin-top: 26px; text-align: left; }
+.apps-grid.compact { margin-top: 8px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+.apps-signin { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: 16px; background: var(--accent-soft); font-size: 13.5px; color: var(--text); }
+.conn-tile { position: relative; display: grid; grid-template-columns: 40px 1fr; grid-template-rows: auto auto; column-gap: 12px; align-items: center; padding: 14px; border-radius: 18px; background: var(--raise); text-align: left; transition: transform .15s var(--ease), box-shadow .2s, background .2s; overflow: hidden; }
+.conn-tile:not(:disabled):hover { transform: translateY(-2px); box-shadow: inset 0 0 0 1.5px var(--line-2), 0 12px 28px -18px #000; }
+.conn-tile:disabled { cursor: default; }
+.conn-logo { grid-row: 1 / 3; width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: #fff; font-weight: 700; color: #333; box-shadow: 0 2px 8px -2px #0005; }
+.conn-logo img { width: 26px; height: 26px; }
+.conn-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.conn-text strong { font-size: 14px; font-weight: 620; color: var(--text); }
+.conn-text small { font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conn-chip { grid-column: 2; justify-self: start; margin-top: 8px; font-size: 11.5px; font-weight: 650; padding: 3px 9px; border-radius: 999px; color: var(--text-2); background: var(--raise-2); }
+.conn-tile.connected { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, #22c55e 55%, transparent); }
+.conn-tile.connected .conn-chip { color: #16a34a; background: color-mix(in srgb, #22c55e 16%, transparent); }
+.conn-tile.connected::after { content: ""; position: absolute; top: 12px; right: 12px; width: 8px; height: 8px; border-radius: 99px; background: #22c55e; box-shadow: 0 0 10px #22c55e; }
+.conn-tile.connecting .conn-chip { color: var(--accent-text); background: var(--accent-soft); }
+.conn-tile.connecting::before { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 70%); background-size: 220% 100%; animation: shimmer 1.4s linear infinite; }
+@keyframes shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+.conn-tile.reconnect .conn-chip, .conn-tile.failed .conn-chip { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+
+/* Profile → Slack. */
+.slack-card { display: flex; flex-direction: column; gap: 14px; padding: 18px; border-radius: 22px; background: var(--raise);
+  background-image: radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, #4a154b 22%, transparent), transparent 55%); }
+.slack-head { display: flex; align-items: center; gap: 14px; }
+.slack-head-text { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.slack-head-text strong { font-size: 16px; color: var(--text); }
+.slack-head-text small { font-size: 12.5px; color: var(--text-2); line-height: 1.4; }
+.live-dot { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 650; color: #16a34a; padding: 4px 10px; border-radius: 999px; background: color-mix(in srgb, #22c55e 15%, transparent); }
+.live-dot::before { content: ""; width: 7px; height: 7px; border-radius: 99px; background: #22c55e; box-shadow: 0 0 8px #22c55e; animation: breathe-text 1.6s ease-in-out infinite; }
+.slack-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; counter-reset: s; }
+.slack-steps li { counter-increment: s; position: relative; padding: 10px 10px 10px 34px; border-radius: 12px; font-size: 12.5px; font-weight: 600; color: var(--text-3); background: var(--raise-2); }
+.slack-steps li::before { content: counter(s); position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 18px; height: 18px; border-radius: 99px; display: grid; place-items: center; font-size: 11px; background: var(--line-2); color: var(--text-2); }
+.slack-steps li.on { color: var(--text); box-shadow: inset 0 0 0 1.5px var(--accent); }
+.slack-steps li.on::before { background: var(--accent); color: var(--accent-ink, #fff); }
+.slack-steps li.done { color: var(--text-2); }
+.slack-steps li.done::before { content: "✓"; background: #22c55e; color: #fff; }
+.slack-fields { display: grid; gap: 8px; }
+.slack-link { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 13.5px; color: var(--text-2); }
+@media (prefers-reduced-motion: reduce) { .wl-aurora { animation: none; } }

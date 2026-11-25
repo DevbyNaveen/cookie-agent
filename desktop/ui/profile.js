@@ -3,7 +3,7 @@
 let profileFace = null, profileTab = "about", profileShellFor = null;
 const TABS = [
   ["about", "About", "info"], ["skills", "Skills", "tool"], ["memory", "Memory", "book"], ["record", "Record", "chart"],
-  ["evolution", "Evolution", "leaf"], ["computer", "Computer", "cpu"], ["share", "Share", "share"],
+  ["evolution", "Evolution", "leaf"], ["computer", "Computer", "cpu"], ["slack", "Slack", "hash"], ["share", "Share", "share"],
 ];
 const TAB_ALIAS = { routines: "skills", tests: "evolution", files: "memory", worlds: "computer" };
 // A tab made of several panels, each after the first under its own heading.
@@ -627,6 +627,95 @@ const PANELS = {
     return [list, open];
   },
 
+  // Slack: its voice in the team's Slack, and its own Slack account.
+  async slack(a) {
+    const s = await call("agent_slack", { agent: a.id });
+    const st = s.state;
+    const out = [];
+    const shape = Faces.shapeOf(a.id);
+    // 1. In the team's Slack, under its own name.
+    const voice = el("div", "group");
+    if (s.team_slack) {
+      voice.append(setRow(`Speak as ${a.name}`, `In your team's Slack, its answers show as “${a.name}” with its own icon, not as the bot. Your Slack app needs the chat:write.customize permission.`,
+        toggle(!!st.voice, async (v) => { await call("agent_slack_voice", { agent: a.id, on: v, shape }); }, `Speak as ${a.name}`)));
+    } else {
+      voice.append(setRow("Your team's Slack isn't connected", "Connect one Slack bot for the whole team in Settings → Channels; then each agent can speak in it under its own name.",
+        button("Open channels", "quiet small", () => { closeProfile(); openSettings("channels"); })));
+    }
+    out.push(el("h3", "group-title", "In your team's Slack"), voice);
+    // 2. Its own Slack account: create → install → link.
+    const own = el("div", "slack-own");
+    const step = s.own ? 3 : st.app_id ? 2 : 1;
+    const steps = el("ol", "slack-steps");
+    [["Create its app", 1], ["Install it", 2], ["Link people", 3]].forEach(([t, n]) => steps.append(el("li", n < step ? "done" : n === step ? "on" : "", t)));
+    const card = el("div", "slack-card");
+    const fc = Faces.create(a.id, 54);
+    const head = el("div", "slack-head");
+    const ht = el("div", "slack-head-text");
+    ht.append(el("strong", null, s.own ? `@${st.bot_name || a.name}` : `${a.name}, in your Slack`),
+      el("small", null, s.own ? `${st.team || "Slack"} · ${st.status || "connected"}` : "A member of your workspace: DM it, @mention it in a channel, and it answers there as itself."));
+    head.append(fc.el, ht);
+    if (s.own) head.append(el("span", "live-dot", "Live"));
+    card.append(head, steps);
+    if (step === 1) {
+      if (!s.config_token) {
+        const tok = input("", "xoxe.xoxp-…  App Configuration Token", { type: "password", autocomplete: "off" });
+        const ref = input("", "xoxe-…  Refresh token (optional, keeps it working)", { type: "password", autocomplete: "off" });
+        card.append(el("p", "set-note", "Cookie makes the app for you from a manifest. It needs an App Configuration Token once: at api.slack.com/apps, under “Your App Configuration Tokens”, choose Generate. Kept in your Keychain."),
+          box("div", "slack-fields", tok, ref),
+          box("div", "row-actions",
+            button("Get a token", "quiet small", () => Api.openUrl("https://api.slack.com/apps").catch(() => {})),
+            button("Save token", "primary small", async () => { await call("slack_config_token", { token: tok.value, refresh: ref.value || null }); toast("Saved", "Cookie can make Slack apps now.", "good"); refreshProfile(); })));
+      } else {
+        card.append(el("p", "set-note", `Makes a Slack app called “${a.name}”, in its colour, asking only to read and answer its own messages.`),
+          box("div", "row-actions", button(`Create ${a.name}'s Slack app`, "primary small", async () => {
+            const r = await call("agent_slack_create", { agent: a.id, color: Faces.hexOf(a.id) });
+            fc.flip("spin"); fc.fx("sparkle");
+            toast("App created", `Now install ${a.name} to your workspace.`, "good");
+            if (r.install_url) await Api.openUrl(r.install_url).catch(() => {});
+            refreshProfile();
+          })));
+      }
+    } else if (step === 2) {
+      const tok = input("", "xoxb-…  Bot User OAuth Token", { type: "password", autocomplete: "off" });
+      card.append(el("p", "set-note", "Install it to your workspace, then copy its Bot User OAuth Token (OAuth & Permissions) here."),
+        box("div", "row-actions",
+          button("Install to Slack", "quiet small", () => Api.openUrl(s.install_url).catch(() => {})),
+          button("Save its face as the app icon", "quiet small", async () => {
+            const blob = await Faces.portrait(a.id);
+            const url = URL.createObjectURL(blob);
+            const link = el("a"); link.href = url; link.download = `${a.name.replace(/\W+/g, "-").toLowerCase()}-slack-icon.png`;
+            document.body.append(link); link.click(); link.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+            if (s.app_url) Api.openUrl(s.app_url).catch(() => {});
+            toast("Icon saved", "Upload it under Basic Information → Display Information.", "good");
+          })),
+        inlineForm(tok, button("Connect", "primary small", async () => { await call("agent_slack_token", { agent: a.id, token: tok.value }); fc.celebrate(); refreshProfile(); })));
+    } else {
+      const people = Object.entries(st.people || {});
+      const g = el("div", "group");
+      if (!people.length) g.append(setRow("Nobody linked yet", "Until someone is linked, it answers no one.", null));
+      for (const [id, name] of people) g.append(setRow(name, "May give it work", button("Remove", "quiet small danger", async () => { await call("agent_slack_unlink", { agent: a.id, user: id }); refreshProfile(); })));
+      const code = st.pending_code;
+      const link = el("div", "slack-link");
+      if (code) {
+        const big = el("div", "wl-code small");
+        for (const ch of code) big.append(el("span", "", ch));
+        link.append(el("span", null, `To link someone, they DM ${a.name} this code in Slack:`), big);
+      }
+      link.append(button(code ? "New code" : "Link someone", "quiet small", async () => { await call("agent_slack_code", { agent: a.id }); refreshProfile(); }));
+      card.append(g, link, el("p", "set-note", `It never answers a bot, so agents can't loop; Slack can start at most ${s.jobs_per_hour} jobs an hour for it. Approvals and questions go to linked people by DM.`),
+        box("div", "row-actions", button("Disconnect", "quiet small danger", async () => {
+          if (!confirm(`Take ${a.name} out of Slack? Its Slack app is deleted too, when Cookie can.`)) return;
+          const r = await call("agent_slack_disconnect", { agent: a.id });
+          toast("Out of Slack", r.note, "");
+          refreshProfile();
+        })));
+    }
+    own.append(card);
+    out.push(el("h3", "group-title", "Its own Slack account"), own);
+    return out;
+  },
   async share(a) {
     const out = [];
     // Its passport: the record, signed by this team.

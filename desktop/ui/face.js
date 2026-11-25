@@ -1265,8 +1265,29 @@ void main(){
     }
     return `${slug}-${hex()}`;
   }
+  /** The shape and colour (#rrggbb) an agent's face wears, for places drawn elsewhere (Slack). */
+  function shapeOf(id, salt = ownSalt) { return look(salt && id !== "cookie" ? salt + ":" + id : id).shape; }
+  function hexOf(id, salt = ownSalt) {
+    return "#" + look(salt && id !== "cookie" ? salt + ":" + id : id).mid.map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("");
+  }
+  /** A 1024px PNG of the face on a soft ground of its own colours: an app icon. */
+  async function portrait(id) {
+    const f = create(id, 320, undefined, { view: 1.36 });
+    const src = f.el.querySelector("canvas");
+    const lk = look(ownSalt && id !== "cookie" ? ownSalt + ":" + id : id);
+    const rgb = (c, a = 1) => `rgba(${c.map((v) => Math.round(v * 255)).join(",")},${a})`;
+    const out = document.createElement("canvas");
+    out.width = out.height = 1024;
+    const c = out.getContext("2d");
+    const g = c.createRadialGradient(512, 380, 60, 512, 512, 760);
+    g.addColorStop(0, rgb(lk.light)); g.addColorStop(0.55, rgb(lk.mid, 0.55)); g.addColorStop(1, rgb(lk.deep));
+    c.fillStyle = g; c.fillRect(0, 0, 1024, 1024);
+    c.drawImage(src, 40, 60, 944, 944);
+    f.stop();
+    return new Promise((res) => out.toBlob(res, "image/png"));
+  }
   /** How long an idle face waits before it dozes. */
   function setDozeAfter(ms) { dozeAfter = ms; }
 
-  return { create, look, setSalt, saltOf, color, of, wave, setDozeAfter, glyphFor, idFor, shapes: DEALT };
+  return { create, look, setSalt, saltOf, color, of, wave, setDozeAfter, glyphFor, idFor, shapes: DEALT, shapeOf, hexOf, portrait };
 })();

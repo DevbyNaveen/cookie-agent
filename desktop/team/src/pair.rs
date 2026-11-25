@@ -113,7 +113,7 @@ fn unwrap(v: Value) -> Value {
     }
 }
 
-async fn request(method: reqwest::Method, url: String, token: Option<&str>, body: Option<Value>) -> Result<Value, String> {
+pub(crate) async fn request(method: reqwest::Method, url: String, token: Option<&str>, body: Option<Value>) -> Result<Value, String> {
     let mut r = http().request(method, &url);
     if let Some(t) = token {
         r = r.bearer_auth(t);
@@ -312,6 +312,8 @@ impl Team {
         let plaintext = res["plaintext"].as_str().or(res.pointer("/key/plaintext").and_then(Value::as_str)).ok_or("Enkeon didn't send a key back.")?;
         let key_id = res["id"].as_str().or(res.pointer("/key/id").and_then(Value::as_str)).map(str::to_string);
         self.store_paired_key(Some(plaintext))?;
+        // The account sign-in stays in memory a while, so apps can be connected straight away.
+        crate::apps::remember_account(gateway, token);
         util::write_json(&self.paired_path(), &Paired { gateway: gateway.into(), project: project.id.clone(), project_name: project.name.clone(), key_id, by: by.into(), at: util::now() })?;
         self.load_pairing();
         set_pairing(|p| {

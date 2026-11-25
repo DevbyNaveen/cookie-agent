@@ -65,7 +65,7 @@ pub struct Channels {
     pub(crate) http: reqwest::Client,
 }
 
-fn short(id: &str) -> String {
+pub(crate) fn short(id: &str) -> String {
     id.rsplit('-').next().unwrap_or(id).chars().take(4).collect::<String>().to_uppercase()
 }
 
@@ -298,6 +298,15 @@ impl Team {
 
     /// Send text to one chat on one channel (chunked to the channel's limit).
     pub(crate) async fn channel_say(&self, kind: &str, chat: &str, text: &str) {
+        self.channel_say_as(kind, chat, text, None).await
+    }
+
+    /// Send as an agent: in the team's Slack, under its own name and icon when its voice is on.
+    pub(crate) async fn channel_say_as(&self, kind: &str, chat: &str, text: &str, agent: Option<&str>) {
+        let voice = match (kind, agent) {
+            ("slack", Some(a)) => self.slack_voice_of(a).await,
+            _ => None,
+        };
         let Some(sender) = self.chans.senders.lock().unwrap().get(kind).cloned() else { return };
         let limit = match kind {
             "discord" => 1900,
@@ -306,7 +315,14 @@ impl Team {
         };
         for part in cookie_harness::cookie::channel::chunks(text, limit) {
             let r = match &sender {
-                Sender::Slack { token } => self.chans.http.post("https://slack.com/api/chat.postMessage").bearer_auth(token).json(&json!({"channel": chat, "text": part})).send().await.map(|_| ()).map_err(|e| e.to_string()),
+                Sender::Slack { token } => {
+                    let mut body = json!({"channel": chat, "text": part});
+                    if let Some((name, emoji)) = &voice {
+                        body["username"] = json!(name);
+                        body["icon_emoji"] = json!(emoji);
+                    }
+                    self.chans.http.post("https://slack.com/api/chat.postMessage").bearer_auth(token).json(&body).send().await.map(|_| ()).map_err(|e| e.to_string())
+                }
                 Sender::Discord { token } => self
                     .chans
                     .http
@@ -441,7 +457,7 @@ impl Team {
                         if let Some(link) = self.job_link(&agent, &job).await {
                             text.push_str(&format!("\n\n{link}"));
                         }
-                        self.channel_say(&kind, &chat, &text).await;
+                        self.channel_say_as(&kind, &chat, &text, Some(&agent)).await;
                     }
                 }
                 TeamEvent::Asked { approval } => {
