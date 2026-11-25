@@ -170,7 +170,18 @@ impl Team {
     /// Read the pairing into the process (at start, and after it changes).
     pub fn load_pairing(&self) {
         let p: Option<Paired> = self.paired_path().exists().then(|| util::read_json(&self.paired_path()));
-        let next = paired_from(p, self.paired_key());
+        let next = paired_from(p.clone(), self.paired_key());
+        // Signed in, the same key reaches Enkeon's models (`enkeon:<model>`, on Cookie credits).
+        match (&next, &p) {
+            (Some((key, _)), Some(p)) => {
+                std::env::set_var("ENKEON_MODEL_KEY", key);
+                std::env::set_var("ENKEON_MODEL_BASE", format!("{}/v1/projects/{}/cookie/desktop", p.gateway.trim_end_matches('/'), p.project));
+            }
+            _ => {
+                std::env::remove_var("ENKEON_MODEL_KEY");
+                std::env::remove_var("ENKEON_MODEL_BASE");
+            }
+        }
         if let Ok(mut g) = PAIRED.write() {
             *g = next;
         }

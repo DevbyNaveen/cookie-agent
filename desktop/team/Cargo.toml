@@ -14,7 +14,7 @@ name = "cookie-team"
 path = "src/main.rs"
 
 [dependencies]
-cookie-harness = { path = "../.." }
+cookie-harness = { path = "../..", features = ["bedrock"] }
 cookie-net = { path = "../net" }
 # Parallax: worlds, engines and the four verbs (../../parallax, MIT).
 parallax = { path = "../../parallax" }

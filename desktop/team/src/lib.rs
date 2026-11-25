@@ -46,6 +46,7 @@ pub mod passport;
 pub mod pack;
 pub mod peers;
 pub mod prep;
+pub mod privacy;
 pub mod procedures;
 pub mod rank;
 pub mod readcache;
@@ -222,6 +223,8 @@ impl Team {
     /// Start the background work: routines, Telegram, and the HTTP server when enabled.
     pub fn start(self: &Arc<Self>) {
         std::sync::LazyLock::force(&retro::STARTED);
+        // Crash reports, if you turned them on (off by default).
+        self.install_crash_reports();
         // Enkeon's key, if this computer was paired (before anything reads memory).
         self.load_pairing();
         routines::spawn_scheduler(self.clone());

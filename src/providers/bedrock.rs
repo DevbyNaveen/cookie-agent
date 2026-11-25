@@ -28,8 +28,15 @@ pub struct Credentials {
     pub session_token: Option<String>,
 }
 
+/// How a request reaches Bedrock: signed with AWS keys, or through Enkeon's
+/// gateway with an Enkeon key (the gateway signs, and bills Cookie credits).
+enum Route {
+    Aws(Credentials),
+    Enkeon { base: String, key: String },
+}
+
 pub struct BedrockProvider {
-    credentials: Credentials,
+    route: Route,
     region: Option<String>,
     max_tokens: u32,
     caching: bool,
@@ -39,7 +46,23 @@ pub struct BedrockProvider {
 impl BedrockProvider {
     pub fn new(credentials: Credentials, region: Option<String>) -> Self {
         // Room for a long answer; a cut-off one is continued (`Agent`), never kept.
-        Self { credentials, region, max_tokens: 16_384, caching: true, client: super::http_client() }
+        Self { route: Route::Aws(credentials), region, max_tokens: 16_384, caching: true, client: super::http_client() }
+    }
+
+    /// Bedrock's models through Enkeon: `{base}/model/{model}/converse[-stream]`, where
+    /// `base` is the project's Cookie desktop door (`…/v1/projects/{p}/cookie/desktop`),
+    /// with the Enkeon key as a bearer. No AWS keys on this machine.
+    pub fn enkeon(base: &str, key: &str) -> Self {
+        Self { route: Route::Enkeon { base: base.trim_end_matches('/').to_string(), key: key.to_string() }, region: None, max_tokens: 16_384, caching: true, client: super::http_client() }
+    }
+
+    /// `ENKEON_MODEL_BASE` (the project's door) and `ENKEON_MODEL_KEY`, set by signing in.
+    pub fn enkeon_from_env() -> Result<Self> {
+        let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+        match (var("ENKEON_MODEL_BASE"), var("ENKEON_MODEL_KEY")) {
+            (Some(base), Some(key)) => Ok(Self::enkeon(&base, &key)),
+            _ => Err(Error::Provider("sign in with Enkeon to use Enkeon's models".into())),
+        }
     }
 
     /// `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`,
@@ -509,8 +532,13 @@ impl BedrockProvider {
             }
             attempt += 1;
             let mut call = self.client.post(url).header("content-type", "application/json").body(body.to_vec());
-            for (name, value) in sign(&self.credentials, region, url, body, SystemTime::now())? {
-                call = call.header(name, value);
+            match &self.route {
+                Route::Aws(credentials) => {
+                    for (name, value) in sign(credentials, region, url, body, SystemTime::now())? {
+                        call = call.header(name, value);
+                    }
+                }
+                Route::Enkeon { key, .. } => call = call.bearer_auth(key),
             }
             let response = match call.send().await {
                 Ok(response) => response,
@@ -540,7 +568,11 @@ impl BedrockProvider {
     }
 
     fn prepare(&self, request: &ModelRequest) -> Result<(String, Vec<u8>)> {
-        let region = region_for_model(self.region.as_deref(), request.model)?;
+        // Through Enkeon the gateway picks the region; the model id is all it needs.
+        let region = match self.route {
+            Route::Enkeon { .. } => String::new(),
+            Route::Aws(_) => region_for_model(self.region.as_deref(), request.model)?,
+        };
         let body = converse_body_with_ttl(request, self.max_tokens, self.caching, crate::provider::request_prefix_ttl(request));
         check_first_turn(&body)?;
         check_images(&body)?;
@@ -548,11 +580,26 @@ impl BedrockProvider {
     }
 }
 
+impl BedrockProvider {
+    fn url(&self, region: &str, model: &str, stream: bool) -> String {
+        match &self.route {
+            Route::Aws(_) if stream => converse_stream_url(region, model),
+            Route::Aws(_) => converse_url(region, model),
+            Route::Enkeon { base, .. } => enkeon_url(base, model, stream),
+        }
+    }
+}
+
+/// The gateway's door for one model call.
+pub fn enkeon_url(base: &str, model: &str, stream: bool) -> String {
+    format!("{base}/model/{}/converse{}", model.replace(':', "%3A"), if stream { "-stream" } else { "" })
+}
+
 #[async_trait]
 impl Provider for BedrockProvider {
     async fn complete(&self, request: ModelRequest<'_>) -> Result<ModelResponse> {
         let (region, body) = self.prepare(&request)?;
-        let response = self.send(&converse_url(&region, request.model), &region, &body).await?;
+        let response = self.send(&self.url(&region, request.model, false), &region, &body).await?;
         let text = response.text().await.map_err(|e| Error::Provider(e.to_string()))?;
         parse_response(&serde_json::from_str(&text)?)
     }
@@ -563,7 +610,7 @@ impl Provider for BedrockProvider {
         on: &mut (dyn FnMut(ProviderEvent) + Send),
     ) -> Result<ModelResponse> {
         let (region, body) = self.prepare(&request)?;
-        let response = self.send(&converse_stream_url(&region, request.model), &region, &body).await?;
+        let response = self.send(&self.url(&region, request.model, true), &region, &body).await?;
         let mut assembler = StreamAssembler::default();
         let mut bytes = response.bytes_stream();
         while let Some(chunk) = bytes.next().await {
@@ -686,6 +733,15 @@ mod tests {
         assert!(retriable(None, "connection reset"));
         assert!(!retriable(Some(400), "ValidationException: bad input"));
         assert!(!retriable(Some(403), "AccessDeniedException"));
+    }
+
+    #[test]
+    fn through_enkeon_a_call_goes_to_the_gateway_with_the_key_not_to_aws() {
+        let base = "https://api.enkeon.com/v1/projects/p1/cookie/desktop";
+        assert_eq!(enkeon_url(base, "eu.anthropic.claude-sonnet-4-6", true), format!("{base}/model/eu.anthropic.claude-sonnet-4-6/converse-stream"));
+        assert_eq!(enkeon_url("https://g", "m:0", false), "https://g/model/m%3A0/converse");
+        let p = BedrockProvider::enkeon("https://g/", "tr_sk_x");
+        assert_eq!(p.url("", "m", true), "https://g/model/m/converse-stream", "the trailing slash goes");
     }
 
     #[test]

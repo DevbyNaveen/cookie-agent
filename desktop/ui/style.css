@@ -1498,3 +1498,5 @@ footer.me { gap: 6px; }
 .slack-fields { display: grid; gap: 8px; }
 .slack-link { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 13.5px; color: var(--text-2); }
 @media (prefers-reduced-motion: reduce) { .wl-aurora { animation: none; } }
+.wl-fine { margin: 26px 0 0; font-size: 12.5px; color: var(--text-3); }
+.plain-list { margin: 0 0 6px; padding: 0 16px 8px 34px; display: grid; gap: 6px; font-size: 13px; line-height: 1.45; color: var(--text-2); }

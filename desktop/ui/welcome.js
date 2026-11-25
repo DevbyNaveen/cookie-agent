@@ -19,13 +19,15 @@ function welcomeClear() {
   clearTimeout(appsTimer); appsTimer = null;
 }
 
-/** On first launch with nobody hired and no Enkeon yet: the welcome. */
+/** Cookie is used signed in with Enkeon: until this Mac is, the welcome stands in front.
+ *  A first launch starts at meeting the crew; anyone who has been here before, at signing in. */
 async function maybeWelcome() {
-  try { if (localStorage.getItem(WELCOMED)) return false; } catch { return false; }
   let st = null;
   try { st = await call("enkeon"); } catch {}
-  if (st?.paired || rows.some((r) => r.id !== "cookie")) { try { localStorage.setItem(WELCOMED, "1"); } catch {} return false; }
-  openWelcome();
+  if (st?.paired) { try { localStorage.setItem(WELCOMED, "1"); } catch {} return false; }
+  let seen = false;
+  try { seen = !!localStorage.getItem(WELCOMED); } catch {}
+  openWelcome(seen || rows.some((r) => r.id !== "cookie") ? "signin" : "hello");
   return true;
 }
 
@@ -68,7 +70,13 @@ async function welcomeStep(step) {
   if (step === "hello") return welcomeHello();
   if (step === "signin") return welcomeSignin();
   if (step === "apps") return welcomeApps();
-  closeWelcome(() => openHire());
+  // Done: a new team hires; a team that already has agents goes back to them.
+  closeWelcome(async () => {
+    providers = await call("providers").catch(() => providers);
+    const team = rows.filter((r) => r.id !== "cookie");
+    if (team.length) { sortRows(); openAgent((rows.find((r) => needsOf(r.id).count > 0) ?? rows[0]).id); }
+    else openHire();
+  });
 }
 
 /* ---------- 1. meet the crew ---------- */
@@ -95,13 +103,12 @@ function welcomeHello() {
     welcomeTimers.push(setTimeout(loop, 1800 + i * 700 + Math.random() * 1500));
   });
   const go = button("Sign in with Enkeon", "primary wl-go", () => welcomeStep("signin"));
-  const skip = button("Use Cookie without an account", "quiet wl-skip", () => welcomeStep("hire"));
   welcomeFrame("hello",
     crew,
     el("h1", "wl-title", "Beyond assistants."),
     el("p", "wl-tag", "Agents that grow up."),
     el("p", "wl-sub", "A team of agents on your Mac, each with its own job, memory and face. They learn from every job, work while you sleep, and ask before anything that matters."),
-    box("div", "wl-actions", go, skip),
+    box("div", "wl-actions", go),
   );
   setTimeout(() => go.focus(), 50);
 }
@@ -117,7 +124,7 @@ async function welcomeSignin() {
     el("h1", "wl-title sm", "Sign in with Enkeon"),
     el("p", "wl-sub", "Your agents remember into an Enkeon brain, with proof for every memory, and reach your apps through it. Cookie keeps its own key for this Mac in your Keychain; your password never comes here."),
     status,
-    box("div", "wl-actions", button("Skip for now", "quiet wl-skip", async () => { await call("pair_cancel").catch(() => {}); welcomeStep("hire"); })),
+    el("p", "wl-fine", "Cookie works signed in, so every agent has a memory with proof and your apps from the first job."),
   );
   let started = false;
   const tick = async () => {

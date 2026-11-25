@@ -27,6 +27,9 @@ pub fn resolve(id: &ModelId) -> Result<Arc<dyn Provider>> {
         "bedrock" => Ok(Arc::new(bedrock::BedrockProvider::from_env()?)),
         #[cfg(not(feature = "bedrock"))]
         "bedrock" => Err(Error::UnknownProvider("bedrock (enable the `bedrock` cargo feature)".into())),
+        // Bedrock's models through Enkeon's gateway, on Enkeon credits (same wire, a bearer key).
+        #[cfg(feature = "bedrock")]
+        "enkeon" => Ok(Arc::new(bedrock::BedrockProvider::enkeon_from_env()?)),
         other => Err(Error::UnknownProvider(other.to_string())),
     }
 }

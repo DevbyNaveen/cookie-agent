@@ -5,6 +5,36 @@ function refreshSettings() {
   if ($("settings").open) openSettings(settingsTab);
 }
 
+/** What leaves this Mac, crash reports (off unless you say), and deleting it all. */
+async function yourDataPart() {
+  // Privacy and your data: what leaves this Mac, crash reports (off unless you say), deleting it all.
+  const data = await call("data_summary");
+  const priv = el("div", "group");
+  const leaves = el("ul", "plain-list");
+  for (const t of [
+    "The model you pick for an agent reads its jobs and what its tools return. Local models (Ollama) never leave this Mac.",
+    "Signed in with Enkeon: each agent's memories, what you connect there, and — for agents you let run in the cloud — their names, jobs and routines.",
+    "Chats you link (Slack, Telegram, …) carry the messages you send through them; web search sends the search words.",
+    "Crash reports are never sent. Turned on, they're written on this Mac for you to read and share.",
+  ]) leaves.append(el("li", null, t));
+  priv.append(setRow("What leaves this Mac", null, null), leaves);
+  priv.append(setRow("Crash reports", "Off unless you turn them on. A crash is written to this Mac — what failed and where, never a conversation, file or key.",
+    toggle(!!data.crash_reports, async (v) => { await call("set_crash_reports", { on: v }); refreshSettings(); }, "Crash reports")));
+  if (data.crashes) {
+    priv.append(setRow(`${data.crashes} crash report${data.crashes === 1 ? "" : "s"}`, "Copy one to share it, or clear them.", box("div", "row-actions",
+      button("Copy newest", "quiet small", async () => { const [r] = await call("crash_reports"); const full = await call("crash_report", { id: r.id }); await navigator.clipboard.writeText(JSON.stringify(full, null, 2)); toast("Copied", "The newest crash report is on your clipboard.", "good"); }),
+      button("Clear", "quiet small", async () => { await call("clear_crash_reports"); refreshSettings(); }))));
+  }
+  priv.append(setRow("Delete everything on this Mac", `Every agent, chat, memory ledger, file and setting in ${data.folder} (${humanSize(data.bytes || 0)}), and every key Cookie saved in the Keychain. Your Enkeon brain stays in Enkeon.`,
+    button("Delete…", "quiet small danger", async () => {
+      const word = prompt("This can't be undone. Type DELETE to erase everything Cookie keeps on this Mac.");
+      if (word == null) return;
+      const r = await call("erase_everything", { confirm: word });
+      toast("Deleted", r.note, "");
+    })));
+  return [el("h3", "group-title", "Your data"), priv];
+}
+
 const SETTINGS = {
   async general() {
     const name = $("me-name").textContent;
@@ -255,7 +285,7 @@ const SETTINGS = {
     model.setAttribute("list", "models");
     model.onchange = () => call("update_settings", { patch: { challenge_model: model.value } }).then(refreshSettings);
     ch.append(setRow("“Try to trick my Cookie”", "A public page (/challenge on your shared address) where anyone tries to make a demo agent leak a code or send it. Nothing it does can cause harm; every try is on the board.", null), model);
-    return [el("h2", null, "Privacy"), el("h3", "group-title", "Where your data lives"), g, el("h3", "group-title", "Walls"), walls, el("h3", "group-title", "Proof"), ch];
+    return [el("h2", null, "Privacy"), el("h3", "group-title", "Where your data lives"), g, ...(await yourDataPart()), el("h3", "group-title", "Walls"), walls, el("h3", "group-title", "Proof"), ch];
   },
 
   async about() {

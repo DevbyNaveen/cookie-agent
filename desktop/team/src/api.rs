@@ -66,7 +66,13 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         /* who and where */
         "me" => ok(me()),
         "data_dir" => ok(team.paths.root.to_string_lossy()),
-        "providers" => ok(Keys::present()),
+        "providers" => {
+            let mut p: Vec<&str> = Keys::present();
+            if std::env::var("ENKEON_MODEL_KEY").is_ok_and(|k| !k.is_empty()) {
+                p.push("enkeon");
+            }
+            ok(p)
+        }
         "key_providers" => ok(crate::keys::PROVIDERS.iter().map(|(id, label, var)| json!({"id": id, "label": label, "env": var, "set": std::env::var(var).is_ok_and(|v| !v.is_empty())})).collect::<Vec<_>>()),
         "set_key" => {
             team.keys.set_provider(&arg::<String>(a, "provider")?, &arg::<String>(a, "value")?)?;
@@ -319,6 +325,15 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "pair_choose" => ok(team.pair_choose(&arg::<String>(a, "project")?).await?),
         "pair_cancel" => { team.pair_cancel(); ok(team.enkeon_status()) }
         "unpair" => ok(team.unpair()?),
+
+        /* your data */
+        "data_summary" => ok(team.data_summary()),
+        "set_crash_reports" => ok(team.set_crash_reports(arg::<bool>(a, "on")?)?),
+        "report_ui_error" => { team.report_ui_error(&arg::<String>(a, "message")?, &opt::<String>(a, "detail").unwrap_or_default()); ok(Value::Null) }
+        "crash_reports" => ok(team.crash_reports()),
+        "crash_report" => ok(team.crash_report(&arg::<String>(a, "id")?)?),
+        "clear_crash_reports" => ok(team.clear_crash_reports()?),
+        "erase_everything" => ok(team.erase_everything(&arg::<String>(a, "confirm")?).await?),
 
         /* apps through Enkeon */
         "apps" => ok(team.apps().await?),

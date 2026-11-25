@@ -11,7 +11,13 @@ const box = (tag, cls, ...kids) => { const n = el(tag, cls); n.append(...kids.fi
 
 // The project's own model ids (README, examples, the Swift app): suggestions, never a default.
 const MODELS = {
+  // Signed in with Enkeon: Bedrock's models through Enkeon, on Cookie credits. No keys of your own.
+  enkeon: ["enkeon:eu.anthropic.claude-sonnet-4-6"],
   anthropic: ["anthropic:claude-sonnet-4-6", "anthropic:claude-haiku-4-5"],
+  // Your own AWS account (Settings → Models): the model Enkeon's cloud runs on.
+  bedrock: ["bedrock:eu.anthropic.claude-sonnet-4-6"],
+  // Filled at start with every model pulled into Ollama on this Mac.
+  ollama: [],
   openai: ["openai:gpt-6"],
   gemini: ["gemini:gemini-3.8-flash"],
 };
@@ -1786,6 +1792,8 @@ async function boot() {
   Api.listen(onTeamEvent);
   const [name, keys] = await Promise.all([call("me"), call("providers")]);
   providers = keys;
+  // Local models: whatever Ollama has pulled, free and offline.
+  try { const lm = await call("local_models"); MODELS.ollama = (lm.installed || []).map((m) => "ollama:" + m); if (MODELS.ollama.length) providers.push("ollama"); } catch {}
   $("me-name").textContent = name || "You";
   $("me-initials").textContent = (name || "You").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
   $("models").replaceChildren(...Object.values(MODELS).flat().map((m) => { const o = el("option"); o.value = m; return o; }));
@@ -1812,6 +1820,11 @@ async function boot() {
 }
 // After every script has loaded: the panels (profile, the desk, settings) are defined in their own files.
 window.addEventListener("DOMContentLoaded", () => boot().catch((e) => toast("Cookie couldn't start", String(e), "error")));
+// A script error in this window becomes a crash report — only if you turned them on (the engine checks).
+let uiErrors = 0;
+const reportUiError = (message, detail) => { if (uiErrors++ < 20) call("report_ui_error", { message: String(message).slice(0, 500), detail: String(detail || "").slice(0, 6000) }).catch(() => {}); };
+window.addEventListener("error", (e) => reportUiError(e.message, `${e.filename}:${e.lineno}:${e.colno}\n${e.error?.stack ?? ""}`));
+window.addEventListener("unhandledrejection", (e) => reportUiError(e.reason?.message ?? e.reason, e.reason?.stack));
 
 // The PIN for a job link, in place of the app until it's right.
 function askLinkPin() {

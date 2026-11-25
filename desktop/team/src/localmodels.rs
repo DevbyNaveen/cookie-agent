@@ -123,9 +123,15 @@ impl Team {
             by_base.entry(base_of(model)).or_default().push(model.clone());
         }
         let doubles: Vec<Value> = by_base.into_iter().filter(|(_, v)| v.len() > 1).map(|(b, v)| json!({"base": b, "tags": v})).collect();
+        // Every model pulled into Ollama: what an agent can be hired on, free and offline.
+        let installed: Vec<String> = match http().get(format!("{}/api/tags", ollama_root())).send().await {
+            Ok(r) if r.status().is_success() => r.json::<Value>().await.ok().and_then(|v| v["models"].as_array().cloned()).unwrap_or_default().iter().filter_map(|m| m["name"].as_str().or(m["model"].as_str()).map(str::to_string)).collect(),
+            _ => Vec::new(),
+        };
         json!({
             "server": ollama_root(),
             "reachable": ps.is_some(),
+            "installed": installed,
             "loaded": loaded,
             "used": used.iter().map(|(m, a)| json!({"model": m, "agents": a.iter().map(|(_, n)| n).collect::<Vec<_>>()})).collect::<Vec<_>>(),
             "doubles": doubles,

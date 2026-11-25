@@ -8,13 +8,17 @@
 
 use std::path::{Path, PathBuf};
 
-const SERVICE: &str = "com.enkeon.cookie";
+pub const SERVICE: &str = "com.enkeon.cookie";
 
 /// The model keys Cookie knows how to save, with the variable each provider reads.
 pub const PROVIDERS: &[(&str, &str, &str)] = &[
     ("anthropic", "Anthropic", "ANTHROPIC_API_KEY"),
     ("openai", "OpenAI", "OPENAI_API_KEY"),
     ("gemini", "Gemini", "GEMINI_API_KEY"),
+    // Amazon Bedrock with your own AWS account (models like `bedrock:eu.anthropic.claude-sonnet-4-6`).
+    ("bedrock", "AWS Bedrock: access key ID", "AWS_ACCESS_KEY_ID"),
+    ("bedrock_secret", "AWS Bedrock: secret access key", "AWS_SECRET_ACCESS_KEY"),
+    ("bedrock_region", "AWS Bedrock: region (for models without eu./us.)", "AWS_REGION"),
     ("exa", "Exa search", "EXA_API_KEY"),
     ("brave", "Brave search", "BRAVE_SEARCH_API_KEY"),
     ("elevenlabs", "ElevenLabs voice", "ELEVENLABS_API_KEY"),
