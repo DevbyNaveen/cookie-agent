@@ -39,7 +39,12 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
                 _ => false,
             };
             if keep {
-                out.push(t);
+                // Pages are read through Enkeon's Scrapling when Enkeon is connected (the Mac's reader behind it).
+                if name == "read_url" && crate::pair::enkeon().is_some() {
+                    out.push(crate::webread::read_url_tool(t));
+                } else {
+                    out.push(t);
+                }
             }
         }
     }

@@ -71,6 +71,7 @@ pub mod teamfile;
 pub mod telegram;
 pub mod tools;
 pub mod usage;
+pub mod webread;
 pub mod triggers;
 pub mod tuning;
 pub mod util;
