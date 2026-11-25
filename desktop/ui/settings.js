@@ -381,7 +381,11 @@ async function openSettings(tab = "general") {
   settingsTab = SETTINGS[tab] ? tab : "general";
   const d = $("settings");
   $("set-nav").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.tab === settingsTab));
-  try { $("set-body").replaceChildren(...(await SETTINGS[settingsTab]())); }
+  try {
+    $("set-body").replaceChildren(...(await SETTINGS[settingsTab]()));
+    // A card's buttons belong in the card: a button row right after an edit card moves inside it.
+    $("set-body").querySelectorAll(".group.edit + .form-end").forEach((end) => end.previousElementSibling.append(end));
+  }
   catch (e) { $("set-body").replaceChildren(el("p", "error-line", String(e))); }
   if (!d.open) d.showModal();
 }
