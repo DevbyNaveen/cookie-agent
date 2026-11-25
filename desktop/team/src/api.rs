@@ -330,6 +330,10 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         /* your data */
         "data_summary" => ok(team.data_summary()),
         "mcps" => ok(team.mcps()),
+        "usage" => ok(team.usage().await),
+        "computer_status" => ok(team.computer_status().await),
+        "computer_wake" => ok(team.computer_wake().await?),
+        "computer_sleep" => ok(team.computer_sleep().await?),
         "onepassword_status" => ok(team.onepassword_status(opt::<bool>(a, "deep").unwrap_or(false)).await),
         "onepassword_set_vaults" => ok(team.onepassword_set_vaults(arg::<Vec<String>>(a, "vaults")?)?),
         "mcp_add" => ok(team.mcp_add(&arg::<String>(a, "name")?, &arg::<String>(a, "target")?, opt::<String>(a, "token").as_deref()).await?),

@@ -109,6 +109,27 @@ impl Team {
         p.exists().then(|| util::read_json::<Paired>(&p)).filter(|p| !p.project.is_empty())
     }
 
+    /// This month's Cookie credits, from Enkeon itself: with the person's fresh
+    /// sign-in, else Cookie's own key. Never a number Enkeon didn't give.
+    pub async fn enkeon_credits(&self) -> Value {
+        let Some(p) = self.paired() else {
+            return json!({"signed_in": false, "paired": false});
+        };
+        let token = account().map(|a| a.1).or_else(|| self.paired_key());
+        let Some(token) = token else {
+            return json!({"signed_in": false, "paired": true});
+        };
+        let gateway = p.gateway.trim_end_matches('/').to_string();
+        match request(reqwest::Method::GET, format!("{gateway}/v1/projects/{}/cookie", p.project), Some(&token), None).await {
+            Ok(v) if v["credits"].is_object() => json!({
+                "signed_in": true, "project": p.project_name,
+                "allowance": v["credits"]["allowance"], "used": v["credits"]["used"], "saves": v["credits"]["saves"],
+            }),
+            Ok(_) => json!({"signed_in": true, "project": p.project_name, "available": false}),
+            Err(e) => json!({"signed_in": false, "paired": true, "reason": crate::util::clip(&e, 200)}),
+        }
+    }
+
     /// Every app Cookie offers, with its state in Enkeon (when signed in).
     pub async fn apps(&self) -> Result<Value, String> {
         let catalog: Vec<Value> = CATALOG.iter().map(|(slug, _, name, what)| json!({"slug": slug, "name": name, "what": what, "state": "off"})).collect();

@@ -268,6 +268,79 @@ const SETTINGS = {
     return out;
   },
 
+  async usage() {
+    const u = await call("usage");
+    const money = (d) => d >= 100 ? `$${Math.round(d)}` : d >= 0.01 ? `$${d.toFixed(2)}` : d > 0 ? `$${d.toFixed(3)}` : "$0";
+    const num = (n) => Number(n || 0).toLocaleString();
+    const month = new Date(`${u.month}-01T12:00:00`).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+    const m = u.models, cr = u.credits, pc = u.computer;
+
+    // Three numbers at the top: models, Enkeon credits, the cloud computer.
+    const tile = (label, big, small, extra) => { const t = el("div", "use-tile"); t.append(el("span", "use-label", label), el("strong", "use-big", big), el("small", "use-small", small)); if (extra) t.append(extra); return t; };
+    let creditsTile;
+    if (cr?.signed_in && cr.allowance != null) {
+      const used = Number(cr.used || 0), all = Number(cr.allowance || 0);
+      const bar = el("div", "use-meter"); const fill = el("span"); fill.style.width = `${all ? Math.min(100, (used / all) * 100) : 0}%`; bar.append(fill);
+      creditsTile = tile("Enkeon credits", `${num(used)} / ${num(all)}`, `${num(Math.max(0, all - used))} left this month`, bar);
+    } else creditsTile = tile("Enkeon credits", "—", cr?.paired ? "Sign in to Enkeon to see them" : "Pair with Enkeon to use credits");
+    const pcState = pc?.set_up ? (pc.running_since ? "Awake" : "Asleep") : "Not set up";
+    const tiles = el("div", "use-tiles");
+    tiles.append(
+      tile("Models", money(m.dollars), `${num(m.jobs)} job${m.jobs === 1 ? "" : "s"} · ${num(m.tokens)} tokens`),
+      creditsTile,
+      tile("Cloud computer", pc?.set_up ? money(pc.dollars) : "—", pc?.set_up ? `${pc.hours} h · ${pcState.toLowerCase()}` : "Not set up"));
+
+    // Spend by day this month.
+    const days = el("div", "use-days");
+    const byDay = new Map((m.days || []).map((d) => [d.day, d]));
+    const first = new Date(`${u.month}-01T12:00:00`), count = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+    const peak = Math.max(0.0001, ...(m.days || []).map((d) => d.dollars));
+    for (let i = 1; i <= count; i++) {
+      const key = `${u.month}-${String(i).padStart(2, "0")}`, d = byDay.get(key);
+      const col = el("div", "use-day" + (d ? "" : " none"));
+      const bar = el("span"); bar.style.height = d ? `${Math.max(6, (d.dollars / peak) * 100)}%` : "2px";
+      col.title = d ? `${key}: ${money(d.dollars)} · ${d.jobs} job${d.jobs === 1 ? "" : "s"}` : key;
+      col.append(bar); days.append(col);
+    }
+
+    // By agent.
+    const agents = el("div", "group");
+    for (const a of m.agents || []) {
+      const face = Faces.create(a.id, 28).el;
+      const t = el("div", "row-text");
+      t.append(el("span", null, a.name), el("small", null, `${a.model.replace(/^[a-z]+:/, "")} · ${num(a.jobs)} job${a.jobs === 1 ? "" : "s"}${a.failed ? `, ${a.failed} failed` : ""} · ${num(a.tokens)} tokens`));
+      const r = el("div", "row use-agent"); r.append(face, t, el("span", "use-amount", a.unpriced_tokens && !a.dollars ? "not priced" : money(a.dollars)));
+      agents.append(r);
+    }
+    if (!(m.agents || []).length) agents.append(setRow("Nothing yet this month", "When your agents work, what each one cost shows here.", null));
+
+    // The cloud computer.
+    const comp = el("div", "group");
+    if (pc?.set_up) {
+      const pill = el("span", "status-pill" + (pc.running_since ? " ok" : ""), pcState);
+      const act = pc.running_since
+        ? button("Sleep now", "quiet small", async (e) => { e.target.disabled = true; try { await call("computer_sleep"); toast("Going to sleep", "The cloud computer is stopping; its worlds stay on its disk.", "good"); } catch (err) { toast("Couldn't put it to sleep", String(err), "error"); } openSettings("usage"); })
+        : button("Wake", "primary small", async (e) => { e.target.disabled = true; try { await call("computer_wake"); toast("Waking", "The cloud computer is starting; it's ready in about a minute.", "good"); } catch (err) { toast("Couldn't wake it", String(err), "error"); } openSettings("usage"); });
+      const head = el("div", "row"); const ht = el("div", "row-text");
+      ht.append(el("span", null, "Parallax in the cloud"), el("small", null, `${pc.kind || "Spot machine"} · ${pc.region} · about $${pc.hourly}/hour while awake`));
+      head.append(ht, box("div", "use-acts", pill, act));
+      comp.append(head,
+        setRow("This month", `${pc.hours} hours awake · about ${money(pc.dollars)}`, null),
+        setRow("Sleeps by itself", "After 15 minutes with nothing to do. Its disk keeps every world while it sleeps; agents wake it when they need a full computer.", null));
+      if (pc.error) comp.append(el("p", "error-line", pc.error));
+    } else comp.append(setRow("Not set up", "A machine in the cloud where agents work with the Mac closed. It wakes when they need it and sleeps after 15 idle minutes.", null));
+    comp.append(setRow("Worlds on this Mac", `${u.worlds_here || 0} · free: they run on your own computer`, null));
+
+    const out = [el("h2", null, "Usage"), el("p", "set-note use-month", `${month}. From the record: each job's tokens at its model's price.`), tiles,
+      el("h3", "group-title", "By day"), days,
+      el("h3", "group-title", "By agent"), agents,
+      el("h3", "group-title", "Computer"), comp];
+    if (m.unpriced_tokens) out.push(el("p", "set-note", `${num(m.unpriced_tokens)} tokens from earlier jobs ran before Cookie knew their model's price, so their cost wasn't recorded.`));
+    out.push(el("p", "set-note", "Prices: your own in Models, else Anthropic's list prices. Models on your Mac (Ollama) are free. The computer's hours are counted from when Cookie saw it awake."));
+    // Live while it runs: look again at the computer, and redraw if it woke or slept.
+    if (pc?.set_up) call("computer_status").then((st) => { if (settingsTab === "usage" && (st.running_since ?? null) !== (pc.running_since ?? null)) openSettings("usage"); }).catch(() => {});
+    return out;
+  },
   async privacy() {
     const dir = await call("data_dir");
     const s = await call("settings");

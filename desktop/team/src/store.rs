@@ -150,6 +150,35 @@ pub struct PriceCfg {
     pub cache_write: f64,
 }
 
+/// List prices, in dollars per million tokens, for models with no price of their
+/// own (Anthropic's pricing page, platform.claude.com/docs/en/about-claude/pricing,
+/// read 2026-11-25; 5-minute cache writes). Models on your own Mac cost nothing.
+/// A price set in Settings always wins.
+pub fn known_price(model: &str) -> Option<PriceCfg> {
+    let m = model.to_lowercase();
+    let p = |input, output, cache_read, cache_write| Some(PriceCfg { input, output, cache_read, cache_write });
+    if m.starts_with("ollama:") {
+        return p(0.0, 0.0, 0.0, 0.0);
+    }
+    if m.contains("opus-4-6") || m.contains("opus-4-5") {
+        return p(5.0, 25.0, 0.5, 6.25);
+    }
+    if m.contains("sonnet-4-6") || m.contains("sonnet-4-5") {
+        return p(3.0, 15.0, 0.3, 3.75);
+    }
+    if m.contains("haiku-4-5") {
+        return p(1.0, 5.0, 0.1, 1.25);
+    }
+    None
+}
+
+impl Settings {
+    /// What a model costs: the person's price, else the list price.
+    pub fn price_of(&self, model: &str) -> Option<PriceCfg> {
+        self.prices.get(model).cloned().or_else(|| known_price(model))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct Telegram {

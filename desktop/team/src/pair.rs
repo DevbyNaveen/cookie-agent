@@ -141,7 +141,7 @@ impl Team {
         self.paths.root.join("enkeon.json")
     }
 
-    fn paired_key(&self) -> Option<String> {
+    pub(crate) fn paired_key(&self) -> Option<String> {
         #[cfg(test)]
         return std::fs::read_to_string(self.paths.root.join("test-enkeon-key")).ok();
         #[cfg(not(test))]

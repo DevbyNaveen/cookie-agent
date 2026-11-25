@@ -1527,3 +1527,22 @@ footer.me { gap: 6px; }
 .op-cmd code { flex: 1; font: 12.5px/1 ui-monospace, "SF Mono", Menlo, monospace; background: var(--raise-2); padding: 10px 12px; border-radius: 8px; }
 .op-cmd .btn { margin-left: 0; }
 .op-sheet .group { margin-top: 4px; }
+
+/* Usage */
+.use-month { margin: -12px 4px 16px; }
+.use-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.use-tile { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border-radius: 14px; background: var(--raise); min-width: 0; }
+.use-label { font-size: 12.5px; color: var(--text-3); }
+.use-big { font-size: 24px; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.use-small { font-size: 12.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.use-meter { height: 5px; border-radius: 3px; background: var(--raise-2); overflow: hidden; margin-top: 6px; }
+.use-meter span { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.use-days { display: flex; align-items: flex-end; gap: 3px; height: 84px; padding: 10px 12px; border-radius: 14px; background: var(--raise); }
+.use-day { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+.use-day span { display: block; width: 100%; border-radius: 3px 3px 1px 1px; background: var(--accent); opacity: .85; }
+.use-day.none span { background: var(--line-2); opacity: 1; }
+.use-agent { gap: 12px; justify-content: flex-start; }
+.use-agent .row-text { flex: 1; min-width: 0; }
+.use-amount { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); }
+.use-acts { display: flex; align-items: center; gap: 8px; }
+@media (max-width: 700px) { .use-tiles { grid-template-columns: 1fr; } }

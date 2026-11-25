@@ -313,7 +313,7 @@ impl Team {
             // A change to the person's own files is put to them every time.
             .policy(cookie_harness::policy::Policy::default().always_ask(crate::access::WRITE_TOOL))
             .shared_approver(broker);
-        let price = settings.prices.get(&rec.model).map(|p| Price { input: p.input, output: p.output, cache_read: p.cache_read, cache_write: p.cache_write });
+        let price = settings.price_of(&rec.model).map(|p| Price { input: p.input, output: p.output, cache_read: p.cache_read, cache_write: p.cache_write });
         let budget = Budget { max_steps: rec.limits.steps.max(1), max_tokens: rec.limits.tokens.max(1_000), max_dollars: price.and(rec.limits.job_dollars) };
         agent = agent.budget(budget);
         if let Some(e) = tuning.effort() {
@@ -398,7 +398,7 @@ impl Team {
         if self.is_asleep(&rec.id) {
             return Err(format!("{} is asleep. Wake it first.", rec.name));
         }
-        if let (Some(cap), Some(_)) = (rec.limits.month_dollars, self.settings().await.prices.get(&rec.model)) {
+        if let (Some(cap), Some(_)) = (rec.limits.month_dollars, self.settings().await.price_of(&rec.model)) {
             if self.month_spend(&rec.id) as f64 / 1e6 >= cap {
                 return Err(format!("{} reached its monthly limit of ${cap:.2}. Raise it in its profile to continue.", rec.name));
             }
@@ -605,7 +605,7 @@ impl Team {
         let Ok(settings) = self.settings.try_read() else { return 0 };
         let Ok(agents) = self.agents.try_read() else { return 0 };
         let Some(model) = agents.iter().find(|a| a.id == agent).map(|a| a.model.clone()) else { return 0 };
-        settings.prices.get(&model).map(|p| Price { input: p.input, output: p.output, cache_read: p.cache_read, cache_write: p.cache_write }.microdollars(u)).unwrap_or(0)
+        settings.price_of(&model).map(|p| Price { input: p.input, output: p.output, cache_read: p.cache_read, cache_write: p.cache_write }.microdollars(u)).unwrap_or(0)
     }
 
     /// Stop an agent's job now. False when nothing was running.

@@ -17,6 +17,7 @@ pub mod channels;
 pub mod chatfiles;
 pub mod checker;
 pub mod cloud;
+pub mod cloudpc;
 pub mod code;
 pub mod computer;
 pub mod control;
@@ -68,6 +69,7 @@ pub mod toolsearch;
 pub mod teamfile;
 pub mod telegram;
 pub mod tools;
+pub mod usage;
 pub mod triggers;
 pub mod tuning;
 pub mod util;
@@ -238,6 +240,7 @@ impl Team {
         self.spawn_channels();
         // Agents with their own Slack account.
         self.spawn_agent_slacks();
+        self.spawn_computer_watch();
         // Agents wake when their memory changes (with Enkeon connected).
         wake::spawn(self.clone());
         // Agents' browsers close when idle.
