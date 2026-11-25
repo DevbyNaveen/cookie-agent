@@ -13,15 +13,20 @@ const MODELS = {
   openai: ["openai:gpt-6"],
   gemini: ["gemini:gemini-3.8-flash"],
 };
+// Each starter wears its own shape, so the whole crew shows every look.
 const STARTERS = [
-  { name: "Inbox Triage", job: "Sort my inbox every morning, tell me which threads need me, and draft a reply for each one. Never send anything yourself." },
-  { name: "Lead Pipeline Desk", job: "Qualify new inbound leads against my notes and draft a short, personal first reply for the good ones." },
-  { name: "Writing Desk", job: "Turn my rough notes into posts and emails in my own voice. Keep it short and plain." },
-  { name: "Research Scout", job: "Answer research questions with sources. Every fact names the page it came from, and you say plainly when you could not find something." },
-  { name: "Invoice Chaser", job: "Keep track of invoices I tell you about and draft polite reminders for the ones that are overdue." },
-  { name: "Chief of Staff", job: "Help me plan the week: what matters, what can wait, and what I promised people. Ask before assuming." },
+  { name: "Inbox Triage", shape: "bot", job: "Sort my inbox every morning, tell me which threads need me, and draft a reply for each one. Never send anything yourself." },
+  { name: "Research Scout", shape: "orb", job: "Answer research questions with sources. Every fact names the page it came from, and you say plainly when you could not find something." },
+  { name: "Chief of Staff", shape: "star", job: "Help me plan the week: what matters, what can wait, and what I promised people. Ask before assuming." },
   // Comes with its own software (a plan, a workout log, a body tracker, a progress chart, a check-in form).
-  { name: "Gym Trainer", template: "gym-trainer", job: "Be my gym coach. Plan my week in the plan calendar, log every workout I tell you about in the workout log, keep my body tracker up to date, and read the progress chart before you change my plan. Keep it safe: never push through pain." },
+  { name: "Gym Trainer", shape: "mochi", template: "gym-trainer", job: "Be my gym coach. Plan my week in the plan calendar, log every workout I tell you about in the workout log, keep my body tracker up to date, and read the progress chart before you change my plan. Keep it safe: never push through pain." },
+  { name: "Writing Desk", shape: "wisp", job: "Turn my rough notes into posts and emails in my own voice. Keep it short and plain." },
+  { name: "Lead Pipeline Desk", shape: "crystal", job: "Qualify new inbound leads against my notes and draft a short, personal first reply for the good ones." },
+  { name: "Invoice Chaser", shape: "macaron", job: "Keep track of invoices I tell you about and draft polite reminders for the ones that are overdue." },
+  { name: "Meeting Notes", shape: "cloud", job: "Turn my meeting notes and transcripts into decisions, owners and next steps, and remind me of what I promised." },
+  { name: "Daily Brief", shape: "ghost", job: "Every morning, brief me in five lines: my day, what's waiting on me, and the news I follow." },
+  { name: "Travel Planner", shape: "gumdrop", job: "Plan my trips: options with prices and times, a day-by-day plan and a packing list. Never book or pay for anything yourself." },
+  { name: "Learning Coach", shape: "bun", job: "Teach me what I want to learn in small daily lessons, quiz me, and keep track of what I've got and what to review." },
 ];
 
 let rows = [];
@@ -1317,34 +1322,37 @@ function trick(c, name) {
 
 // One face per role for this session: come back and the one you liked is still there.
 const crewIds = new Map();
-function slugId(name) {
+const slugOf = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "agent";
+function slugId(name, shape) {
   if (crewIds.has(name)) return crewIds.get(name);
-  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "agent";
-  const hex = Array.from(crypto.getRandomValues(new Uint8Array(3)), (b) => b.toString(16).padStart(2, "0")).join("");
-  const id = `${slug}-${hex}`;
+  const id = Faces.idFor(slugOf(name), shape);
   crewIds.set(name, id);
   return id;
 }
+let lookFaces = [];
 
 function stopCrew() {
   crewTimers.forEach(clearTimeout); crewTimers = [];
   crew.forEach((c) => c.face?.stop());
   crew = [];
+  lookFaces.forEach((f) => f.stop()); lookFaces = [];
+  $("hire-looks")?.setAttribute("hidden", "");
 }
 
 function renderStarters() {
   stopCrew();
-  const taken = new Set(rows.map((r) => r.name.toLowerCase()));
-  const roles = STARTERS.filter((s) => !taken.has(s.name.toLowerCase()));
-  const cards = roles.map((s) => {
-    const id = slugId(s.name);
+  // The whole crew, always: one you already have shows its own face, marked Hired.
+  const have = new Map(rows.map((r) => [r.name.toLowerCase(), r]));
+  const cards = STARTERS.map((s) => {
+    const hired = have.get(s.name.toLowerCase()) ?? null;
+    const id = hired ? hired.id : slugId(s.name, s.shape);
     const face = Faces.create(id, 108, undefined, { view: 2.5 });
-    return { ...s, id, face };
+    return { ...s, id, face, hired };
   });
   cards.push({ own: true, name: "Your own" });
   $("starter-list").replaceChildren(...cards.map((c, i) => {
     const li = el("li");
-    const b = el("button", "crew-card" + (c.own ? " own" : ""));
+    const b = el("button", "crew-card" + (c.own ? " own" : "") + (c.hired ? " hired" : ""));
     b.type = "button";
     b.setAttribute("role", "option");
     b.setAttribute("aria-selected", "false");
@@ -1354,10 +1362,11 @@ function renderStarters() {
     const stage = el("span", "acro-stage");
     stage.append(acro);
     b.append(stage, el("span", "crew-name", c.name));
+    if (c.hired) b.append(el("span", "crew-tag", "Hired"));
     c.card = b; c.acro = acro;
     b.onmouseenter = () => !c.own && trick(c);
-    b.onclick = () => pick(c);
-    b.ondblclick = () => !c.own && hireNow();
+    b.onclick = () => (c.hired ? (stopCrew(), openAgent(c.hired.id)) : pick(c));
+    b.ondblclick = () => !c.own && !c.hired && hireNow();
     li.append(b);
     // Its own rhythm: a first trick soon, then one every few seconds.
     if (!c.own) {
@@ -1375,7 +1384,49 @@ function pick(c) {
   $("hire-form").hidden = !c.own || false;
   if (c.own) { $("hire-form").hidden = false; $("hire-form").name.focus(); }
   else { $("hire-form").hidden = true; trick(c, "doubleflip"); setTimeout(() => c.face.celebrate?.(), 650); }
+  showLooks(c);
   syncHireBtn();
+}
+
+// Pick a look: one option in every shape (new colours on "More"). The face picked is the
+// face hired, because a face is drawn from the id it's hired with.
+function showLooks(c) {
+  let box = $("hire-looks");
+  if (!box) { box = el("div", "hire-looks"); box.id = "hire-looks"; $("hire-form").before(box); }
+  lookFaces.forEach((f) => f.stop()); lookFaces = [];
+  const slug = c.own ? "agent" : slugOf(c.name);
+  const row = el("div", "looks");
+  row.setAttribute("role", "listbox");
+  row.setAttribute("aria-label", "Looks");
+  for (const shape of Faces.shapes) {
+    const id = c.id && Faces.look(c.id).shape === shape && !c.own ? c.id : Faces.idFor(slug, shape);
+    const b = el("button", "look" + (id === c.id ? " on" : ""));
+    b.type = "button";
+    b.title = shape[0].toUpperCase() + shape.slice(1);
+    b.setAttribute("aria-label", b.title);
+    const f = Faces.create(id, 50);
+    lookFaces.push(f);
+    b.append(f.el);
+    b.onmouseenter = () => f.perk();
+    b.onclick = () => setLook(c, id, b);
+    row.append(b);
+  }
+  const more = el("button", "btn quiet looks-more", "More colours");
+  more.type = "button";
+  more.onclick = () => showLooks(c);
+  box.replaceChildren(el("p", "looks-title", "Pick a look"), row, more);
+  box.hidden = false;
+}
+
+function setLook(c, id, b) {
+  for (const x of b.parentNode.children) x.classList.toggle("on", x === b);
+  c.id = id;
+  if (!c.own) crewIds.set(c.name, id);
+  c.face?.stop();
+  c.face = Faces.create(id, 108, undefined, { view: 2.5 });
+  c.acro.replaceChildren(c.face.el);
+  c.busy = false;
+  trick(c, "supernova");
 }
 
 function syncHireBtn() {
@@ -1439,6 +1490,8 @@ async function hireNow() {
         ? { name: form.name.value, job: form.job.value, model, inherit: form.handover.value.slice("archive:".length) }
         : { name: form.name.value, job: form.job.value, model, handover: form.handover.value || null })
     : { name: picked.name, job: picked.job, model, id: picked.id, template: picked.template ?? null };
+  // A look picked for your own agent comes with it.
+  if (picked.own && picked.id) hire.id = picked.id;
   $("hire-btn").disabled = true;
   try {
     const agent = await call("hire_agent", { hire });

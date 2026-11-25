@@ -1398,3 +1398,18 @@ footer.me { gap: 6px; }
 .board-add:hover { background: var(--raise); color: var(--text); }
 .board-add-in { font-size: 13px; }
 .card-sheet .text-in { margin-bottom: 10px; width: 100%; }
+
+/* Hire: the whole crew (ones you have are marked), and a look for the one you pick. */
+.hire-inner { max-width: 940px; }
+.crew-card { position: relative; }
+.crew-tag { position: absolute; top: 12px; right: 12px; font-size: 11px; font-weight: 650; letter-spacing: .02em; color: var(--text-2); background: var(--raise-2); padding: 3px 8px; border-radius: 999px; }
+.crew-card.hired .crew-name { color: var(--text-3, var(--text-2)); }
+.hire-looks { width: 100%; max-width: 900px; display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 22px; animation: pop .2s var(--ease); }
+.hire-looks[hidden] { display: none; }
+.looks-title { margin: 0; font-size: 13px; font-weight: 600; color: var(--text-2); }
+.looks { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; }
+.look { width: 64px; height: 64px; display: grid; place-items: center; border-radius: 20px; background: transparent; transition: background .15s, box-shadow .15s, transform .15s; }
+.look:hover { background: var(--raise); }
+.look:active { transform: scale(.94); }
+.look.on { background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); }
+.looks-more { font-size: 13px; }

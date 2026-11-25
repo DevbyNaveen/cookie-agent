@@ -1255,8 +1255,18 @@ void main(){
   function wave(ids, gapMs = 160) {
     ids.forEach((id, i) => setTimeout(() => of(id).forEach((f) => f.perk()), i * gapMs));
   }
+  /** A fresh id, `<slug>-<6 hex>`, whose face has the shape asked for (any shape if none).
+   *  A face is drawn from its id, so this is how a look is chosen and kept. */
+  function idFor(slug, shape, salt = ownSalt) {
+    const hex = () => Array.from(crypto.getRandomValues(new Uint8Array(3)), (b) => b.toString(16).padStart(2, "0")).join("");
+    for (let i = 0; i < 500; i++) {
+      const id = `${slug}-${hex()}`;
+      if (!shape || look(salt ? salt + ":" + id : id).shape === shape) return id;
+    }
+    return `${slug}-${hex()}`;
+  }
   /** How long an idle face waits before it dozes. */
   function setDozeAfter(ms) { dozeAfter = ms; }
 
-  return { create, look, setSalt, saltOf, color, of, wave, setDozeAfter, glyphFor };
+  return { create, look, setSalt, saltOf, color, of, wave, setDozeAfter, glyphFor, idFor, shapes: DEALT };
 })();
