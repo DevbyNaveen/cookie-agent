@@ -183,6 +183,10 @@ impl Team {
             loop {
                 match aws::ec2(&cr, "StartInstances", &[("InstanceId.1".into(), c.instance.clone())]).await {
                     Ok(_) => break,
+                    // A Spot machine just stopped takes a minute before AWS lets it start again.
+                    Err(e) if e.contains("IncorrectSpotRequestState") && std::time::Instant::now() < deadline => {
+                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    }
                     Err(e) if e.contains("capacity") && std::time::Instant::now() < deadline => {
                         tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                         wait = (wait * 2).min(60);
@@ -349,6 +353,16 @@ impl Team {
         Self::wait_state(&cr, &new, "running", 300).await?;
         aws::ec2(&cr, "StopInstances", &[("InstanceId.1".into(), new.clone())]).await?;
         Self::wait_state(&cr, &new, "stopped", 300).await?;
+        // Its Spot request settles (disabled) a minute after the stop; only then can it start.
+        if market == "spot" {
+            for _ in 0..30 {
+                let r = aws::ec2(&cr, "DescribeSpotInstanceRequests", &[("Filter.1.Name".into(), "instance-id".into()), ("Filter.1.Value.1".into(), new.clone())]).await?;
+                if field(&r, "state", 0) == Some("disabled") {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        }
         // 3. Its own disk out, this one in.
         let nx = aws::ec2(&cr, "DescribeInstances", &[("InstanceId.1".into(), new.clone())]).await?;
         let at = nx.find("<deviceName>/dev/sda1</deviceName>").ok_or("The new machine has no root disk.")?;
