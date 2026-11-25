@@ -12,6 +12,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-notification = "2"
+# The Stop key: every agent stops, from anywhere on the Mac.
+tauri-plugin-global-shortcut = "2"
 cookie-team = { path = "../team" }
 serde_json = "1"
 tokio = { version = "1", features = ["sync", "rt-multi-thread"] }

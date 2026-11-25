@@ -113,6 +113,7 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
             ok(team.send_in_chat(&arg::<String>(a, "id")?, arg(a, "text")?, attachments).await?)
         }
         "stop" => ok(team.stop(&arg::<String>(a, "id")?)),
+        "stop_all" => ok(team.stop_all()),
         "steer" => ok(team.steer(&arg::<String>(a, "id")?, &arg::<String>(a, "text")?)),
         "busy" => ok(team.busy().into_iter().map(|(agent, job)| json!({"agent": agent, "job": job})).collect::<Vec<_>>()),
         "jobs" => ok(team.jobs(&arg::<String>(a, "id")?)),

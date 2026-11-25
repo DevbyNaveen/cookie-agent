@@ -182,6 +182,18 @@ fn main() {
     }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        // The Stop key, ⌃⌥⎋: every agent stops, whatever has focus.
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        if let Some(team) = app.try_state::<std::sync::Arc<Team>>() {
+                            team.stop_all();
+                        }
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             let team = Team::open(&dir).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
@@ -213,12 +225,25 @@ fn main() {
                 }
             });
 
+            {
+                use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+                if let Err(e) = app.global_shortcut().register(Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Escape)) {
+                    eprintln!("the Stop key (control-option-escape) couldn't be set: {e}");
+                }
+            }
+
             // The tray: Cookie keeps working with the window closed.
             let open = MenuItem::with_id(app, "open", "Open Cookie", true, None::<&str>)?;
+            let stop = MenuItem::with_id(app, "stop", "Stop all agents  ⌃⌥⎋", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Cookie", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &stop, &quit])?;
             let mut tray = TrayIconBuilder::with_id("cookie").menu(&menu).tooltip("Cookie").on_menu_event(|app, e| match e.id().as_ref() {
                 "open" => show_main(app),
+                "stop" => {
+                    if let Some(team) = app.try_state::<std::sync::Arc<Team>>() {
+                        team.stop_all();
+                    }
+                }
                 "quit" => app.exit(0),
                 _ => {}
             });

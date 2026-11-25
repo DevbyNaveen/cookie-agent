@@ -613,6 +613,20 @@ impl Team {
         self.runs.lock().unwrap().get(agent).map(|r| r.control.cancel.cancel()).is_some()
     }
 
+    /// Stop every agent's job now (the Stop key). How many were running.
+    pub fn stop_all(&self) -> usize {
+        let runs = self.runs.lock().unwrap();
+        for r in runs.values() {
+            r.control.cancel.cancel();
+        }
+        let n = runs.len();
+        drop(runs);
+        if n > 0 {
+            self.emit(crate::TeamEvent::Notice { agent: crate::front::COOKIE_ID.into(), title: "Stopped".into(), body: format!("{n} agent{} stopped. Nothing they were doing goes on.", if n == 1 { "" } else { "s" }), job: None });
+        }
+        n
+    }
+
     /// Add the person's words to a job in flight. False when nothing is running.
     pub fn steer(&self, agent: &str, text: &str) -> bool {
         self.runs.lock().unwrap().get(agent).map(|r| r.control.steer.push(text.to_string())).is_some()
