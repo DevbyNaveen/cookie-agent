@@ -896,6 +896,7 @@ dependencies = [
  "cookie-net",
  "futures",
  "lettre",
+ "lopdf",
  "mail-auth",
  "mail-parser",
  "parallax",
