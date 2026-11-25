@@ -214,6 +214,13 @@ pub(crate) fn tools(team: &Arc<Team>, agent: &str) -> Vec<Arc<dyn Tool>> {
     let mut out: Vec<Arc<dyn Tool>> = Vec::new();
     for spec in parallax::mcp::tools() {
         let name = spec["name"].as_str().unwrap_or_default().to_string();
+        // Vaults need Linux with KVM: with a cloud computer set up they run there.
+        if name.starts_with("parallax_vault") {
+            if team.computer().is_some() {
+                out.push(vault_tool(team, agent, &spec));
+            }
+            continue;
+        }
         let effect = if LOOKS.contains(&name.as_str()) { Effect::Read } else { Effect::Write };
         let (t, a, n) = (Arc::downgrade(team), agent.to_string(), name.clone());
         out.push(Arc::new(tool(&name, spec["description"].as_str().unwrap_or(""), spec["inputSchema"].clone(), effect, move |args: Value| {
@@ -235,6 +242,27 @@ pub(crate) fn tools(team: &Arc<Team>, agent: &str) -> Vec<Arc<dyn Tool>> {
         })));
     }
     out
+}
+
+/// A vault tool, run on the cloud computer as this agent (`as`): its own Linux machine with a desktop.
+fn vault_tool(team: &Arc<Team>, agent: &str, spec: &Value) -> Arc<dyn Tool> {
+    let name = spec["name"].as_str().unwrap_or_default().to_string();
+    let effect = if matches!(name.as_str(), "parallax_vaults" | "parallax_vault_look") { Effect::Read } else { Effect::Write };
+    let (t, a, n) = (Arc::downgrade(team), agent.to_string(), name.clone());
+    let about = format!("{} It runs on your cloud computer, which wakes for it (about a minute when it's asleep).", spec["description"].as_str().unwrap_or(""));
+    Arc::new(tool(&name, &about, spec["inputSchema"].clone(), effect, move |mut args: Value| {
+        let (t, a, n) = (t.clone(), a.clone(), n.clone());
+        async move {
+            let team = t.upgrade().ok_or("Cookie is closing.")?;
+            args["as"] = json!(a);
+            let r = team.computer_px(&n, &args).await?;
+            Ok(util::clip(&match r {
+                Value::String(s) => s,
+                v if v["output"].is_string() => format!("exit {}\n{}", v["code"], v["output"].as_str().unwrap_or("")),
+                v => serde_json::to_string_pretty(&v).unwrap_or_default(),
+            }, 30_000))
+        }
+    }))
 }
 
 /// The agent's own software: look at it, change it (through Do), undo.

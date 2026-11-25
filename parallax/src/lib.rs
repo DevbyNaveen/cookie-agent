@@ -15,6 +15,7 @@
 //! `preview`) are for when a world should live on a host.
 
 pub mod cloud;
+pub mod vaults;
 pub mod engine;
 pub mod engines;
 pub mod ledger;

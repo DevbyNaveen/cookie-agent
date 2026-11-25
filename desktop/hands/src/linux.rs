@@ -78,6 +78,11 @@ async fn pid_of(conn: &zbus::Connection, bus: &str) -> i32 {
     }
 }
 
+/// "_OK" → "OK", "Save _As…" → "Save As…"; a doubled "__" stays one underscore.
+fn mnemonic_free(name: &str) -> String {
+    name.replace("__", "\u{0}").replace('_', "").replace('\u{0}', "_")
+}
+
 /// The plain role an agent reads.
 fn plain(role: Role) -> String {
     match role {
@@ -200,7 +205,8 @@ impl Linux {
                     continue;
                 }
                 let role = el.get_role().await.unwrap_or(Role::Invalid);
-                let mut name = el.name().await.unwrap_or_default();
+                // GTK marks a shortcut letter with "_" ("_OK"): people read "OK".
+                let mut name = mnemonic_free(&el.name().await.unwrap_or_default());
                 if name.is_empty() {
                     name = el.description().await.unwrap_or_default();
                 }

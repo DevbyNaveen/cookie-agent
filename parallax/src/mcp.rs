@@ -47,6 +47,14 @@ pub fn tools() -> Vec<Value> {
         tool("parallax_diff", "What differs between two worlds, or between a world and one of its checkpoints.", json!({"world": w, "other": st, "checkpoint": {"type": "integer"}}), &["world"]),
         tool("parallax_keep", "Write a world made from a folder back to that folder (never over a file changed there since).", json!({"world": w}), &["world"]),
         tool("parallax_discard", "Throw a world away.", json!({"world": w}), &["world"]),
+        tool("parallax_vaults", "Your vaults: whole Linux computers of your own, each with a hidden desktop. Awake, asleep (on disk, free) or off.", json!({}), &[]),
+        tool("parallax_vault_open", "Open a vault by name: a new one boots in seconds with its own disk; an asleep one wakes exactly where it was.", json!({"name": st}), &["name"]),
+        tool("parallax_vault_run", "Run a shell command in a vault (its desktop is DISPLAY=:0). Returns the exit code and output.", json!({"name": st, "command": st, "timeout": {"type": "integer", "description": "seconds, default 60"}}), &["name", "command"]),
+        tool("parallax_vault_launch", "Start an app on a vault's desktop, e.g. \"mousepad ~/notes.txt\" or \"zenity --entry\". Returns at once.", json!({"name": st, "app": st}), &["name", "app"]),
+        tool("parallax_vault_look", "Read an app's window in a vault: its buttons, fields and text, each with a ref.", json!({"name": st, "app": st}), &["name"]),
+        tool("parallax_vault_act", "Use an app in a vault: steps by ref or role and name (press, set, focus, menu, type, keys…), checked between steps; answers with what changed.", json!({"name": st, "app": st, "steps": {"type": "array", "items": {"type": "object"}}}), &["name", "steps"]),
+        tool("parallax_vault_sleep", "Put a vault to sleep: its memory and state go to disk, and it wakes exactly there.", json!({"name": st}), &["name"]),
+        tool("parallax_vault_discard", "Throw a vault away for good: its disk, memory and state.", json!({"name": st}), &["name"]),
         tool("parallax_waiting", "Actions waiting at the wall for a person's yes.", json!({}), &[]),
     ]
 }
@@ -122,6 +130,25 @@ pub async fn call(px: &Arc<Parallax>, name: &str, a: &Value, owner: &str) -> Res
         "parallax_discard" => {
             px.worlds.discard(w(a)?)?;
             Ok(json!({"discarded": w(a)?}))
+        }
+        // Vaults: the host's own token may act for an agent (`as`); anyone else is themselves.
+        v if v.starts_with("parallax_vault") => {
+            let who = if owner == "*" { a["as"].as_str().filter(|s| !s.is_empty()).unwrap_or("local") } else { owner };
+            let name = a["name"].as_str().unwrap_or_default();
+            let home = &px.home;
+            match v {
+                "parallax_vaults" => Ok(crate::vaults::list(home, who).await),
+                "parallax_vault_open" => crate::vaults::open(home, who, name).await,
+                "parallax_vault_run" => crate::vaults::run(home, who, name, a["command"].as_str().ok_or("Needs `command`.")?, a["timeout"].as_u64().unwrap_or(60)).await,
+                "parallax_vault_launch" => crate::vaults::launch(home, who, name, a["app"].as_str().ok_or("Needs `app`.")?).await,
+                "parallax_vault_look" => crate::vaults::look(home, who, name, a["app"].as_str()).await,
+                "parallax_vault_act" => crate::vaults::act(home, who, name, a["app"].as_str(), &a["steps"]).await,
+                "parallax_vault_sleep" => crate::vaults::sleep(home, who, name).await,
+                "parallax_vault_discard" => crate::vaults::discard(home, who, name).await,
+                "parallax_vaults_sleep_all" if owner == "*" => Ok(json!({"slept": crate::vaults::sleep_all(home).await})),
+                "parallax_vaults_awake" if owner == "*" => Ok(json!({"awake": crate::vaults::awake_count().await})),
+                _ => Err(format!("No tool `{v}`.")),
+            }
         }
         "parallax_waiting" => Ok(json!(px.ledger.waiting().into_iter().filter(|e| owner == "*" || px.worlds.get(&e.world).is_ok_and(|w| w.owner == owner)).collect::<Vec<_>>())),
         other => Err(format!("No tool {other}.")),

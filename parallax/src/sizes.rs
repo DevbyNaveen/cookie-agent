@@ -149,13 +149,15 @@ pub fn vault_available() -> Result<PathBuf, String> {
 /// One HTTP request over Firecracker's Unix socket (its API is plain HTTP/1.1).
 #[cfg(unix)]
 async fn api(sock: &Path, method: &str, path: &str, body: &Value) -> Result<String, String> {
+    // Writing or loading a snapshot moves the vault's whole memory: give it time.
+    let wait = if path.starts_with("/snapshot") { 180 } else { 10 };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut s = tokio::net::UnixStream::connect(sock).await.map_err(|e| format!("Firecracker's socket: {e}"))?;
     let b = body.to_string();
     let req = format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nAccept: application/json\r\nContent-Length: {}\r\n\r\n{b}", b.len());
     s.write_all(req.as_bytes()).await.map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; 16 * 1024];
-    let n = tokio::time::timeout(Duration::from_secs(10), s.read(&mut buf)).await.map_err(|_| "Firecracker didn't answer.")?.map_err(|e| e.to_string())?;
+    let n = tokio::time::timeout(Duration::from_secs(wait), s.read(&mut buf)).await.map_err(|_| "Firecracker didn't answer.")?.map_err(|e| e.to_string())?;
     let text = String::from_utf8_lossy(&buf[..n]).to_string();
     let status: u16 = text.split_whitespace().nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
     if !(200..300).contains(&status) {
@@ -264,7 +266,9 @@ pub fn guest_agent() -> Result<(), String> {
                 continue;
             }
             let req: Value = serde_json::from_str(line.trim()).unwrap_or_default();
-            let out = std::process::Command::new("/bin/sh").arg("-c").arg(req["command"].as_str().unwrap_or("true")).output();
+            // A time limit the command can't outlast (coreutils' timeout, then a kill).
+            let secs = req["timeout"].as_u64().unwrap_or(60).clamp(1, 600).to_string();
+            let out = std::process::Command::new("/usr/bin/timeout").args(["--kill-after=2", &secs, "/bin/sh", "-c"]).arg(req["command"].as_str().unwrap_or("true")).output();
             let answer = match out {
                 Ok(o) => json!({"code": o.status.code().unwrap_or(-1), "output": format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))}),
                 Err(e) => json!({"code": -1, "output": e.to_string()}),
