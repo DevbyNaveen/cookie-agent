@@ -73,6 +73,12 @@ const Api = (() => {
     return tauri.core.invoke("pick_folder");
   }
 
+  /** The Mac's own file chooser, filtered to one kind (images, documents, media, archives) or any; [] when cancelled. */
+  async function pickFiles(kind) {
+    if (!tauri) return null;
+    return tauri.core.invoke("pick_files", { kind: kind || null });
+  }
+
   /** A job link Cookie sent (`/j/<token>` → `#link=`): asks for the PIN, then signs this browser in. */
   const pendingLink = !tauri ? location.hash.match(/link=([0-9a-f]+)/)?.[1] ?? null : null;
   async function openLink(pin) {
@@ -85,5 +91,5 @@ const Api = (() => {
     return body.ok;
   }
 
-  return { call, listen, reveal, openFile, setBadge, openUrl, openWindow, pickFolder, openLink, pendingLink, web: !tauri, signedIn: () => !!tauri || !!token };
+  return { call, listen, reveal, openFile, setBadge, openUrl, openWindow, pickFolder, pickFiles, openLink, pendingLink, web: !tauri, signedIn: () => !!tauri || !!token };
 })();

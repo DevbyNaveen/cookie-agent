@@ -13,7 +13,7 @@ const box = (tag, cls, ...kids) => { const n = el(tag, cls); n.append(...kids.fi
 const MODELS = {
   // Signed in with Enkeon: Bedrock's models through Enkeon, on Cookie credits. No keys of your own.
   enkeon: ["enkeon:eu.anthropic.claude-sonnet-4-6"],
-  anthropic: ["anthropic:claude-sonnet-4-6", "anthropic:claude-haiku-4-5"],
+  anthropic: ["anthropic:claude-sonnet-4-6", "anthropic:claude-haiku-4-5", "anthropic:claude-opus-4-6"],
   // Your own AWS account (Settings → Models): the model Enkeon's cloud runs on.
   bedrock: ["bedrock:eu.anthropic.claude-sonnet-4-6"],
   // Filled at start with every model pulled into Ollama on this Mac.
@@ -21,6 +21,7 @@ const MODELS = {
   openai: ["openai:gpt-6"],
   gemini: ["gemini:gemini-3.8-flash"],
 };
+const PROVIDER_NAME = { enkeon: "Enkeon", anthropic: "Anthropic", bedrock: "AWS", ollama: "This Mac", openai: "OpenAI", gemini: "Google" };
 // Each starter wears its own shape, so the whole crew shows every look.
 const STARTERS = [
   { name: "Inbox Triage", shape: "bot", job: "Sort my inbox every morning, tell me which threads need me, and draft a reply for each one. Never send anything yourself." },
@@ -274,6 +275,7 @@ async function openAgent(id) {
   if (current && current.id !== id) drafts.set(current.id, $("input").value);
   closeTalk();
   current = r;
+  renderModelChip();
   paintYou(r.id);
   if (r.unread) { r.unread = 0; call("mark_read", { id }).catch(() => {}); }
   $("input").value = drafts.get(id) ?? "";
@@ -1211,7 +1213,8 @@ $("composer").onsubmit = async (e) => {
       return;
     }
   }
-  if (!text) return;
+  if (!text && !pending.length) return;
+  if (pending.some((f) => f.card?.busy)) { toast("Still getting a file ready", "Send again in a moment.", ""); return; }
   // Named with @: each agent named hops, wherever its face is.
   for (const m of text.matchAll(/@([a-z0-9][a-z0-9-]*)(?![\w/-])/gi)) {
     const hit = addressBook.find((x) => x.kind === "team" && x.address.toLowerCase() === "@" + m[1].toLowerCase());
@@ -1225,10 +1228,10 @@ $("composer").onsubmit = async (e) => {
   $("input").value = "";
   autosize();
   $("log").append(line({ from: "you", text }));
-  for (const f of files) $("log").append(line({ from: "file", text: f.name, image: f.data ? `data:${f.media_type};base64,${f.data}` : undefined }));
+  for (const f of files) $("log").append(line({ from: "file", text: f.card?.label ? `${f.name} · ${f.card.label}` : f.name, image: f.card?.thumb || (f.data ? `data:${f.media_type};base64,${f.data}` : undefined) }));
   scrollDown(true);
   try {
-    await call("send", { id: agent.id, text, attachments: files });
+    await call("send", { id: agent.id, text: text || (files.length === 1 ? `Here's ${files[0].name}.` : `Here are ${files.length} files.`), attachments: files.flatMap((f) => f.attachments ?? [f]) });
   } catch (err) {
     $("log").append(event([String(err)], "error"));
     scrollDown(true);
@@ -1238,21 +1241,109 @@ $("composer").onsubmit = async (e) => {
 
 /* ---------- attachments ---------- */
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-$("attach").onclick = () => $("file").click();
-async function addFiles(list) {
-  for (const file of list) {
-    if (IMAGE_TYPES.includes(file.type)) {
-      if (file.size > 5_000_000) { $("log").append(event([`${file.name} is over 5 MB, so it was left out.`], "error")); continue; }
-      const data = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1] ?? ""); r.onerror = no; r.readAsDataURL(file); });
-      pending.push({ name: file.name, media_type: file.type, data });
-      continue;
-    }
-    if (file.size > 2_000_000) { $("log").append(event([`${file.name} is over 2 MB, so it was left out.`], "error")); continue; }
-    if (file.type && !/^text\/|json|xml|yaml|toml|csv|javascript|markdown/.test(file.type)) { $("log").append(event([`${file.name} isn't something Cookie reads yet: text files and pictures (PNG, JPEG, GIF, WebP) are.`], "error")); continue; }
-    pending.push({ name: file.name, text: await file.text() });
-  }
+// The + menu: any file (Cookie sorts out each kind itself), a whole folder, and apps.
+function attachMenu() {
+  const old = document.querySelector(".attach-menu");
+  if (old) { old.remove(); return; }
+  const m = el("div", "pop attach-menu");
+  m.setAttribute("role", "menu");
+  const item = (ic, label, side, run) => {
+    const b = el("button");
+    b.type = "button";
+    b.setAttribute("role", "menuitem");
+    b.append(icon(ic), el("span", "am-label", label));
+    if (side) b.append(side);
+    b.onclick = () => { m.remove(); run(); };
+    m.append(b);
+    return b;
+  };
+  item("clip", "Add files or photos", el("kbd", "am-key", "⌘U"), pickAndAttach);
+  item("folder", "Add folder", null, addFolder);
+  const note = el("span", "am-side");
+  const chev = icon("up"); chev.classList.add("am-chev");
+  const side = el("span", "am-right"); side.append(note, chev);
+  item("plug", "Connect apps", side, () => openConnect());
+  call("apps").then((st) => {
+    const n = (st?.apps || []).filter((x) => x.state === "reconnect" || x.state === "failed").length;
+    if (n) note.textContent = `${n} need${n === 1 ? "s" : ""} attention`;
+  }).catch(() => {});
+  ($("attach").closest(".composer") ?? document.body).append(m);
+  const away = (e) => { if (!m.contains(e.target) && !$("attach").contains(e.target)) { m.remove(); document.removeEventListener("mousedown", away); } };
+  setTimeout(() => document.addEventListener("mousedown", away), 0);
+  m.addEventListener("keydown", (e) => {
+    const items = [...m.querySelectorAll("button")];
+    const i = items.indexOf(document.activeElement);
+    if (e.key === "Escape") { m.remove(); $("attach").focus(); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+  });
+  m.querySelector("button")?.focus();
+}
+async function pickAndAttach() {
+  const paths = await Api.pickFiles(null).catch((e) => { toast("Couldn't open the chooser", String(e), "error"); return []; });
+  if (paths === null) return $("file").click(); // a browser: its own chooser
+  if (paths.length) await attachPaths(paths);
+}
+/** A whole folder: the real one is shared with agents (nothing copied), shown as a chip. */
+async function addFolder() {
+  const agent = current;
+  if (!agent) return;
+  const path = await Api.pickFolder().catch(() => null);
+  if (!path) return;
+  try {
+    const r = await call("add_folder", { agent: agent.id, path });
+    agent.grants = { ...(agent.grants || {}), files: true };
+    const words = `${r.files >= 20000 ? "20,000+" : r.files.toLocaleString()} file${r.files === 1 ? "" : "s"}`;
+    pending.push({ name: r.name, card: { name: r.name, label: `Folder · ${words}`, folder: true }, attachments: [{ name: r.name, text: `The folder ${r.path} (${words}) is shared with you now: list, search and read it with mac_files_list, mac_files_search and mac_files_read (full paths under ${r.path}). Changing a file there asks the person first.` }] });
+    renderChips();
+    syncSend();
+    $("input").focus();
+  } catch (e) { toast("Couldn't add that folder", String(e), "error"); }
+}
+$("attach").onclick = attachMenu;
+
+/** A card while a file is prepared, replaced by the real one (or dropped on failure). */
+function preparing(name) {
+  const p = { name, card: { name, label: "Getting it ready…", busy: true }, attachments: [] };
+  pending.push(p);
+  renderChips();
+  return p;
+}
+function prepared(slot, r) {
+  const i = pending.indexOf(slot);
+  if (i < 0) return;
+  if (!r) pending.splice(i, 1);
+  else pending[i] = { name: r.card.name, card: r.card, attachments: r.attachments };
   renderChips();
   syncSend();
+}
+async function attachPaths(paths) {
+  const agent = current;
+  if (!agent) return;
+  const slots = paths.map((p) => preparing(p.split("/").pop()));
+  try {
+    const out = await call("attach_paths", { agent: agent.id, paths });
+    slots.forEach((slot, i) => prepared(slot, out[i]));
+  } catch (e) {
+    slots.forEach((slot) => prepared(slot, null));
+    toast("Couldn't add that", String(e), "error");
+  }
+  $("input").focus();
+}
+async function addFiles(list) {
+  const agent = current;
+  if (!agent) return;
+  for (const file of list) {
+    if (file.size > 200_000_000) { toast(`${file.name} is over 200 MB`, "Add a big file with the + button instead: it's copied straight from disk.", "error"); continue; }
+    const slot = preparing(file.name);
+    try {
+      const data = await new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1] ?? ""); r.onerror = no; r.readAsDataURL(file); });
+      prepared(slot, await call("attach_bytes", { agent: agent.id, name: file.name || "pasted.png", data }));
+    } catch (e) {
+      prepared(slot, null);
+      toast(`Couldn't add ${file.name}`, String(e), "error");
+    }
+  }
   $("input").focus();
 }
 $("file").onchange = async () => { await addFiles($("file").files); $("file").value = ""; };
@@ -1266,9 +1357,14 @@ $("chat").addEventListener("drop", (e) => { e.preventDefault(); dragDepth = 0; $
 function renderChips() {
   $("chips").hidden = pending.length === 0;
   $("chips").replaceChildren(...pending.map((f, i) => {
-    const c = el("span", "chip");
-    if (f.data) { const t = el("img", "chip-thumb"); t.src = `data:${f.media_type};base64,${f.data}`; t.alt = ""; c.append(t); }
-    c.append(f.name);
+    const c = el("span", "chip" + (f.card?.busy ? " busy" : ""));
+    const thumb = f.card?.thumb || (f.data ? `data:${f.media_type};base64,${f.data}` : null);
+    if (thumb) { const t = el("img", "chip-thumb"); t.src = thumb; t.alt = ""; c.append(t); }
+    else if (f.card?.folder) { const fi = icon("folder"); fi.classList.add("chip-ic"); c.append(fi); }
+    const words = el("span", "chip-words");
+    words.append(el("span", "chip-name", f.name));
+    if (f.card?.label) words.append(el("small", "chip-kind", f.card.size && !f.card.busy ? `${f.card.label} · ${f.card.size}` : f.card.label));
+    c.append(words);
     const x = el("button");
     x.type = "button";
     x.setAttribute("aria-label", `Remove ${f.name}`);
@@ -1465,6 +1561,7 @@ function defaultModel() {
 
 async function openHire(prefill) {
   current = null;
+  renderModelChip();
   closePops();
   show("hire");
   renderRoster();
@@ -1673,6 +1770,7 @@ document.addEventListener("keydown", (e) => {
   if (mod && e.key === "n") { e.preventDefault(); openHire(); }
   if (mod && e.key === "f") { e.preventDefault(); toggleSearch(true); }
   if (mod && e.key === ",") { e.preventDefault(); openSettings("general"); }
+  if (mod && (e.key === "u" || e.key === "U") && current && !document.querySelector("dialog[open]")) { e.preventDefault(); pickAndAttach(); }
   if (mod && e.key === "\\") { e.preventDefault(); toggleRail(); }
   if (mod && e.key === "t") { e.preventDefault(); openNextNeed(); }
   if (e.key === "Escape" && !$("doc-view").hidden && !document.querySelector("dialog[open]")) { e.preventDefault(); closePage(); return; }
@@ -1858,3 +1956,59 @@ function askLinkPin() {
     pin.focus();
   });
 }
+
+/* ---------- the model, under the composer ---------- */
+function modelName(id) {
+  const [prov, rest = ""] = String(id || "").split(/:(.*)/s);
+  const m = rest.match(/(opus|sonnet|haiku)-(\d+)-(\d+)/i);
+  if (m) return `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}.${m[3]}`;
+  return rest.replace(/^eu\.|^us\./, "") || prov;
+}
+function modelHint(id) {
+  const t = /opus/i.test(id) ? "Hardest jobs, costs most" : /sonnet/i.test(id) ? "Everyday work" : /haiku/i.test(id) ? "Fast and cheapest" : id.startsWith("ollama:") ? "Free, on this Mac" : "";
+  const prov = PROVIDER_NAME[id.split(":")[0]] || id.split(":")[0];
+  return t ? `${t} · ${prov}` : prov;
+}
+function renderModelChip() {
+  const b = $("model-chip");
+  if (!b) return;
+  b.hidden = !current;
+  if (!current) return;
+  b.replaceChildren(el("span", null, modelName(current.model)), el("small", null, PROVIDER_NAME[current.model.split(":")[0]] || ""));
+  b.title = `${current.name} answers with ${current.model}. Click to change.`;
+}
+$("model-chip").onclick = () => {
+  const old = document.querySelector(".model-menu");
+  if (old) { old.remove(); return; }
+  const agent = current;
+  if (!agent) return;
+  const m = el("div", "pop model-menu");
+  m.setAttribute("role", "menu");
+  const ids = [...new Set([agent.model, ...suggestions()])];
+  for (const id of ids) {
+    const b = el("button");
+    b.type = "button";
+    b.setAttribute("role", "menuitemradio");
+    b.setAttribute("aria-checked", String(id === agent.model));
+    const t = el("span", "row-text");
+    t.append(el("span", null, modelName(id)), el("small", null, modelHint(id)));
+    b.append(t);
+    if (id === agent.model) b.append(icon("check"));
+    b.onclick = async () => {
+      m.remove();
+      if (id === agent.model) return;
+      try {
+        await call("update_agent", { id: agent.id, patch: { model: id } });
+        agent.model = id;
+        renderModelChip();
+        toast(`${agent.name} now uses ${modelName(id)}`, "From its next message.", "good");
+      } catch (e) { toast("Couldn't change the model", String(e), "error"); }
+    };
+    m.append(b);
+  }
+  $("composer").append(m);
+  const away = (e) => { if (!m.contains(e.target) && !$("model-chip").contains(e.target)) { m.remove(); document.removeEventListener("mousedown", away); } };
+  setTimeout(() => document.addEventListener("mousedown", away), 0);
+  m.addEventListener("keydown", (e) => { if (e.key === "Escape") m.remove(); });
+  m.querySelector('[aria-checked="true"]')?.focus();
+};

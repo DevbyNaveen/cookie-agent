@@ -361,6 +361,9 @@ fn ref_id(r: &str) -> Option<u32> {
     r.trim().trim_start_matches('e').parse().ok()
 }
 
+/// How far a step looks when the target wasn't in a cut-short look.
+const FULL_LOOK: usize = 5_000;
+
 /// Run steps in one app, checking the screen between them. Stops at the first step that can't be done.
 pub fn run(body: &dyn Body, look: &Look, steps: &[Step], vars: &HashMap<String, String>) -> Result<Done, String> {
     let started = Instant::now();
@@ -376,7 +379,15 @@ pub fn run(body: &dyn Body, look: &Look, steps: &[Step], vars: &HashMap<String, 
         let mut node: Option<Node> = None;
         let target = if step.r#ref.is_some() || step.name.is_some() || step.role.is_some() {
             let by_ref = step.r#ref.as_deref().and_then(ref_id).filter(|id| current.nodes.iter().any(|n| n.id == *id));
-            let id = by_ref.or_else(|| find(&current, step.role.as_deref(), &step.name.as_deref().map(fill).unwrap_or_default()));
+            let want = step.name.as_deref().map(fill).unwrap_or_default();
+            let mut id = by_ref.or_else(|| find(&current, step.role.as_deref(), &want));
+            // A long page can hold the target past the look's limit: look again in full before giving up.
+            if id.is_none() && current.truncated {
+                if let Ok(full) = body.look(&Look { limit: FULL_LOOK, ..here.clone() }) {
+                    current = full;
+                    id = find(&current, step.role.as_deref(), &want);
+                }
+            }
             match id {
                 Some(id) => {
                     node = current.nodes.iter().find(|n| n.id == id).cloned();

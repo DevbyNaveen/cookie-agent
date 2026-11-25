@@ -1548,3 +1548,33 @@ footer.me { gap: 6px; }
 .use-amount { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); }
 .use-acts { display: flex; align-items: center; gap: 8px; }
 @media (max-width: 700px) { .use-tiles { grid-template-columns: 1fr; } }
+
+/* The + menu, like Claude's: borderless, three rows */
+.attach-menu { position: absolute; left: 0; bottom: calc(100% - 8px); z-index: 40; min-width: 300px; padding: 6px; border: 0; border-radius: 18px; display: flex; flex-direction: column; gap: 1px; animation: pop .16s var(--ease); }
+.attach-menu button { display: flex; align-items: center; gap: 13px; padding: 10px 12px; border-radius: 12px; font-size: 15px; color: var(--text); text-align: left; }
+.attach-menu button:hover, .attach-menu button:focus-visible { background: var(--raise-2); outline: none; }
+.attach-menu svg { width: 19px; height: 19px; flex: none; color: var(--text-2); }
+.attach-menu .am-label { flex: 1; }
+.attach-menu .am-key { font: inherit; font-size: 13px; color: var(--text-3); letter-spacing: .04em; }
+.attach-menu .am-right { display: flex; align-items: center; gap: 8px; color: var(--text-3); font-size: 13px; }
+.attach-menu .am-chev { width: 14px; height: 14px; transform: rotate(90deg); }
+.chip-ic { width: 16px; height: 16px; color: var(--text-2); }
+/* The model this agent answers with, under the composer */
+.composer-foot { display: flex; justify-content: flex-end; padding: 6px 10px 0; }
+.model-chip { display: inline-flex; align-items: baseline; gap: 6px; padding: 3px 8px; border-radius: 8px; font-size: 13px; color: var(--text-2); }
+.model-chip small { font-size: 12px; color: var(--text-3); }
+.model-chip:hover { background: var(--raise); color: var(--text); }
+.model-menu { position: absolute; right: 24px; bottom: 34px; z-index: 40; min-width: 260px; padding: 6px; border: 0; border-radius: 16px; display: flex; flex-direction: column; animation: pop .16s var(--ease); }
+.model-menu button { display: flex; align-items: center; gap: 10px; padding: 8px 11px; border-radius: 11px; text-align: left; }
+.model-menu button:hover, .model-menu button:focus-visible { background: var(--raise-2); outline: none; }
+.model-menu .row-text { flex: 1; display: flex; flex-direction: column; }
+.model-menu .row-text span { font-size: 14px; }
+.model-menu .row-text small { font-size: 12px; color: var(--text-3); }
+.model-menu svg { width: 16px; height: 16px; color: var(--accent, var(--text)); }
+.chip { align-items: center; }
+.chip-words { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
+.chip-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-kind { font-size: 11.5px; color: var(--text-3); }
+.chip.busy { opacity: .7; }
+.chip.busy .chip-kind::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; border: 1.5px solid var(--text-3); border-top-color: transparent; animation: spin .8s linear infinite; vertical-align: -1px; }
+@keyframes spin { to { transform: rotate(360deg); } }

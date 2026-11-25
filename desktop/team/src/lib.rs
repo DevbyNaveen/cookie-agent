@@ -9,6 +9,7 @@ pub mod api;
 pub mod cage;
 pub mod approvals;
 pub mod apps;
+pub mod attach;
 pub mod bench;
 pub mod boards;
 pub mod browser;

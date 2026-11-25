@@ -143,6 +143,42 @@ async fn pick_folder() -> Result<Option<String>, String> {
     }
 }
 
+/// Files to give an agent, chosen in macOS's own picker, of one kind or any.
+#[tauri::command]
+async fn pick_files(kind: Option<String>) -> Result<Vec<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (prompt, types): (&str, &[&str]) = match kind.as_deref().unwrap_or("") {
+            "images" => ("Choose photos or images", &["public.image"]),
+            "documents" => ("Choose documents or PDFs", &[
+                "com.adobe.pdf", "public.plain-text", "public.text", "public.rtf", "org.openxmlformats.wordprocessingml.document", "com.microsoft.word.doc",
+                "com.apple.iwork.pages.sydney", "org.oasis-open.opendocument.text", "org.openxmlformats.spreadsheetml.sheet", "com.microsoft.excel.xls",
+                "com.apple.iwork.numbers.sydney", "public.comma-separated-values-text", "public.json", "net.daringfireball.markdown",
+            ]),
+            "media" => ("Choose videos or audio", &["public.movie", "public.audio"]),
+            "archives" => ("Choose ZIP files", &["public.zip-archive", "com.pkware.zip-archive"]),
+            _ => ("Choose files", &[]),
+        };
+        let of_type = if types.is_empty() { String::new() } else { format!(" of type {{{}}}", types.iter().map(|t| format!("\"{t}\"")).collect::<Vec<_>>().join(", ")) };
+        let script = format!(
+            "set fs to choose file with prompt \"{prompt}\"{of_type} with multiple selections allowed\nset out to \"\"\nrepeat with f in fs\nset out to out & POSIX path of f & linefeed\nend repeat\nreturn out"
+        );
+        let out = tauri::async_runtime::spawn_blocking(move || std::process::Command::new("osascript").args(["-e", &script]).output())
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Ok(Vec::new()); // cancelled
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = kind;
+        Ok(Vec::new())
+    }
+}
+
 /// The Glass theme: the window itself turns to frosted glass (macOS vibrancy), so the
 /// desktop shows through, blurred, wherever the page leaves it uncovered.
 #[tauri::command]
@@ -263,7 +299,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![call, reveal, open_file, set_badge, open_window, open_url, set_glass, pick_folder])
+        .invoke_handler(tauri::generate_handler![call, reveal, open_file, set_badge, open_window, open_url, set_glass, pick_folder, pick_files])
         .build(tauri::generate_context!())
         .expect("Cookie could not start");
     app.run(|app, event| {

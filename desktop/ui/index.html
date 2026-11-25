@@ -123,6 +123,7 @@
           <button type="button" id="mic" class="round soft mic" title="Dictate" aria-label="Dictate"><svg width="18" height="18" viewBox="0 0 24 24"><use href="#i-mic"/></svg></button>
           <button type="submit" id="send" class="round go voice" aria-label="Talk" disabled><svg class="ic-voice"><use href="#i-wave"/></svg><svg class="ic-send"><use href="#i-up"/></svg><svg class="ic-stop"><use href="#i-stop"/></svg></button>
         </div>
+        <div class="composer-foot"><button type="button" id="model-chip" class="model-chip" hidden></button></div>
         <div id="drop" class="drop" hidden>Drop files to add them</div>
       </form>
     </section>
@@ -200,7 +201,7 @@
     <p>Open this runner with the link it gave you (it ends in <code>#token=…</code>). Run <code>cookie-team token</code> on the runner to see it again.</p>
   </div>
 
-  <input id="file" type="file" multiple style="display:none" aria-hidden="true" tabindex="-1" accept=".txt,.md,.markdown,.csv,.json,.log,.html,.xml,.yaml,.yml,.toml,.rs,.py,.js,.ts,.tsx,.swift,.go,.java,.c,.h,.css,.sql,text/*">
+  <input id="file" type="file" multiple style="display:none" aria-hidden="true" tabindex="-1">
   <div id="row-menu" class="pop menu row-menu" role="menu" hidden></div>
   <script src="md.js"></script>
   <script src="blocks.js"></script>

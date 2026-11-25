@@ -330,6 +330,9 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         /* your data */
         "data_summary" => ok(team.data_summary()),
         "mcps" => ok(team.mcps()),
+        "add_folder" => ok(team.add_folder(&arg::<String>(a, "agent")?, &arg::<String>(a, "path")?).await?),
+        "attach_paths" => ok(team.attach_paths(&arg::<String>(a, "agent")?, arg::<Vec<String>>(a, "paths")?).await?),
+        "attach_bytes" => ok(team.attach_bytes(&arg::<String>(a, "agent")?, &arg::<String>(a, "name")?, &arg::<String>(a, "data")?).await?),
         "usage" => ok(team.usage().await),
         "computer_status" => ok(team.computer_status().await),
         "computer_wake" => ok(team.computer_wake().await?),

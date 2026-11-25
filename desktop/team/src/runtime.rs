@@ -24,7 +24,7 @@ pub(crate) struct Run {
 
 /// A file the person attached: read in the window, given to the model as untrusted.
 /// Text comes as `text`; an image comes as `media_type` and base64 `data`.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Attachment {
     pub name: String,
     #[serde(default)]

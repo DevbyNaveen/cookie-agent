@@ -169,7 +169,9 @@ impl Team {
             if real == Path::new("/") {
                 return Err("That's the whole disk; choose a folder in it.".into());
             }
-            if real.starts_with(&self.paths.root) {
+            // Both sides resolved: on a Mac /var is /private/var, and an unresolved root would miss.
+            let root = self.paths.root.canonicalize().unwrap_or_else(|_| self.paths.root.clone());
+            if real.starts_with(&root) {
                 return Err("That's Cookie's own data; choose another folder.".into());
             }
             let t = tilde(&real);
@@ -184,6 +186,53 @@ impl Team {
         util::write_json(&self.access_file(), &a)?;
         Ok(a)
     }
+}
+
+impl Team {
+    /// "Add folder" in a chat: that real folder joins what agents may see (nothing is
+    /// copied), and this agent gets Files on. Home access already covers it.
+    pub async fn add_folder(&self, agent: &str, folder: &str) -> Result<serde_json::Value, String> {
+        let rec = self.agent(agent).await?;
+        let now = self.access();
+        let real = expand(folder).canonicalize().map_err(|_| format!("`{folder}` isn't a folder on this Mac."))?;
+        let a = if now.level == "home" && home().is_some_and(|h| real.starts_with(h)) {
+            now
+        } else {
+            let mut folders = if now.level == "folders" { now.folders.clone() } else { Vec::new() };
+            folders.push(folder.to_string());
+            self.set_access("folders", folders)?
+        };
+        if !rec.grants.files {
+            let mut g = rec.grants.clone();
+            g.files = true;
+            self.update(agent, crate::Patch { grants: Some(g), ..Default::default() }).await?;
+        }
+        let count = walkdir_count(&real, 20_000);
+        Ok(serde_json::json!({"path": tilde(&real), "name": real.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), "files": count, "access": a}))
+    }
+}
+
+/// Files in a folder (hidden ones skipped), counted up to a cap.
+fn walkdir_count(dir: &Path, cap: usize) -> usize {
+    let mut n = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            if e.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(e.path()),
+                Ok(_) => n += 1,
+                _ => {}
+            }
+            if n >= cap {
+                return n;
+            }
+        }
+    }
+    n
 }
 
 /// A line for the agent's instructions about what it can see, when it can see more than its folder.
@@ -431,6 +480,32 @@ fn write(path: &Path, content: &str, backups: &Path) -> Result<(String, Option<P
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn adding_a_folder_in_a_chat_shares_the_real_folder_and_turns_files_on() {
+        let dir = std::env::temp_dir().join(format!("cookie-addfolder-{}", util::random_hex(4)));
+        let team = Team::open(&dir.join("cookie")).unwrap();
+        let rec = team
+            .add_agent(crate::AgentRecord {
+                id: "a".into(), name: "A".into(), model: "anthropic:x".into(), job: "j".into(), created_at: 0,
+                grants: Default::default(), limits: Default::default(), probation_until: None, parent: None, shadow_of: None, handover: None, origin: None, version: 1,
+            })
+            .await
+            .unwrap();
+        let proj = dir.join("project");
+        std::fs::create_dir_all(proj.join("src")).unwrap();
+        std::fs::write(proj.join("src/a.rs"), "").unwrap();
+        std::fs::write(proj.join("README.md"), "").unwrap();
+        std::fs::write(proj.join(".env"), "").unwrap();
+        let out = team.add_folder(&rec.id, &proj.to_string_lossy()).await.unwrap();
+        assert_eq!(out["files"], 2, "hidden files aren't counted");
+        assert_eq!(team.access().level, "folders");
+        assert_eq!(team.access().folders.len(), 1);
+        assert!(team.agent(&rec.id).await.unwrap().grants.files);
+        assert!(team.add_folder(&rec.id, &dir.join("cookie").to_string_lossy()).await.is_err(), "never Cookie's own data");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     #[test]
