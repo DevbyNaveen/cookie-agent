@@ -252,4 +252,5 @@ async function renderApps(grid) {
 /** Pairing or a connect finished somewhere: anything showing apps refreshes. */
 function onEnkeonChanged() {
   document.querySelectorAll(".apps-grid").forEach((g) => renderApps(g));
+  refreshConnect();
 }

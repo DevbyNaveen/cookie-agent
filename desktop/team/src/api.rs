@@ -328,6 +328,11 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
 
         /* your data */
         "data_summary" => ok(team.data_summary()),
+        "mcps" => ok(team.mcps()),
+        "mcp_add" => ok(team.mcp_add(&arg::<String>(a, "name")?, &arg::<String>(a, "target")?, opt::<String>(a, "token").as_deref()).await?),
+        "mcp_remove" => ok(team.mcp_remove(&arg::<String>(a, "id")?)?),
+        "mcp_toggle" => ok(team.mcp_toggle(&arg::<String>(a, "id")?, arg::<bool>(a, "on")?)?),
+        "mcp_recheck" => ok(team.mcp_recheck(&arg::<String>(a, "id")?).await?),
         "set_crash_reports" => ok(team.set_crash_reports(arg::<bool>(a, "on")?)?),
         "report_ui_error" => { team.report_ui_error(&arg::<String>(a, "message")?, &opt::<String>(a, "detail").unwrap_or_default()); ok(Value::Null) }
         "crash_reports" => ok(team.crash_reports()),

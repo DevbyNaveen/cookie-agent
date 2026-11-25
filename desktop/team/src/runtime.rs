@@ -253,7 +253,11 @@ impl Team {
             mode: if probation { Mode::Record } else { mode },
             log,
         });
-        let all_tools = crate::tools::for_agent(self, rec, trigger, job, Some(broker.clone()));
+        let mut all_tools = crate::tools::for_agent(self, rec, trigger, job, Some(broker.clone()));
+        // Your own MCP servers (Connect apps → Developer), for agents with Apps on.
+        if rec.grants.apps && !outside && !crate::bench::is_probe(&rec.id) {
+            all_tools.extend(self.mcp_tools().await);
+        }
         // Helpers to send out side by side are made of these same tools (see the end).
         let helpers_may = crate::helpers::allowed(rec, trigger, probation) && mode == Mode::Ask && !crate::bench::is_probe(&rec.id);
         let for_helpers = if helpers_may { all_tools.clone() } else { Vec::new() };

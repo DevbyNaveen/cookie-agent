@@ -372,68 +372,219 @@ async function openEnkeon() {
 }
 
 /* ---------- connect apps ---------- */
+// [name, what, group, logo key or brand colour, kind]
 const APPS = [
-  ["Enkeon", "Memory with proof, and Gmail, Drive, Slack and more through its connectors", "Connected", "#d97706", "enkeon"],
-  ["Telegram", "Talk to your agents and approve from your phone", "Connected", "#229ed9", "telegram"],
-  ["Other people's agents", "Invite theirs, or let yours message them (A2A)", "Connected", "#7c3aed", "peers"],
-  ["Slack", "Talk to your agents in Slack", "Channels", "#4a154b", "channel"], ["Discord", "Talk to your agents in Discord", "Channels", "#5865f2", "channel"],
-  ["iMessage", "Text your agents from your iPhone", "Channels", "#34c759", "channel"], ["Signal", "Talk to your agents on Signal", "Channels", "#3a76f0", "channel"],
-  ["Calendar", "See your days, add events", "This Mac", "#ef4444", "mac"],
-  ["Notes", "Find, read and save notes", "This Mac", "#eab308", "mac"], ["Reminders", "Check, add and complete reminders", "This Mac", "#f97316", "mac"],
-  ["Contacts", "Look up emails and numbers", "This Mac", "#64748b", "mac"],
-  ["Messages", "Send iMessages (asks you each time)", "This Mac", "#22c55e", "mac"],
-  ["Mail", "Read and draft replies in Apple Mail", "This Mac", "#3b82f6"],
-  ["MCP server", "Any tool that speaks MCP", "Developer", "#0ea5e9"],
+  ["Enkeon", "Memory with proof, and your apps through its connectors", "Connected", "enkeon", "enkeon"],
+  ["Telegram", "Talk to your agents and approve from your phone", "Channels", "telegram", "telegram"],
+  ["Slack", "Talk to your agents in Slack", "Channels", "slack", "channel"], ["Discord", "Talk to your agents in Discord", "Channels", "discord", "channel"],
+  ["iMessage", "Text your agents from your iPhone", "Channels", "imessage", "channel"], ["Signal", "Talk to your agents on Signal", "Channels", "signal", "channel"],
+  ["Other people's agents", "Invite theirs, or let yours message them (A2A)", "Channels", "#7c3aed", "peers"],
+  ["Calendar", "See your days, add events", "This Mac", "calendar", "mac"],
+  ["Notes", "Find, read and save notes", "This Mac", "notes", "mac"], ["Reminders", "Check, add and complete reminders", "This Mac", "reminders", "mac"],
+  ["Contacts", "Look up emails and numbers", "This Mac", "contacts", "mac"],
+  ["Messages", "Send iMessages (asks you each time)", "This Mac", "messages", "mac"],
+  ["Mail", "Read and draft replies in Apple Mail", "This Mac", "mail"],
 ];
+const CONNECT_GROUPS = ["All", "Connected", "Apps", "Channels", "This Mac", "Developer"];
+let connectState = { filter: "All", q: "", data: null, timer: null };
+
+/** A logo: the app's own icon, a brand mark on its colour, or a letter. */
+function logoTile(key, name) {
+  const t = el("span", "app-tile");
+  const src = (typeof LOGOS !== "undefined" && LOGOS[key]) || (typeof APP_LOGOS !== "undefined" && APP_LOGOS[key]);
+  if (src) {
+    const img = el("img"); img.src = src; img.alt = "";
+    if (LOGO_BG[key]) { t.classList.add("glyph"); t.style.background = LOGO_BG[key]; }
+    else if (LOGOS[key]) t.classList.add("bare");
+    else t.classList.add("mark");
+    t.append(img);
+  } else if (key === "peers" || (key || "").startsWith("#")) {
+    t.style.background = key.startsWith("#") ? key : "#7c3aed"; t.append(icon("share"));
+  } else { t.textContent = name[0]; t.style.background = "#3f3f46"; }
+  return t;
+}
+
+async function loadConnect() {
+  const [enkeon, tg, apps, mcps] = await Promise.all([
+    call("enkeon_status").catch(() => false), call("telegram_status").catch(() => ({})),
+    call("apps").catch(() => null), call("mcps").catch(() => ({ servers: [] })),
+  ]);
+  connectState.data = { enkeon: !!enkeon, telegram: !!tg.has_token, apps, mcps: mcps.servers || [] };
+}
 
 async function openConnect(filter = "All", q = "") {
+  connectState.filter = filter; connectState.q = q;
   const d = $("connect");
   const body = $("connect-body");
-  const [enkeon, tg] = await Promise.all([call("enkeon_status").catch(() => false), call("telegram_status").catch(() => ({}))]);
-  const live = { enkeon: !!enkeon, telegram: !!tg.has_token, peers: true };
-  const cats = ["All", ...new Set(APPS.map((a) => a[2]))];
+  const top = el("div", "connect-top");
   const head = el("div", "connect-head");
-  head.append(el("h2", null, "Connect apps"), el("span", "status-pill" + (live.enkeon || live.telegram ? " ok" : ""), `${[live.enkeon, live.telegram].filter(Boolean).length} connected`));
+  const pill = el("span", "status-pill");
+  const x = el("button", "round soft connect-x"); x.setAttribute("aria-label", "Close"); x.append(icon("x")); x.onclick = () => d.close();
+  head.append(el("h2", null, "Connect apps"), pill, x);
   const search = el("div", "search-wrap connect-search");
   const inp = el("input");
-  inp.type = "search"; inp.placeholder = "Search apps"; inp.value = q;
-  inp.oninput = () => openConnect(filter, inp.value);
+  inp.type = "search"; inp.placeholder = "Search apps and servers"; inp.value = q;
   search.append(icon("search"), inp);
   const chips = el("div", "chip-row");
-  for (const c of cats) { const b = el("button", c === filter ? "on" : "", c); b.onclick = () => openConnect(c, inp.value); chips.append(b); }
-  const shown = APPS.filter((a) => (filter === "All" || a[2] === filter) && (!q || a[0].toLowerCase().includes(q.toLowerCase())));
-  const groups = filter === "All" ? cats.slice(1) : [filter];
-  const sections = groups.map((g) => {
-    const items = shown.filter((a) => a[2] === g);
-    if (!items.length) return null;
+  const list = el("div", "connect-list");
+  const paint = () => {
+    chips.replaceChildren(...CONNECT_GROUPS.map((c) => { const b = el("button", c === connectState.filter ? "on" : "", c); b.onclick = () => { connectState.filter = c; paint(); }; return b; }));
+    renderConnectList(list, pill);
+  };
+  inp.oninput = () => { connectState.q = inp.value; renderConnectList(list, pill); };
+  top.append(head, search, chips);
+  body.replaceChildren(top, list);
+  if (!d.open) { d.showModal(); inp.focus({ preventScroll: true }); d.addEventListener("close", () => clearTimeout(connectState.timer), { once: true }); }
+  list.replaceChildren(el("p", "set-note", "Loading…"));
+  await loadConnect();
+  paint();
+  inp.focus({ preventScroll: true });
+  if (q) inp.setSelectionRange(q.length, q.length);
+}
+
+/** Refresh in place (a connect finished, a server was added). */
+async function refreshConnect() {
+  const d = $("connect");
+  if (!d?.open) return;
+  await loadConnect();
+  const list = d.querySelector(".connect-list"), pill = d.querySelector(".connect-head .status-pill");
+  if (list) renderConnectList(list, pill);
+}
+
+function renderConnectList(list, pill) {
+  const d = $("connect");
+  const data = connectState.data;
+  if (!data) return;
+  const { filter } = connectState;
+  const q = connectState.q.trim().toLowerCase();
+  const match = (name, what = "") => !q || name.toLowerCase().includes(q) || what.toLowerCase().includes(q);
+  const st = data.apps;
+  const linked = (st?.apps || []).filter((a) => a.state === "connected");
+  const count = (data.enkeon ? 1 : 0) + (data.telegram ? 1 : 0) + linked.length + data.mcps.filter((m) => m.on).length;
+  pill.className = "status-pill" + (count ? " ok" : "");
+  pill.textContent = `${count} connected`;
+
+  const row = (logo, name, what, action, extra) => {
+    const card = el("div", "app" + (extra ? " " + extra : ""));
+    const t = el("div", "row-text"); t.append(el("span", null, name), el("small", null, what));
+    card.append(logo, t, action || el("span"));
+    return card;
+  };
+  const sections = [];
+  const section = (title, items, note) => {
+    const kept = items.filter(Boolean);
+    if (!kept.length) return;
     const sec = el("section", "app-sec");
-    const grid = el("div", "app-grid");
-    for (const [name, what, , color, kind] of items) {
-      const card = el("div", "app");
-      const tile = el("span", "app-tile", name[0]);
-      tile.style.background = color;
-      const t = el("div", "row-text"); t.append(el("span", null, name), el("small", null, what));
-      let b;
-      if (kind === "enkeon") b = button(live.enkeon ? "Manage" : "Pair", "quiet small", () => { d.close(); openEnkeon(); });
-      else if (kind === "telegram") b = button(live.telegram ? "Manage" : "Connect", "quiet small", () => { d.close(); openSettings("channels"); });
-      else if (kind === "peers") b = button("Open", "quiet small", () => { d.close(); if (current) openProfile("share"); else openSettings("sharing"); });
-      else if (kind === "channel") b = button("Set up", "quiet small", () => { d.close(); openSettings("channels"); });
-      else if (kind === "mac") b = button("Turn on", "quiet small", () => {
-        d.close();
-        if (current) { openProfile("about"); toast("Turn on Mac apps", `Switch on “Mac apps” for ${current.name}. macOS asks once per app the first time.`); }
-        else toast("Turn on Mac apps", "Open an agent, then its profile → Mac apps. Each agent gets them only if you say so.");
+    const grid = el("div", "app-grid"); grid.append(...kept);
+    sec.append(el("h3", "group-title", title), grid);
+    if (note) sec.append(note);
+    sections.push(sec);
+  };
+  const want = (g) => filter === "All" || filter === g;
+
+  // Connected: only what really is.
+  if (want("Connected")) {
+    const items = [];
+    if (data.enkeon && match("Enkeon")) items.push(row(logoTile("enkeon", "Enkeon"), "Enkeon", "Your brain: memory with proof", button("Manage", "quiet small", () => { d.close(); openEnkeon(); })));
+    if (data.telegram && match("Telegram")) items.push(row(logoTile("telegram", "Telegram"), "Telegram", "Your bot is on", button("Manage", "quiet small", () => { d.close(); openSettings("channels"); })));
+    for (const a of linked) if (match(a.name, a.what)) items.push(row(logoTile(a.slug, a.name), a.name, a.synced ? `${Number(a.synced).toLocaleString()} synced · through Enkeon` : "Connected through Enkeon", el("span", "conn-dot", "On")));
+    for (const m of data.mcps.filter((m) => m.on)) if (match(m.name)) items.push(row(logoTile("mcp", m.name), m.name, `MCP · ${m.tools.length} tool${m.tools.length === 1 ? "" : "s"}`, el("span", "conn-dot", "On")));
+    if (!items.length && filter === "Connected") sections.push(el("p", "set-note", q ? "Nothing connected matches." : "Nothing connected yet."));
+    section("Connected", items);
+  }
+
+  // Apps through Enkeon (Gmail, Drive, Slack…).
+  if (want("Apps")) {
+    const items = [];
+    if (!data.enkeon && !q) items.push(row(logoTile("enkeon", "Enkeon"), "Sign in with Enkeon", "Your apps connect through your Enkeon account", button("Sign in", "primary small", () => { d.close(); openEnkeon(); })));
+    else if (st && !st.signed_in && st.paired && !q) {
+      const s = st.signin;
+      const act = s?.state === "waiting" ? el("span", "conn-dot wait", `Code ${s.user_code}`) : button("Sign in", "quiet small", async () => {
+        try { const r = await call("apps_signin"); if (r.url) await Api.openUrl(r.url).catch(() => {}); } catch (e) { toast("Couldn't start sign-in", String(e), "error"); }
+        refreshConnect();
       });
-      else { b = el("button", "btn quiet small", "Soon"); b.disabled = true; }
-      card.append(tile, t, b);
-      grid.append(card);
+      items.push(row(logoTile("enkeon", "Enkeon"), "Sign in to manage apps", s?.state === "waiting" ? "Confirm the code in your browser" : "Connecting an app takes your Enkeon sign-in", act));
     }
-    sec.append(el("h3", "group-title", g), grid);
-    return sec;
-  }).filter(Boolean);
-  const note = el("p", "set-note", "Mac apps are per agent: turn them on in an agent's profile. Apple Mail and MCP servers aren't connected yet. Gmail, Drive and Slack already work through Enkeon.");
-  body.replaceChildren(head, search, chips, ...(sections.length ? sections : [el("p", "set-note", "No app matches.")]), note);
-  if (!d.open) d.showModal();
-  if (q) { inp.focus(); inp.setSelectionRange(q.length, q.length); }
+    for (const a of (st?.apps || []).filter((a) => a.state !== "connected")) {
+      if (!match(a.name, a.what)) continue;
+      const label = { connecting: "Connecting…", reconnect: "Reconnect", failed: "Try again" }[a.state] || "Connect";
+      const b = button(label, "quiet small", async () => {
+        if (!st.signed_in) return toast("Sign in first", "Connecting an app takes your Enkeon sign-in.", "");
+        b.disabled = true; b.textContent = "Opening…";
+        try {
+          const r = await call("app_connect", { slug: a.slug });
+          if (r.authorize_url) await Api.openUrl(r.authorize_url).catch(() => {});
+          else if (r.state !== "connected") toast(`Couldn't connect ${a.name}`, r.reason || "Enkeon couldn't start it.", "error");
+        } catch (e) { toast(`Couldn't connect ${a.name}`, String(e), "error"); }
+        refreshConnect();
+      });
+      b.disabled = !data.enkeon || a.state === "connecting";
+      items.push(row(logoTile(a.slug, a.name), a.name, a.what, b));
+    }
+    section("Apps", items);
+  }
+
+  if (want("Channels")) section("Channels", APPS.filter((a) => a[2] === "Channels" && match(a[0], a[1])).map(([name, what, , key, kind]) =>
+    row(logoTile(key, name), name, what, kind === "peers"
+      ? button("Open", "quiet small", () => { d.close(); if (current) openProfile("share"); else openSettings("sharing"); })
+      : button(kind === "telegram" && data.telegram ? "Manage" : "Set up", "quiet small", () => { d.close(); openSettings("channels"); }))));
+
+  if (want("This Mac")) section("This Mac", APPS.filter((a) => a[2] === "This Mac" && match(a[0], a[1])).map(([name, what, , key, kind]) => {
+    let b;
+    if (kind === "mac") b = button("Turn on", "quiet small", () => {
+      d.close();
+      if (current) { openProfile("about"); toast("Turn on Mac apps", `Switch on “Mac apps” for ${current.name}. macOS asks once per app the first time.`); }
+      else toast("Turn on Mac apps", "Open an agent, then its profile → Mac apps. Each agent gets them only if you say so.");
+    });
+    else { b = el("button", "btn quiet small", "Soon"); b.disabled = true; }
+    return row(logoTile(key, name), name, what, b);
+  }), el("p", "set-note", "Mac apps are per agent: turn them on in an agent's profile."));
+
+  // Developer: your own MCP servers.
+  if (want("Developer")) {
+    const items = data.mcps.filter((m) => match(m.name, m.url || m.command || "")).map((m) => {
+      const acts = el("div", "conn-acts");
+      const sw = el("button", "switch" + (m.on ? " on" : "")); sw.title = m.on ? "On for agents with Apps" : "Off";
+      sw.onclick = async () => { try { await call("mcp_toggle", { id: m.id, on: !m.on }); refreshConnect(); } catch (e) { toast("Couldn't change it", String(e), "error"); } };
+      const more = el("button", "round soft"); more.title = "Remove"; more.append(icon("trash"));
+      more.onclick = async () => { if (!confirm(`Remove ${m.name}?`)) return; try { await call("mcp_remove", { id: m.id }); refreshConnect(); } catch (e) { toast("Couldn't remove it", String(e), "error"); } };
+      acts.append(sw, more);
+      const r = row(logoTile("mcp", m.name), m.name, `${m.url || m.command} · ${m.tools.length} tool${m.tools.length === 1 ? "" : "s"}`, acts);
+      r.title = m.tools.join(", ");
+      return r;
+    });
+    if (match("MCP server", "custom add")) items.push(row(logoTile("mcp", "MCP"), "Add an MCP server", "Any tool that speaks MCP: a URL, or a command on this Mac", button("Add", "primary small", () => addMcp())));
+    section("Developer", items, el("p", "set-note", "Agents with Apps on get its tools. Cookie asks before every call unless the server marks a tool read-only, and refuses the server if its tools change until you look again."));
+  }
+
+  list.replaceChildren(...(sections.length ? sections : [el("p", "set-note", "No app matches.")]));
+  clearTimeout(connectState.timer);
+  const busy = (st?.apps || []).some((a) => a.state === "connecting") || st?.signin?.state === "waiting";
+  if (d.open) connectState.timer = setTimeout(refreshConnect, busy ? 2500 : 15000);
+}
+
+/** Add your own MCP server: checked once, its tools pinned. */
+function addMcp() {
+  const d = el("dialog", "sheet secret-sheet mcp-sheet");
+  const name = input("", "Name, like Linear or My tools");
+  const target = input("", "https://…/mcp   or   npx -y @scope/server");
+  const token = input("", "Token (optional, for a URL)"); token.type = "password";
+  const err = el("p", "error-line"); err.hidden = true;
+  const end = el("div", "form-end");
+  const go = button("Connect", "primary small", async () => {
+    err.hidden = true; go.disabled = true; go.textContent = "Checking…";
+    try {
+      const r = await call("mcp_add", { name: name.value, target: target.value, token: token.value || null });
+      d.close();
+      toast(`${r.name} is connected`, `${r.tools.length} tools, for agents with Apps on.`, "good");
+      connectState.filter = "Developer"; refreshConnect();
+    } catch (e) { err.textContent = String(e); err.hidden = false; }
+    go.disabled = false; go.textContent = "Connect";
+  });
+  end.append(button("Cancel", "quiet small", () => d.close()), go);
+  d.append(el("h2", null, "Add an MCP server"), el("p", "muted", "Cookie connects once to list its tools and remembers them. The token is kept in your Keychain."), name, target, token, err, end);
+  d.addEventListener("close", () => d.remove());
+  document.body.append(d); d.showModal(); name.focus();
 }
 
 /** Your address: @handle for you, @handle/agent for each agent. Online through a relay when you set one. */

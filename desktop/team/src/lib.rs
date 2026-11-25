@@ -38,6 +38,7 @@ pub mod mail;
 pub mod mac;
 pub mod memory;
 pub mod mcp_server;
+pub mod mcps;
 pub mod mention;
 pub mod network;
 pub mod outcome;

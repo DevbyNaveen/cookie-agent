@@ -109,6 +109,7 @@ pub fn router(team: Arc<Team>) -> Router {
         .route("/face.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], UI_FACE) }))
         .route("/md.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], UI_MD) }))
         .route("/blocks.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], UI_BLOCKS) }))
+        .route("/logos.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], UI_LOGOS) }))
         .route("/welcome.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], UI_WELCOME) }))
         .route("/style.css", get(|| async { ([(header::CONTENT_TYPE, "text/css")], UI_CSS) }))
         .route("/api.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], UI_API) }))
@@ -149,6 +150,7 @@ const UI_APP: &str = include_str!("../../ui/app.js");
 const UI_FACE: &str = include_str!("../../ui/face.js");
 const UI_MD: &str = include_str!("../../ui/md.js");
 const UI_BLOCKS: &str = include_str!("../../ui/blocks.js");
+const UI_LOGOS: &str = include_str!("../../ui/logos.js");
 const UI_WELCOME: &str = include_str!("../../ui/welcome.js");
 const UI_CSS: &str = include_str!("../../ui/style.css");
 const UI_API: &str = include_str!("../../ui/api.js");
