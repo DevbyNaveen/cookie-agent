@@ -299,6 +299,10 @@ pub fn find(s: &Snapshot, role: Option<&str>, name: &str) -> Option<u32> {
     let name = name.trim().to_lowercase();
     let role = role.map(|r| r.trim().to_lowercase()).filter(|r| !r.is_empty());
     let fits = |n: &&Node| role.as_deref().is_none_or(|r| n.role == r);
+    // A role with no name means the first one of that kind: "the text field".
+    if name.is_empty() {
+        return role.as_ref().and_then(|_| s.nodes.iter().find(fits)).map(|n| n.id);
+    }
     let label = |n: &Node| if n.name.is_empty() { n.value.to_lowercase() } else { n.name.to_lowercase() };
     s.nodes.iter().filter(fits).find(|n| label(n) == name).or_else(|| s.nodes.iter().filter(fits).find(|n| !name.is_empty() && label(n).contains(&name))).map(|n| n.id)
 }
@@ -326,6 +330,7 @@ impl Step {
         let what = match (&self.r#ref, &self.role, &self.name) {
             (_, Some(r), Some(n)) => format!("{r} {n:?}"),
             (_, None, Some(n)) => format!("{n:?}"),
+            (None, Some(r), None) => format!("the {r}"),
             (Some(r), _, _) => r.clone(),
             _ => String::new(),
         };
@@ -369,9 +374,9 @@ pub fn run(body: &dyn Body, look: &Look, steps: &[Step], vars: &HashMap<String, 
         let value = step.value.as_deref().map(fill);
         let word = step.r#do.trim().to_lowercase();
         let mut node: Option<Node> = None;
-        let target = if step.r#ref.is_some() || step.name.is_some() {
+        let target = if step.r#ref.is_some() || step.name.is_some() || step.role.is_some() {
             let by_ref = step.r#ref.as_deref().and_then(ref_id).filter(|id| current.nodes.iter().any(|n| n.id == *id));
-            let id = by_ref.or_else(|| step.name.as_deref().map(fill).and_then(|n| find(&current, step.role.as_deref(), &n)));
+            let id = by_ref.or_else(|| find(&current, step.role.as_deref(), &step.name.as_deref().map(fill).unwrap_or_default()));
             match id {
                 Some(id) => {
                     node = current.nodes.iter().find(|n| n.id == id).cloned();
@@ -520,7 +525,7 @@ mod tests {
     fn a_batch_resolves_by_name_reports_only_changes_and_can_be_replayed() {
         let f = fake();
         let steps = vec![
-            Step { role: Some("textfield".into()), name: Some("To".into()), r#do: "type".into(), value: Some("{{who}}".into()), ..Default::default() },
+            Step { role: Some("textfield".into()), r#do: "type".into(), value: Some("{{who}}".into()), ..Default::default() },
             Step { r#ref: Some("e2".into()), r#do: "press".into(), ..Default::default() },
             Step { r#do: "keys".into(), value: Some("cmd+w".into()), ..Default::default() },
         ];
@@ -557,5 +562,7 @@ mod tests {
         assert!(out.contains("e2 button \"Send\"") && out.contains("e1 textfield \"To\""), "{out}");
         assert_eq!(find(&s, Some("button"), "send"), Some(2));
         assert_eq!(find(&s, None, "sen"), Some(2), "contains, when nothing matches exactly");
+        assert_eq!(find(&s, Some("textfield"), ""), Some(1), "a role with no name is the first of its kind");
+        assert_eq!(find(&s, None, ""), None, "nothing named and no role finds nothing");
     }
 }
