@@ -385,7 +385,7 @@ const APPS = [
   ["Messages", "Send iMessages (asks you each time)", "This Mac", "messages", "mac"],
   ["Mail", "Read and draft replies in Apple Mail", "This Mac", "mail"],
 ];
-const CONNECT_GROUPS = ["All", "Connected", "Apps", "Channels", "This Mac", "Developer"];
+const CONNECT_GROUPS = ["All", "Connected", "Apps", "Channels", "This Mac", "Passwords", "Developer"];
 let connectState = { filter: "All", q: "", data: null, timer: null };
 
 /** A logo: the app's own icon, a brand mark on its colour, or a letter. */
@@ -405,11 +405,12 @@ function logoTile(key, name) {
 }
 
 async function loadConnect() {
-  const [enkeon, tg, apps, mcps] = await Promise.all([
+  const [enkeon, tg, apps, mcps, op] = await Promise.all([
     call("enkeon_status").catch(() => false), call("telegram_status").catch(() => ({})),
     call("apps").catch(() => null), call("mcps").catch(() => ({ servers: [] })),
+    call("onepassword_status").catch(() => ({ installed: false, allowed: [] })),
   ]);
-  connectState.data = { enkeon: !!enkeon, telegram: !!tg.has_token, apps, mcps: mcps.servers || [] };
+  connectState.data = { enkeon: !!enkeon, telegram: !!tg.has_token, apps, mcps: mcps.servers || [], op };
 }
 
 async function openConnect(filter = "All", q = "") {
@@ -460,7 +461,8 @@ function renderConnectList(list, pill) {
   const match = (name, what = "") => !q || name.toLowerCase().includes(q) || what.toLowerCase().includes(q);
   const st = data.apps;
   const linked = (st?.apps || []).filter((a) => a.state === "connected");
-  const count = (data.enkeon ? 1 : 0) + (data.telegram ? 1 : 0) + linked.length + data.mcps.filter((m) => m.on).length;
+  const opOn = data.op?.installed && (data.op.allowed || []).length > 0;
+  const count = (data.enkeon ? 1 : 0) + (data.telegram ? 1 : 0) + (opOn ? 1 : 0) + linked.length + data.mcps.filter((m) => m.on).length;
   pill.className = "status-pill" + (count ? " ok" : "");
   pill.textContent = `${count} connected`;
 
@@ -487,6 +489,7 @@ function renderConnectList(list, pill) {
     const items = [];
     if (data.enkeon && match("Enkeon")) items.push(row(logoTile("enkeon", "Enkeon"), "Enkeon", "Your brain: memory with proof", button("Manage", "quiet small", () => { d.close(); openEnkeon(); })));
     if (data.telegram && match("Telegram")) items.push(row(logoTile("telegram", "Telegram"), "Telegram", "Your bot is on", button("Manage", "quiet small", () => { d.close(); openSettings("channels"); })));
+    if (opOn && match("1Password", "passwords")) items.push(row(logoTile("1password", "1Password"), "1Password", `${data.op.allowed.length} vault${data.op.allowed.length === 1 ? "" : "s"} for agents · they never see a password`, button("Manage", "quiet small", () => openOnePassword())));
     for (const a of linked) if (match(a.name, a.what)) items.push(row(logoTile(a.slug, a.name), a.name, a.synced ? `${Number(a.synced).toLocaleString()} synced · through Enkeon` : "Connected through Enkeon", el("span", "conn-dot", "On")));
     for (const m of data.mcps.filter((m) => m.on)) if (match(m.name)) items.push(row(logoTile("mcp", m.name), m.name, `MCP · ${m.tools.length} tool${m.tools.length === 1 ? "" : "s"}`, el("span", "conn-dot", "On")));
     if (!items.length && filter === "Connected") sections.push(el("p", "set-note", q ? "Nothing connected matches." : "Nothing connected yet."));
@@ -540,6 +543,14 @@ function renderConnectList(list, pill) {
     return row(logoTile(key, name), name, what, b);
   }), el("p", "set-note", "Mac apps are per agent: turn them on in an agent's profile."));
 
+  // Password managers: agents sign in for you, never seeing a password.
+  if (want("Passwords") && match("1Password", "password manager sign in")) {
+    section("Password managers", [row(logoTile("1password", "1Password"), "1Password",
+      opOn ? "Agents sign in for you; they never see a password" : data.op?.installed ? "Choose which vaults agents may use" : "Let agents sign in for you, without ever seeing a password",
+      button(opOn ? "Manage" : "Set up", opOn ? "quiet small" : "primary small", () => openOnePassword()))],
+      el("p", "set-note", "Cookie fills the login straight into the sign-in form, only on the login's own website, and asks you each time. 1Password asks for Touch ID."));
+  }
+
   // Developer: your own MCP servers.
   if (want("Developer")) {
     const items = data.mcps.filter((m) => match(m.name, m.url || m.command || "")).map((m) => {
@@ -561,6 +572,61 @@ function renderConnectList(list, pill) {
   clearTimeout(connectState.timer);
   const busy = (st?.apps || []).some((a) => a.state === "connecting") || st?.signin?.state === "waiting";
   if (d.open) connectState.timer = setTimeout(refreshConnect, busy ? 2500 : 15000);
+}
+
+/** 1Password: install, connect (Touch ID), and choose the vaults agents may use. */
+async function openOnePassword() {
+  const d = el("dialog", "sheet secret-sheet op-sheet");
+  const body = el("div", "op-body");
+  const close = button("Done", "quiet small", () => d.close());
+  const foot = box("div", "form-end", close);
+  /** The sheet's one row of buttons: this step's action, then Done. */
+  const actions = (...b) => foot.replaceChildren(...b, close);
+  d.append(el("h2", null, "1Password"), el("p", "muted", "Agents sign in for you: Cookie puts the login straight into the sign-in form, only on that login's own website, after you say yes. The agent is told only \u201cfilled\u201d; it never sees a username, password or code."), body, foot);
+  d.addEventListener("close", () => { d.remove(); refreshConnect(); });
+  document.body.append(d); d.showModal(); close.blur();
+  const paint = async (deep) => {
+    body.replaceChildren(el("p", "set-note", deep ? "Asking 1Password… (it may ask for Touch ID)" : "Checking…"));
+    const st = await call("onepassword_status", { deep }).catch((e) => ({ installed: false, reason: String(e) }));
+    if (!st.installed) {
+      const cmd = "brew install 1password-cli";
+      const copy = button("Copy", "quiet small", async () => { await navigator.clipboard.writeText(cmd).catch(() => {}); toast("Copied", cmd, "good"); });
+      body.replaceChildren(
+        el("h3", "group-title", "Three steps, once"),
+        box("ol", "op-steps",
+          box("li", null, el("span", null, "Install the 1Password app and sign in. "), button("Get 1Password", "quiet small", () => Api.openUrl("https://1password.com/downloads/mac").catch(() => {}))),
+          box("li", null, el("span", null, "In 1Password: Settings → Developer → switch on \u201cIntegrate with 1Password CLI\u201d.")),
+          box("li", null, el("span", null, "Install its command-line tool in Terminal:"), box("div", "op-cmd", el("code", null, cmd), copy))));
+      actions(button("Check again", "primary small", () => paint(false)));
+      return;
+    }
+    if (!deep) {
+      body.replaceChildren(el("p", "set-note", (st.allowed || []).length ? `${st.allowed.length} vault${st.allowed.length === 1 ? "" : "s"} allowed for agents.` : "1Password is installed. Connect to choose the vaults agents may use."));
+      actions(button("Connect", "primary small", () => paint(true)));
+      return;
+    }
+    if (!st.signed_in) {
+      body.replaceChildren(el("p", "error-line", st.reason || "1Password didn't let Cookie in."),
+        el("p", "set-note", "Open the 1Password app, unlock it, and check Settings → Developer → \u201cIntegrate with 1Password CLI\u201d is on."));
+      actions(button("Try again", "primary small", () => paint(true)));
+      return;
+    }
+    const allowed = new Set(st.allowed || []);
+    const list = el("div", "group");
+    for (const v of st.vaults || []) {
+      list.append(setRow(v.name, allowed.has(v.id) ? "Agents may sign in with its logins" : "Agents can't see it", toggle(allowed.has(v.id), async (on) => {
+        on ? allowed.add(v.id) : allowed.delete(v.id);
+        try { await call("onepassword_set_vaults", { vaults: [...allowed] }); } catch (e) { toast("Couldn't save that", String(e), "error"); }
+      }, v.name)));
+    }
+    body.replaceChildren(
+      el("p", "set-note ok", `Connected to ${st.account}.`),
+      el("h3", "group-title", "Vaults agents may use"),
+      list,
+      el("p", "set-note", "Tip: make a vault called \u201cCookie\u201d holding only the logins agents need, and allow just that one."));
+    actions();
+  };
+  paint(false);
 }
 
 /** Add your own MCP server: checked once, its tools pinned. */

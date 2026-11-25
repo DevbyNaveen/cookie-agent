@@ -232,7 +232,7 @@ fn look_in(s: &mut State, q: &Look) -> Result<Snapshot, String> {
         }
     }
     s.refs.insert(pid, held);
-    Ok(Snapshot { app: app_name(&title), pid, window: title, nodes, truncated, took_ms: started.elapsed().as_millis() as u64 })
+    Ok(Snapshot { app: app_name(&title), pid, window: title, nodes, truncated, took_ms: started.elapsed().as_millis() as u64, url: None })
 }
 
 fn act_in(s: &mut State, pid: i32, id: u32, act: &Act) -> Result<String, String> {

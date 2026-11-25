@@ -262,7 +262,7 @@ impl Linux {
             }
         }
         self.refs.lock().unwrap().insert(app.pid, held);
-        Ok(Snapshot { app: app.name, pid: app.pid, window: title, nodes, truncated, took_ms: started.elapsed().as_millis() as u64 })
+        Ok(Snapshot { app: app.name, pid: app.pid, window: title, nodes, truncated, took_ms: started.elapsed().as_millis() as u64, url: None })
     }
 
     async fn act_async(&self, pid: i32, id: u32, act: &Act) -> Result<String, String> {

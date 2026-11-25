@@ -113,6 +113,10 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
         out.extend(crate::mac::tools());
         out.extend(crate::control::tools());
         out.extend(crate::hands::tools(team, &rec.id));
+        // 1Password sign-ins, once the person has allowed a vault for agents.
+        if !team.onepassword().vaults.is_empty() {
+            out.extend(crate::onepassword::tools(team));
+        }
     }
     // Code that calls its read-only tools (only with "Run commands" on, never for outsiders).
     if g.shell && !outside {

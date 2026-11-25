@@ -188,12 +188,14 @@ struct Walk {
     nodes: Vec<Node>,
     held: Vec<Held>,
     truncated: bool,
+    /// The first web page's address.
+    url: Option<String>,
 }
 
 fn walk(root: CFType, limit: usize, deadline: Instant) -> Walk {
     let names: Vec<CFString> = ATTRS.iter().map(|a| CFString::new(a)).collect();
     let names = CFArray::from_CFTypes(&names);
-    let mut out = Walk { nodes: Vec::new(), held: Vec::new(), truncated: false };
+    let mut out = Walk { nodes: Vec::new(), held: Vec::new(), truncated: false, url: None };
     // (element, depth among the shown things)
     let mut stack: Vec<(CFType, u16)> = vec![(root, 0)];
     let mut visited = 0usize;
@@ -232,6 +234,9 @@ fn walk(root: CFType, limit: usize, deadline: Instant) -> Walk {
         };
         if role == "AXStaticText" && name.is_empty() {
             name = std::mem::take(&mut value);
+        }
+        if role == "AXWebArea" && out.url.is_none() {
+            out.url = attr(&el, "AXURL").and_then(|u| u.downcast::<core_foundation::url::CFURL>()).map(|u| u.get_string().to_string());
         }
         let usable = USABLE.contains(&role.as_str());
         let shown = usable || role == "AXHeading" || !name.is_empty() || (!value.is_empty() && role != "AXGroup");
@@ -452,10 +457,10 @@ impl Body for Mac {
         let limit = if q.limit == 0 { 250 } else { q.limit.clamp(10, 1500) };
         let (title, w) = match window {
             Some(win) => (attr(&win, "AXTitle").and_then(|t| text_of(&t)).unwrap_or_default(), walk(win, limit, started + Duration::from_millis(2500))),
-            None => ("(no window)".to_string(), Walk { nodes: Vec::new(), held: Vec::new(), truncated: false }),
+            None => ("(no window)".to_string(), Walk { nodes: Vec::new(), held: Vec::new(), truncated: false, url: None }),
         };
         self.refs.lock().unwrap().insert(app.pid, w.held);
-        Ok(Snapshot { app: app.name, pid: app.pid, window: title, nodes: w.nodes, truncated: w.truncated, took_ms: started.elapsed().as_millis() as u64 })
+        Ok(Snapshot { app: app.name, pid: app.pid, window: title, nodes: w.nodes, truncated: w.truncated, took_ms: started.elapsed().as_millis() as u64, url: w.url })
     }
 
     fn act(&self, pid: i32, id: u32, act: &Act) -> Result<String, String> {

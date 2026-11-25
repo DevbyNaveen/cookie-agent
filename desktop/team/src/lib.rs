@@ -43,6 +43,7 @@ pub mod mcp_server;
 pub mod mcps;
 pub mod mention;
 pub mod network;
+pub mod onepassword;
 pub mod outcome;
 pub mod pair;
 pub mod passport;

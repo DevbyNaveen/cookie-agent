@@ -54,6 +54,9 @@ pub struct Snapshot {
     /// More was there than the limit allowed.
     pub truncated: bool,
     pub took_ms: u64,
+    /// The web page's address, when the window shows one (a browser's page).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// What to look at.
@@ -207,6 +210,9 @@ pub fn body() -> Option<&'static dyn Body> {
 /// What the agent reads: one line per thing, indented by depth.
 pub fn render(s: &Snapshot) -> String {
     let mut out = format!("app {} · window {:?} · {} items in {} ms{}\n", s.app, s.window, s.nodes.len(), s.took_ms, if s.truncated { " (more not shown; look with a higher limit)" } else { "" });
+    if let Some(u) = &s.url {
+        out.push_str(&format!("page {u}\n"));
+    }
     for n in &s.nodes {
         out.push_str(&line(n));
         out.push('\n');
@@ -470,7 +476,7 @@ mod tests {
             if *self.sent.lock().unwrap() {
                 nodes.push(node(3, "text", "", "Sent"));
             }
-            Ok(Snapshot { app: "Mail".into(), pid: 7, window: "New Message".into(), nodes, truncated: false, took_ms: 1 })
+            Ok(Snapshot { app: "Mail".into(), pid: 7, window: "New Message".into(), nodes, truncated: false, took_ms: 1, url: None })
         }
         fn act(&self, _pid: i32, id: u32, act: &Act) -> Result<String, String> {
             match (id, act) {

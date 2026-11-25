@@ -1518,3 +1518,12 @@ footer.me { gap: 6px; }
 @media (prefers-reduced-motion: reduce) { .wl-aurora { animation: none; } }
 .wl-fine { margin: 26px 0 0; font-size: 12.5px; color: var(--text-3); }
 .plain-list { margin: 0 0 6px; padding: 0 16px 8px 34px; display: grid; gap: 6px; font-size: 13px; line-height: 1.45; color: var(--text-2); }
+
+/* 1Password */
+.op-steps { margin: 6px 0 14px; padding-left: 20px; display: grid; gap: 10px; font-size: 14px; color: var(--text-2); }
+.op-steps li { line-height: 1.6; }
+.op-steps li .btn { margin-left: 6px; vertical-align: middle; }
+.op-cmd { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.op-cmd code { flex: 1; font: 12.5px/1 ui-monospace, "SF Mono", Menlo, monospace; background: var(--raise-2); padding: 10px 12px; border-radius: 8px; }
+.op-cmd .btn { margin-left: 0; }
+.op-sheet .group { margin-top: 4px; }
