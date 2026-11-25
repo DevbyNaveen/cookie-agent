@@ -210,7 +210,7 @@ button svg, .search-wrap svg, .menu svg { width: 18px; height: 18px; fill: none;
 
 /* Characters: a fluid body on canvas, crisp eyes over it (face.js). */
 .face { position: relative; display: inline-grid; place-items: center; flex: none; transform-origin: 50% 100%; isolation: isolate; }
-.face canvas { grid-area: 1 / 1; width: 100%; height: 100%; filter: drop-shadow(0 2px 3px rgb(0 0 0 / .32)); }
+.face canvas:not(.gl) { grid-area: 1 / 1; width: 100%; height: 100%; filter: drop-shadow(0 2px 3px rgb(0 0 0 / .32)); }
 .face .eyes { grid-area: 1 / 1; position: relative; z-index: 1; display: flex; align-items: center; }
 .face .eyes i { display: block; border-radius: 999px; background: #22120a; box-shadow: 0 .5px 0 rgb(255 255 255 / .28); transform-origin: 50% 55%; }
 
@@ -609,7 +609,7 @@ body.signed-out .signed-out-msg { display: block; max-width: 460px; padding: 24p
 
 /* The turn: body and eyes rotate together; a soft light sweeps across. */
 .face .flip { grid-area: 1 / 1; width: 100%; height: 100%; display: grid; place-items: center; transform-style: preserve-3d; backface-visibility: visible; position: relative; }
-.face .flip > canvas, .face .flip > .eyes { grid-area: 1 / 1; }
+.face .flip > canvas:not(.gl), .face .flip > .eyes { grid-area: 1 / 1; }
 .face .sheen { grid-area: 1 / 1; z-index: 2; width: 45%; height: 100%; opacity: 0; pointer-events: none; border-radius: 40%;
   background: linear-gradient(90deg, transparent, rgb(255 255 255 / .55), transparent); mix-blend-mode: soft-light; filter: blur(2px); }
 
