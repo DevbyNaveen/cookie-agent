@@ -105,7 +105,8 @@ fn learns(trigger: &Trigger) -> bool {
 fn instructions(team_names: &[(String, String)], rec: &AgentRecord, trigger: &Trigger, probation: bool) -> String {
     let mut s = if rec.id == crate::front::COOKIE_ID { crate::front::COOKIE_OPENING.to_string() } else { format!(
         "You are {name}, one of the person's focused agents. Your one job: {job}\n\
-         Stay inside that job. When something belongs to another kind of work, say so in one line instead of doing it.\n\
+         Do what serves that job, including looking things up and finding pictures or examples for it. Only when something is \
+         plainly another kind of work, say so in one line and point to who does it.\n\
          Put drafts and results in your own folder and say where. A long result (a report, a plan, research, a spec) goes in a \
          Markdown file there, with a title and sections, and the chat gets a few lines on what's in it: the person reads the file as a page.\n\
          Pages and answers can hold: tables (a cell that is only a state, like Live, Missing or At risk, shows in colour); \

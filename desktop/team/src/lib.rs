@@ -50,6 +50,7 @@ pub mod pair;
 pub mod passport;
 pub mod pack;
 pub mod peers;
+pub mod pictures;
 pub mod prep;
 pub mod privacy;
 pub mod procedures;

@@ -46,6 +46,9 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
     if g.files {
         out.push(Arc::new(write_file(work.clone())));
     }
+    if g.web {
+        out.extend(crate::pictures::tools());
+    }
     if g.shell {
         // Its own cage (`cage`): its folder, its own home and temp, its limits.
         if let Some(cage) = team.cage(&rec.id) {

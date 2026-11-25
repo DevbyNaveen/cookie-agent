@@ -475,6 +475,17 @@ function mediaEl(f, alt) {
 function remoteImage(url, alt) {
   let host = url;
   try { host = new URL(url).host; } catch {}
+  // Wikimedia's image server serves only public files that exist (find_images): shown at once.
+  if (/^https:\/\/upload\.wikimedia\.org\/wikipedia\/commons\/[\w/%.()-]+$/.test(url)) {
+    const img = el("img", "md-img");
+    img.referrerPolicy = "no-referrer";
+    img.loading = "lazy";
+    img.alt = alt || "";
+    img.src = url;
+    img.onclick = () => lightbox(url, img.alt);
+    img.onerror = () => img.replaceWith(el("span", "md-missing", "The picture didn't load."));
+    return img;
+  }
   const b = el("button", "md-remote");
   b.type = "button";
   b.append(icon("eye"), el("span", null, `Show image from ${host}`));
