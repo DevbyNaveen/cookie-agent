@@ -948,6 +948,8 @@ footer.me { gap: 6px; }
 :root[data-theme="glass"] .pop, :root[data-theme="glass"] .menu, :root[data-theme="glass"] dialog.sheet { background-color: rgb(28 28 30 / .9); }
 :root[data-theme="glass"] .talk-view { background: rgb(20 20 22 / .72); }
 :root[data-theme="glass"] .profile { background: rgb(22 22 23 / .82); -webkit-backdrop-filter: blur(30px); backdrop-filter: blur(30px); }
+/* Views that cover the chat must hide it: Glass's page background lets what's behind show through. */
+:root[data-theme="glass"] .doc-view, :root[data-theme="glass"] .welcome { background: rgb(18 18 20 / .96); -webkit-backdrop-filter: blur(34px) saturate(1.3); backdrop-filter: blur(34px) saturate(1.3); }
 /* No frosted window (a browser, or not a Mac): a deep tinted stand-in, so the theme still reads. */
 :root[data-theme="glass"]:not(.glass-native) body { background: radial-gradient(1200px 700px at 80% -10%, #2a2440, transparent 60%), radial-gradient(900px 600px at 10% 110%, #3a2414, transparent 60%), #111114; }
 
