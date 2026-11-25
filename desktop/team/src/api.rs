@@ -167,6 +167,13 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         }
         "webhook_url" => ok(team.webhook_url(&arg::<String>(a, "id")?).await),
         "queued_triggers" => ok(team.queued_triggers()),
+        // How an AI tool starts the MCP bridge on this computer: this very program, asked for MCP.
+        "mcp_command" => {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let headless = exe.file_name().is_some_and(|n| n.to_string_lossy().contains("cookie-team"));
+            let args: Vec<String> = if headless { vec!["mcp".into(), "--dir".into(), team.paths.root.to_string_lossy().into_owned()] } else { vec!["--mcp".into()] };
+            ok(json!({"command": exe.to_string_lossy(), "args": args}))
+        }
         "trigger_apps" => ok(crate::triggers::APPS.iter().map(|(id, name)| json!({"id": id, "name": name})).collect::<Vec<_>>()),
         "set_routine_enabled" => ok(team.set_routine_enabled(&arg::<String>(a, "id")?, arg(a, "enabled")?).await?),
         "delete_routine" => ok(team.delete_routine(&arg::<String>(a, "id")?).await?),

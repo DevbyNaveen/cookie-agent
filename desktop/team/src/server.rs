@@ -137,6 +137,8 @@ pub fn router(team: Arc<Team>) -> Router {
         .route("/hooks/mail", post(mail_hook))
         // A routine started by a call to its own address (secret as a bearer token).
         .route("/hooks/routine/{id}", post(routine_hook))
+        // The team over MCP, for Claude Desktop, Cursor and other AI tools (`mcp_server`).
+        .route("/mcp", post(mcp))
         .with_state(state)
 }
 
@@ -254,6 +256,17 @@ async fn mail_hook(State(st): State<AppState>, headers: HeaderMap, body: axum::b
     match st.team.mail_inbound(&body, &rcpt).await {
         Ok(what) => Json(json!({"ok": what})).into_response(),
         Err(e) => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": e}))).into_response(),
+    }
+}
+
+async fn mcp(State(st): State<AppState>, headers: HeaderMap, Json(msg): Json<Value>) -> Response {
+    if !authorised(&st.team, bearer(&headers)) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"jsonrpc": "2.0", "id": msg.get("id"), "error": {"code": -32001, "message": "Cookie's token is missing or wrong."}}))).into_response();
+    }
+    let client = headers.get("x-cookie-client").and_then(|v| v.to_str().ok()).unwrap_or("").chars().take(60).collect::<String>();
+    match crate::mcp_server::handle(&st.team, &msg, &client).await {
+        Some(answer) => Json(answer).into_response(),
+        None => StatusCode::ACCEPTED.into_response(),
     }
 }
 

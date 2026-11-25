@@ -1248,3 +1248,9 @@ footer.me { gap: 6px; }
 .msg.guest .guest-col { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 0; max-width: 100%; }
 .guest-head { display: inline-flex; align-items: center; gap: 6px; margin-left: 4px; font-size: 12.5px; font-weight: 600; color: var(--text-2); }
 .guest-head .face { width: 18px; height: 18px; flex: none; }
+/* AI tools: ready-to-paste MCP setup */
+.mcp-snip { padding: 10px 12px; }
+.mcp-snip-head { display: flex; align-items: center; gap: 10px; }
+.mcp-snip-head .row-text { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.mcp-snip-head .row-text small { color: var(--text-3); font-size: 12.5px; }
+.mcp-pre { margin: 8px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; white-space: pre-wrap; word-break: break-all; user-select: all; }

@@ -277,6 +277,8 @@ pub enum Trigger {
     Review,
     /// The person wrote from Slack, Discord, iMessage or Signal.
     Channel { channel: String, chat: String },
+    /// An AI tool the person uses (Claude Desktop, Cursor…) asked over MCP (`mcp_server`).
+    Mcp { client: String },
     /// The person named it with @ in another agent's chat (`chat`): it answers there (`mention`).
     Mention { chat: String },
     /// Its memory changed enough to be worth its attention (`wake`).

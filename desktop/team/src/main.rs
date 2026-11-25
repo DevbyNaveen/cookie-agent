@@ -5,6 +5,7 @@
 //!
 //!   cookie-team serve [--dir DIR] [--bind 0.0.0.0] [--port 4519] [--public-url https://…]
 //!   cookie-team token [--dir DIR] [--rotate]
+//!   cookie-team mcp [--dir DIR]     the running team over MCP, on stdin/stdout
 
 use std::path::PathBuf;
 
@@ -23,6 +24,15 @@ fn default_dir() -> PathBuf {
 async fn main() {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into())).init();
     let args: Vec<String> = std::env::args().collect();
+    // The MCP bridge talks to the running team; it never opens one of its own.
+    if args.get(1).map(String::as_str) == Some("mcp") {
+        let dir = arg(&args, "--dir").map(PathBuf::from).or_else(|| cookie_team::mcp_server::desktop_dir().filter(|d| d.exists())).unwrap_or_else(default_dir);
+        if let Err(e) = cookie_team::mcp_server::stdio_bridge(&dir).await {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let dir = arg(&args, "--dir").map(PathBuf::from).unwrap_or_else(default_dir);
     let team = match cookie_team::Team::open(&dir) {
         Ok(t) => t,
@@ -61,7 +71,7 @@ async fn main() {
             println!("{}", cookie_team::server::token(&team, rotate).expect("token"));
         }
         _ => {
-            eprintln!("usage:\n  cookie-team serve [--dir DIR] [--bind ADDR] [--port N] [--public-url URL]\n  cookie-team token [--dir DIR] [--rotate]");
+            eprintln!("usage:\n  cookie-team serve [--dir DIR] [--bind ADDR] [--port N] [--public-url URL]\n  cookie-team token [--dir DIR] [--rotate]\n  cookie-team mcp [--dir DIR]");
             std::process::exit(2);
         }
     }

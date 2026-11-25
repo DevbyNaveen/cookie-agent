@@ -152,7 +152,7 @@ const SETTINGS = {
     net.lastChild.append(bind, port);
     net.append(setRow("Public address", "Where others reach it (behind HTTPS, e.g. a tunnel). Needed for invites.", null), pub);
     const end = el("div", "form-end"); end.append(save);
-    const out = [el("h2", null, "Sharing"), ...(await addressPart()), el("h3", "group-title", "This team over HTTP"), g, net, end];
+    const out = [el("h2", null, "Sharing"), ...(await addressPart()), ...(await aiToolsPart(st)), el("h3", "group-title", "This team over HTTP"), g, net, end];
     if (st.listening) {
       const token = await call("runner_token");
       const base = st.public_url ?? `http://${st.bind}:${st.port}`;
@@ -404,6 +404,34 @@ async function openConnect(filter = "All", q = "") {
 }
 
 /** Your address: @handle for you, @handle/agent for each agent. Online through a relay when you set one. */
+/** AI tools: Claude Desktop, Cursor and Claude Code hand your agents work over MCP, through Cookie itself. */
+async function aiToolsPart(st) {
+  const g = el("div", "group");
+  g.append(setRow("Let AI tools on this computer use your team", "Claude Desktop, Cursor, Claude Code and other MCP tools can see your agents, hand them work and read their answers. They can't approve anything: what an agent would send, change or pay still asks you here.",
+    toggle(st.enabled, async (v) => { await call("update_settings", { patch: { server: { enabled: v } } }); setTimeout(refreshSettings, 400); }, "AI tools")));
+  const out = [el("h3", "group-title", "AI tools"), g];
+  if (!st.enabled) return out;
+  const mc = await call("mcp_command").catch(() => null);
+  if (!mc) return out;
+  const q = (s) => (/[\s"']/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s);
+  const json = JSON.stringify({ mcpServers: { cookie: { command: mc.command, args: mc.args } } }, null, 2);
+  const snip = (title, where, text) => {
+    const box = el("div", "group edit mcp-snip");
+    const head = el("div", "mcp-snip-head");
+    head.append(el("div", "row-text"), button("Copy", "quiet small", () => navigator.clipboard.writeText(text).then(() => toast("Copied", title))));
+    head.firstChild.append(el("span", null, title), el("small", null, where));
+    box.append(head, el("pre", "mcp-pre", text));
+    return box;
+  };
+  out.push(
+    snip("Claude Desktop", "Settings → Developer → Edit Config, then restart Claude", json),
+    snip("Cursor", "~/.cursor/mcp.json (or Settings → MCP → Add)", json),
+    snip("Claude Code", "Run once in a terminal", `claude mcp add cookie -- ${[mc.command, ...mc.args].map(q).join(" ")}`),
+    el("p", "set-note", "Cookie must be open for them to reach it. Everything stays on this computer: the tool starts Cookie's own bridge, which talks to this app."),
+  );
+  return out;
+}
+
 async function addressPart() {
   const ns = netStatus = await call("net_status");
   const out = [el("h3", "group-title", "Your address")];

@@ -170,6 +170,16 @@ fn show_main(app: &tauri::AppHandle) {
 }
 
 fn main() {
+    // `Cookie --mcp`: the running team over MCP for Claude Desktop and other AI tools, no window.
+    if std::env::args().any(|a| a == "--mcp") {
+        let dir = cookie_team::mcp_server::desktop_dir().unwrap_or_default();
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("runtime");
+        if let Err(e) = rt.block_on(cookie_team::mcp_server::stdio_bridge(&dir)) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
