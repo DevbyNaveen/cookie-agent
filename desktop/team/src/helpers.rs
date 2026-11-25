@@ -37,7 +37,7 @@ const HELPER_STEPS: usize = 12;
 pub const NAME: &str = "helper";
 
 /// Tools a helper never holds even though they only read: they speak for the agent.
-const NOT_FOR_HELPERS: [&str; 4] = ["ask_person", "todo_list", "tool_search", "read_artifact"];
+const NOT_FOR_HELPERS: [&str; 5] = ["ask_person", "todo_list", "tool_search", "read_artifact", "board"];
 
 const PROMPT: &str = "You are a helper: one short task, handed to you by an agent that works for a person. \
 Do only this task, with the tools you have, and report back. You can't ask anyone anything: when something \

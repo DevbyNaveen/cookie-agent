@@ -62,10 +62,31 @@ const Md = (() => {
     return out + esc(code.slice(last));
   }
 
+  // Blocks Cookie draws (blocks.js): a flow, a chart, a form, a board. The text stays as written.
+  const DRAWN = new Set(["flow", "chart", "form", "board"]);
+
   function codeBlock(body, lang) {
+    if (DRAWN.has(lang.toLowerCase())) return `<div class="md-block md-${lang.toLowerCase()}" data-src="${esc(body)}"></div>`;
     const label = lang ? esc(lang) : "code";
     return `<div class="md-code"><div class="md-code-head"><span>${label}</span><button type="button" class="md-copy" aria-label="Copy code">Copy</button></div><pre><code>${highlight(body, lang)}</code></pre></div>`;
   }
+
+  /* ---------- status words: a table cell that is only a state reads as one ---------- */
+  const STATES = {
+    good: ["live", "done", "shipped", "ready", "pass", "passed", "ok", "working", "complete", "completed", "active", "on track", "healthy", "yes", "approved", "fixed", "merged", "up"],
+    warn: ["at risk", "degraded", "partial", "pending", "in progress", "doing", "waiting", "in review", "review", "beta", "slow", "not asked", "draft", "needs work", "website only", "behind"],
+    bad: ["missing", "broken", "failed", "fail", "failing", "blocked", "dead", "down", "error", "overdue", "no", "rejected", "off track", "critical"],
+    calm: ["unused", "unknown", "n/a", "paused", "skipped", "planned", "todo", "to do", "later", "not started", "deprecated", "idea"],
+  };
+  const STATE_OF = new Map(Object.entries(STATES).flatMap(([k, words]) => words.map((w) => [w, k])));
+  function status(cell) {
+    const plainCell = cell.replace(/[*_`~]/g, "").trim();
+    const k = STATE_OF.get(plainCell.toLowerCase().replace(/[.!]$/, ""));
+    return k ? `<span class="state s-${k}">${esc(plainCell)}</span>` : null;
+  }
+
+  /* ---------- callouts: GitHub's > [!NOTE] ---------- */
+  const CALLOUTS = { note: "Note", tip: "Tip", important: "Important", warning: "Warning", caution: "Caution" };
 
   /* ---------- tables ---------- */
   const SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
@@ -86,7 +107,7 @@ const Md = (() => {
   function table(lines, i) {
     const head = cells(lines[i]);
     const align = cells(lines[i + 1]).map((c) => (c.startsWith(":") && c.endsWith(":") ? "center" : c.endsWith(":") ? "right" : ""));
-    const td = (tag, c, k) => `<${tag}${align[k] ? ` style="text-align:${align[k]}"` : ""}>${inline(c)}</${tag}>`;
+    const td = (tag, c, k) => `<${tag}${align[k] ? ` style="text-align:${align[k]}"` : ""}>${tag === "td" ? status(c) ?? inline(c) : inline(c)}</${tag}>`;
     let html = `<div class="md-table"><table><thead><tr>${head.map((c, k) => td("th", c, k)).join("")}</tr></thead><tbody>`;
     i += 2;
     while (i < lines.length && lines[i].includes("|") && lines[i].trim()) {
@@ -121,7 +142,12 @@ const Md = (() => {
       if (/^>\s?/.test(line)) {
         const body = [];
         while (i < lines.length && /^>\s?/.test(lines[i])) body.push(lines[i++].replace(/^>\s?/, ""));
-        out.push(`<blockquote>${render(body.join("\n"))}</blockquote>`);
+        const kind = body[0]?.match(/^\[!(note|tip|important|warning|caution)\]\s*(.*)$/i);
+        if (kind) {
+          const k = kind[1].toLowerCase();
+          const title = kind[2].trim() || CALLOUTS[k];
+          out.push(`<div class="callout c-${k}" role="note"><div class="callout-title">${inline(title)}</div>${render(body.slice(1).join("\n"))}</div>`);
+        } else out.push(`<blockquote>${render(body.join("\n"))}</blockquote>`);
         continue;
       }
       const list = line.match(/^\s*([-*+]|\d+[.)])\s+/);

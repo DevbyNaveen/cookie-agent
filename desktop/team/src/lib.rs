@@ -9,6 +9,7 @@ pub mod api;
 pub mod cage;
 pub mod approvals;
 pub mod bench;
+pub mod boards;
 pub mod browser;
 pub mod challenge;
 pub mod channels;

@@ -221,6 +221,15 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "remove_peer" => ok(team.remove_peer(&arg::<String>(a, "agent")?, &arg::<String>(a, "url")?).await?),
 
         /* packs and market */
+        /* boards */
+        "boards" => ok(team.boards().into_iter().map(|b| json!({"id": b.id, "title": b.title, "cards": b.cards.len(), "updated_at": b.updated_at, "created_by": b.created_by})).collect::<Vec<_>>()),
+        "board" => ok(team.board(&arg::<String>(a, "id")?)?),
+        "create_board" => ok(team.create_board(&arg::<String>(a, "title")?, opt(a, "columns"), "you")?),
+        "add_card" => ok(team.add_card(&arg::<String>(a, "board")?, &arg::<String>(a, "title")?, &opt::<String>(a, "notes").unwrap_or_default(), opt::<String>(a, "column").as_deref(), "you")?.0),
+        "move_card" => ok(team.move_card(&arg::<String>(a, "board")?, &arg::<String>(a, "card")?, &arg::<String>(a, "column")?, opt::<String>(a, "before").as_deref(), "you")?),
+        "edit_card" => ok(team.edit_card(&arg::<String>(a, "board")?, &arg::<String>(a, "card")?, opt::<String>(a, "title").as_deref(), opt::<String>(a, "notes").as_deref(), "you")?),
+        "delete_card" => ok(team.delete_card(&arg::<String>(a, "board")?, &arg::<String>(a, "card")?)?),
+        "delete_board" => ok(team.delete_board(&arg::<String>(a, "id")?)?),
         /* a whole team as one Markdown file */
         "export_team" => ok(team.export_team(&opt::<String>(a, "name").unwrap_or_default(), &opt::<String>(a, "about").unwrap_or_default(), opt(a, "ids")).await?),
         "preview_team" => {

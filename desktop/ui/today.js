@@ -136,6 +136,20 @@ async function teamDesk() {
     c.querySelector(".desk-head").append(el("small", "muted", fmtTime(retro.at)));
     out.push(c);
   }
+  // Boards the team keeps: open one, or start one.
+  const boards = await call("boards").catch(() => []);
+  const bl = el("div", "group");
+  for (const b of boards.slice(0, 6)) {
+    const by = b.created_by === "you" ? "You" : agentById(b.created_by)?.name ?? "An agent";
+    bl.append(setRow(b.title, `${b.cards} card${b.cards === 1 ? "" : "s"} · ${by} · ${fmtTime(b.updated_at)}`, button("Open", "quiet small", () => openBoard(b.id, "cookie"))));
+  }
+  if (!boards.length) bl.append(setRow("No boards yet", "A board is columns of cards you and your agents work on together. Ask an agent to keep one for a project, or start one.", null));
+  bl.append(setRow("", null, button("New board", "quiet small", async () => {
+    const title = prompt("What is the board for?");
+    if (!title?.trim()) return;
+    try { const b = await call("create_board", { title }); openBoard(b.id, "cookie"); } catch (e) { toast("Couldn't make it", String(e), "error"); }
+  })));
+  out.push(deskCard("cookie", `Boards${boards.length ? ` (${boards.length})` : ""}`, bl));
   // Who's waiting on you (mail, through Enkeon).
   out.push(deskCard("cookie", "Who's waiting on you", inboxCard()));
   // Hires Scout thinks you'd want.

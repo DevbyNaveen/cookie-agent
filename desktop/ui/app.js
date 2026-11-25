@@ -490,6 +490,7 @@ function slotAfter(block) {
 /** Fill in what a rendered reply points at: its pictures, recordings, videos and files. */
 function hydrateMd(root, agentId) {
   if (!root || !agentId) return;
+  hydrateBlocks(root, agentId);
   for (const ph of root.querySelectorAll(".md-media:not([data-done])")) {
     ph.dataset.done = "1";
     const { src, alt } = ph.dataset;
@@ -653,6 +654,7 @@ function closePage() {
   const v = $("doc-view");
   if (v.hidden) return;
   v.classList.remove("open");
+  delete v.dataset.board;
   $("chat").classList.remove("doc-open");
   v.querySelectorAll("iframe.doc-pdf").forEach((fr) => URL.revokeObjectURL(fr.src));
   setTimeout(() => { v.hidden = true; v.replaceChildren(); }, 160);
@@ -962,6 +964,7 @@ function onTeamEvent(ev) {
       if (job.ui && current?.id === ev.agent && view === "chat") { placeHelpers(job).set(ev.n, ev.task, ev.state, ev.note); scrollDown(); }
       break;
     }
+    case "board": onBoardChanged(ev.id); break;
     case "chat_changed": {
       // An answer from an agent brought in with @ was kept: redraw from the record.
       if (current?.id === ev.agent && view === "chat") {
