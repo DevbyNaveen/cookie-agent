@@ -329,6 +329,48 @@ impl Team {
 }
 
 /// A PDF's page count and text (`lopdf`); no text when its pages are scans.
+impl Team {
+    fn me_photo_file(&self) -> PathBuf {
+        self.paths.root.join("me.jpg")
+    }
+
+    /// The person's own photo, as a data URL, if they set one.
+    pub fn me_photo(&self) -> Option<String> {
+        use base64::Engine;
+        std::fs::read(self.me_photo_file()).ok().map(|b| format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(b)))
+    }
+
+    /// Set the person's photo from a picked file (`path`) or its bytes (`data`, base64):
+    /// made a square-ish 256-px JPEG, so any picture (HEIC too) works and it stays small.
+    pub fn set_me_photo(&self, path: Option<String>, data: Option<String>) -> Result<Option<String>, String> {
+        use base64::Engine;
+        let tmp = std::env::temp_dir().join(format!("cookie-me-{}", util::random_hex(6)));
+        let src = match (path, data) {
+            (Some(p), _) => PathBuf::from(p),
+            (None, Some(d)) => {
+                let b = base64::engine::general_purpose::STANDARD.decode(d.trim()).map_err(|_| "The picture didn't arrive whole.".to_string())?;
+                std::fs::write(&tmp, b).map_err(|e| e.to_string())?;
+                tmp.clone()
+            }
+            _ => return Err("Choose a picture.".into()),
+        };
+        let out = tmp.with_extension("jpg");
+        let made = run("/usr/bin/sips", &["-s", "format", "jpeg", "-s", "formatOptions", "85", "-Z", "256", &src.to_string_lossy(), "--out", &out.to_string_lossy()]).is_some();
+        let _ = std::fs::remove_file(&tmp);
+        if !made || !out.exists() {
+            return Err("That isn't a picture Cookie can read: try a PNG, JPEG or HEIC.".into());
+        }
+        let r = std::fs::rename(&out, self.me_photo_file()).or_else(|_| std::fs::copy(&out, self.me_photo_file()).map(|_| ()));
+        let _ = std::fs::remove_file(&out);
+        r.map_err(|e| e.to_string())?;
+        Ok(self.me_photo())
+    }
+
+    pub fn clear_me_photo(&self) -> bool {
+        std::fs::remove_file(self.me_photo_file()).is_ok()
+    }
+}
+
 fn pdf_read(path: &Path) -> (Option<usize>, Option<String>) {
     let Ok(doc) = lopdf::Document::load(path) else { return (None, None) };
     let pages: Vec<u32> = doc.get_pages().keys().copied().collect();
@@ -357,6 +399,25 @@ mod tests {
         assert_eq!(safe_name("../../etc/passwd"), "-..-etc-passwd");
         assert_eq!(safe_name(".hidden"), "hidden");
         assert_eq!(human(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    #[test]
+    fn your_photo_is_kept_small_and_only_pictures_are_taken() {
+        use base64::Engine;
+        let dir = std::env::temp_dir().join(format!("cookie-me-{}", util::random_hex(4)));
+        let team = Team::open(&dir).unwrap();
+        assert!(team.me_photo().is_none());
+        assert!(team.set_me_photo(None, Some(base64::engine::general_purpose::STANDARD.encode("not a picture"))).is_err());
+        // A 600x400 PNG made by sips itself.
+        let png = dir.join("big.png");
+        run("/usr/bin/sips", &["-s", "format", "png", "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericFolderIcon.icns", "--out", &png.to_string_lossy()]);
+        if png.exists() {
+            let url = team.set_me_photo(Some(png.to_string_lossy().to_string()), None).unwrap().unwrap();
+            assert!(url.starts_with("data:image/jpeg;base64,"));
+            assert!(std::fs::metadata(dir.join("me.jpg")).unwrap().len() < 100_000);
+            assert!(team.clear_me_photo() && team.me_photo().is_none());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -1809,6 +1809,7 @@ $("me-menu").onclick = async (e) => {
   closePops();
   if (go === "expand") toggleRail();
   else if (go === "connect") openConnect();
+  else if (go === "photo") changeMyPhoto();
   else if (go === "folder") Api.reveal(await call("data_dir")).catch((err) => toast("Can't open it here", String(err), "error"));
   else openSettings(go);
 };
@@ -1904,7 +1905,9 @@ async function boot() {
   // Local models: whatever Ollama has pulled, free and offline.
   try { const lm = await call("local_models"); MODELS.ollama = (lm.installed || []).map((m) => "ollama:" + m); if (MODELS.ollama.length) providers.push("ollama"); } catch {}
   $("me-name").textContent = name || "You";
-  $("me-initials").textContent = (name || "You").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+  meInitials = (name || "You").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+  mePhoto = await call("me_photo").catch(() => null);
+  paintMe();
   $("models").replaceChildren(...Object.values(MODELS).flat().map((m) => { const o = el("option"); o.value = m; return o; }));
   await loadApprovals();
   await loadQuestions();
@@ -2012,3 +2015,50 @@ $("model-chip").onclick = () => {
   m.addEventListener("keydown", (e) => { if (e.key === "Escape") m.remove(); });
   m.querySelector('[aria-checked="true"]')?.focus();
 };
+
+/* ---------- your photo ---------- */
+let meInitials = "";
+let mePhoto = null;
+/** Your face: your photo when you've set one, else your initials. */
+function meFace(cls = "initials") {
+  const f = el("span", cls + (mePhoto ? " has-photo" : ""));
+  if (mePhoto) { const i = el("img"); i.src = mePhoto; i.alt = ""; f.append(i); }
+  else f.textContent = meInitials;
+  return f;
+}
+/** Every place your face shows. */
+function paintMe() {
+  const slot = $("me-initials");
+  slot.classList.toggle("has-photo", !!mePhoto);
+  if (mePhoto) { const i = el("img"); i.src = mePhoto; i.alt = ""; slot.replaceChildren(i); }
+  else slot.textContent = meInitials;
+  document.querySelectorAll(".me-face-slot").forEach((n) => {
+    n.classList.toggle("has-photo", !!mePhoto);
+    if (mePhoto) { const i = el("img"); i.src = mePhoto; i.alt = ""; n.replaceChildren(i); } else n.textContent = meInitials;
+  });
+  if (typeof showMyAddress === "function") showMyAddress();
+}
+async function changeMyPhoto() {
+  try {
+    const picked = await Api.pickFiles("images");
+    let r;
+    if (picked === null) {
+      // A browser: its own chooser.
+      const file = await new Promise((ok) => { const i = el("input"); i.type = "file"; i.accept = "image/*"; i.onchange = () => ok(i.files[0]); i.click(); });
+      if (!file) return;
+      const data = await new Promise((ok, no) => { const fr = new FileReader(); fr.onload = () => ok(String(fr.result).split(",")[1] ?? ""); fr.onerror = no; fr.readAsDataURL(file); });
+      r = await call("set_me_photo", { data });
+    } else {
+      if (!picked.length) return;
+      r = await call("set_me_photo", { path: picked[0] });
+    }
+    mePhoto = r;
+    paintMe();
+    toast("Photo updated", "It shows wherever you do in Cookie.", "good");
+  } catch (e) { toast("Couldn't use that picture", String(e), "error"); }
+}
+async function removeMyPhoto() {
+  await call("clear_me_photo").catch(() => {});
+  mePhoto = null;
+  paintMe();
+}

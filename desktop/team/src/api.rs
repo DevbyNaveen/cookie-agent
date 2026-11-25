@@ -65,6 +65,9 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
     match cmd {
         /* who and where */
         "me" => ok(me()),
+        "me_photo" => ok(team.me_photo()),
+        "set_me_photo" => ok(team.set_me_photo(opt::<String>(a, "path"), opt::<String>(a, "data"))?),
+        "clear_me_photo" => ok(team.clear_me_photo()),
         "data_dir" => ok(team.paths.root.to_string_lossy()),
         "providers" => {
             let mut p: Vec<&str> = Keys::present();

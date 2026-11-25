@@ -39,7 +39,7 @@ function showMyAddress() {
   const head = $("me-head");
   const t = el("div", "me-head-text");
   t.append(el("strong", null, $("me-name").textContent), el("span", null, addr || "No address yet"));
-  const ini = el("span", "initials", $("me-initials").textContent);
+  const ini = meFace("initials me-face-slot");
   head.replaceChildren(ini, t);
   if (addr) {
     const c = el("button", "round soft me-copy");

@@ -1579,3 +1579,9 @@ footer.me { gap: 6px; }
 .chip.busy .chip-kind::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; border: 1.5px solid var(--text-3); border-top-color: transparent; animation: spin .8s linear infinite; vertical-align: -1px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .crew-card:focus-visible { outline: none; background: var(--raise-2); }
+
+/* Your photo, wherever your initials were */
+.initials.has-photo { overflow: hidden; background: none; }
+.initials.has-photo img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
+/* A rail button that's off stays off when the rail is folded (the network button, when the relay isn't on) */
+.rail-collapsed .mini[hidden] { display: none !important; }

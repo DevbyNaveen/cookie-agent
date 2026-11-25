@@ -41,7 +41,11 @@ const SETTINGS = {
     const acct = el("div", "group");
     const who = el("div", "row account");
     const id = el("div", "row-text"); id.append(el("span", null, name), el("small", null, Api.web ? "Signed in to this runner." : "Signed in to this computer. Cookie keeps everything here."));
-    who.append(el("span", "initials", $("me-initials").textContent), id);
+    const face = meFace("initials me-face-slot");
+    const acts = el("div", "row-actions");
+    acts.append(button(mePhoto ? "Change photo" : "Add photo", "quiet small", async () => { await changeMyPhoto(); openSettings("general"); }));
+    if (mePhoto) acts.append(button("Remove", "quiet small", async () => { await removeMyPhoto(); openSettings("general"); }));
+    who.append(face, id, acts);
     acct.append(who);
     const look = el("div", "group");
     look.append(
