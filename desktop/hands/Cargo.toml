@@ -21,3 +21,11 @@ libc = "0.2"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL", "NSEnumerator"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSWorkspace", "NSRunningApplication"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+atspi = { version = "0.30", default-features = false, features = ["connection", "proxies", "tokio"] }
+tokio = { version = "1", features = ["rt", "time"] }
+futures-lite = "2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+uiautomation = { version = "0.25", default-features = false, features = ["control", "input", "pattern"] }

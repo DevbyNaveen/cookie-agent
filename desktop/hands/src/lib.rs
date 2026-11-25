@@ -21,6 +21,10 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "macos")]
 pub mod mac;
+#[cfg(target_os = "linux")]
+pub mod linux;
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 /// One thing on screen an agent can read or use.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -168,6 +172,14 @@ pub fn body() -> Option<&'static dyn Body> {
     #[cfg(target_os = "macos")]
     {
         return Some(mac::body());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return linux::body().map(|b| b as &'static dyn Body);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return windows::body().map(|b| b as &'static dyn Body);
     }
     #[allow(unreachable_code)]
     None
