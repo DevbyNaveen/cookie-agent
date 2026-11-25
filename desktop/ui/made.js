@@ -118,12 +118,11 @@ function renderMade() {
       for (const it of items) g.append(madeCard(agentId, it, d.pin === it.path));
       body.append(g);
     };
-    if (d.space) section("Its space", [{ path: SPACE_PIN, name: "Space", kind: "other", sub: `${d.space.blocks} block${d.space.blocks === 1 ? "" : "s"} · its own software` }]);
     section("Made", made.map((f) => ({ ...f, sub: (f.path.includes("/") ? f.path.split("/").slice(0, -1).join("/") + " · " : "") + sub(f) })));
     section("You gave it", given.map((f) => ({ ...f, sub: sub(f) })));
-    if (!d.space && !d.files.length) body.append(el("p", "made-empty", `Nothing yet. Pages, PDFs, sheets and pictures ${a?.name ?? "it"} makes show up here.`));
+    if (!d.files.length) body.append(el("p", "made-empty", `Nothing yet. Pages, PDFs, sheets and pictures ${a?.name ?? "it"} makes show up here.`));
     if (d.more) body.append(el("p", "made-empty", `And ${d.more} more in its folder.`));
-    if (d.space || d.files.length) body.append(el("p", "made-hint", "Pin one to keep it beside the name."));
+    if (d.files.length) body.append(el("p", "made-hint", "Pin one to keep it beside the name."));
   }
   v.replaceChildren(head, body);
   v.dataset.made = agentId;

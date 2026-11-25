@@ -174,7 +174,6 @@ function renderRoster() {
     li.tabIndex = 0;
     li.setAttribute("role", "button");
     li.setAttribute("aria-label", r.name);
-    li.title = r.name;
     const face = Faces.create(r.id, 46);
     const needs = needsOf(r.id).count;
     const waiting = needs > 0;
@@ -2068,3 +2067,27 @@ async function removeMyPhoto() {
   mePhoto = null;
   paintMe();
 }
+
+/* ---------- the folded rail: a floating pill with the agent's name and what it does ---------- */
+const railTip = el("div", "rail-tip");
+railTip.setAttribute("role", "tooltip");
+railTip.hidden = true;
+document.body.append(railTip);
+function showRailTip(li) {
+  const r = agentById(li.dataset.id);
+  if (!r || !document.body.classList.contains("rail-collapsed")) return;
+  const job = (r.job || "").split(/(?<=[.!?])\s/)[0].trim();
+  railTip.replaceChildren(el("strong", null, r.name), ...(job ? [el("span", null, job.length > 80 ? job.slice(0, 79) + "…" : job)] : []));
+  const b = li.getBoundingClientRect();
+  railTip.style.left = `${Math.round(b.right + 10)}px`;
+  railTip.style.top = `${Math.round(b.top + b.height / 2)}px`;
+  railTip.hidden = false;
+  requestAnimationFrame(() => railTip.classList.add("on"));
+}
+function hideRailTip() { railTip.classList.remove("on"); railTip.hidden = true; }
+$("roster").addEventListener("mouseover", (e) => { const li = e.target.closest("li.agent"); if (li) showRailTip(li); });
+$("roster").addEventListener("mouseleave", hideRailTip);
+$("roster").addEventListener("focusin", (e) => { const li = e.target.closest("li.agent"); if (li) showRailTip(li); });
+$("roster").addEventListener("focusout", hideRailTip);
+$("roster").addEventListener("scroll", hideRailTip, { passive: true });
+$("roster").addEventListener("click", hideRailTip);
