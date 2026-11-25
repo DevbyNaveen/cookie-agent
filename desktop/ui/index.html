@@ -96,7 +96,6 @@
     <section id="chat" class="view" hidden>
       <header class="pill-row">
         <button id="who" class="pill who" aria-haspopup="dialog"><span id="who-face"></span><span id="who-name"></span></button>
-        <button id="ws-btn" class="pill icon-pill ws-pill" title="Its workspace" aria-label="Its workspace"><svg><use href="#i-blocks"/></svg></button>
         <button id="more" class="pill icon-pill" title="More" aria-label="More" aria-haspopup="menu"><svg><use href="#i-more"/></svg></button>
         <div id="more-menu" class="pop menu" role="menu" hidden>
           <button role="menuitem" id="undo-last"><svg><use href="#i-swap"/></svg>Undo its last changes</button>
@@ -107,6 +106,7 @@
       <div id="log" class="log" aria-live="polite"></div>
       <div id="voice-call" class="voice-call" role="region" aria-label="Voice chat" hidden></div>
       <div id="talk-view" class="talk-view" role="dialog" aria-modal="true" aria-labelledby="talk-title" hidden></div>
+      <div id="doc-view" class="doc-view" role="dialog" aria-label="Page" hidden></div>
       <form id="composer" class="composer">
         <div id="suggest" class="suggest" hidden></div>
         <div id="chips" class="chips" hidden></div>

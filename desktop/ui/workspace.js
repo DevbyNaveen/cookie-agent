@@ -8,11 +8,11 @@ const COLUMN_TYPES = ["text", "number", "date", "yes/no", "choice"];
 
 function wsOpenFor(id) { return id && !$("workspace").hidden && wsFor === id; }
 
-$("ws-btn").onclick = () => ($("workspace").hidden || wsFor !== current?.id ? openWorkspace() : closeWorkspace());
+$("ws-btn") && ($("ws-btn").onclick = () => ($("workspace").hidden || wsFor !== current?.id ? openWorkspace() : closeWorkspace()));
 
 function closeWorkspace() {
   $("workspace").hidden = true;
-  $("ws-btn").classList.remove("on");
+  $("ws-btn")?.classList.remove("on");
   document.querySelector(".pane").classList.remove("with-workspace");
   wsFor = null;
 }
@@ -25,7 +25,7 @@ async function openWorkspace(keepScroll = false) {
   const scroll = keepScroll ? box.scrollTop : 0;
   wsFor = id;
   document.querySelector(".pane").classList.add("with-workspace");
-  $("ws-btn").classList.add("on");
+  $("ws-btn")?.classList.add("on");
   box.hidden = false;
   let ws;
   try { ws = await call("workspace", { id }); } catch (e) { box.replaceChildren(wsHead(current.name), el("p", "error-line", String(e))); return; }

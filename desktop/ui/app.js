@@ -257,6 +257,7 @@ function paintYou(id) {
 async function openAgent(id) {
   const r = agentById(id);
   if (!r) return;
+  closePage();
   if (current && current.id !== id) drafts.set(current.id, $("input").value);
   closeTalk();
   current = r;
@@ -500,6 +501,7 @@ function hydrateMd(root, agentId) {
     ph.dataset.done = "1";
     const label = ph.textContent;
     const slot = slotAfter(ph.closest("p, li, td") ?? ph);
+    if (PAGE_KIND[extOf(ph.dataset.src)]) { slot.replaceWith(pageCard(agentId, ph.dataset.src, label)); continue; }
     chatFile(agentId, ph.dataset.src).then((f) => slot.replaceWith(f.data ? mediaEl(f, label) : fileCard(agentId, f, label)))
       .catch(() => slot.remove()); // not a file it can show: the words stay as words
   }
@@ -510,6 +512,7 @@ function hydrateMd(root, agentId) {
     c.dataset.done = "1";
     cards++;
     const slot = slotAfter(c.closest("p, li") ?? c);
+    if (PAGE_KIND[extOf(text)]) { chatFile(agentId, text).then(() => slot.replaceWith(pageCard(agentId, text))).catch(() => slot.remove()); continue; }
     chatFile(agentId, text).then((f) => slot.replaceWith(f.data ? mediaEl(f) : fileCard(agentId, f))).catch(() => slot.remove());
   }
 }
@@ -521,6 +524,148 @@ document.addEventListener("click", async (e) => {
   const code = b.closest(".md-code")?.querySelector("pre")?.textContent ?? "";
   try { await navigator.clipboard.writeText(code); b.textContent = "Copied"; setTimeout(() => (b.textContent = "Copy"), 1200); } catch {}
 });
+
+/* ---------- pages: documents an agent made, as cards that open over the chat ---------- */
+const PAGE_KIND = { md: "Page", markdown: "Page", html: "Web page", htm: "Web page", pdf: "PDF" };
+const extOf = (p) => (String(p).split(/[?#]/)[0].match(/\.([a-z0-9]+)$/i)?.[1] ?? "").toLowerCase();
+
+/** What a Markdown page says about itself: its title, first paragraph and sections. */
+function pageOutline(md) {
+  const lines = md.replace(/\r/g, "").split("\n");
+  const h1 = lines.find((l) => /^#\s+/.test(l))?.replace(/^#\s+/, "").trim();
+  const sections = lines.filter((l) => /^##\s+/.test(l)).map((l) => l.replace(/^##\s+/, "").trim()).slice(0, 14);
+  const para = md.split(/\n{2,}/).map((b) => b.trim()).find((b) => b && !/^(#|>|[-*+]\s|\d+[.)]\s|```|\||<)/.test(b));
+  return { title: h1, about: para ? plain(para).slice(0, 280) : "", sections };
+}
+
+/** A web page's title and first words, read without running or showing it. */
+function htmlOutline(html) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const title = doc.querySelector("title")?.textContent?.trim() || doc.querySelector("h1")?.textContent?.trim();
+  const about = (doc.querySelector('meta[name="description"]')?.getAttribute("content") || doc.querySelector("p")?.textContent || "").trim().slice(0, 280);
+  const sections = [...doc.querySelectorAll("h2")].map((h) => h.textContent.trim()).filter(Boolean).slice(0, 14);
+  return { title, about, sections };
+}
+
+/** A document as a card, like a page in a messaging app: its title, what it's about, its sections. */
+function pageCard(agentId, src, label) {
+  const card = el("button", "page-card");
+  card.type = "button";
+  const preview = el("div", "page-preview");
+  const foot = el("div", "page-foot");
+  const ic = el("span", "page-ic");
+  ic.append(icon("file"));
+  const meta = el("div", "page-meta");
+  const name = el("div", "page-name", label || src.split("/").pop());
+  const kind = el("div", "page-kind", PAGE_KIND[extOf(src)] ?? "Document");
+  meta.append(name, kind);
+  foot.append(ic, meta);
+  card.append(preview, foot);
+  card.disabled = true;
+  chatFile(agentId, src).then((f) => {
+    const o = f.text ? (extOf(f.name) === "md" || extOf(f.name) === "markdown" ? pageOutline(f.text) : htmlOutline(f.text)) : { title: null, about: "", sections: [] };
+    const title = o.title || label || f.name.replace(/\.[^.]+$/, "");
+    name.textContent = title;
+    kind.textContent = `${PAGE_KIND[extOf(f.name)] ?? "Document"} · ${humanSize(f.size)}`;
+    preview.append(el("div", "page-title", title));
+    if (o.about) preview.append(el("p", "page-about", o.about));
+    if (o.sections.length) {
+      const toc = el("div", "page-toc");
+      toc.append(el("small", null, "On this page"), ...o.sections.map((s) => el("span", null, s)));
+      preview.append(toc);
+    } else if (extOf(f.name) === "pdf") preview.append(el("p", "page-about", `${humanSize(f.size)} PDF`));
+    card.disabled = false;
+    card.onclick = () => openPage(agentId, f, title);
+  }).catch((e) => { card.replaceWith(el("span", "md-missing", `${label || src}: ${String(e)}`)); });
+  return card;
+}
+
+/** A page open over the chat: read it, share it, close it; the message box stays at hand. */
+function openPage(agentId, f, title) {
+  const v = $("doc-view");
+  const head = el("div", "doc-head");
+  const pill = el("div", "pill doc-pill");
+  pill.append(icon("file"), el("span", null, title));
+  const acts = el("div", "doc-acts");
+  const share = el("button", "pill doc-btn", "Share");
+  share.type = "button";
+  share.onclick = (e) => {
+    e.stopPropagation();
+    const items = [];
+    if (f.text) items.push(["Copy its text", () => navigator.clipboard.writeText(f.text).then(() => toast("Copied", title))]);
+    if (!Api.web) {
+      if (f.openable) items.push(["Open in its app", () => Api.openFile(agentId, f.path).catch((err) => toast("Couldn't open it", String(err), "error"))]);
+      items.push(["Show in Finder", () => Api.openFile(agentId, f.path, true).catch((err) => toast("Couldn't show it", String(err), "error"))]);
+    }
+    const menu = el("div", "pop menu doc-menu");
+    for (const [t, fn] of items) { const b = el("button", null, t); b.type = "button"; b.onclick = () => { menu.remove(); fn(); }; menu.append(b); }
+    acts.querySelector(".doc-menu")?.remove();
+    acts.append(menu);
+    setTimeout(() => addEventListener("click", () => menu.remove(), { once: true }), 0);
+  };
+  const x = el("button", "round soft doc-x");
+  x.type = "button";
+  x.setAttribute("aria-label", "Close page");
+  x.append(icon("x"));
+  x.onclick = closePage;
+  acts.append(share, x);
+  head.append(pill, acts);
+  const body = el("div", "doc-body");
+  const ext = extOf(f.name);
+  if (ext === "pdf" && f.data) {
+    const blob = new Blob([Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0))], { type: "application/pdf" });
+    const frame = el("iframe", "doc-pdf");
+    frame.title = title;
+    frame.src = URL.createObjectURL(blob);
+    body.classList.add("pdf");
+    body.append(frame);
+  } else if ((ext === "html" || ext === "htm") && f.text) {
+    // Shown, never run: no scripts, no reaching the web, no reaching Cookie.
+    const frame = el("iframe", "doc-html");
+    frame.title = title;
+    frame.setAttribute("sandbox", "");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.srcdoc = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:">` + f.text;
+    body.classList.add("html");
+    body.append(frame);
+  } else if (f.text) {
+    const page = el("article", "doc-page md");
+    page.innerHTML = Md.render(f.text);
+    hydrateMd(page, agentId);
+    // "On this page": its sections, each a jump.
+    const hs = [...page.querySelectorAll("h4")];
+    if (hs.length > 2) {
+      const toc = el("nav", "doc-toc");
+      toc.append(el("small", null, "On this page"));
+      hs.forEach((h) => { const b = el("button", null, h.textContent); b.type = "button"; b.onclick = () => h.scrollIntoView({ behavior: "smooth", block: "start" }); toc.append(b); });
+      const first = page.querySelector("h3 ~ p, h3 + *") ?? page.firstElementChild;
+      (page.querySelector("h3")?.nextElementSibling?.tagName === "P" ? page.querySelector("h3").nextElementSibling : first)?.after(toc);
+    }
+    body.append(page);
+  } else body.append(el("p", "md-missing", "This document is too large to show here: open it in its app."));
+  v.replaceChildren(head, body);
+  v.hidden = false;
+  $("chat").classList.add("doc-open");
+  requestAnimationFrame(() => v.classList.add("open"));
+}
+
+function closePage() {
+  const v = $("doc-view");
+  if (v.hidden) return;
+  v.classList.remove("open");
+  $("chat").classList.remove("doc-open");
+  v.querySelectorAll("iframe.doc-pdf").forEach((fr) => URL.revokeObjectURL(fr.src));
+  setTimeout(() => { v.hidden = true; v.replaceChildren(); }, 160);
+}
+
+/** The documents a job made, under its answer. */
+function documentsLine(agentId, paths) {
+  const row = el("div", "msg agent pages");
+  const col = el("div", "page-col");
+  for (const p of paths) col.append(pageCard(agentId, p));
+  row.append(col);
+  return row;
+}
 
 /* ---------- helpers: the read-only assistants a job sends out side by side ---------- */
 const HELPER_STATE = { waiting: "Waiting", working: "Working", done: "Done", failed: "Couldn't finish" };
@@ -585,6 +730,7 @@ function helpersCard(agentId) {
 
 function line(l) {
   if (l.from === "talk") return talkPill(l.talk);
+  if (l.from === "documents") return documentsLine(current?.id, l.text.split("\n").filter(Boolean));
   if (l.from === "helpers") {
     const c = helpersCard(current?.id);
     l.helpers.forEach((h, i) => c.set(i + 1, h.task, h.failed ? "failed" : "done", h.report));
@@ -864,7 +1010,14 @@ function onTeamEvent(ev) {
       if (job.ui) {
         job.ui.face.stop();
         job.ui.status.remove();
-        if (ev.status === "done" && job.acc) { hydrateMd(job.ui.reply, ev.agent); job.ui.row.append(actions(job.acc)); }
+        if (ev.status === "done" && job.acc) {
+          hydrateMd(job.ui.reply, ev.agent);
+          job.ui.row.append(actions(job.acc));
+          // Pages it made that the answer didn't already show.
+          const shown = new Set([...job.ui.reply.querySelectorAll(".page-card .page-name")].map((n) => n.textContent));
+          const fresh = (ev.made || []).filter((p) => ![...shown].some((s) => p.endsWith(s)));
+          if (fresh.length && chatOf(job) === ev.agent) job.ui.row.after(documentsLine(ev.agent, fresh));
+        }
         else job.ui.row.remove();
       }
       if (here) {
@@ -1451,6 +1604,7 @@ document.addEventListener("keydown", (e) => {
   if (mod && e.key === ",") { e.preventDefault(); openSettings("general"); }
   if (mod && e.key === "\\") { e.preventDefault(); toggleRail(); }
   if (mod && e.key === "t") { e.preventDefault(); openNextNeed(); }
+  if (e.key === "Escape" && !$("doc-view").hidden && !document.querySelector("dialog[open]")) { e.preventDefault(); closePage(); return; }
 });
 
 $("more").onclick = () => { const open = $("more-menu").hidden; closePops(); $("more-menu").hidden = !open; };

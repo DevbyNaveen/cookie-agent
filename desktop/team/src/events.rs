@@ -48,7 +48,17 @@ pub enum TeamEvent {
     /// Probation or shadow: the action was recorded, not made.
     Would { job: String, agent: String, tool: String, preview: String },
     Handoff { job: String, from: String, to: String, task: String },
-    JobFinished { job: String, agent: String, status: JobStatus, answer: String, error: Option<String>, microdollars: u64 },
+    JobFinished {
+        job: String,
+        agent: String,
+        status: JobStatus,
+        answer: String,
+        error: Option<String>,
+        microdollars: u64,
+        /// Documents it made in its folder (Markdown, web pages, PDFs), shown as pages under the answer.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        made: Vec<String>,
+    },
     /// Something worth the person's attention, within the day's cap.
     Notice { agent: String, title: String, body: String, job: Option<String> },
     RosterChanged,
