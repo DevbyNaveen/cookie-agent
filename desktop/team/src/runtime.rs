@@ -123,6 +123,16 @@ fn instructions(team_names: &[(String, String)], rec: &AgentRecord, trigger: &Tr
     if rec.grants.team && !others.is_empty() {
         s.push_str(&format!("\nYour teammates (write to them with `message`, by their @address, when their job fits): {}.", others.join(", ")));
     }
+    // Where the work happens: its own worlds first, the person's computer only when needed.
+    if rec.grants.worlds || rec.grants.mac {
+        s.push_str("\nWhere you work: do the job in your own worlds first (Parallax: copies you can undo, fork and race), so it keeps going and \
+             shows on the person's phone even when their computer is closed.");
+        if rec.grants.mac {
+            s.push_str(" Use the person's own computer (look, act, open_app, open_settings) only when they ask for it, or when the job needs \
+                 something only it has: an app they're signed into, a setting, a file that lives there. Then look before acting, put \
+                 several steps in one act, and save a recipe for anything you may do again.");
+        }
+    }
     match trigger {
         Trigger::Routine { .. } => s.push_str("\nThis is one of your routines, running on its own: do it, and finish with what the person should know (or 'Nothing new.')."),
         Trigger::Handoff { from, .. } => s.push_str(&format!("\nAnother agent ({from}) asked you this. Answer it directly; it will pass your answer on.")),

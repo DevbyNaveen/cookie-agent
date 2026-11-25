@@ -16,6 +16,8 @@ path = "src/main.rs"
 [dependencies]
 cookie-harness = { path = "../..", features = ["bedrock"] }
 cookie-net = { path = "../net" }
+# Cookie Hands: reading and using apps through each system's accessibility layer.
+cookie-hands = { path = "../hands" }
 # Parallax: worlds, engines and the four verbs (../../parallax, MIT).
 parallax = { path = "../../parallax" }
 base64 = "0.22"

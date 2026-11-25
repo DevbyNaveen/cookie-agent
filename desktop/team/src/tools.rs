@@ -112,6 +112,7 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
     if g.mac && !outside {
         out.extend(crate::mac::tools());
         out.extend(crate::control::tools());
+        out.extend(crate::hands::tools(team, &rec.id));
     }
     // Code that calls its read-only tools (only with "Run commands" on, never for outsiders).
     if g.shell && !outside {

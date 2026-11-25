@@ -20,6 +20,7 @@ pub mod cloud;
 pub mod code;
 pub mod computer;
 pub mod control;
+pub mod hands;
 pub mod evals;
 pub mod events;
 pub mod evolve;

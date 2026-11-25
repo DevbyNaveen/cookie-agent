@@ -42,8 +42,9 @@ pub struct Grants {
     /// A browser of its own, with the sign-ins you gave it (`browser`). Clicks and typing ask you.
     pub browser: bool,
     /// Parallax worlds of its own: copies to try things in, undo, race, rewind (`computer`).
-    /// Left out of the JSON when off, so packs signed before it still verify.
-    #[serde(skip_serializing_if = "is_false")]
+    /// On by default: agents work in Parallax first. Left out of the JSON when on,
+    /// so packs signed before it still verify; written out only when switched off.
+    #[serde(skip_serializing_if = "is_true")]
     pub worlds: bool,
     /// Apps connected through Enkeon (Composio): each call is billed per call.
     #[serde(skip_serializing_if = "is_true")]
@@ -54,17 +55,13 @@ pub struct Grants {
     pub helpers: bool,
 }
 
-fn is_false(b: &bool) -> bool {
-    !*b
-}
-
 fn is_true(b: &bool) -> bool {
     *b
 }
 
 impl Default for Grants {
     fn default() -> Self {
-        Self { files: true, web: true, shell: false, memory: true, routines: true, team: true, peers: Vec::new(), mac: false, browser: false, worlds: false, apps: true, helpers: true }
+        Self { files: true, web: true, shell: false, memory: true, routines: true, team: true, peers: Vec::new(), mac: false, browser: false, worlds: true, apps: true, helpers: true }
     }
 }
 
@@ -511,5 +508,20 @@ impl Paths {
     /// Only folders of this team's own, never anything else on disk.
     pub fn owns(&self, path: &Path) -> bool {
         path.starts_with(&self.root)
+    }
+}
+
+#[cfg(test)]
+mod grant_tests {
+    #[test]
+    fn worlds_are_on_by_default_and_off_stays_off() {
+        let on = super::Grants::default();
+        assert!(on.worlds, "agents work in Parallax first");
+        let json = serde_json::to_value(&on).unwrap();
+        assert!(json.get("worlds").is_none(), "on is left out, so signed packs keep their bytes");
+        let mut off = on.clone();
+        off.worlds = false;
+        let back: super::Grants = serde_json::from_value(serde_json::to_value(&off).unwrap()).unwrap();
+        assert!(!back.worlds, "switched off survives a save and a load");
     }
 }

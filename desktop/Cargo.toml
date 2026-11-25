@@ -1,7 +1,7 @@
 # Cookie for the desktop: the core every surface shares (team/) and the Tauri app (src-tauri/).
 # Its own workspace, apart from the harness crate above, which stays a plain library.
 [workspace]
-members = ["net", "relay", "team", "src-tauri"]
+members = ["net", "relay", "team", "hands", "src-tauri"]
 resolver = "2"
 
 # ponytail: no debug info and no incremental cache keep target/ small on a full disk.
