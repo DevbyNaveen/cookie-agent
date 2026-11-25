@@ -536,9 +536,9 @@ impl Agent {
                 handoff: Default::default(),
                 artifacts: artifacts.clone(),
             };
-            let (results, stop, decided) = self
-                .run_calls(&tools, &calls, &provenance, &policy, approver.as_ref(), &mut loop_guard, &context, on_event)
-                .await;
+            let ((results, stop, decided), images) =
+                crate::tool::collect_images(self.run_calls(&tools, &calls, &provenance, &policy, approver.as_ref(), &mut loop_guard, &context, on_event))
+                    .await;
             meter.absorb(*context.spend.lock().expect("spend lock"));
             for event in context.events.lock().expect("events lock").drain(..) {
                 on_event(event);
@@ -553,7 +553,7 @@ impl Agent {
             let names = calls.iter().map(|(_, name, _)| name.as_str()).collect::<Vec<_>>().join(",");
             // Secrets a tool turned up are masked here, once: before the model
             // reads them, before the session file keeps them, before provenance.
-            let results = results
+            let mut results: Vec<Content> = results
                 .into_iter()
                 .map(|r| match r {
                     Content::ToolResult { id, output, is_error } => {
@@ -562,6 +562,16 @@ impl Agent {
                     other => other,
                 })
                 .collect();
+            // Pictures the calls attached go after every result (providers want results first),
+            // checked like any image; one that fails the check is left out, never sent.
+            for (media_type, bytes) in images.into_iter().take(crate::message::MAX_IMAGES_PER_MESSAGE) {
+                let image = Content::image(media_type.as_str(), &bytes);
+                if let Content::Image { media_type, data } = &image {
+                    if crate::message::check_image(media_type, data).is_ok() {
+                        results.push(image);
+                    }
+                }
+            }
             let message = Message::tool_results(results, Origin::Untrusted(Source::Tool(names)));
             provenance.observe(&message);
             // Recorded before stopping, so a stopped run never forgets what already happened.
@@ -739,6 +749,24 @@ mod tests {
         let result = second_call.last().unwrap();
         assert!(result.origin().is_untrusted());
         assert!(matches!(&result.content()[0], Content::ToolResult { output, is_error: false, .. } if output == "Riga: 9°C"));
+    }
+
+    #[tokio::test]
+    async fn a_picture_a_tool_attaches_reaches_the_model_after_the_results() {
+        let shot = tool("screenshot", "a window", json!({"type": "object"}), Effect::Read, |_| async move {
+            assert!(crate::tool::attach_image("image/png", b"\x89PNG\r\n\x1a\nrest".to_vec()));
+            assert!(crate::tool::attach_image("image/png", b"not a png".to_vec()), "accepted here, dropped at the check");
+            Ok("the window, attached".to_string())
+        });
+        let (a, p) = agent(vec![Scripted::call("c1", "screenshot", json!({})), Scripted::text("I see it.")]);
+        let a = a.tool(shot);
+        assert_eq!(a.run("what's on screen?").await.unwrap(), "I see it.");
+        let round = p.seen()[1].last().unwrap().clone();
+        assert!(round.origin().is_untrusted());
+        assert!(matches!(&round.content()[0], Content::ToolResult { .. }), "results come first");
+        let images: Vec<_> = round.content().iter().filter(|c| matches!(c, Content::Image { .. })).collect();
+        assert_eq!(images.len(), 1, "the real png, not the bytes that aren't one");
+        assert!(!crate::tool::attach_image("image/png", vec![1]), "outside a run there is nowhere to attach");
     }
 
     #[tokio::test]

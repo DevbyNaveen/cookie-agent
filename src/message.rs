@@ -48,7 +48,7 @@ fn kilobytes(data: &str) -> usize {
     image_size(data).div_ceil(1024)
 }
 
-fn check_image(media_type: &str, data: &str) -> Result<()> {
+pub(crate) fn check_image(media_type: &str, data: &str) -> Result<()> {
     use base64::Engine;
     if !IMAGE_MEDIA_TYPES.contains(&media_type) {
         return Err(Error::Image(format!("`{media_type}` can't be sent; use image/png, image/jpeg, image/gif or image/webp")));

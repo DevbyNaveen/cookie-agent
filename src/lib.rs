@@ -55,7 +55,7 @@ pub use model_id::ModelId;
 pub use policy::{Decision, Policy, Provenance};
 pub use provider::{Effort, ModelRequest, ModelResponse, Provider, ProviderEvent, StopReason, Usage};
 pub use session::Session;
-pub use tool::{tool, Effect, FnTool, Tool, ToolSpec};
+pub use tool::{attach_image, tool, Effect, FnTool, Tool, ToolSpec};
 pub use tokio_util::sync::CancellationToken;
 pub use mcp::{McpClient, McpServer, McpTools};
 pub use skills::{read_agents_md, Skills};

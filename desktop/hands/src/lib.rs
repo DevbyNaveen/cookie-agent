@@ -165,6 +165,23 @@ pub trait Body: Send + Sync {
     fn type_text(&self, pid: Option<i32>, text: &str) -> Result<(), String>;
     /// Sleep until the app's screen changes (event-driven where the system has events), or the time is up. True if it changed.
     fn wait_change(&self, pid: i32, timeout: Duration) -> bool;
+    /// A picture of the app's front window (PNG), for what its outline can't show: a canvas, a chart, a game.
+    /// Only that window, never the whole screen.
+    fn screenshot(&self, _pid: i32) -> Result<Shot, String> {
+        Err("Pictures of windows aren't available on this system yet.".into())
+    }
+    /// Click a point in the app's latest picture (its pixels). Moves the pointer, so it's the last resort.
+    fn click_at(&self, _pid: i32, _x: f64, _y: f64) -> Result<(), String> {
+        Err("Clicking a point isn't available on this system yet.".into())
+    }
+}
+
+/// A picture of one window.
+#[derive(Debug, Clone)]
+pub struct Shot {
+    pub png: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// This system's hands, if it has them.
@@ -308,6 +325,7 @@ impl Step {
         };
         match (self.r#do.as_str(), &self.value) {
             ("keys", Some(v)) => format!("press {v}"),
+            ("click_at", Some(v)) => format!("click at {v} in the picture"),
             ("type", Some(v)) => format!("type {:?}{}", clip(v, 80), if what.is_empty() { String::new() } else { format!(" into {what}") }),
             (d, Some(v)) => format!("{d} {what} to {:?}", clip(v, 80)),
             (d, None) => format!("{d} {what}"),
@@ -362,6 +380,14 @@ pub fn run(body: &dyn Body, look: &Look, steps: &[Step], vars: &HashMap<String, 
             None
         };
         let outcome = match (word.as_str(), target) {
+            ("click_at", _) => {
+                let v = value.clone().unwrap_or_default();
+                let mut xy = v.split(',').map(|n| n.trim().parse::<f64>());
+                match (xy.next(), xy.next()) {
+                    (Some(Ok(x)), Some(Ok(y))) => body.click_at(pid, x, y).map(|_| String::new()),
+                    _ => Err("click_at takes `value` as x,y in the picture's pixels.".to_string()),
+                }
+            }
             ("keys", _) => Combo::parse(value.as_deref().unwrap_or_default()).and_then(|c| body.keys(Some(pid), &c)).map(|_| String::new()),
             ("type", Some(id)) => {
                 // Into a field: set it directly (instant, works behind other windows), else focus and type.

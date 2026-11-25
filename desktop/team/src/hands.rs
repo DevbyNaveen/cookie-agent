@@ -154,8 +154,9 @@ pub(crate) fn tools(team: &Arc<Team>, agent: &str) -> Vec<Arc<dyn Tool>> {
             "Use an app on the person's computer: one step, or several in `steps` done in order with the screen checked between them \
              (one approval for all). A step names a thing by `ref` (from your latest look) or by `role` and `name`, and what to `do`: \
              press, set (a field's text or a slider's number, in `value`), focus, menu, increment, decrement, confirm, cancel, raise, show; \
-             `type` (`value` into a field, or wherever the cursor is) or `keys` (`value` like cmd+t, return, escape). It works behind \
-             the person's windows where the app allows. Answers with what changed, with current refs. Look first.",
+             `type` (`value` into a field, or wherever the cursor is) or `keys` (`value` like cmd+t, return, escape); `click_at` \
+             (`value` x,y from your latest `see` picture) only when nothing else reaches it. It works behind the person's windows where \
+             the app allows. Answers with what changed, with current refs. Look first.",
             json!({"type": "object", "properties": {
                 "app": {"type": "string", "description": "the app's name; empty for the app in front"},
                 "ref": {"type": "string"}, "role": {"type": "string"}, "name": {"type": "string"},
@@ -185,6 +186,27 @@ pub(crate) fn tools(team: &Arc<Team>, agent: &str) -> Vec<Arc<dyn Tool>> {
         )
         .with_preview(|a| preview(&steps_of(a).unwrap_or_default(), a["app"].as_str().filter(|s| !s.is_empty()))),
     ));
+
+    out.push(Arc::new(tool(
+        "see",
+        "A picture of an app's front window, for what `look` can't read: a canvas, a chart, an image, a game, an app that hides \
+         its contents. Only that window, never the whole screen. Comes with the window's outline. If you must click something only \
+         the picture shows, use act with do: click_at and value \"x,y\" in this picture's pixels (it moves the pointer: last resort).",
+        json!({"type": "object", "properties": {"app": {"type": "string", "description": "the app's name; empty for the app in front"}}}),
+        Effect::Read,
+        |a: Value| async move {
+            let q = look_of(&a);
+            let (shot, snap) = blocking(move |b| {
+                let snap = b.look(&q)?;
+                let shot = b.screenshot(snap.pid)?;
+                Ok((shot, snap))
+            })
+            .await?;
+            let attached = cookie_harness::attach_image("image/png", shot.png);
+            let head = if attached { format!("Picture of {}'s window attached ({}x{} pixels).", snap.app, shot.width, shot.height) } else { "The picture couldn't be attached here.".to_string() };
+            Ok(format!("{head}\n{}", cookie_hands::render(&snap)))
+        },
+    )));
 
     out.push(Arc::new(tool(
         "wait_for",

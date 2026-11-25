@@ -13,6 +13,29 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{budget::Budget, policy::Provenance};
 
+tokio::task_local! {
+    /// Pictures the tools of one round want the model to see (see `attach_image`).
+    static IMAGES: std::cell::RefCell<Vec<(String, Vec<u8>)>>;
+}
+
+/// Show the model a picture with this call's result: a screenshot of one app's
+/// window, say. It goes after the round's results, as untrusted content, and is
+/// checked like any image (type, size, count). Called outside a run, it is dropped
+/// and this returns false.
+pub fn attach_image(media_type: &str, bytes: Vec<u8>) -> bool {
+    IMAGES.try_with(|v| v.borrow_mut().push((media_type.to_string(), bytes))).is_ok()
+}
+
+/// Run a round of calls and collect the pictures they attached.
+pub(crate) async fn collect_images<F: Future>(f: F) -> (F::Output, Vec<(String, Vec<u8>)>) {
+    IMAGES
+        .scope(std::cell::RefCell::new(Vec::new()), async {
+            let out = f.await;
+            (out, IMAGES.with(|v| v.take()))
+        })
+        .await
+}
+
 /// What running the tool does to the world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

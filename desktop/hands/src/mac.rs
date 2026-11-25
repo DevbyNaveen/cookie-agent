@@ -28,10 +28,16 @@ use core_foundation_sys::runloop::{kCFRunLoopDefaultMode, CFRunLoopAddSource, CF
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
-use crate::{Act, AppInfo, Body, Combo, Look, Node, Snapshot};
+use crate::{Act, AppInfo, Body, Combo, Look, Node, Shot, Snapshot};
 
 type AXUIElementRef = CFTypeRef;
 type AXObserverRef = CFTypeRef;
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
 
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
@@ -86,11 +92,13 @@ pub struct Mac {
     /// The latest look's elements per app: ref e{n} is index n-1.
     refs: Mutex<HashMap<i32, Vec<Held>>>,
     woken: Mutex<HashSet<i32>>,
+    /// The latest picture per app: the window's top-left on screen, and points per picture pixel.
+    shots: Mutex<HashMap<i32, (f64, f64, f64)>>,
 }
 
 pub fn body() -> &'static Mac {
     static B: OnceLock<Mac> = OnceLock::new();
-    B.get_or_init(|| Mac { refs: Mutex::new(HashMap::new()), woken: Mutex::new(HashSet::new()) })
+    B.get_or_init(|| Mac { refs: Mutex::new(HashMap::new()), woken: Mutex::new(HashSet::new()), shots: Mutex::new(HashMap::new()) })
 }
 
 fn app_element(pid: i32) -> CFType {
@@ -306,6 +314,33 @@ fn key_code(k: &str) -> Option<u16> {
         "\\" => 42, "," => 43, "/" => 44, "n" => 45, "m" => 46, "." => 47, "`" => 50,
         _ => return None,
     })
+}
+
+
+/// The app's front window on screen: its number and its bounds in points.
+fn front_window(pid: i32) -> Option<(u32, [f64; 4])> {
+    use core_foundation::dictionary::CFDictionary;
+    use core_graphics::window::{copy_window_info, kCGNullWindowID, kCGWindowBounds, kCGWindowLayer, kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly, kCGWindowNumber, kCGWindowOwnerPID};
+    let list = copy_window_info(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID)?;
+    let key = |k: CFStringRef| unsafe { CFString::wrap_under_get_rule(k) };
+    let num = |d: &CFDictionary<CFString, CFType>, k: CFStringRef| d.find(key(k)).and_then(|v| v.downcast::<CFNumber>()).and_then(|n| n.to_f64());
+    // Front to back: the first normal window of this app is its front one.
+    for item in list.get_all_values() {
+        let d: CFDictionary<CFString, CFType> = unsafe { CFDictionary::wrap_under_get_rule(item as _) };
+        if num(&d, unsafe { kCGWindowOwnerPID }) != Some(pid as f64) || num(&d, unsafe { kCGWindowLayer }) != Some(0.0) {
+            continue;
+        }
+        let id = num(&d, unsafe { kCGWindowNumber })? as u32;
+        let b: CFDictionary<CFString, CFType> = d.find(key(unsafe { kCGWindowBounds })).and_then(|v| v.downcast::<CFDictionary>()).map(|x| unsafe { CFDictionary::wrap_under_get_rule(x.as_concrete_TypeRef()) })?;
+        let f = |k: &str| b.find(CFString::new(k)).and_then(|v| v.downcast::<CFNumber>()).and_then(|n| n.to_f64()).unwrap_or(0.0);
+        return Some((id, [f("X"), f("Y"), f("Width"), f("Height")]));
+    }
+    None
+}
+
+/// A PNG's width and height, from its header.
+fn png_size(png: &[u8]) -> Option<(u32, u32)> {
+    (png.len() > 24 && png.starts_with(b"\x89PNG")).then(|| (u32::from_be_bytes(png[16..20].try_into().unwrap()), u32::from_be_bytes(png[20..24].try_into().unwrap())))
 }
 
 extern "C" fn on_change(_o: AXObserverRef, _e: AXUIElementRef, _n: CFStringRef, refcon: *mut c_void) {
@@ -566,5 +601,40 @@ impl Body for Mac {
         unsafe { CFRunLoopRemoveSource(rl, source, kCFRunLoopDefaultMode) };
         drop(observer);
         hit
+    }
+    fn screenshot(&self, pid: i32) -> Result<Shot, String> {
+        if !unsafe { CGPreflightScreenCaptureAccess() } {
+            unsafe { CGRequestScreenCaptureAccess() };
+            return Err("macOS hasn't let Cookie take pictures of windows yet: switch Cookie on in System Settings → Privacy & Security → Screen & System Audio Recording (once), then try again.".into());
+        }
+        let (id, [x, y, w, _h]) = front_window(pid).ok_or("That app has no window on screen.")?;
+        let path = std::env::temp_dir().join(format!("cookie-shot-{pid}-{}.png", std::process::id()));
+        let ok = std::process::Command::new("/usr/sbin/screencapture").args(["-x", "-o", "-t", "png", &format!("-l{id}")]).arg(&path).status().is_ok_and(|s| s.success());
+        if !ok {
+            return Err("The picture couldn't be taken.".into());
+        }
+        // At most 1280 pixels across: enough to read, few tokens.
+        let _ = std::process::Command::new("/usr/bin/sips").args(["-Z", "1280"]).arg(&path).output();
+        let png = std::fs::read(&path).map_err(|e| e.to_string());
+        let _ = std::fs::remove_file(&path);
+        let png = png?;
+        let (pw, ph) = png_size(&png).ok_or("The picture came out unreadable.")?;
+        self.shots.lock().unwrap().insert(pid, (x, y, w / pw.max(1) as f64));
+        Ok(Shot { png, width: pw, height: ph })
+    }
+
+    fn click_at(&self, pid: i32, x: f64, y: f64) -> Result<(), String> {
+        use core_graphics::event::{CGEventType, CGMouseButton};
+        use core_graphics::geometry::CGPoint;
+        self.ready()?;
+        let (ox, oy, scale) = *self.shots.lock().unwrap().get(&pid).ok_or("Take a picture of the window first; points come from a picture.")?;
+        let at = CGPoint::new(ox + x * scale, oy + y * scale);
+        let src = CGEventSource::new(CGEventSourceStateID::HIDSystemState).map_err(|_| "Couldn't make a click.".to_string())?;
+        for kind in [CGEventType::MouseMoved, CGEventType::LeftMouseDown, CGEventType::LeftMouseUp] {
+            let ev = CGEvent::new_mouse_event(src.clone(), kind, at, CGMouseButton::Left).map_err(|_| "Couldn't make a click.".to_string())?;
+            ev.post(CGEventTapLocation::HID);
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        Ok(())
     }
 }
