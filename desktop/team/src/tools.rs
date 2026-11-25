@@ -111,6 +111,7 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
     // The Mac's own apps, never for someone reaching it from outside.
     if g.mac && !outside {
         out.extend(crate::mac::tools());
+        out.extend(crate::control::tools());
     }
     // Code that calls its read-only tools (only with "Run commands" on, never for outsiders).
     if g.shell && !outside {

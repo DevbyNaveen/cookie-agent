@@ -125,39 +125,13 @@ async function renderDesk(agentId) {
 /** Cookie's share of the desk: the morning recap, your mail, and Scout. */
 async function teamDesk() {
   const out = [];
-  const [retro, ideas] = await Promise.all([call("retro").catch(() => null), call("scout").catch(() => [])]);
-  // The morning recap: what happened since yesterday, from the record (none on a quiet day).
-  if (retro && Date.now() / 1000 - retro.at < 36 * 3600) {
-    const [head, ...lines] = retro.text.split("\n");
-    const body = el("div", "retro-lines");
-    for (const l of lines) body.append(el("p", l.startsWith("  ") ? "retro-sub" : null, l.replace(/^\s*[-·]\s*/, "")));
-    const c = deskCard("cookie", head, body);
-    c.classList.add("retro-card");
-    c.querySelector(".desk-head").append(el("small", "muted", fmtTime(retro.at)));
-    out.push(c);
-  }
-  // Boards the team keeps: open one, or start one.
-  const boards = await call("boards").catch(() => []);
-  const bl = el("div", "group");
-  for (const b of boards.slice(0, 6)) {
-    const by = b.created_by === "you" ? "You" : agentById(b.created_by)?.name ?? "An agent";
-    bl.append(setRow(b.title, `${b.cards} card${b.cards === 1 ? "" : "s"} · ${by} · ${fmtTime(b.updated_at)}`, button("Open", "quiet small", () => openBoard(b.id, "cookie"))));
-  }
-  if (!boards.length) bl.append(setRow("No boards yet", "A board is columns of cards you and your agents work on together. Ask an agent to keep one for a project, or start one.", null));
-  bl.append(setRow("", null, button("New board", "quiet small", async () => {
-    const title = prompt("What is the board for?");
-    if (!title?.trim()) return;
-    try { const b = await call("create_board", { title }); openBoard(b.id, "cookie"); } catch (e) { toast("Couldn't make it", String(e), "error"); }
-  })));
-  out.push(deskCard("cookie", `Boards${boards.length ? ` (${boards.length})` : ""}`, bl));
-  // Who's waiting on you (mail, through Enkeon).
-  out.push(deskCard("cookie", "Who's waiting on you", inboxCard()));
+  const ideas = await call("scout").catch(() => []);
   // Hires Scout thinks you'd want.
   for (const idea of ideas) {
     const c = el("div", "idea");
     const f = Faces.create("scout-" + idea.id, 36);
     const t = el("div", "row-text");
-    t.append(el("strong", null, `You did "${idea.steps.join(" → ")}" in ${idea.app} on ${idea.days} days`), el("small", null, "Want an agent for it? Cookie can't press buttons in other apps; this agent prepares the work and reminds you."));
+    t.append(el("strong", null, `You did "${idea.steps.join(" → ")}" in ${idea.app} on ${idea.days} days`), el("small", null, "Want an agent for it? With “Use this Mac” on, it can do the steps in the app; each press asks you until it has earned your trust."));
     const acts = el("div", "row-actions");
     acts.append(
       button("Not now", "quiet small", async () => { await call("scout_dismiss", { proposal: idea.id }); refreshDesk(); }),

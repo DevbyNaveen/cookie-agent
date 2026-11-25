@@ -138,7 +138,7 @@ const GRANT_INFO = [
   ["team", "Ask teammates", "Hand tasks to your other agents."],
   ["helpers", "Helpers", "Send up to 4 helpers at once to look things up side by side. They only read, and use its budget."],
   ["apps", "Connected apps", "Use the apps you connected in Enkeon (Gmail, Slack, …). Each call is billed per call by the connector; Record counts them."],
-  ["mac", "Mac apps", "Reminders, Notes, Calendar, Contacts; send iMessages (each asks you). macOS asks once per app."],
+  ["mac", "Use this Mac", "Open apps, files, links and Settings; read the screen; press, type and use menus (each asks you until trusted). Reminders, Notes, Calendar, Contacts, iMessage. macOS asks once."],
 ];
 
 /** A web-address routine's line: where it is called, and a new secret. */

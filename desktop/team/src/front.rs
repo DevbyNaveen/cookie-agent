@@ -51,7 +51,8 @@ impl Team {
             model,
             job: COOKIE_JOB.into(),
             created_at: util::now(),
-            grants: Grants::default(),
+            // The front desk uses this Mac: opening and reading alone, acting asks.
+            grants: Grants { mac: true, ..Grants::default() },
             limits: Limits::default(),
             probation_until: None,
             parent: None,

@@ -19,6 +19,7 @@ pub mod checker;
 pub mod cloud;
 pub mod code;
 pub mod computer;
+pub mod control;
 pub mod evals;
 pub mod events;
 pub mod evolve;
