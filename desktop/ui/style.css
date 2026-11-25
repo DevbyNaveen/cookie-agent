@@ -1254,3 +1254,11 @@ footer.me { gap: 6px; }
 .mcp-snip-head .row-text { flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .mcp-snip-head .row-text small { color: var(--text-3); font-size: 12.5px; }
 .mcp-pre { margin: 8px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; white-space: pre-wrap; word-break: break-all; user-select: all; }
+/* Teams as one file */
+.team-paste { font: 12.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+.team-pre { max-height: 46vh; overflow: auto; }
+.team-review .group { margin: 10px 0; max-height: 44vh; overflow-y: auto; }
+.team-review .row-text small { display: block; margin-top: 3px; }
+.team-trust { margin: 6px 0 4px; padding: 8px 12px; border-radius: 10px; font-size: 13px; }
+.team-trust.signed { background: rgb(37 211 102 / .1); color: #6fdc99; }
+.team-trust.unsigned { background: rgb(224 166 74 / .12); color: var(--warn); }

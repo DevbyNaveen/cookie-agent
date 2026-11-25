@@ -706,6 +706,7 @@ dependencies = [
  "tokio-stream",
  "tokio-tungstenite",
  "tokio-util",
+ "toml 0.8.2",
  "tracing",
  "tracing-subscriber",
 ]

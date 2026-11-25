@@ -217,7 +217,7 @@ const SETTINGS = {
       } catch (e) { toast("That pack didn't check out", String(e), "error"); }
     };
     const imp = el("div", "group"); imp.append(setRow("Hire from a pack file", "A .cookie-agent.json someone sent you.", button("Choose file", "quiet small", () => file.click())), file);
-    out.push(imp);
+    out.push(imp, ...teamsPart());
     if (s.market_url) {
       const list = el("div", "group");
       try {
@@ -404,6 +404,85 @@ async function openConnect(filter = "All", q = "") {
 }
 
 /** Your address: @handle for you, @handle/agent for each agent. Online through a relay when you set one. */
+/** Teams as one Markdown file: share yours, add someone's after a review. */
+function teamsPart() {
+  const share = el("div", "group");
+  share.append(setRow("Share your team", "One TEAM.md: each agent's job, model, what it asks to use and its routines, with a playbook anyone can read. Signed with your key. Never keys, chats, memory or files.",
+    button("Make TEAM.md", "quiet small", async () => {
+      try {
+        const name = `${($("me-name").textContent || "My").trim()}'s team`;
+        showTeamFile(name, await call("export_team", { name }));
+      } catch (e) { toast("Couldn't make it", String(e), "error"); }
+    })));
+  const add = el("div", "group edit");
+  const link = input("", "A link to a TEAM.md (GitHub works), or paste the file below");
+  const paste = el("textarea", "text-in team-paste"); paste.rows = 3; paste.placeholder = "+++\nformat = \"cookie-team/1\"\n…";
+  const file = el("input"); file.type = "file"; file.accept = ".md,text/markdown,text/plain"; file.hidden = true;
+  file.onchange = async () => { const f = file.files[0]; if (f) { paste.value = await f.text(); file.value = ""; } };
+  const end = el("div", "form-end");
+  end.append(button("Choose file", "quiet small", () => file.click()), button("Review", "primary small", async () => {
+    try {
+      const p = await call("preview_team", link.value.trim() ? { url: link.value.trim() } : { text: paste.value });
+      reviewTeam(p);
+    } catch (e) { toast("That team didn't check out", String(e), "error"); }
+  }));
+  add.append(setRow("Add a team", "You see every agent before anything is added. Each starts with no access and on probation; its routines arrive paused.", null), link, paste, file, end);
+  return [el("h3", "group-title", "Teams"), share, add];
+}
+
+/** A team file just made: copy it, or keep it in Downloads. */
+function showTeamFile(name, text) {
+  const d = el("dialog", "sheet secret-sheet");
+  d.append(el("h2", null, "Your TEAM.md"), el("p", "muted", "Share it anywhere: a message, a gist, a repo. Someone adds it in Cookie under Settings → Market → Add a team; anyone can follow it by hand."), el("pre", "secret-pre team-pre", text));
+  const end = el("div", "form-end");
+  end.append(
+    button("Save to Downloads", "quiet small", async () => { try { const p = await call("save_team_file", { name, text }); toast("Saved", p.replace(/^.*\/Downloads\//, "Downloads/"), "good"); } catch (e) { toast("Couldn't save it", String(e), "error"); } }),
+    button("Copy", "quiet small", () => navigator.clipboard.writeText(text).then(() => toast("Copied", "The whole TEAM.md."))),
+    button("Done", "primary small", () => d.close()),
+  );
+  d.append(end);
+  d.addEventListener("close", () => d.remove());
+  document.body.append(d);
+  d.showModal();
+}
+
+/** What adding a team would do, before anything is added. */
+function reviewTeam(p) {
+  const d = el("dialog", "sheet secret-sheet team-review");
+  const trust = el("p", "team-trust " + (p.signed ? "signed" : "unsigned"),
+    p.yours ? "Signed by you." : p.signed ? `Signed by key ${String(p.by).slice(0, 16)}…: it hasn't changed since it was signed.` : "Unsigned: anyone could have written it. Its agents still start with no access.");
+  const list = el("div", "group");
+  for (const a of p.agents) {
+    const r = setRow(`${a.name}${a.taken ? " (you have one by this name: it'll be " + a.name + " 2)" : ""}`, a.job, null);
+    const t = r.querySelector(".row-text");
+    t.append(el("small", "muted", `${a.model_ok ? a.model : a.model ? a.model + ": no key here, uses the model below" : "Uses the model below"}${a.asks_for.length ? " · asks to use " + a.asks_for.join(", ") : ""}`));
+    for (const rt of a.routines) t.append(el("small", "muted", `Paused routine: ${rt.when}: ${rt.task}`));
+    list.append(r);
+  }
+  const needModel = p.agents.some((a) => !a.model_ok);
+  const model = select(suggestions().map((m) => [m, m]), suggestions()[0] ?? "", () => {});
+  d.append(el("h2", null, `Add ${p.name}?`), trust);
+  if (p.about) d.append(el("p", "muted", p.about));
+  d.append(list);
+  if (needModel) { const m = el("div", "inline-row"); m.append(el("span", "muted", "Model for the agents without one here"), model); d.append(m); }
+  d.append(el("p", "set-note", "Nothing is granted: each agent lists what it asks to use, and you turn that on in its profile. It's on probation for a week. Routines arrive paused."));
+  const end = el("div", "form-end");
+  end.append(button("Cancel", "quiet small", () => d.close()), button(`Add ${p.agents.length} agent${p.agents.length === 1 ? "" : "s"}`, "primary small", async () => {
+    try {
+      const hired = await call("install_team", { text: p.text, model: needModel ? model.value : null });
+      d.close();
+      await loadRoster();
+      toast(`${p.name} added`, `${hired.length} agent${hired.length === 1 ? "" : "s"}, with no access yet: grant what each needs in its profile.`, "good");
+      $("settings").close();
+      if (hired[0]) openAgent(hired[0].id);
+    } catch (e) { toast("Couldn't add the team", String(e), "error"); }
+  }));
+  d.append(end);
+  d.addEventListener("close", () => d.remove());
+  document.body.append(d);
+  d.showModal();
+}
+
 /** AI tools: Claude Desktop, Cursor and Claude Code hand your agents work over MCP, through Cookie itself. */
 async function aiToolsPart(st) {
   const g = el("div", "group");

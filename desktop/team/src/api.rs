@@ -221,6 +221,16 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "remove_peer" => ok(team.remove_peer(&arg::<String>(a, "agent")?, &arg::<String>(a, "url")?).await?),
 
         /* packs and market */
+        /* a whole team as one Markdown file */
+        "export_team" => ok(team.export_team(&opt::<String>(a, "name").unwrap_or_default(), &opt::<String>(a, "about").unwrap_or_default(), opt(a, "ids")).await?),
+        "preview_team" => {
+            let text = match opt::<String>(a, "url").filter(|u| !u.trim().is_empty()) { Some(u) => team.fetch_team(&u).await?, None => arg::<String>(a, "text")? };
+            let mut v = team.preview_team(&text).await?;
+            v["text"] = json!(text);
+            ok(v)
+        }
+        "save_team_file" => ok(crate::teamfile::save_to_downloads(&arg::<String>(a, "name")?, &arg::<String>(a, "text")?)?),
+        "install_team" => ok(team.install_team(&arg::<String>(a, "text")?, opt(a, "model")).await?),
         "export_pack" => ok(team.export(&arg::<String>(a, "id")?).await?),
         "import_pack" => ok(team.import(arg(a, "pack")?, opt(a, "model")).await?),
         "market" => ok(team.market().await?),

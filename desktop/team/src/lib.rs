@@ -57,6 +57,7 @@ pub mod server;
 pub mod store;
 pub mod talk;
 pub mod toolsearch;
+pub mod teamfile;
 pub mod telegram;
 pub mod tools;
 pub mod triggers;
