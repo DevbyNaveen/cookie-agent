@@ -24,7 +24,8 @@ const Faces = (() => {
   // [hue, saturation] per agent: amber, berry, blueberry, matcha, plum, mint, caramel, rose, lemon, lagoon.
   const HUES = [[28, 82], [338, 70], [222, 72], [96, 48], [272, 52], [160, 52], [20, 62], [352, 74], [48, 88], [192, 66]];
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  // The canvas reaches past the face's box on every side, for hops, flips and the shadow.
+  // The canvas reaches past the face's box on every side, for hops, flips and the shadow
+  // (a face that does big jumps asks for more room: `view`).
   const VIEW = 1.36;
 
   // The face's own look travels with this file, so a relay's card page draws the same faces.
@@ -35,7 +36,7 @@ const Faces = (() => {
 .face { position: relative; display: inline-grid; place-items: center; flex: none; transform-origin: 50% 100%; isolation: isolate; }
 .face canvas { grid-area: 1 / 1; width: 100%; height: 100%; }
 .face canvas:not(.gl) { filter: drop-shadow(0 2px 3px rgb(0 0 0 / .32)); }
-.face canvas.gl { position: absolute; left: -18%; top: -18%; width: 136%; height: 136%; pointer-events: none; }
+.face canvas.gl { position: absolute; pointer-events: none; }
 .face.gl .eyes, .face.gl .mouth, .face.gl .sheen { display: none; }
 .face .eyes { grid-area: 1 / 1; position: relative; z-index: 1; display: flex; align-items: center; }
 .face .eyes i { display: block; border-radius: 999px; background: #22120a; box-shadow: 0 .5px 0 rgb(255 255 255 / .28); transform-origin: 50% 55%; }
@@ -112,7 +113,7 @@ const Faces = (() => {
   const FRAG = `
 precision highp float;
 uniform vec2 u_res;
-uniform float u_time, u_energy, u_seed, u_sec, u_ex;
+uniform float u_time, u_energy, u_seed, u_sec, u_ex, u_view;
 uniform int u_shape;
 uniform vec3 u_deep, u_mid, u_light;
 uniform mat3 u_rot;    // world -> body
@@ -120,7 +121,6 @@ uniform vec4 u_body;   // hop (face units, up), width scale, height scale, jelly
 uniform vec4 u_eye;    // gaze x, gaze y (+ is down), lid open 0..1, eye size
 uniform vec4 u_lids;   // happy arcs 0..1, lower lid (squint), blush, red flush
 uniform vec4 u_mouth;  // mode, width, height (or the smile's arc), tilt
-const float VIEW = ${VIEW.toFixed(2)};
 const vec3 INK = vec3(0.075, 0.045, 0.04);
 
 float hash(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
@@ -356,8 +356,8 @@ vec3 shade(vec3 p, vec3 rd, float pxW){
 }
 
 void main(){
-  vec2 uv = (gl_FragCoord.xy * 2.0 - u_res) / u_res.y * VIEW;
-  float pxW = 2.0 * VIEW / u_res.y;
+  vec2 uv = (gl_FragCoord.xy * 2.0 - u_res) / u_res.y * u_view;
+  float pxW = 2.0 * u_view / u_res.y;
   // a camera a little above, so the top of each body shows, like a product shot
   const float CA = 0.12;
   vec3 ro = vec3(0.0, 6.0 * sin(CA), 6.0 * cos(CA));
@@ -408,7 +408,7 @@ void main(){
     const at = gl.getAttribLocation(prog, "p");
     gl.enableVertexAttribArray(at);
     gl.vertexAttribPointer(at, 2, gl.FLOAT, false, 0, 0);
-    const names = ["u_res", "u_time", "u_energy", "u_seed", "u_sec", "u_ex", "u_shape", "u_deep", "u_mid", "u_light", "u_rot", "u_body", "u_eye", "u_lids", "u_mouth"];
+    const names = ["u_res", "u_time", "u_energy", "u_seed", "u_sec", "u_ex", "u_view", "u_shape", "u_deep", "u_mid", "u_light", "u_rot", "u_body", "u_eye", "u_lids", "u_mouth"];
     const u = Object.fromEntries(names.map((n) => [n, gl.getUniformLocation(prog, n)]));
     cv.width = cv.height = 512;
     return {
@@ -424,6 +424,7 @@ void main(){
         gl.uniform1f(u.u_seed, (face.look.seed % 997) / 97);
         gl.uniform1f(u.u_sec, (performance.now() / 1000) % 1000);
         gl.uniform1f(u.u_ex, face.look.ex);
+        gl.uniform1f(u.u_view, face.view);
         gl.uniform1i(u.u_shape, SHAPES.indexOf(face.look.shape));
         gl.uniform3f(u.u_deep, ...face.look.deep);
         gl.uniform3f(u.u_mid, ...face.look.mid);
@@ -434,8 +435,11 @@ void main(){
         gl.uniform4f(u.u_lids, v[13], v[14], v[15], v[16]);
         gl.uniform4f(u.u_mouth, v[17], v[18], v[19], v[20]);
         gl.drawArrays(gl.TRIANGLES, 0, 6);
+        const fxOn = face.parts.length || face.emit.length;
         face.ctx.clearRect(0, 0, px, px);
+        if (fxOn) drawFx(face, false);
         face.ctx.drawImage(cv, 0, cv.height - px, px, px, 0, 0, px, px);
+        if (fxOn) drawFx(face, true);
       },
     };
   })();
@@ -452,17 +456,176 @@ void main(){
   // Mouth shapes, as the shader numbers them.
   const MOUTH = { "": 0, talk: 1, o: 2, flat: 3, smile: 4, rest: 5, fret: 6 };
 
+  /* ---------- effects round the body: wind, swoosh, fire, sparkle, dust ----------
+   * Drawn on the face's own 2D canvas in two passes, behind the body and in front of it,
+   * so a ribbon of wind wraps round it and flames lick up from behind. Positions are in
+   * face units (the box is ±1, y up), the same space the shader draws the body in. */
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const mixc = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+  const groundOf = (s) => (s.look.shape === "biscuit" ? -0.95 : -0.72);
+  const hopOf = (s) => (s.u ? s.u[5] : 0);
+
+  function addFx(s, kind, ms = 900) {
+    const now = performance.now(), hop = hopOf(s), g = groundOf(s);
+    if (kind === "sparkle") {
+      for (let i = 0; i < 14; i++) {
+        const a = (i / 14) * Math.PI * 2 + rand(-0.2, 0.2), v = rand(1.3, 2.3);
+        // from just outside the body, outward, so it never sparkles over the face
+        s.parts.push({ k: "star", x: Math.cos(a) * 0.95, y: hop + Math.sin(a) * 0.9, vx: Math.cos(a) * v, vy: Math.sin(a) * v, age: 0, life: rand(0.55, 0.9), r: rand(0.08, 0.15), rot: rand(0, 3), vr: rand(-6, 6), front: true });
+      }
+      return;
+    }
+    if (kind === "dust") {
+      for (let i = 0; i < 12; i++) {
+        const side = i % 2 ? 1 : -1;
+        s.parts.push({ k: "dust", x: side * rand(0.25, 0.7), y: g + rand(0.02, 0.12), vx: side * rand(0.5, 1.3), vy: rand(0.05, 0.35), age: 0, life: rand(0.45, 0.8), r: rand(0.08, 0.14), front: Math.random() < 0.5 });
+      }
+      return;
+    }
+    s.emit.push({ kind, at: now, until: now + ms, acc: 0 });
+  }
+
+  /** Spawns from the live effects, moves every particle. True while anything is showing. */
+  function stepFx(s, now, dt) {
+    if (!s.emit.length && !s.parts.length) return false;
+    const hop = hopOf(s), g = groundOf(s);
+    s.emit = s.emit.filter((e) => now < e.until + 450);
+    for (const e of s.emit) {
+      if (now > e.until) continue;
+      if (e.kind === "fire") {
+        e.acc += dt * 110;
+        for (; e.acc >= 1; e.acc--) {
+          const air = hop > 0.25;
+          if (air) { // a rocket's trail: out of the bottom, left behind in the air
+            s.parts.push({ k: "fire", x: rand(-0.3, 0.3), y: hop + g + 0.12, vx: rand(-0.25, 0.25), vy: rand(-1.1, -0.4), age: 0, life: rand(0.35, 0.6), r: rand(0.16, 0.28), front: Math.random() < 0.4 });
+          } else { // flames all round the base, rising behind and beside the body
+            // behind and beside it, never over the face: an aura of flame round the silhouette
+            const a = Math.random() * Math.PI * 2, rr = rand(0.55, 1.0);
+            s.parts.push({ k: "fire", x: Math.cos(a) * rr, y: g + rand(0.05, 0.5), vx: Math.cos(a) * rand(0.15, 0.45), vy: rand(0.8, 1.7), age: 0, life: rand(0.5, 0.95), r: rand(0.18, 0.34), front: false });
+          }
+          if (Math.random() < 0.14) s.parts.push({ k: "ember", x: rand(-0.95, 0.95), y: hop + g + rand(0.1, 0.5), vx: rand(-0.4, 0.4), vy: rand(1.0, 1.9), age: 0, life: rand(0.8, 1.4), r: rand(0.022, 0.04), ph: rand(0, 6), front: false });
+        }
+      }
+      if (e.kind === "wind" && hop < 0.35) { // the wind kicks up a little dust from the table
+        e.acc += dt * 14;
+        for (; e.acc >= 1; e.acc--) { const side = Math.random() < 0.5 ? -1 : 1; s.parts.push({ k: "dust", x: side * rand(0.5, 0.9), y: g + 0.04, vx: side * rand(0.3, 0.8), vy: rand(0.1, 0.4), age: 0, life: rand(0.4, 0.7), r: rand(0.06, 0.11), front: Math.random() < 0.5 }); }
+      }
+    }
+    const drag = Math.exp(-dt * 3.2);
+    for (const q of s.parts) {
+      q.age += dt;
+      if (q.k === "fire") { q.vy += 1.8 * dt; q.vx *= 0.97; }
+      else if (q.k === "ember") { q.vy -= 0.2 * dt; q.x += Math.sin(q.age * 9 + q.ph) * 0.4 * dt; }
+      else if (q.k === "star") { q.vx *= drag; q.vy = q.vy * drag - 0.6 * dt; q.rot += q.vr * dt; }
+      else if (q.k === "dust") { q.vx *= drag; q.vy *= drag; }
+      q.x += q.vx * dt; q.y += q.vy * dt;
+    }
+    s.parts = s.parts.filter((q) => q.age < q.life);
+    if (s.parts.length > 400) s.parts.splice(0, s.parts.length - 400);
+    return true;
+  }
+
+  function fireColor(t) {
+    if (t < 0.3) return mixc([255, 246, 205], [255, 196, 70], t / 0.3);
+    if (t < 0.65) return mixc([255, 196, 70], [244, 96, 24], (t - 0.3) / 0.35);
+    return mixc([244, 96, 24], [130, 32, 12], (t - 0.65) / 0.35);
+  }
+
+  function drawFx(s, front) {
+    const c = s.ctx, px = s.px, k = px / (2 * s.view), half = px / 2;
+    const X = (x) => half + x * k, Y = (y) => half - y * k;
+    const now = performance.now(), hop = hopOf(s), g = groundOf(s);
+    const tint = s.look.light.map((v) => Math.round(v * 255));
+    c.save();
+    // ribbons of wind (round the body) and swoosh trails (beside a flip)
+    for (const e of s.emit) {
+      const env = Math.min(1, (now - e.at) / 150) * Math.max(0, Math.min(1, 1 - (now - e.until) / 450));
+      if (env <= 0) continue;
+      const t = (now - e.at) / 1000;
+      if (e.kind === "fire" && !front) { // the heat: a glow behind the body
+        const gr = c.createRadialGradient(X(0), Y(hop + g + 0.5), 0, X(0), Y(hop + g + 0.5), 1.5 * k);
+        gr.addColorStop(0, `rgba(255,130,40,${0.32 * env})`);
+        gr.addColorStop(1, "rgba(255,80,20,0)");
+        c.fillStyle = gr; c.fillRect(0, 0, px, px);
+      }
+      if (e.kind !== "wind" && e.kind !== "swoosh") continue;
+      c.lineCap = "round";
+      const N = 22, ribbons = e.kind === "wind" ? 3 : 2;
+      for (let i = 0; i < ribbons; i++) {
+        for (let j = 0; j < N; j++) {
+          const head = t * (e.kind === "wind" ? 11 : 9) + i * (Math.PI * 2 / ribbons);
+          const a0 = head - j * 0.075, a1 = a0 - 0.08;
+          let x0, y0, x1, y1, near;
+          if (e.kind === "wind") {
+            const yc = hop + (-0.42 + i * 0.4) + Math.sin(t * 3 + i) * 0.05, rx = 1.0 + i * 0.1, ry = 0.27;
+            x0 = Math.cos(a0) * rx; y0 = yc + Math.sin(a0) * ry; x1 = Math.cos(a1) * rx; y1 = yc + Math.sin(a1) * ry;
+            near = Math.sin(a0) < 0;
+          } else {
+            const side = i ? 1 : -1;
+            x0 = side * (0.96 + 0.1 * Math.cos(a0)); y0 = hop + Math.sin(a0) * 1.05; x1 = side * (0.96 + 0.1 * Math.cos(a1)); y1 = hop + Math.sin(a1) * 1.05;
+            near = Math.cos(a0) > 0;
+          }
+          if (near !== front) continue;
+          const fade = 1 - j / N;
+          c.strokeStyle = `rgba(${mixc([255, 255, 255], tint, 0.35).map(Math.round).join(",")},${0.75 * fade * env})`;
+          c.lineWidth = Math.max(0.8, 0.1 * k * fade);
+          c.beginPath(); c.moveTo(X(x0), Y(y0)); c.lineTo(X(x1), Y(y1)); c.stroke();
+        }
+      }
+    }
+    // particles
+    for (const q of s.parts) {
+      if (q.front !== front) continue;
+      const t = q.age / q.life;
+      if (q.k === "fire") {
+        c.globalCompositeOperation = "lighter";
+        const [r, gg, b] = fireColor(t), rr = q.r * (1 - t * 0.55) * k, a = Math.pow(1 - t, 1.2) * 0.85;
+        const gr = c.createRadialGradient(X(q.x), Y(q.y), 0, X(q.x), Y(q.y), rr);
+        gr.addColorStop(0, `rgba(${r | 0},${gg | 0},${b | 0},${a})`);
+        gr.addColorStop(1, `rgba(${r | 0},${gg | 0},${b | 0},0)`);
+        c.fillStyle = gr; c.beginPath(); c.arc(X(q.x), Y(q.y), rr, 0, 7); c.fill();
+      } else if (q.k === "ember") {
+        c.globalCompositeOperation = "lighter";
+        c.fillStyle = `rgba(255,${200 - t * 120 | 0},90,${(1 - t) * (0.6 + 0.4 * Math.sin(q.age * 30))})`;
+        c.beginPath(); c.arc(X(q.x), Y(q.y), Math.max(0.6, q.r * k), 0, 7); c.fill();
+      } else if (q.k === "star") {
+        c.globalCompositeOperation = "lighter";
+        const sz = q.r * k * Math.sin(Math.min(1, t * 1.6) * Math.PI) + 0.5, a = 1 - t * t;
+        c.translate(X(q.x), Y(q.y)); c.rotate(q.rot);
+        c.fillStyle = `rgba(${mixc([255, 255, 255], tint, 0.25).map(Math.round).join(",")},${a})`;
+        c.beginPath();
+        for (let m = 0; m < 8; m++) { const rad = m % 2 ? sz * 0.28 : sz, an = (m / 8) * Math.PI * 2; c.lineTo(Math.cos(an) * rad, Math.sin(an) * rad); }
+        c.closePath(); c.fill();
+        c.setTransform(1, 0, 0, 1, 0, 0);
+      } else if (q.k === "dust") {
+        c.globalCompositeOperation = "source-over";
+        const rr = q.r * (1 + t * 1.6) * k;
+        const gr = c.createRadialGradient(X(q.x), Y(q.y), 0, X(q.x), Y(q.y), rr);
+        gr.addColorStop(0, `rgba(205,196,186,${0.3 * (1 - t)})`);
+        gr.addColorStop(1, "rgba(205,196,186,0)");
+        c.fillStyle = gr; c.beginPath(); c.arc(X(q.x), Y(q.y), rr, 0, 7); c.fill();
+      }
+    }
+    c.restore();
+  }
+
   /* ---------- a face ---------- */
-  function create(id, size = 44, salt = ownSalt) {
+  /** opts.view: how far the canvas reaches past the box (1.36; 2.4 for a stage with big jumps). */
+  function create(id, size = 44, salt = ownSalt, opts = {}) {
     const lk = look(salt && id !== "cookie" ? salt + ":" + id : id);
     const root = document.createElement("span");
     root.className = R ? "face gl" : "face";
     root.style.width = root.style.height = size + "px";
     root.setAttribute("aria-hidden", "true");
     const canvas = document.createElement("canvas");
-    const px = Math.round(size * (R ? VIEW : 1) * Math.min(devicePixelRatio || 1, 2));
+    const view = R ? Math.max(1.2, opts.view || VIEW) : 1;
+    const px = Math.round(size * view * Math.min(devicePixelRatio || 1, 2));
     canvas.width = canvas.height = px;
-    if (R) canvas.className = "gl";
+    if (R) {
+      canvas.className = "gl";
+      canvas.style.width = canvas.style.height = view * 100 + "%";
+      canvas.style.left = canvas.style.top = -(view - 1) * 50 + "%";
+    }
     // Without WebGL the old flat face draws: a gradient body, eyes and mouth in HTML.
     const eyes = document.createElement("span");
     eyes.className = "eyes";
@@ -494,7 +657,7 @@ void main(){
       canvas.style.borderRadius = "50%";
     }
     const st = {
-      look: lk, root, ctx: canvas.getContext("2d"), px, size, eyes: [...eyes.children], eyesWrap: eyes,
+      look: lk, root, ctx: canvas.getContext("2d"), px, size, view, parts: [], emit: [], eyes: [...eyes.children], eyesWrap: eyes,
       clock: 3.7 + (lk.seed % 100) / 10, energy: 0, energyTarget: 0, last: performance.now(), frame: lk.seed % 3,
       blinksPerMin: 8 + (lk.seed % 13), phase: (lk.seed % 1000) / 160, bounce: 0.7 + ((lk.seed >>> 11) % 5) * 0.12,
       gaze: { x: 0, y: 0 }, from: { x: 0, y: 0 }, to: { x: 0, y: 0 },
@@ -567,9 +730,17 @@ void main(){
       glanceAt(x, y, ms = 1400) { st.glance = { x, y, until: performance.now() + ms }; wake(st); },
       /** A trick: the body rolls round. kind: front, back, double, spin, spin2. */
       flip(kind = "front", ms) {
-        const k = { front: ["x", 1, 820], back: ["x", -1, 820], double: ["x", 2, 1150], spin: ["y", 1, 760], spin2: ["y", 2, 1050] }[kind] ?? ["x", 1, 820];
+        const k = { front: ["x", 1, 820], back: ["x", -1, 820], double: ["x", 2, 1150], spin: ["y", 1, 760], spin2: ["y", 2, 1050], corkscrew: ["xy", 1, 1000] }[kind] ?? ["x", 1, 820];
         roll(st, k[0], k[1], ms ?? k[2]); wake(st);
       },
+      /** A real jump: crouch, take off stretched, land squashed with a jelly tremble and a
+       *  puff of dust. h is the height as a share of its size; the shadow stays on the table. */
+      jump(h = 0.4, ms = 900) { if (reduce) return; st.hopAt = performance.now(); st.hopMs = ms; st.hopH = h; wake(st); },
+      /** An effect round the body for ms: wind (swirling ribbons), swoosh (flip trails),
+       *  fire (flames, embers, a rocket trail in the air), sparkle and dust (one burst). */
+      fx(kind, ms = 900) { if (!reduce && R) addFx(st, kind, ms); wake(st); },
+      /** Squish! A big jelly wobble. */
+      jelly() { st.spring = { at: performance.now(), from: 0.95 }; st.happyAt = performance.now(); wake(st); },
       /** Confetti in its own colours, from where it sits. */
       celebrate() { celebrate(st); st.happyAt = performance.now(); st.mouthFlash = { mode: "smile", until: performance.now() + 1400 }; wake(st); },
       get id() { return id; },
@@ -779,7 +950,7 @@ void main(){
     if (happy) { const p = (now - s.happyAt) / 520; if (p < 1) { ty = -Math.sin(p * Math.PI) * 0.1; } }
     if (s.hopAt >= 0) {
       const p = (now - s.hopAt) / s.hopMs;
-      if (p >= 1) { s.hopAt = -1; s.landAt = now; }
+      if (p >= 1) { s.hopAt = -1; s.landAt = now; if (s.hopH >= 0.15 && R) addFx(s, "dust"); }
       else if (p < 0.12) sy -= (p / 0.12) * 0.1;                                  // crouch
       else if (p < 0.85) { const q = (p - 0.12) / 0.73; ty = Math.min(ty, -Math.sin(q * Math.PI) * s.hopH); sy += Math.sin(q * Math.PI) * 0.06; } // up, stretched
       else sy -= Math.sin(((p - 0.85) / 0.15) * Math.PI) * 0.12;                 // land
@@ -810,8 +981,8 @@ void main(){
     if (R) {
       // 3D: the head turns toward where the eyes look (the eyes lead, the head follows),
       // rolls round in a trick, shakes no after a mistake, sways while thinking.
-      const yaw = gx * 0.34 + (rollAxis === "y" ? rollA : 0) + shake * 0.42;
-      const pitch = gy * 0.24 - (rollAxis === "x" ? rollA : 0);
+      const yaw = gx * 0.34 + (rollAxis === "y" || rollAxis === "xy" ? rollA : 0) + shake * 0.42;
+      const pitch = gy * 0.24 - (rollAxis === "x" || rollAxis === "xy" ? rollA : 0);
       const tilt = -rot * Math.PI / 180;
       let mw = 0, mh = 0, mt = 0;
       if (mode === "talk") { mw = 0.11 + s.talk * 0.05; mh = 0.035 + s.talk * 0.12; }
@@ -833,6 +1004,7 @@ void main(){
       let changed = force || !prev || wob > 0.001;
       if (!changed) for (let i = 2; i < s.u.length; i++) if (Math.abs(s.u[i] - prev[i]) > 0.0015) { changed = true; break; }
       if (!changed && flowing && (S >= 64 || (s.frame++ % 3) === 0)) changed = true;
+      if (stepFx(s, now, dt)) changed = true;
       if (changed) { R.draw(s); s.drawn = s.u; }
       s.root.style.transform = "";
     } else {

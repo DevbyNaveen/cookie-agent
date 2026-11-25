@@ -1256,44 +1256,19 @@ function renderChips() {
 // Each face loops its own tricks. A 2D body never turns like a card: it jumps (a crouch,
 // a stretch up, a squash on landing), its face rolls round it mid-air, and a shadow on
 // the ground shrinks as it rises. Cartwheels and twirls turn in the picture's own plane.
-function jumpFrames(h, extra = () => "") {
-  return [
-    { transform: `translateY(0) scale(1,1) ${extra(0)}` },
-    { transform: `translateY(0) scale(1.16,.84) ${extra(0)}`, offset: 0.13 },
-    { transform: `translateY(${-h * 0.45}%) scale(.88,1.14) ${extra(0.25)}`, offset: 0.24 },
-    { transform: `translateY(${-h}%) scale(1,1) ${extra(0.5)}`, offset: 0.5, easing: "cubic-bezier(.5,0,.75,0)" },
-    { transform: `translateY(${-h * 0.12}%) scale(.94,1.07) ${extra(0.85)}`, offset: 0.84 },
-    { transform: `translateY(0) scale(1.18,.82) ${extra(1)}`, offset: 0.91 },
-    { transform: `translateY(0) scale(.97,1.03) ${extra(1)}`, offset: 0.96 },
-    { transform: `translateY(0) scale(1,1) ${extra(1)}` },
-  ];
-}
-function shadowFrames(h) {
-  const at = (k) => `scale(${1 - 0.5 * k}) `;
-  return [
-    { transform: at(0), opacity: 0.55 }, { transform: "scale(1.12)", opacity: 0.62, offset: 0.13 },
-    { transform: at(0.45), opacity: 0.4, offset: 0.24 }, { transform: at(1), opacity: 0.18, offset: 0.5 },
-    { transform: at(0.12), opacity: 0.5, offset: 0.84 }, { transform: "scale(1.15)", opacity: 0.62, offset: 0.91 },
-    { transform: at(0), opacity: 0.55 },
-  ].map((f) => (h < 20 ? { ...f, opacity: Math.max(0.35, f.opacity) } : f));
-}
-// [jump height %, ms, the face's roll (front/back/double/spin/spin2) or null, in-plane turn]
+// Tricks happen in the face's own 3D: a real jump (its shadow stays on the table), a roll
+// round any axis, and an effect round it. [jump height (share of size), ms, roll, effects]
 const TRICKS = {
-  frontflip: [46, 980, "front"],
-  backflip: [46, 980, "back"],
-  doubleflip: [70, 1300, "double"],
-  spin: [26, 860, "spin"],
-  doublespin: [40, 1100, "spin2"],
-  cartwheel: [38, 1150, null, (k) => `rotate(${-360 * k}deg)`],
-  twirl: [30, 1050, null, (k) => `rotate(${720 * k}deg)`],
+  frontflip: [0.46, 980, "front", ["swoosh"]],
+  backflip: [0.46, 980, "back", ["swoosh"]],
+  doubleflip: [0.7, 1300, "double", ["fire", "sparkle@0.9"]],
+  spin: [0.26, 860, "spin", ["wind"]],
+  tornado: [0.4, 1100, "spin2", ["wind"]],
+  corkscrew: [0.52, 1150, "corkscrew", ["wind", "sparkle@0.9"]],
+  blaze: [0.18, 1100, null, ["fire"]],
   hops: null,
   jelly: null,
   moonwalk: null,
-};
-const GROUND_TRICKS = {
-  hops: [[{ transform: "translateY(0) scale(1,1)" }, { transform: "translateY(0) scale(1.15,.85)", offset: 0.08 }, { transform: "translateY(-30%) scale(.92,1.08)", offset: 0.2 }, { transform: "translateY(0) scale(1.12,.88)", offset: 0.33 }, { transform: "translateY(-24%) scale(.94,1.06)", offset: 0.48 }, { transform: "translateY(0) scale(1.1,.9)", offset: 0.62 }, { transform: "translateY(-16%) scale(.96,1.04)", offset: 0.78 }, { transform: "translateY(0) scale(1,1)" }], 1150],
-  jelly: [[{ transform: "scale(1,1)" }, { transform: "scale(1.25,.75)", offset: 0.2 }, { transform: "scale(.82,1.18)", offset: 0.4 }, { transform: "scale(1.12,.9)", offset: 0.6 }, { transform: "scale(.96,1.04)", offset: 0.8 }, { transform: "scale(1,1)" }], 850],
-  moonwalk: [[{ transform: "translateX(0) rotate(0deg)" }, { transform: "translateX(-16%) rotate(-8deg)", offset: 0.2 }, { transform: "translateX(-28%) rotate(4deg)", offset: 0.4 }, { transform: "translateX(-10%) rotate(-6deg)", offset: 0.6 }, { transform: "translateX(8%) rotate(5deg)", offset: 0.8 }, { transform: "translateX(0) rotate(0deg)" }], 1200],
 };
 const TRICK_NAMES = Object.keys(TRICKS);
 const noMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1303,23 +1278,37 @@ function trick(c, name) {
   if (noMotion || c.busy) return;
   const n = name ?? TRICK_NAMES.filter((t) => t !== c.last)[Math.floor(Math.random() * (TRICK_NAMES.length - 1))];
   c.last = n; c.busy = true;
-  let anim;
+  const f = c.face;
+  let ms;
   if (TRICKS[n]) {
-    const [h, ms, roll, turn] = TRICKS[n];
-    anim = c.acro.animate(jumpFrames(h, turn ? (k) => turn(k) : undefined), { duration: ms });
-    c.shadow.animate(shadowFrames(h), { duration: ms });
-    // The face rolls while it's in the air: after the take-off, done before the landing.
-    if (roll) setTimeout(() => c.face.flip(roll, ms * 0.6), ms * 0.2);
-    else c.face.perk();
+    const [h, dur, roll, effects] = TRICKS[n];
+    ms = dur;
+    // Effects start with the take-off; "name@0.9" starts at 90% of the trick (a landing sparkle).
+    for (const e of effects) {
+      const [kind, at] = e.split("@");
+      if (at) setTimeout(() => f.fx(kind), dur * Number(at));
+      else f.fx(kind, n === "blaze" ? dur : dur * 0.85);
+    }
+    if (n === "blaze") setTimeout(() => f.jump(h, 520), 380);
+    else f.jump(h, dur);
+    // The body rolls while it's in the air: after the take-off, done before the landing.
+    if (roll) setTimeout(() => f.flip(roll, dur * 0.6), dur * 0.2);
+    else f.perk();
+  } else if (n === "hops") {
+    ms = 1150;
+    [[0.3, 380, 0], [0.22, 340, 400], [0.14, 300, 760]].forEach(([h, d, at]) => setTimeout(() => f.jump(h, d), at));
+  } else if (n === "jelly") {
+    ms = 900; f.jelly();
   } else {
-    const [frames, ms] = GROUND_TRICKS[n];
-    anim = c.acro.animate(frames, { duration: ms, easing: "cubic-bezier(.34,.12,.3,1)" });
-    c.face.perk();
+    // A moonwalk: it slides back along the table (shadow and all), glancing behind.
+    ms = 1200;
+    c.acro.animate([{ transform: "translateX(0)" }, { transform: "translateX(-18%)", offset: 0.3 }, { transform: "translateX(-28%)", offset: 0.5 }, { transform: "translateX(-8%)", offset: 0.75 }, { transform: "translateX(0)" }], { duration: ms, easing: "cubic-bezier(.34,.12,.3,1)" });
+    const r = f.rect(); f.glanceAt(r.right + 200, r.top + r.height / 2, 700);
   }
-  anim.onfinish = anim.oncancel = () => {
+  setTimeout(() => {
     c.busy = false;
-    if (Math.random() < 0.35) c.face.setMood("done");
-  };
+    if (Math.random() < 0.35) f.setMood("done");
+  }, ms);
 }
 
 // One face per role for this session: come back and the one you liked is still there.
@@ -1345,7 +1334,7 @@ function renderStarters() {
   const roles = STARTERS.filter((s) => !taken.has(s.name.toLowerCase()));
   const cards = roles.map((s) => {
     const id = slugId(s.name);
-    const face = Faces.create(id, 108);
+    const face = Faces.create(id, 108, undefined, { view: 2.5 });
     return { ...s, id, face };
   });
   cards.push({ own: true, name: "Your own" });
@@ -1356,13 +1345,12 @@ function renderStarters() {
     b.setAttribute("role", "option");
     b.setAttribute("aria-selected", "false");
     const acro = el("span", "acro");
-    const shadow = el("span", "acro-shadow");
     if (c.own) { const plus = el("span", "plus-face"); plus.append(icon("plus")); acro.append(plus); }
     else acro.append(c.face.el);
     const stage = el("span", "acro-stage");
-    stage.append(c.own ? acro : shadow, ...(c.own ? [] : [acro]));
+    stage.append(acro);
     b.append(stage, el("span", "crew-name", c.name));
-    c.card = b; c.acro = acro; c.shadow = shadow;
+    c.card = b; c.acro = acro;
     b.onmouseenter = () => !c.own && trick(c);
     b.onclick = () => pick(c);
     b.ondblclick = () => !c.own && hireNow();
