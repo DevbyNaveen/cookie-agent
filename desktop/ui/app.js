@@ -289,6 +289,8 @@ async function openAgent(id) {
   if (busy.has(r.id)) pillFace.setMood("working");
   $("who-face").replaceChildren(pillFace.el);
   $("who-name").textContent = r.name;
+  if (typeof loadPin === "function") loadPin(current.id);
+  if (typeof madeFor !== "undefined" && madeFor) openMadePanel();
   if (!$("workspace").hidden) openWorkspace();
   const lines = await call("history", { id: r.id });
   if (current?.id !== id) return;
@@ -681,6 +683,8 @@ function closePage() {
   if (v.hidden) return;
   v.classList.remove("open");
   delete v.dataset.board;
+  delete v.dataset.made;
+  $("made-btn")?.classList.remove("on");
   $("chat").classList.remove("doc-open");
   v.querySelectorAll("iframe.doc-pdf").forEach((fr) => URL.revokeObjectURL(fr.src));
   setTimeout(() => { v.hidden = true; v.replaceChildren(); }, 160);
@@ -1066,6 +1070,7 @@ function onTeamEvent(ev) {
         .then(loadRoster)
         .then(() => setMood(ev.agent, ev.status === "done" && job.started ? "done" : "idle"));
       if (profileOpenFor(ev.agent)) refreshProfile();
+      refreshMade(ev.agent);
       break;
     }
     case "notice": {
@@ -1905,6 +1910,7 @@ async function boot() {
   // Local models: whatever Ollama has pulled, free and offline.
   try { const lm = await call("local_models"); MODELS.ollama = (lm.installed || []).map((m) => "ollama:" + m); if (MODELS.ollama.length) providers.push("ollama"); } catch {}
   $("me-name").textContent = name || "You";
+  $("me-btn").setAttribute("aria-label", `${name || "You"}: account and settings`);
   meInitials = (name || "You").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
   mePhoto = await call("me_photo").catch(() => null);
   paintMe();

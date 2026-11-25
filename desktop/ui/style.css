@@ -108,7 +108,7 @@ button svg, .search-wrap svg, .menu svg { width: 18px; height: 18px; fill: none;
 .drag { position: absolute; inset: 0 0 auto 0; height: 64px; z-index: 5; }
 .view { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
 
-.pill-row { position: absolute; top: 14px; left: 0; right: 0; z-index: 10; display: flex; justify-content: center; pointer-events: none; }
+.pill-row { position: absolute; top: 14px; left: 0; right: 0; z-index: 10; display: flex; justify-content: center; gap: 8px; pointer-events: none; }
 .pill { pointer-events: auto; height: 40px; display: inline-flex; align-items: center; gap: 9px; padding: 0 16px 0 8px; border-radius: 20px; background: rgb(36 36 36 / .86); border: 0; backdrop-filter: blur(18px) saturate(1.4); -webkit-backdrop-filter: blur(18px) saturate(1.4); font-weight: 550; font-size: 15px; box-shadow: 0 8px 24px -10px rgb(0 0 0 / .55); transition: background .15s; }
 :root[data-theme="white"] .pill { background: rgb(255 255 255 / .9); box-shadow: 0 0 0 1px var(--line), 0 8px 24px -12px rgb(0 0 0 / .14); }
 :root[data-theme="light"] .pill { background: rgb(251 250 248 / .86); box-shadow: 0 8px 24px -12px rgb(0 0 0 / .18); }
@@ -1593,3 +1593,37 @@ footer.me { gap: 6px; }
 /* The account drop-up: each item on one line */
 .me-menu button { white-space: nowrap; }
 .me-menu { min-width: 236px; }
+
+/* Beside the agent's name: what it made, and the one pinned item */
+.made-btn { width: 40px; padding: 0; justify-content: center; color: var(--text-2); }
+.made-btn svg, .pin-pill svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.made-btn:hover, .made-btn.on { color: var(--text); }
+.pin-pill { padding: 0 14px 0 12px; gap: 8px; font-size: 14px; color: var(--text); }
+.pin-pill svg { color: var(--accent-text, var(--accent)); }
+.pin-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Made: a full page over the chat, cards in a grid */
+.made-page { padding: 8px 4px 40px; }
+.made-page .made-title { margin: 26px 0 12px; font-size: 13px; font-weight: 600; color: var(--text-3); letter-spacing: .01em; }
+.made-page .made-title:first-child { margin-top: 6px; }
+.made-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.made-card { position: relative; border-radius: 16px; background: var(--raise); transition: background .15s, transform .15s; }
+.made-card:hover { background: var(--raise-2); }
+.made-card:active { transform: scale(.985); }
+.made-card.space { grid-column: 1 / -1; background: linear-gradient(135deg, var(--accent-soft), var(--raise) 70%); }
+.made-open { width: 100%; display: flex; align-items: center; gap: 14px; padding: 16px 48px 16px 16px; text-align: left; border-radius: 16px; }
+.made-open:focus-visible { outline: none; box-shadow: none; background: var(--raise-2); }
+.made-ic { width: 44px; height: 44px; flex: none; border-radius: 12px; display: grid; place-items: center; background: var(--raise-2); color: var(--text-2); }
+.made-card:hover .made-ic { background: var(--bg); }
+.made-ic svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.made-ic.k-pdf { color: #e5604f; } .made-ic.k-image { color: #5aa8e6; } .made-ic.k-sheet { color: #4fb37c; }
+.made-card.space .made-ic { background: var(--accent); color: var(--accent-ink); }
+.made-text { display: flex; flex-direction: column; min-width: 0; gap: 3px; }
+.made-name { font-size: 14.5px; font-weight: 550; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.made-text small { font-size: 12.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.made-pin { position: absolute; top: 50%; right: 10px; transform: translateY(-50%); width: 32px; height: 32px; opacity: 0; color: var(--text-3); transition: opacity .15s, color .15s; }
+.made-card:hover .made-pin, .made-pin:focus-visible, .made-pin.on { opacity: 1; }
+.made-pin.on { color: var(--accent-text, var(--accent)); }
+.made-pin svg { width: 15px; height: 15px; }
+.made-empty { margin: 28px 2px; color: var(--text-3); font-size: 14px; line-height: 1.5; }
+.made-hint { margin: 22px 2px 0; color: var(--text-3); font-size: 12.5px; }
+.made-back svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; }

@@ -333,6 +333,8 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         /* your data */
         "data_summary" => ok(team.data_summary()),
         "mcps" => ok(team.mcps()),
+        "agent_files" => ok(team.agent_files(&arg::<String>(a, "id")?).await?),
+        "agent_pin" => ok(team.set_agent_pin(&arg::<String>(a, "id")?, opt::<String>(a, "path")).await?),
         "add_folder" => ok(team.add_folder(&arg::<String>(a, "agent")?, &arg::<String>(a, "path")?).await?),
         "attach_paths" => ok(team.attach_paths(&arg::<String>(a, "agent")?, arg::<Vec<String>>(a, "paths")?).await?),
         "attach_bytes" => ok(team.attach_bytes(&arg::<String>(a, "agent")?, &arg::<String>(a, "name")?, &arg::<String>(a, "data")?).await?),

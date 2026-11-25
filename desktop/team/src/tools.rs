@@ -112,6 +112,10 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
     if g.files && !outside {
         out.extend(crate::access::tools(team, &rec.id, job));
     }
+    // How Cookie is set up, read-only (names and on/off, never a secret).
+    if !outside {
+        out.push(crate::made::settings_tool(Arc::downgrade(team), rec.id.clone()));
+    }
     // Cookie sees the whole team (who's working, what waits on the person).
     if rec.id == crate::front::COOKIE_ID && !outside {
         out.push(crate::front::overview_tool(Arc::downgrade(team)));
