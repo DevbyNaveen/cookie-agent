@@ -1266,6 +1266,9 @@ const TRICKS = {
   tornado: [0.4, 1100, "spin2", ["wind"]],
   corkscrew: [0.52, 1150, "corkscrew", ["wind", "sparkle@0.9"]],
   blaze: [0.18, 1100, null, ["fire"]],
+  levitate: [0.55, 1700, "spin", ["stardust"]],
+  zap: [0.12, 900, null, ["zap"]],
+  supernova: [0.62, 1400, "spin2", ["stardust", "wind", "sparkle@0.88"]],
   hops: null,
   jelly: null,
   moonwalk: null,
@@ -1290,6 +1293,7 @@ function trick(c, name) {
       else f.fx(kind, n === "blaze" ? dur : dur * 0.85);
     }
     if (n === "blaze") setTimeout(() => f.jump(h, 520), 380);
+    else if (n === "zap") { f.error(); setTimeout(() => f.jelly(), 500); }
     else f.jump(h, dur);
     // The body rolls while it's in the air: after the take-off, done before the landing.
     if (roll) setTimeout(() => f.flip(roll, dur * 0.6), dur * 0.2);

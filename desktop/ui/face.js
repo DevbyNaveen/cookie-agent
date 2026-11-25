@@ -18,9 +18,10 @@
 // motion means work); only a slow blink every 6–10 s says it is alive.
 
 const Faces = (() => {
-  // The first four are dealt to agents by id; "biscuit" is Cookie's own.
-  const SHAPES = ["gumdrop", "bun", "macaron", "mochi", "biscuit"];
-  const DEALT = 4;
+  // Every shape but "biscuit" (Cookie's own) is dealt to agents by id. The shader numbers
+  // them in this order, so new shapes go on the end.
+  const SHAPES = ["gumdrop", "bun", "macaron", "mochi", "biscuit", "orb", "crystal", "wisp", "bot", "cloud", "star", "ghost"];
+  const DEALT = SHAPES.filter((x) => x !== "biscuit");
   // [hue, saturation] per agent: amber, berry, blueberry, matcha, plum, mint, caramel, rose, lemon, lagoon.
   const HUES = [[28, 82], [338, 70], [222, 72], [96, 48], [272, 52], [160, 52], [20, 62], [352, 74], [48, 88], [192, 66]];
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -103,7 +104,7 @@ const Faces = (() => {
     const [h, s] = HUES[(seed >>> 3) % HUES.length];
     return {
       seed, ex,
-      shape: SHAPES[seed % DEALT],
+      shape: DEALT[seed % DEALT.length],
       deep: hsl(h, s, 34), mid: hsl((h + 6) % 360, s, 58), light: hsl((h + 14) % 360, Math.min(s, 70), 92),
     };
   }
@@ -135,7 +136,37 @@ float sdRBox(vec3 p, vec3 b, float r){ vec3 q = abs(p) - b + r; return length(ma
 // An arc about +y with half-aperture sc = (sin, cos), radius ra, stroke rb (Inigo Quilez).
 float sdArc(vec2 p, vec2 sc, float ra, float rb){ p.x = abs(p.x); return ((sc.y * p.x > sc.x * p.y) ? length(p - sc * ra) : abs(length(p) - ra)) - rb; }
 
-float base(){ return u_shape == 4 ? -0.95 : u_shape == 2 ? -0.74 : -0.70; }
+float sdTorus(vec3 p, vec2 t){ return length(vec2(length(p.xz) - t.x, p.y)) - t.y; }
+float sdRoundCone(vec3 p, float r1, float r2, float h){
+  vec2 q = vec2(length(p.xz), p.y);
+  float b = (r1 - r2) / h, a = sqrt(1.0 - b * b), k = dot(q, vec2(-b, a));
+  if (k < 0.0) return length(q) - r1;
+  if (k > a * h) return length(q - vec2(0.0, h)) - r2;
+  return dot(q, vec2(a, b)) - r1;
+}
+float sdStar5(vec2 p, float r, float rf){
+  const vec2 k1 = vec2(0.809016994375, -0.587785252292);
+  vec2 k2 = vec2(-k1.x, k1.y);
+  p.x = abs(p.x);
+  p -= 2.0 * max(dot(k1, p), 0.0) * k1;
+  p -= 2.0 * max(dot(k2, p), 0.0) * k2;
+  p.x = abs(p.x);
+  p.y -= r;
+  vec2 ba = rf * vec2(-k1.y, k1.x) - vec2(0.0, 1.0);
+  float h = clamp(dot(p, ba) / dot(ba, ba), 0.0, r);
+  return length(p - ba * h) * sign(p.y * ba.x - p.x * ba.y);
+}
+// Thin-film colour: a soap-bubble rainbow that shifts with the angle you see it at.
+vec3 irid(float x){ return 0.5 + 0.5 * cos(6.2831 * (x + vec3(0.0, 0.33, 0.67))); }
+// The orb's ring, tilted toward you and rocking a little while it works.
+float ring(vec3 p){
+  float a = 0.42 + 0.06 * sin(u_time * 1.7);
+  vec3 q = p; q.yz = mat2(cos(a), sin(a), -sin(a), cos(a)) * q.yz;
+  return sdTorus(q, vec2(1.0, 0.045));
+}
+float base(){ return u_shape == 4 ? -0.95 : (u_shape == 2 || u_shape == 10 || u_shape == 11) ? -0.73 : -0.70; }
+// Set per pixel by shade(): the features' ink (an LED's light on the bot) and the eyes' size.
+vec3 ink; float eyeK;
 
 // Cookie's chocolate chips, kept off the face.
 float chips(vec2 p){
@@ -167,6 +198,45 @@ float body(vec3 p){
     vec3 q = p - vec3(0.0, -0.06, 0.0);
     q.xz *= 1.0 + 0.12 * q.y;
     return smax(sdEll(q, vec3(0.92, 0.70, 0.76)), -(p.y + 0.70), 0.24);
+  }
+  if (u_shape == 5) return min(length(p) - 0.70, ring(p)); // orb: a glass planet with a ring
+  if (u_shape == 6){ // crystal: a diamond tile with chamfered facets, standing on a cut point
+    vec3 q = p - vec3(0.0, 0.1, 0.0);
+    q.y /= 1.05;
+    q.xy = mat2(0.7071, 0.7071, -0.7071, 0.7071) * q.xy;
+    float d = sdRBox(q, vec3(0.6, 0.6, 0.26), 0.06);
+    d = smax(d, (abs(q.x) + abs(q.y)) * 0.5 + abs(q.z) * 0.85 - 0.62, 0.02);
+    return smax(d, -(p.y + 0.70), 0.04);
+  }
+  if (u_shape == 7){ // wisp: a teardrop flame whose tip sways while it works
+    vec3 q = p - vec3(0.0, -0.10, 0.0);
+    q.x -= sin(q.y * 2.6 - u_time * 3.0 + u_seed) * 0.13 * max(q.y, 0.0);
+    return sdRoundCone(q, 0.60, 0.07, 1.0) * 0.9;
+  }
+  if (u_shape == 8){ // bot: a rounded pod with an antenna
+    float b = sdRBox(p - vec3(0.0, -0.04, 0.0), vec3(0.74, 0.66, 0.58), 0.34);
+    float stem = max(length(p.xz) - 0.035, abs(p.y - 0.77) - 0.15);
+    return min(b, min(stem, length(p - vec3(0.0, 0.98, 0.0)) - 0.085));
+  }
+  if (u_shape == 9){ // cloud: puffs melted together
+    float d = length(p - vec3(0.0, 0.12, 0.0)) - 0.52;
+    d = smin(d, length(p - vec3(-0.48, -0.18, 0.0)) - 0.42, 0.18);
+    d = smin(d, length(p - vec3(0.48, -0.18, 0.0)) - 0.42, 0.18);
+    d = smin(d, sdEll(p - vec3(0.0, -0.3, 0.0), vec3(0.75, 0.4, 0.55)), 0.2);
+    return smax(d, -(p.y + 0.70), 0.1);
+  }
+  if (u_shape == 10){ // star: puffy, standing on two points
+    float d2 = sdStar5(p.xy - vec2(0.0, 0.1), 0.72, 0.52);
+    vec2 w = vec2(d2, abs(p.z) - 0.14);
+    return min(max(w.x, w.y), 0.0) + length(max(w, 0.0)) - 0.2;
+  }
+  if (u_shape == 11){ // ghost: a dome over a skirt with a wavy hem, floating
+    vec3 q = p - vec3(0.0, 0.06, 0.0);
+    float top = sdEll(q - vec3(0.0, 0.12, 0.0), vec3(0.66, 0.66, 0.58));
+    float col = (length(q.xz / vec2(0.66, 0.58)) - 1.0) * 0.58;
+    float hem = -0.6 + 0.06 * sin(atan(q.z, q.x) * 7.0 + u_time * 2.5 + u_seed);
+    col = max(col, max(q.y - 0.12, hem - q.y));
+    return smin(top, col, 0.05);
   }
   // Cookie's own: a thick round biscuit, scalloped rim, chips raised from the face.
   float a = atan(p.y, p.x);
@@ -224,7 +294,7 @@ vec3 light(vec3 alb, vec3 p, vec3 n, vec3 V, float gloss, float sss){
 
 // One eye, set into the body at c: a glossy bead under real lids, or a happy arc.
 void eye(inout vec3 col, vec2 q, vec2 c, float aa, vec3 V){
-  float sc = u_eye.w, open = u_eye.z, happy = u_lids.x;
+  float sc = u_eye.w * eyeK, open = u_eye.z, happy = u_lids.x;
   vec2 rad = vec2(0.115, 0.175) * sc;
   vec2 e = (q - c) / rad;
   float de = (length(e) - 1.0) * rad.x;
@@ -240,6 +310,10 @@ void eye(inout vec3 col, vec2 q, vec2 c, float aa, vec3 V){
   vec3 nb = normalize(toWorld(normalize(vec3(e * 0.85, z + 0.2))));
   vec3 bead = INK + u_deep * 0.1;
   bead += mix(u_mid, u_light, 0.3) * 0.3 * smoothstep(-0.1, -0.95, e.y) * (1.0 - abs(e.x) * 0.6);
+  if (u_shape == 8){ // the bot's eyes are light, glowing on its visor
+    bead = ink * (1.1 - 0.35 * dot(e, e));
+    lid = col + ink * 0.45 * smoothstep(0.09 * sc, 0.0, de) * (1.0 - inBead);
+  }
   vec3 H = normalize(normalize(KEY) + V);
   bead += pow(clamp(dot(nb, H), 0.0, 1.0), 220.0) * 1.4;
   bead += softbox(nb, V, 0.6) * 0.5;
@@ -251,10 +325,10 @@ void eye(inout vec3 col, vec2 q, vec2 c, float aa, vec3 V){
   float hw = sqrt(max(0.0, 1.0 - top * top)) + 0.12;
   float lash = (1.0 - smoothstep(-aa, aa, abs((e.y - top) * rad.y) - 0.03 * sc))
              * (1.0 - smoothstep(-aa, aa, (abs(e.x) - hw) * rad.x)) * step(top, 1.0);
-  open3 = mix(open3, INK, lash);
+  open3 = mix(open3, ink, lash);
   // happy: a thick ^ in place of the eye
   float arc = sdArc(q - c + vec2(0.0, 0.06 * sc), vec2(0.891, 0.454), 0.105 * sc, 0.034 * sc);
-  vec3 glad = mix(col, INK, 1.0 - smoothstep(-aa, aa, arc));
+  vec3 glad = mix(col, ink, 1.0 - smoothstep(-aa, aa, arc));
   col = mix(open3, glad, happy);
 }
 
@@ -275,7 +349,7 @@ void mouth(inout vec3 col, vec2 q, vec2 c, float aa){
     cav = mix(cav, vec3(0.86, 0.36, 0.4), tongue * 0.9);
     cav *= mix(1.0, 0.55, smoothstep(-h, h, p.y));
     col = mix(col, cav, 1.0 - smoothstep(-aa, aa, d));
-    col = mix(col, INK, 1.0 - smoothstep(-aa, aa, abs(d) - 0.014));
+    col = mix(col, ink, 1.0 - smoothstep(-aa, aa, abs(d) - 0.014));
     return;
   }
   float d;
@@ -285,7 +359,7 @@ void mouth(inout vec3 col, vec2 q, vec2 c, float aa){
     float ra = w / s.x;
     d = sdArc(vec2(p.x, -(p.y - ra * s.y - 0.02)), s, ra, lw);
   } else { d = max(abs(p.y - 0.018 * sin(p.x * 34.0)) - lw * 0.85, abs(p.x) - w); }  // a fret
-  col = mix(col, INK, 1.0 - smoothstep(-aa, aa, d));
+  col = mix(col, ink, 1.0 - smoothstep(-aa, aa, d));
 }
 
 vec3 shade(vec3 p, vec3 rd, float pxW){
@@ -304,6 +378,9 @@ vec3 shade(vec3 p, vec3 rd, float pxW){
   vec3 alb = mix(u_light, u_mid, smoothstep(0.18, 0.55, h));
   alb = mix(alb, u_deep, smoothstep(0.55, 0.98, h));
   float gloss = 1.0, sss = 1.0, ey = -0.02, my = -0.36;
+  float fres = pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 1.5);
+  vec3 emit = vec3(0.0);
+  ink = INK; eyeK = 1.0;
   if (u_shape == 0){ // sugar glitter that twinkles as the body turns
     vec3 g = pl * 26.0, gc = floor(g);
     float spark = step(0.9, hash(gc.xy + gc.z * 7.1)) * smoothstep(0.3, 0.1, length(fract(g.xy) - 0.5));
@@ -329,6 +406,40 @@ vec3 shade(vec3 p, vec3 rd, float pxW){
     float speck = step(0.93, hash(floor(fg))) * smoothstep(0.28, 0.08, length(fract(fg) - 0.5));
     alb = mix(alb, vec3(1.0), speck * 0.35);
     gloss = 0.45; sss = 1.6;
+  } else if (u_shape == 5){ // glass planet, chrome ring in thin-film colours
+    ey = 0.08; my = -0.24;
+    if (ring(pl) < length(pl) - 0.70){ alb = mix(vec3(0.92), irid(fres * 1.4 + pl.x * 0.3 + u_seed), 0.55); gloss = 1.6; sss = 0.2; }
+    else { alb = mix(alb, irid(fres * 0.9 + u_seed), 0.22 * fres); gloss = 1.3; sss = 1.4; }
+  } else if (u_shape == 6){ // crystal: iridescent facets
+    ey = 0.12; my = -0.2;
+    alb = mix(alb, irid(fres * 1.2 + pl.y * 0.45 + u_seed), 0.22 + 0.3 * fres);
+    gloss = 1.45; sss = 1.2;
+  } else if (u_shape == 7){ // wisp: lit from inside, brightest low in the bulb
+    ey = -0.2; my = -0.45; eyeK = 0.92;
+    emit = mix(u_light, vec3(1.0), 0.35) * (0.18 + 0.4 * (1.0 - smoothstep(-0.6, 0.7, pl.y))) * (0.85 + 0.15 * sin(u_time * 7.0 + pl.y * 4.0));
+    gloss = 0.9; sss = 1.8;
+  } else if (u_shape == 8){ // bot: a dark glass visor with LED eyes, a blinking antenna
+    ey = 0.0; my = -0.27;
+    ink = mix(u_light, vec3(1.0), 0.25) * 1.25 + u_mid * 0.15;
+    vec2 vq = abs(pl.xy - vec2(0.0, -0.06)) - vec2(0.5, 0.27) + 0.17;
+    float vd = length(max(vq, 0.0)) + min(max(vq.x, vq.y), 0.0) - 0.17;
+    float visor = (1.0 - smoothstep(-0.006, 0.006, vd)) * step(0.15, pl.z);
+    alb = mix(alb, vec3(0.03, 0.035, 0.05), visor);
+    alb = mix(alb, u_light, (1.0 - smoothstep(0.0, 0.018, abs(vd))) * step(0.15, pl.z) * 0.6);
+    gloss = mix(1.0, 1.7, visor); sss = mix(1.0, 0.1, visor);
+    if (pl.y > 0.87) emit = ink * (0.7 + 0.5 * (0.5 + 0.5 * sin(u_time * 6.0)));
+  } else if (u_shape == 9){ // cloud: soft, matte, light through it
+    ey = -0.02; my = -0.3;
+    alb = mix(alb, vec3(1.0), 0.38); gloss = 0.3; sss = 1.7;
+  } else if (u_shape == 10){ // star: glossy candy with glitter
+    ey = 0.08; my = -0.16; eyeK = 0.85;
+    vec3 g = pl * 26.0, gc = floor(g);
+    alb += step(0.9, hash(gc.xy + gc.z * 7.1)) * smoothstep(0.3, 0.1, length(fract(g.xy) - 0.5)) * (0.25 + 1.4 * pow(clamp(dot(reflect(rd, n), normalize(KEY)), 0.0, 1.0), 6.0));
+    gloss = 1.15;
+  } else if (u_shape == 11){ // ghost: pale and glowing
+    ey = 0.14; my = -0.14;
+    alb = mix(alb, vec3(1.0), 0.5); gloss = 0.6; sss = 2.0;
+    emit = u_light * 0.12;
   } else { // baked: matte with tiny pits, glossy chocolate
     ey = 0.06; my = -0.30;
     float cm = chips(pl.xy) * step(0.0, pl.z);
@@ -336,7 +447,7 @@ vec3 shade(vec3 p, vec3 rd, float pxW){
     alb = mix(alb, u_deep * 0.42, cm);
     gloss = mix(0.35, 0.95, cm); sss = 0.6;
   }
-  vec3 col = light(alb, p, n, V, gloss, sss);
+  vec3 col = light(alb, p, n, V, gloss, sss) + emit;
   if (nl.z > 0.02 && pl.z > 0.0){
     float aa = pxW * 0.9 / max(nl.z, 0.3);
     vec2 g = vec2(u_eye.x * 0.07, -u_eye.y * 0.055);
@@ -366,7 +477,10 @@ void main(){
   // the shadow on the table: it stays on the ground, smaller and fainter as the body hops
   float lift = max(u_body.x, 0.0);
   vec2 sq = vec2(uv.x / ((u_shape == 4 ? 0.55 : 0.8) * u_body.y * (1.0 + lift * 0.5)), (uv.y - base() * 0.99 + 0.02) / (0.12 * (1.0 + lift * 0.6)));
-  float shadow = exp(-dot(sq, sq) * 2.0) * 0.5 * (1.0 - min(lift * 1.8, 0.75));
+  float shadow = exp(-dot(sq, sq) * 2.0) * 0.5 * (1.0 - min(lift * 1.8, 0.75)) * (u_shape == 11 ? 0.6 : 1.0);
+  float glowK = u_shape == 7 ? 1.0 : u_shape == 11 ? 0.55 : u_shape == 5 ? 0.3 : 0.0;
+  // how near the ray passes the body: exact inside the bound, estimated past it
+  float dglow = length(ro - vec3(0.0, u_body.x, 0.0) + rd * -dot(ro - vec3(0.0, u_body.x, 0.0), rd)) - 0.85;
   vec4 o = vec4(0.0);
   vec3 oc = ro - vec3(0.0, u_body.x, 0.0);
   float rb = 1.3 * max(u_body.y, u_body.z);
@@ -384,6 +498,12 @@ void main(){
     // a ray that just grazes the body still lights a little of the pixel: a smooth edge
     float cover = hit ? 1.0 : 1.0 - smoothstep(0.0, pxW * 0.9, dmin);
     if (cover > 0.0) o = vec4(shade(ro + rd * (hit ? t : tmin), rd, pxW) * cover, cover);
+    dglow = hit ? 0.0 : dmin;
+  }
+  // a soft light round the bodies that glow
+  if (glowK > 0.0){
+    float ga = exp(-max(dglow, 0.0) * 9.0) * glowK * 0.55 * (1.0 - o.a);
+    o += vec4(mix(u_mid, u_light, 0.45) * ga, ga * 0.85);
   }
   gl_FragColor = o + vec4(0.0, 0.0, 0.0, shadow) * (1.0 - o.a);
 }`;
@@ -482,7 +602,16 @@ void main(){
       }
       return;
     }
-    s.emit.push({ kind, at: now, until: now + ms, acc: 0 });
+    if (kind === "hearts") {
+      for (let i = 0; i < 6; i++) s.parts.push({ k: "heart", x: rand(-0.6, 0.6), y: hop + rand(0.6, 0.95), vx: rand(-0.25, 0.25), vy: rand(0.6, 1.1), age: -i * 0.07, life: rand(0.9, 1.3), r: rand(0.1, 0.16), ph: rand(0, 6), front: true });
+      return;
+    }
+    if (kind === "ring") { // a shockwave along the table
+      s.parts.push({ k: "ring", x: 0, y: g, vx: 0, vy: 0, age: 0, life: 0.55, r: 0.5, front: false });
+      s.parts.push({ k: "ring", x: 0, y: g, vx: 0, vy: 0, age: 0, life: 0.55, r: 0.5, front: true });
+      return;
+    }
+    s.emit.push({ kind, at: now, until: now + ms, acc: 0, seed: Math.random() * 1000 });
   }
 
   /** Spawns from the live effects, moves every particle. True while anything is showing. */
@@ -506,6 +635,10 @@ void main(){
           if (Math.random() < 0.14) s.parts.push({ k: "ember", x: rand(-0.95, 0.95), y: hop + g + rand(0.1, 0.5), vx: rand(-0.4, 0.4), vy: rand(1.0, 1.9), age: 0, life: rand(0.8, 1.4), r: rand(0.022, 0.04), ph: rand(0, 6), front: false });
         }
       }
+      if (e.kind === "stardust") { // tiny twinkling stars drifting up and out, in rainbow light
+        e.acc += dt * 55;
+        for (; e.acc >= 1; e.acc--) { const a = Math.random() * Math.PI * 2, r0 = rand(0.75, 1.05); s.parts.push({ k: "dust*", x: Math.cos(a) * r0, y: hop + Math.sin(a) * r0 * 0.9, vx: Math.cos(a) * rand(0.1, 0.35), vy: rand(0.2, 0.6), age: 0, life: rand(0.6, 1.1), r: rand(0.025, 0.05), ph: Math.random(), front: Math.sin(a) < 0 }); }
+      }
       if (e.kind === "wind" && hop < 0.35) { // the wind kicks up a little dust from the table
         e.acc += dt * 14;
         for (; e.acc >= 1; e.acc--) { const side = Math.random() < 0.5 ? -1 : 1; s.parts.push({ k: "dust", x: side * rand(0.5, 0.9), y: g + 0.04, vx: side * rand(0.3, 0.8), vy: rand(0.1, 0.4), age: 0, life: rand(0.4, 0.7), r: rand(0.06, 0.11), front: Math.random() < 0.5 }); }
@@ -518,12 +651,16 @@ void main(){
       else if (q.k === "ember") { q.vy -= 0.2 * dt; q.x += Math.sin(q.age * 9 + q.ph) * 0.4 * dt; }
       else if (q.k === "star") { q.vx *= drag; q.vy = q.vy * drag - 0.6 * dt; q.rot += q.vr * dt; }
       else if (q.k === "dust") { q.vx *= drag; q.vy *= drag; }
+      else if (q.k === "heart") { q.x += Math.sin(q.age * 6 + q.ph) * 0.25 * dt; }
       q.x += q.vx * dt; q.y += q.vy * dt;
     }
     s.parts = s.parts.filter((q) => q.age < q.life);
+    if (s.emit.some((e) => e.kind === "zap" && now < e.until + 120)) return true;
     if (s.parts.length > 400) s.parts.splice(0, s.parts.length - 400);
     return true;
   }
+
+  const irid3 = (x) => [0, 0.33, 0.67].map((o) => Math.round(255 * (0.6 + 0.4 * Math.cos(6.2831 * (x + o)))));
 
   function fireColor(t) {
     if (t < 0.3) return mixc([255, 246, 205], [255, 196, 70], t / 0.3);
@@ -547,6 +684,28 @@ void main(){
         gr.addColorStop(0, `rgba(255,130,40,${0.32 * env})`);
         gr.addColorStop(1, "rgba(255,80,20,0)");
         c.fillStyle = gr; c.fillRect(0, 0, px, px);
+      }
+      if (e.kind === "zap" && now < e.until) {
+        // lightning: jagged bolts arcing from the air to the body, re-struck every few frames
+        const strike = Math.floor(t * 18);
+        let r = Math.sin(strike * 12.9898 + e.seed) * 43758.5453;
+        const rnd = () => { r = Math.sin(r * 78.233 + 1.7) * 43758.5453; return r - Math.floor(r); };
+        c.globalCompositeOperation = "lighter";
+        c.lineJoin = "round"; c.lineCap = "round";
+        for (let b = 0; b < 3; b++) {
+          const a = rnd() * Math.PI * 2, near = Math.sin(a) < -0.2;
+          if (near !== front) continue;
+          let x = Math.cos(a) * 1.35, y = hop + Math.sin(a) * 1.2;
+          const tx = Math.cos(a) * 0.72, ty = hop + Math.sin(a) * 0.68;
+          const pts = [[x, y]];
+          for (let m = 1; m <= 6; m++) { const f = m / 6; pts.push([x + (tx - x) * f + (rnd() - 0.5) * 0.2 * (1 - f * 0.6), y + (ty - y) * f + (rnd() - 0.5) * 0.2 * (1 - f * 0.6)]); }
+          for (const [w, a2] of [[0.16, 0.18], [0.07, 0.45], [0.025, 1]]) {
+            c.strokeStyle = a2 === 1 ? `rgba(255,255,255,${env})` : `rgba(${mixc([150, 200, 255], tint, 0.4).map(Math.round).join(",")},${a2 * env})`;
+            c.lineWidth = Math.max(0.6, w * k);
+            c.beginPath(); pts.forEach(([px2, py2], i) => (i ? c.lineTo(X(px2), Y(py2)) : c.moveTo(X(px2), Y(py2)))); c.stroke();
+          }
+        }
+        c.globalCompositeOperation = "source-over";
       }
       if (e.kind !== "wind" && e.kind !== "swoosh") continue;
       c.lineCap = "round";
@@ -597,6 +756,26 @@ void main(){
         for (let m = 0; m < 8; m++) { const rad = m % 2 ? sz * 0.28 : sz, an = (m / 8) * Math.PI * 2; c.lineTo(Math.cos(an) * rad, Math.sin(an) * rad); }
         c.closePath(); c.fill();
         c.setTransform(1, 0, 0, 1, 0, 0);
+      } else if (q.k === "heart") {
+        if (t < 0) continue;
+        c.globalCompositeOperation = "source-over";
+        const sz = q.r * k * Math.min(1, t * 5), a = t > 0.7 ? (1 - t) / 0.3 : 1;
+        c.save(); c.translate(X(q.x), Y(q.y)); c.rotate(Math.sin(q.age * 5 + q.ph) * 0.25); c.scale(sz, sz);
+        c.beginPath(); c.moveTo(0, 0.35); c.bezierCurveTo(-1.1, -0.35, -0.5, -1.05, 0, -0.5); c.bezierCurveTo(0.5, -1.05, 1.1, -0.35, 0, 0.35);
+        c.fillStyle = `rgba(255,${80 + (q.ph * 20 | 0)},${120 + (q.ph * 15 | 0)},${a})`; c.fill();
+        c.fillStyle = `rgba(255,255,255,${0.55 * a})`; c.beginPath(); c.arc(-0.3, -0.55, 0.13, 0, 7); c.fill();
+        c.restore();
+      } else if (q.k === "ring") {
+        c.globalCompositeOperation = "source-over";
+        const rx = (q.r + t * 1.3) * k, ry = rx * 0.22, a = (1 - t) * 0.5;
+        c.strokeStyle = `rgba(${mixc([255, 255, 255], tint, 0.3).map(Math.round).join(",")},${a})`;
+        c.lineWidth = Math.max(0.8, 0.05 * k * (1 - t));
+        c.beginPath(); c.ellipse(X(0), Y(q.y), rx, ry, 0, front ? 0 : Math.PI, front ? Math.PI : Math.PI * 2); c.stroke();
+      } else if (q.k === "dust*") {
+        c.globalCompositeOperation = "lighter";
+        const [r2, g2, b2] = irid3(q.ph + t * 0.3), tw = 0.5 + 0.5 * Math.sin(q.age * 22 + q.ph * 9), a = Math.sin(t * Math.PI) * (0.5 + 0.5 * tw);
+        c.fillStyle = `rgba(${r2},${g2},${b2},${a})`;
+        c.beginPath(); c.arc(X(q.x), Y(q.y), Math.max(0.6, q.r * k * (0.7 + 0.5 * tw)), 0, 7); c.fill();
       } else if (q.k === "dust") {
         c.globalCompositeOperation = "source-over";
         const rr = q.r * (1 + t * 1.6) * k;
@@ -688,6 +867,7 @@ void main(){
       st.spring = { at: performance.now(), from: st.squish };
       st.happyAt = performance.now();
       st.mouthFlash = { mode: "smile", until: performance.now() + 1100 };
+      if (R && size >= 30) addFx(st, "hearts");
     };
     addEventListener("pointerup", release);
     addEventListener("pointercancel", release);
@@ -702,7 +882,7 @@ void main(){
         // A new job or a finished one turns the face once, like a ball catching light.
         if (m === "received" || (m === "done" && st.mood !== "idle")) turn(st, m === "done" ? 760 : 900);
         if (m === "received") { st.ackAt = now; m = "thinking"; }
-        if (m === "done") { st.happyAt = now; m = "idle"; }
+        if (m === "done") { st.happyAt = now; m = "idle"; if (R && size >= 40) addFx(st, "sparkle"); }
         // Thinking, the fluid slows and gathers; working and writing, it runs.
         st.energyTarget = m === "working" ? 1 : m === "writing" ? 0.8 : m === "thinking" ? 0.35 : 0;
         if (m === "writing" && st.mood !== "writing") st.scanAt = now;
@@ -737,7 +917,8 @@ void main(){
        *  puff of dust. h is the height as a share of its size; the shadow stays on the table. */
       jump(h = 0.4, ms = 900) { if (reduce) return; st.hopAt = performance.now(); st.hopMs = ms; st.hopH = h; wake(st); },
       /** An effect round the body for ms: wind (swirling ribbons), swoosh (flip trails),
-       *  fire (flames, embers, a rocket trail in the air), sparkle and dust (one burst). */
+       *  fire (flames, embers, a rocket trail in the air), zap (lightning), stardust (twinkling
+       *  rainbow specks), and one-shot bursts: sparkle, dust, hearts, ring (a shockwave). */
       fx(kind, ms = 900) { if (!reduce && R) addFx(st, kind, ms); wake(st); },
       /** Squish! A big jelly wobble. */
       jelly() { st.spring = { at: performance.now(), from: 0.95 }; st.happyAt = performance.now(); wake(st); },
@@ -950,7 +1131,7 @@ void main(){
     if (happy) { const p = (now - s.happyAt) / 520; if (p < 1) { ty = -Math.sin(p * Math.PI) * 0.1; } }
     if (s.hopAt >= 0) {
       const p = (now - s.hopAt) / s.hopMs;
-      if (p >= 1) { s.hopAt = -1; s.landAt = now; if (s.hopH >= 0.15 && R) addFx(s, "dust"); }
+      if (p >= 1) { s.hopAt = -1; s.landAt = now; if (s.hopH >= 0.15 && R) addFx(s, "dust"); if (s.hopH >= 0.42 && R) addFx(s, "ring"); }
       else if (p < 0.12) sy -= (p / 0.12) * 0.1;                                  // crouch
       else if (p < 0.85) { const q = (p - 0.12) / 0.73; ty = Math.min(ty, -Math.sin(q * Math.PI) * s.hopH); sy += Math.sin(q * Math.PI) * 0.06; } // up, stretched
       else sy -= Math.sin(((p - 0.85) / 0.15) * Math.PI) * 0.12;                 // land
