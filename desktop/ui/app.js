@@ -65,8 +65,24 @@ const humanSize = (b) => b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFix
 // The sidebar preview: Markdown marks dropped, one line.
 const plain = (t) => (t ?? "").replace(/```[\s\S]*?```/g, " ").replace(/[*`#>]+/g, "").replace(/(^|\s)_+|_+(?=\s|$)/g, "$1").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/\s+/g, " ").trim();
 /** "search_inbox" → "Using search inbox". The tool's own name, made readable; never invented. */
-const TOOL_WORDS = { hire_contractor: "Bringing in a contractor", find_skill: "Looking for a skill", load_skill: "Loading a skill", share_with_team: "Sharing with the team", recall: "Remembering" };
-const toolPhrase = (name) => TOOL_WORDS[name] ?? "Using " + name.replace(/^external::[^:]+::/, "").replace(/[_\-.]+/g, " ").trim();
+const TOOL_WORDS = {
+  hire_contractor: "Bringing in a contractor", find_skill: "Looking for a skill", load_skill: "Loading a skill", use_skill: "Using a skill",
+  share_with_team: "Sharing with the team", recall: "Remembering", remember: "Saving to memory", save_note: "Making a note", hire_agent: "Hiring a teammate",
+  make_image: "Making an image", make_video: "Making a video", message: "Messaging a teammate", ask_agent: "Asking a teammate",
+  message_agent: "Messaging another agent", message_contact: "Messaging a contact", team_overview: "Checking on the team",
+  ask_person: "Getting a question ready for you", todo_list: "Planning the steps", tool_search: "Finding the right tool", helper: "Sending out helpers",
+  web_search: "Searching the web", read_url: "Reading a page", read_page: "Reading a page", read_file: "Reading a file", write_file: "Writing a file",
+  run_command: "Running a command", screenshot: "Looking at the screen", read_artifact: "Opening what it made", board: "Updating the board",
+  connector_actions: "Looking in your apps", connector_call: "Working in your apps", app_settings: "Checking your apps", app_call: "Working in your apps",
+  send_email: "Writing an email", send_mail: "Writing an email", open_settings: "Opening settings", set_routine: "Setting up a routine",
+};
+/** A plain sentence for what a tool is doing, never its code name. */
+function toolPhrase(name) {
+  if (TOOL_WORDS[name]) return TOOL_WORDS[name];
+  const words = name.replace(/^external::[^:]+::/, "").replace(/^(mcp__|[a-z]+::)/, "").split(/[_\-.:]+/).filter(Boolean);
+  const verb = { read: "Reading", get: "Getting", list: "Looking through", search: "Searching", find: "Finding", fetch: "Fetching", write: "Writing", create: "Creating", update: "Updating", delete: "Removing", send: "Sending", make: "Making", run: "Running", open: "Opening", check: "Checking" }[words[0]];
+  return verb && words.length > 1 ? `${verb} ${words.slice(1).join(" ")}` : "Working on it";
+}
 const agentById = (id) => rows.find((r) => r.id === id);
 
 function select(options, value, onChange) {
@@ -193,7 +209,17 @@ function renderRoster() {
     if (r.probation_until && r.probation_until > Date.now() / 1000) right.append(el("span", "tag", "probation"));
     if (r.pinned) right.append(svgIcon("i-pin", "pin-mark"));
     if (r.hidden) li.classList.add("is-hidden");
-    li.append(face.el, meta, right);
+    // Cookie, the agent everyone starts with: a small star marks it as the main one.
+    let faceEl = face.el;
+    if (r.id === "cookie") {
+      faceEl = el("span", "main-agent");
+      const star = el("span", "main-star");
+      star.title = "Cookie: your main agent";
+      star.setAttribute("aria-hidden", "true");
+      star.append(icon("star-fill"));
+      faceEl.append(face.el, star);
+    }
+    li.append(faceEl, meta, right);
     li.onmouseenter = () => face.peek(true);
     li.onmouseleave = () => face.peek(false);
     li.onclick = () => openAgent(r.id);
@@ -295,7 +321,9 @@ async function openAgent(id) {
   const lines = await call("history", { id: r.id });
   if (current?.id !== id) return;
   renderLog(r, lines);
-  renderSuggest(r, lines.length === 0 && !busy.has(r.id) && needsOf(r.id).count === 0);
+  for (const job of live.values()) if (job.agent === r.id && !job.inbound && job.acc) dropSaidSoFar(job);
+  // Until the person has written: a new hire may have greeted them first.
+  renderSuggest(r, !lines.some((l) => l.from === "you") && !busy.has(r.id) && needsOf(r.id).count === 0);
   // What it holds for you sits at the end of its chat (today.js), then what waits for your yes.
   const desk = el("div", "desk");
   desk.id = "desk";
@@ -309,17 +337,21 @@ async function openAgent(id) {
   $("input").focus();
 }
 
-/** Starters for an empty chat, from the agent's own job. Click one to fill the box. */
-function renderSuggest(r, show) {
+/** Starters for a chat the person hasn't written in: the agent's own (written when it was hired), else from its job. Click one to fill the box. */
+async function renderSuggest(r, show) {
   const box = $("suggest");
-  box.hidden = !show;
+  box.hidden = true;
   if (!show) return;
+  const own = await call("starters", { id: r.id }).catch(() => []);
+  if (current?.id !== r.id) return;
   const job = r.job.replace(/\.$/, "");
-  const ideas = [
-    "What do you need from me to get started?",
-    `Show me how you'd do this: ${job.charAt(0).toLowerCase() + job.slice(1)}`,
-    "What can't you do yet?",
+  const short = job.length > 70 ? job.split(/[.,;:—]/)[0] : job;
+  const ideas = own.length ? own : [
+    "Where should we start?",
+    `First step: ${short.charAt(0).toLowerCase() + short.slice(1)}`,
+    "What do you need from me?",
   ];
+  box.hidden = false;
   box.replaceChildren(...ideas.map((t) => {
     const b = el("button", null, t);
     b.type = "button";
@@ -360,6 +392,7 @@ function talkPill(t) {
   b.type = "button";
   const n = t.messages.length;
   b.append(el("span", null, `${n} message${n === 1 ? "" : "s"} with`), Faces.create(t.with_id, 20, talkSalt(t)).el, el("span", "talk-name", t.with_name));
+  if (t.ms >= 1000) b.append(el("span", "talk-time", secs(t.ms)));
   b.setAttribute("aria-label", `Open ${n} messages with ${t.with_name}`);
   b.onclick = () => openTalk(t);
   row.append(b);
@@ -770,17 +803,56 @@ function line(l) {
     l.helpers.forEach((h, i) => c.set(i + 1, h.task, h.failed ? "failed" : "done", h.report));
     return c.el;
   }
+  // Steps it took between its words, kept in the record: one folded line, open for each.
+  if (l.from === "steps") {
+    const g = { steps: new Map(), closed: true, el: el("div", "steps") };
+    const list = l.steps ?? l.text.split("\n").filter(Boolean).map((did) => ({ did, status: "ok" }));
+    // Times come from the record; a step without one shows none rather than a guess.
+    list.forEach((s, i) => g.steps.set("h" + i, { id: "h" + i, did: s.did, doing: s.did, ok: s.status === "ok", status: s.status, approval: s.approval, with: s.with, start: 0, end: s.ms ?? null, saved: true }));
+    paintGroup(g);
+    return g.el;
+  }
+  // Its plan, as it last stood: the same card as live, ticks and all.
+  if (l.from === "plan") {
+    const items = l.text.split("\n").map((x) => /^\[(x|>| )\]\s*(.+)$/.exec(x.trim())).filter(Boolean).map(([, m, text]) => ({ text, state: m === "x" ? "done" : m === ">" ? "doing" : "todo" }));
+    if (!items.length) return el("div");
+    const box = el("div", "todo-box todo-saved");
+    const done = items.filter((t) => t.state === "done").length;
+    const head = el("div", "todo-head");
+    head.append(el("span", null, "Plan"), el("span", "muted", `${done} of ${items.length}`));
+    const ol = el("ol", "todo-list");
+    for (const t of items) { const li = el("li", "todo " + t.state); const mk = el("span", "todo-mark"); mk.setAttribute("aria-hidden", "true"); li.append(mk, el("span", null, t.text)); ol.append(li); }
+    box.append(head, ol);
+    return box;
+  }
+  // Cut off by Cookie closing: said plainly, with a way to carry on (nothing reruns on its own).
+  if (l.from === "interrupted") {
+    const row = el("div", "event interrupted");
+    const go = el("button", "btn quiet small", "Continue");
+    go.type = "button";
+    go.onclick = () => { row.remove(); $("input").value = "Continue where you stopped."; autosize(); $("composer").requestSubmit(); };
+    row.append(icon("info"), el("span", null, l.text), go);
+    return row;
+  }
+  if (l.from === "you") {
+    const card = answersCard(l.text);
+    if (card) return card;
+  }
   if (l.from === "file") {
     const row = el("div", "msg file");
     const chip = el("div", "file-chip");
     const name = l.text.split("\n")[0].replace(/ \(an image, below\)$/, "");
     if (l.image) {
-      const img = el("img", "file-thumb");
+      // A picture shows as itself, big, on your side of the chat.
+      const img = el("img", "sent-image");
       img.src = l.image;
       img.alt = name;
+      img.loading = "lazy";
       img.onclick = () => lightbox(l.image, name);
-      chip.append(img);
-    } else chip.append(icon("clip"));
+      row.append(img);
+      return row;
+    }
+    chip.append(icon("clip"));
     chip.append(name);
     row.append(chip);
     return row;
@@ -801,6 +873,27 @@ function line(l) {
   if (l.from === "agent") { b.classList.add("md"); b.innerHTML = Md.render(l.text); hydrateMd(b, current?.id); }
   else b.textContent = l.text;
   row.append(b, actions(l.text));
+  return row;
+}
+
+/** Answers sent from a form ("- Question: answer" lines): shown as answers, not as a typed message. */
+function answersCard(text) {
+  const lines = text.trim().split("\n");
+  const title = /^\*\*(.+)\*\*$/.exec(lines[0])?.[1];
+  const rows = (title ? lines.slice(1) : lines).map((x) => /^- (.+?): (.*)$/.exec(x.trim()));
+  if (rows.length < 2 || rows.some((r) => !r)) return null;
+  const row = el("div", "msg you answers");
+  const card = el("div", "answers-card");
+  const head = el("div", "answers-head");
+  head.append(icon("check"), el("span", null, title ?? "Your answers"));
+  card.append(head);
+  for (const [, q, a] of rows) {
+    const r = el("div", "answers-row");
+    const blank = a === "(left blank)";
+    r.append(el("span", "answers-q", q.replace(/\s*\*$/, "")), el("span", "answers-a" + (blank ? " blank" : ""), blank ? "Skipped" : a));
+    card.append(r);
+  }
+  row.append(card, actions(text));
   return row;
 }
 
@@ -918,12 +1011,126 @@ function attachLive(job) {
   const row = el("div", "msg agent" + (guest ? " guest" : ""));
   const reply = el("div", "bubble md");
   if (guest) { const col = el("div", "guest-col"); col.append(guestHead(job.agent), reply); row.append(col); } else row.append(reply);
-  if (job.acc) { reply.innerHTML = Md.render(job.acc); $("log").append(row); }
-  else $("log").append(status);
-  job.ui = { status, face, text, row, reply, announced: true };
+  for (const g of job.groups ?? []) $("log").append(g.el);
+  if (job.acc) { reply.innerHTML = Md.render(job.acc.slice(job.ui?.from ?? job.from ?? 0)); $("log").append(row); }
+  else if (!job.groups?.some((g) => !g.closed)) $("log").append(status);
+  job.ui = { status, face, text, row, reply, announced: true, from: job.ui?.from ?? job.from };
   if (job.helpers) for (const h of job.helpers.values()) placeHelpers(job).set(h.n, h.task, h.state, h.note);
   renderTodos(job.agent);
   scrollDown();
+}
+
+/** Lines the record already holds from a job still running (it saves as it goes): the live view shows them instead. */
+function dropSaidSoFar(job) {
+  const log = $("log");
+  for (let n = log.lastElementChild; n; ) {
+    const prev = n.previousElementSibling;
+    if (n.classList.contains("you")) break;
+    if (n.classList.contains("agent") && !n.classList.contains("guest")) {
+      const t = n.textContent.trim().slice(0, 60);
+      if (t && job.acc.includes(t)) n.remove();
+    } else if (n.classList.contains("talk-row")) n.remove();
+    n = prev;
+  }
+}
+
+/* ---------- steps: what a job is doing, in order with its words ---------- */
+
+/** One step began: it joins the open run of steps, or starts one where the chat is now. */
+function addStep(job, ev) {
+  job.groups ??= [];
+  let g = job.groups.at(-1);
+  if (!g || g.closed) {
+    g = { steps: new Map(), closed: false, agent: job.agent, el: el("div", "steps"), job };
+    job.groups.push(g);
+    if (job.ui && current?.id === chatOf(job) && view === "chat") {
+      if (job.ui.status.isConnected) { job.ui.status.remove(); job.ui.face.stop(); }
+      $("log").append(g.el);
+      job.ui.fresh = true;
+    }
+  }
+  g.steps.set(ev.id, { id: ev.id, name: ev.name, doing: ev.doing, did: ev.did, with: ev.with, start: Date.now(), end: null, ok: true, sub: null });
+  paintGroup(g);
+  tickSteps();
+  scrollDown();
+}
+
+const secs = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`; };
+
+/** "··· Messaging Enkeon Growth 17s ›" while a step runs; "Messaged Enkeon Growth, searched the web ›" once done. */
+function paintGroup(g) {
+  if (!g) return;
+  const steps = [...g.steps.values()];
+  const running = steps.filter((s) => !s.saved && s.end == null);
+  const now = Date.now();
+  const head = el("button", "steps-head");
+  head.type = "button";
+  if (running.length) {
+    const s = running.at(-1);
+    head.classList.add("live");
+    head.append(el("span", "steps-dots", "•••"), el("span", "steps-what", s.doing), el("span", "steps-time", secs(now - s.start)));
+  } else {
+    const said = [];
+    for (const s of steps) if (!said.includes(s.did)) said.push(s.did);
+    const line = said.slice(0, 3).map((t, i) => (i ? t.charAt(0).toLowerCase() + t.slice(1) : t)).join(", ") + (said.length > 3 ? `, and ${said.length - 3} more` : "");
+    head.append(el("span", "steps-what", line));
+    const total = steps.reduce((n, s) => n + (stepMs(s) ?? 0), 0);
+    if (total >= 1000) head.append(el("span", "steps-time", secs(total)));
+    // What didn't go to plan, said in the line itself.
+    const odd = { failed: "didn't work", denied: "you said no", blocked: "not allowed", interrupted: "interrupted" };
+    const flags = [...new Set(steps.map((s) => odd[s.status ?? (s.ok ? "ok" : "failed")]).filter(Boolean))];
+    if (flags.length) head.append(el("span", "steps-flag", flags.join(" · ")));
+  }
+  head.append(el("span", "steps-more", "›"));
+  const list = el("div", "steps-list");
+  list.hidden = !g.openList;
+  for (const s of steps) {
+    const done = s.end != null || s.saved;
+    const st = s.status ?? (s.ok ? "ok" : "failed");
+    const r = el("div", "steps-item" + (done ? (st === "ok" ? "" : " " + st) : " live"));
+    const what = el("span", "steps-did", done ? s.did : s.doing);
+    if (s.with) what.prepend(Faces.create(s.with, 14).el);
+    r.append(what);
+    // How the person decided, in place: allowed once, allowed from now on, or no.
+    const said = { allowed_once: "Allowed once", allowed_always: "Allowed from now on", denied: "Denied" }[s.approval];
+    if (said) r.append(el("span", "steps-approval " + s.approval, said));
+    if (st === "interrupted") r.append(el("span", "steps-approval denied", "Interrupted"));
+    const ms = done ? stepMs(s) : now - s.start;
+    if (ms != null) r.append(el("span", "steps-time", secs(ms)));
+    list.append(r);
+  }
+  head.onclick = () => { g.openList = !g.openList; paintGroup(g); };
+  const kids = [head];
+  // The teammate it is waiting on: its face and what it is doing right now.
+  const talking = running.find((s) => s.with);
+  if (talking) {
+    const sub = el("div", "steps-sub");
+    sub.append(Faces.create(talking.with, 16).el, el("span", null, `${agentById(talking.with)?.name ?? "Teammate"} · ${talking.sub ?? "Reading your message"}`));
+    kids.push(sub);
+  }
+  kids.push(list);
+  g.el.replaceChildren(...kids);
+}
+
+/** A step's duration: from the record when saved, from the clock when watched live. */
+const stepMs = (s) => (s.saved ? s.end : s.end != null ? s.end - s.start : null);
+
+let stepTimer = null;
+/** The running steps' clocks, once a second, only while one runs. */
+function tickSteps() {
+  if (stepTimer) return;
+  stepTimer = setInterval(() => {
+    let any = false;
+    for (const j of live.values()) for (const g of j.groups ?? []) {
+      if ([...g.steps.values()].some((s) => !s.end)) {
+        any = true;
+        const t = g.el.querySelector(".steps-head.live .steps-time");
+        const s = [...g.steps.values()].filter((x) => !x.end).at(-1);
+        if (t && s) t.textContent = secs(Date.now() - s.start);
+      }
+    }
+    if (!any) { clearInterval(stepTimer); stepTimer = null; }
+  }, 1000);
 }
 
 /** The job's helpers card, in the chat just above where its answer is coming. */
@@ -953,15 +1160,41 @@ function onTeamEvent(ev) {
       if (current?.id === chatOf(job)) { $("suggest").hidden = true; attachLive(job); syncSend(); }
       break;
     }
+    case "step": {
+      const job = live.get(ev.job);
+      if (job) addStep(job, ev);
+      // A teammate this step talks to is working: its latest action shows under the step.
+      for (const j of live.values()) for (const g of j.groups ?? []) for (const s of g.steps.values()) if (s.with === ev.agent && !s.end) { s.sub = ev.doing; paintGroup(g); }
+      break;
+    }
+    case "step_done": {
+      const job = live.get(ev.job);
+      const s = job?.groups?.at(-1)?.steps.get(ev.id) ?? job?.groups?.flatMap((g) => [...g.steps.values()]).find((x) => x.id === ev.id);
+      if (s) { s.end = Date.now(); s.ok = ev.ok; s.sub = null; paintGroup(job.groups.find((g) => g.steps.has(ev.id))); }
+      break;
+    }
     case "text": {
       const job = live.get(ev.job);
       if (!job) return;
+      // Words after a run of steps start a new bubble below them; the steps fold into one line.
+      const open = job.groups?.at(-1);
+      if (open && !open.closed) { open.closed = true; paintGroup(open); job.from = job.acc.length; if (job.ui) { job.ui.from = job.from; job.ui.fresh = true; } }
       job.acc += ev.text;
+      if (job.inbound) for (const j of live.values()) for (const g of j.groups ?? []) for (const s of g.steps.values()) if (s.with === ev.agent && !s.end && s.sub !== "Writing its answer") { s.sub = "Writing its answer"; paintGroup(g); }
       if (typeof Voice !== "undefined") Voice.onText(ev);
       if (!job.started || job.toolOn) { job.started = true; job.toolOn = false; setMood(ev.agent, "writing"); allFaces(ev.agent, (f) => f.tool(null)); setStatus(ev.agent, "Writing…"); }
       if (job.ui && current?.id === chatOf(job)) {
         // Words go at the end of the chat: after an approval card asked in the middle, never above it.
         if (job.ui.status.isConnected) { job.ui.status.remove(); job.ui.face.stop(); $("log").append(job.ui.row); }
+        if (job.ui.fresh) {
+          job.ui.fresh = false;
+          if (job.ui.row.isConnected && job.ui.row.querySelector(".bubble")?.textContent.trim()) {
+            const row = job.ui.row.cloneNode(false), reply = el("div", "bubble md");
+            row.append(reply);
+            job.ui.row = row; job.ui.reply = reply;
+          }
+          $("log").append(job.ui.row);
+        }
         else if (job.ui.split != null && job.ui.row.isConnected && job.ui.row.nextElementSibling) {
           const row = job.ui.row.cloneNode(false), reply = el("div", "bubble md");
           row.append(reply);
@@ -976,8 +1209,8 @@ function onTeamEvent(ev) {
     case "tool": {
       const job = live.get(ev.job);
       if (!job) return;
-      job.statusText = TALK_TOOLS.has(ev.name) ? "Talking with another agent" : ev.name === "helper" ? "Sending out helpers" : toolPhrase(ev.name);
-      if (TALK_TOOLS.has(ev.name)) job.talked = true;
+      job.statusText = toolPhrase(ev.name);
+      if (TALK_TOOLS.has(ev.name) || ev.name === "message") job.talked = true;
       setMood(ev.agent, "working");
       job.toolOn = true;
       allFaces(ev.agent, (f) => f.tool(ev.name));
@@ -1011,7 +1244,7 @@ function onTeamEvent(ev) {
     case "board": onBoardChanged(ev.id); break;
     case "chat_changed": {
       // An answer from an agent brought in with @ was kept: redraw from the record.
-      if (current?.id === ev.agent && view === "chat") {
+      if (current?.id === ev.agent && view === "chat" && ![...live.values()].some((j) => j.agent === ev.agent && !j.inbound)) {
         const r = agentById(ev.agent);
         call("history", { id: ev.agent }).then((lines) => { if (current?.id === ev.agent && view === "chat") { renderLog(r, lines); scrollDown(true); renderDesk(r.id); } }).catch(() => {});
       }
@@ -1026,6 +1259,8 @@ function onTeamEvent(ev) {
       // A yes to something that goes out into the world: a small celebration, in its colours.
       if (ev.yes && was && was.effect === "outbound") allFaces(was.agent, (f) => f.celebrate());
       approvals = approvals.filter((a) => a.id !== ev.id);
+      // The decision shows on the step it was about, live as after a reload.
+      if (was) for (const j of live.values()) if (j.agent === was.agent) for (const g of j.groups ?? []) for (const st of g.steps.values()) if (st.name === was.tool && st.end == null) { st.approval = ev.yes ? "allowed_once" : "denied"; paintGroup(g); }
       document.querySelectorAll(`[data-approval="${ev.id}"]`).forEach((c) => {
         c.replaceWith(event([ev.yes ? "Approved" : ev.by === "stopped" ? "No longer needed" : "Denied", ev.by === "telegram" ? " from your phone" : ""]));
       });
@@ -1048,6 +1283,7 @@ function onTeamEvent(ev) {
       if (!job) { if (profileOpenFor(ev.agent)) refreshProfile(); return; }
       live.delete(ev.job);
       busy.delete(ev.agent);
+      for (const g of job.groups ?? []) { for (const s of g.steps.values()) s.end ??= Date.now(); g.closed = true; paintGroup(g); }
       allFaces(ev.agent, (f) => f.tool(null));
       if (ev.status === "failed") setTimeout(() => allFaces(ev.agent, (f) => f.error()), 60);
       // A routine reporting in: a hop, so a morning of reports reads as a standup down the list.
@@ -1246,8 +1482,8 @@ $("composer").onsubmit = async (e) => {
   renderChips();
   $("input").value = "";
   autosize();
-  $("log").append(line({ from: "you", text }));
   for (const f of files) $("log").append(line({ from: "file", text: f.card?.label ? `${f.name} · ${f.card.label}` : f.name, image: f.card?.thumb || (f.data ? `data:${f.media_type};base64,${f.data}` : undefined) }));
+  if (text) $("log").append(line({ from: "you", text }));
   scrollDown(true);
   try {
     await call("send", { id: agent.id, text: text || (files.length === 1 ? `Here's ${files[0].name}.` : `Here are ${files.length} files.`), attachments: files.flatMap((f) => f.attachments ?? [f]) });
@@ -1368,18 +1604,27 @@ async function addFiles(list) {
 $("file").onchange = async () => { await addFiles($("file").files); $("file").value = ""; };
 $("input").addEventListener("paste", (e) => { if (e.clipboardData?.files?.length) { e.preventDefault(); addFiles(e.clipboardData.files); } });
 let dragDepth = 0;
-$("chat").addEventListener("dragenter", (e) => { if (e.dataTransfer?.types?.includes("Files")) { dragDepth++; $("drop").hidden = false; } });
-$("chat").addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; $("drop").hidden = true; } });
+$("chat").addEventListener("dragenter", (e) => { if (e.dataTransfer?.types?.includes("Files")) { dragDepth++; $("drop").hidden = false; requestAnimationFrame(() => $("drop").classList.add("on")); } });
+$("chat").addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; $("drop").classList.remove("on"); $("drop").hidden = true; } });
 $("chat").addEventListener("dragover", (e) => e.preventDefault());
-$("chat").addEventListener("drop", (e) => { e.preventDefault(); dragDepth = 0; $("drop").hidden = true; if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files); });
+$("chat").addEventListener("drop", (e) => { e.preventDefault(); dragDepth = 0; $("drop").classList.remove("on"); $("drop").hidden = true; if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files); });
 
 function renderChips() {
   $("chips").hidden = pending.length === 0;
   $("chips").replaceChildren(...pending.map((f, i) => {
-    const c = el("span", "chip" + (f.card?.busy ? " busy" : ""));
     const thumb = f.card?.thumb || (f.data ? `data:${f.media_type};base64,${f.data}` : null);
-    if (thumb) { const t = el("img", "chip-thumb"); t.src = thumb; t.alt = ""; c.append(t); }
-    else if (f.card?.folder) { const fi = icon("folder"); fi.classList.add("chip-ic"); c.append(fi); }
+    // A picture is its own thumbnail tile, like a photo on the desk; anything else a small card.
+    if (thumb) {
+      const t = el("span", "tile" + (f.card?.busy ? " busy" : ""));
+      const img = el("img"); img.src = thumb; img.alt = f.name; img.title = f.name;
+      img.onclick = () => lightbox(thumb, f.name);
+      const x = el("button", "tile-x"); x.type = "button"; x.setAttribute("aria-label", `Remove ${f.name}`); x.append(icon("x"));
+      x.onclick = () => { pending.splice(i, 1); renderChips(); syncSend(); };
+      t.append(img, x);
+      return t;
+    }
+    const c = el("span", "chip" + (f.card?.busy ? " busy" : ""));
+    if (f.card?.folder) { const fi = icon("folder"); fi.classList.add("chip-ic"); c.append(fi); }
     const words = el("span", "chip-words");
     words.append(el("span", "chip-name", f.name));
     if (f.card?.label) words.append(el("small", "chip-kind", f.card.size && !f.card.busy ? `${f.card.label} · ${f.card.size}` : f.card.label));

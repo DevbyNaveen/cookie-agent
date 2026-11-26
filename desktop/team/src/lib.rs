@@ -6,6 +6,9 @@
 
 pub mod access;
 pub mod api;
+mod steps;
+mod guide;
+mod appsettings;
 pub mod cage;
 pub mod approvals;
 pub mod apps;
@@ -208,7 +211,14 @@ impl Team {
         std::fs::create_dir_all(paths.handovers()).map_err(|e| e.to_string())?;
         let keys = keys::Keys::new(&paths.root);
         keys.load_into_env();
-        let agents: Vec<AgentRecord> = util::read_json(&paths.roster());
+        let mut agents: Vec<AgentRecord> = util::read_json(&paths.roster());
+        // Test copies live only while a test runs; one left by a quit mid-test is swept away.
+        agents.retain(|a| !bench::is_probe(&a.id));
+        for e in std::fs::read_dir(paths.agents_dir()).into_iter().flatten().flatten() {
+            if bench::is_probe(&e.file_name().to_string_lossy()) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
         let settings: Settings = std::fs::read(paths.settings())
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
@@ -322,7 +332,8 @@ impl Team {
         let side = self.sidebar();
         let mut rows: Vec<Row> = agents
             .into_iter()
-            .filter(|a| a.shadow_of.is_none())
+            // Test copies run as agents for a moment; they are never on the team.
+            .filter(|a| a.shadow_of.is_none() && !crate::bench::is_probe(&a.id))
             .map(|agent| {
                 let jobs: Vec<Job> = util::read_jsonl(&self.paths.jobs(&agent.id));
                 let visible = |j: &&Job| matches!(j.trigger, Trigger::Chat | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Peer { .. } | Trigger::Handoff { .. } | Trigger::Inbox | Trigger::Memory { .. });

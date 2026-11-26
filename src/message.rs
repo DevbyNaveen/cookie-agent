@@ -177,6 +177,12 @@ impl Message {
         Self { role: Role::User, content: vec![Content::Text { text: text.into() }], origin: Origin::System, summary_of: None }
     }
 
+    /// The agent's own words, written outside a run: the first message a new
+    /// agent greets the person with, after a harness note that briefed it.
+    pub fn opening(text: impl Into<String>) -> Self {
+        Self { role: Role::Assistant, content: vec![Content::Text { text: text.into() }], origin: Origin::Model, summary_of: None }
+    }
+
     pub(crate) fn assistant(content: Vec<Content>) -> Self {
         Self { role: Role::Assistant, content, origin: Origin::Model, summary_of: None }
     }

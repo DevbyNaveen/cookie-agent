@@ -24,7 +24,11 @@ use crate::runtime::Attachment;
 use crate::{util, Team};
 
 const TEXT_MAX: usize = 200_000;
-const IMAGE_MAX: usize = 4 * 1024 * 1024;
+/// The most a model takes in one picture (the harness checks the same number).
+const IMAGE_MAX: usize = cookie_harness::message::MAX_IMAGE_BYTES;
+/// Pictures bigger than this are made smaller first: past ~1568px a model sees no more
+/// detail, and a smaller picture is read faster and costs less.
+const IMAGE_AS_IS: usize = 1_500_000;
 const UNZIP_MAX: u64 = 1 << 30;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -85,7 +89,7 @@ fn readable_image(path: &Path, tmp: &Path) -> Option<(String, Vec<u8>)> {
     let native = [("png", "image/png"), ("jpg", "image/jpeg"), ("jpeg", "image/jpeg"), ("gif", "image/gif"), ("webp", "image/webp")];
     let size = std::fs::metadata(path).ok()?.len() as usize;
     if let Some((_, mt)) = native.iter().find(|(e, _)| name.ends_with(&format!(".{e}"))) {
-        if size <= IMAGE_MAX {
+        if size <= IMAGE_AS_IS {
             return std::fs::read(path).ok().map(|b| (mt.to_string(), b));
         }
     }
@@ -94,6 +98,21 @@ fn readable_image(path: &Path, tmp: &Path) -> Option<(String, Vec<u8>)> {
     let b = std::fs::read(&out).ok();
     let _ = std::fs::remove_file(&out);
     b.filter(|b| b.len() <= IMAGE_MAX).map(|b| ("image/jpeg".to_string(), b))
+}
+
+/// A picture too big for a model, made small enough (1568px, JPEG): None when it can't be.
+pub(crate) fn shrink_image(bytes: &[u8]) -> Option<(String, Vec<u8>)> {
+    let tmp = std::env::temp_dir();
+    let src = tmp.join(format!("cookie-shrink-{}.png", util::random_hex(6)));
+    std::fs::write(&src, bytes).ok()?;
+    let out = tmp.join(format!("{}.jpg", util::random_hex(6)));
+    let r = run("/usr/bin/sips", &["-s", "format", "jpeg", "-s", "formatOptions", "80", "-Z", "1568", &src.to_string_lossy(), "--out", &out.to_string_lossy()])
+        .and_then(|_| std::fs::read(&out).ok())
+        .filter(|b| !b.is_empty() && b.len() <= IMAGE_MAX)
+        .map(|b| ("image/jpeg".to_string(), b));
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&out);
+    r
 }
 
 /// A picture of a file (a PDF's first page, a video's frame) from Quick Look.

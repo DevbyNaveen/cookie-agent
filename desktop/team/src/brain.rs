@@ -56,8 +56,13 @@ pub const PLANS_EVERY: u64 = 300;
 pub const PRIME_K: usize = 6;
 pub const PRIME_OUTSIDE: usize = 2;
 pub const PRIME_SPACES: usize = 2;
-/// How long the prime may take before the job goes on without it.
-pub const PRIME_WAIT: Duration = Duration::from_secs(9);
+/// How long the prime may take before the job goes on without it: the
+/// person is waiting for the first word, so this stays short.
+pub const PRIME_WAIT: Duration = Duration::from_millis(2500);
+/// After the brain was busy or slow, primes skip it this long instead of
+/// making every reply wait on it again.
+const PRIME_REST: u64 = 120;
+static BRAIN_RESTS_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Spaces classified per model call.
 const ASSIGN_BATCH: usize = 40;
 
@@ -492,6 +497,9 @@ impl Team {
         if !rec.grants.memory || text.trim().len() < 8 || crate::pair::enkeon().is_none() {
             return None;
         }
+        if util::now() < BRAIN_RESTS_UNTIL.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
         let own = space_of(&rec.id);
         let task_terms: BTreeSet<String> = crate::shelf::terms(text).into_iter().collect();
         // Followed spaces the task names (by the words in their names), at most two.
@@ -527,11 +535,11 @@ impl Team {
                 continue;
             }
             let t0 = std::time::Instant::now();
-            // A brain busy with a background pass answers 503: tried again while the wait allows.
-            let mut r = engine_post("/recall", args.clone(), left).await;
-            while matches!(&r, Err(e) if e.contains("503")) && deadline.saturating_duration_since(std::time::Instant::now()) > Duration::from_millis(1500) {
-                tokio::time::sleep(Duration::from_millis(600)).await;
-                r = engine_post("/recall", args.clone(), deadline.saturating_duration_since(std::time::Instant::now())).await;
+            // A brain busy with a background pass (503) or too slow: the job goes on without it,
+            // and the next replies don't wait on it for a while.
+            let r = engine_post("/recall", args.clone(), left).await;
+            if r.is_err() {
+                BRAIN_RESTS_UNTIL.store(util::now() + PRIME_REST, std::sync::atomic::Ordering::Relaxed);
             }
             if std::env::var("COOKIE_DEBUG_PRIME").is_ok() {
                 let what = match &r { Err(e) => format!("error: {}", util::clip(e, 160)), Ok(v) => format!("hits {} standing {}", v["hits"].as_array().map(|a| a.len()).unwrap_or(0), v["standing"].as_array().map(|a| a.len()).unwrap_or(0)) };

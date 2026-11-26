@@ -127,10 +127,15 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
     // How Cookie is set up, read-only (names and on/off, never a secret).
     if !outside {
         out.push(crate::made::settings_tool(Arc::downgrade(team), rec.id.clone()));
+        // The app's own guide, and the settings it can change for the person (each change approved).
+        out.push(crate::guide::help_tool());
+        out.extend(crate::appsettings::tools(Arc::downgrade(team), rec.id.clone()));
     }
     // Cookie sees the whole team (who's working, what waits on the person).
     if rec.id == crate::front::COOKIE_ID && !outside {
         out.push(crate::front::overview_tool(Arc::downgrade(team)));
+        // Cookie hires the teammate the person asks for (they approve it first).
+        out.push(crate::front::hire_tool(Arc::downgrade(team)));
     }
     // The Mac's own apps, never for someone reaching it from outside.
     if g.mac && !outside {

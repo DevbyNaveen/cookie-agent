@@ -86,6 +86,9 @@ pub(crate) struct Start {
 pub enum Event {
     TextDelta(String),
     ToolCallStarted { id: String, name: String },
+    /// The call's arguments are complete and it is about to be checked and run:
+    /// what a screen needs to say what it is doing ("Messaging Writer").
+    ToolCallReady { id: String, name: String, args: serde_json::Value },
     /// A person is being asked to approve; `preview` is what will happen.
     AskedPerson { tool: String, preview: String },
     /// Sent once the call's result is written to the session.
@@ -472,9 +475,12 @@ impl Agent {
             }
 
             let reply = Message::assistant(response.content);
-            let calls: Vec<_> = reply.tool_calls().map(|(id, name, args)| (id.into(), name.into(), args.clone())).collect();
+            let calls: Vec<(String, String, serde_json::Value)> = reply.tool_calls().map(|(id, name, args)| (id.into(), name.into(), args.clone())).collect();
             let answer = reply.text();
             session.append(reply).await?;
+            for (id, name, args) in &calls {
+                on_event(Event::ToolCallReady { id: id.clone(), name: name.clone(), args: args.clone() });
+            }
             if let Some(trace) = &trace {
                 for (id, name, args) in &calls {
                     trace.record("call", serde_json::json!({"id": id, "tool": name, "args": crate::trace::digest(args.to_string())}))?;
@@ -1098,6 +1104,7 @@ mod tests {
         assert_eq!(*events.lock().unwrap(), vec![
             Event::ToolCallStarted { id: "c1".into(), name: "weather".into() },
             Event::Usage(usage.clone()),
+            Event::ToolCallReady { id: "c1".into(), name: "weather".into(), args: json!({"city": "Riga"}) },
             Event::ToolFinished { id: "c1".into(), is_error: false },
             Event::TextDelta("done".into()),
             Event::Usage(usage),

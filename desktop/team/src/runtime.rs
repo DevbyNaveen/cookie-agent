@@ -55,7 +55,9 @@ impl Attachment {
         if let (Some(mt), Some(data)) = (self.media_type.as_deref(), self.data.as_deref()) {
             let bytes = base64::engine::general_purpose::STANDARD.decode(data.trim()).unwrap_or_default();
             if IMAGE_TYPES.contains(&mt) && !bytes.is_empty() && bytes.len() <= IMAGE_MAX {
-                if let Ok(img) = Message::untrusted_image(mt, &bytes, Source::File) {
+                // Too big for the model as it is: made smaller rather than lost.
+                let fit = if bytes.len() > cookie_harness::message::MAX_IMAGE_BYTES { crate::attach::shrink_image(&bytes) } else { Some((mt.to_string(), bytes.clone())) };
+                if let Some(img) = fit.and_then(|(mt, b)| Message::untrusted_image(&mt, &b, Source::File).ok()) {
                     return vec![Message::untrusted(format!("{} (an image, below)", self.name), Source::File), img];
                 }
             }
@@ -242,6 +244,11 @@ impl Team {
             base.push_str("\n\n");
             base.push_str(&b);
         }
+        // The app it is part of: a map of every feature, the same for every agent (and cached with its instructions).
+        if !matches!(trigger, Trigger::Contact { .. } | Trigger::Room { .. } | Trigger::Peer { .. }) {
+            base.push_str("\n\n");
+            base.push_str(&crate::guide::map());
+        }
         // What it can see of the person's files beyond its folder (Settings → Your files).
         let outside = matches!(trigger, Trigger::Contact { .. } | Trigger::Room { .. } | Trigger::Peer { .. });
         if rec.grants.files && !outside {
@@ -316,6 +323,13 @@ impl Team {
             base.push_str("\n\n");
             base.push_str(&n);
         }
+        // Your own agents are inside the team: their addresses are safe to write
+        // to even when one was only read from a tool result (a fresh hire's reply).
+        // A change to the person's own files, a setting, or a new hire is put to them every time.
+        let mut policy = cookie_harness::policy::Policy::default().always_ask(crate::access::WRITE_TOOL).always_ask("settings_set").always_ask("hire_agent");
+        for a in self.agents().await.iter().filter(|a| a.id != rec.id && a.shadow_of.is_none() && !crate::bench::is_probe(&a.id)) {
+            policy = policy.allow(&format!("@{}", self.slug_of(a)));
+        }
         let mut agent = Agent::new(&rec.model)
             .map_err(|e| e.to_string())?
             .instructions(base)
@@ -324,7 +338,7 @@ impl Team {
             .prompt_cache_ttl(self.cache_ttl(&rec.id))
             .close_with_answer()
             // A change to the person's own files is put to them every time.
-            .policy(cookie_harness::policy::Policy::default().always_ask(crate::access::WRITE_TOOL))
+            .policy(policy)
             .shared_approver(broker);
         let price = settings.price_of(&rec.model).map(|p| Price { input: p.input, output: p.output, cache_read: p.cache_read, cache_write: p.cache_write });
         let budget = Budget { max_steps: rec.limits.steps.max(1), max_tokens: rec.limits.tokens.max(1_000), max_dollars: price.and(rec.limits.job_dollars) };
@@ -498,6 +512,11 @@ impl Team {
                     }
                     team.emit(TeamEvent::Tool { job: jid.clone(), agent: aid.clone(), name })
                 }
+                Event::ToolCallReady { id, name, args } => {
+                    let (doing, did, with) = crate::steps::words(&team, &name, &args);
+                    team.emit(TeamEvent::Step { job: jid.clone(), agent: aid.clone(), id, name, doing, did, with })
+                }
+                Event::ToolFinished { id, is_error } => team.emit(TeamEvent::StepDone { job: jid.clone(), agent: aid.clone(), id, ok: !is_error }),
                 Event::Steered { text } => {
                     mk.lock().unwrap().0 += 1;
                     team.emit(TeamEvent::Steered { job: jid.clone(), agent: aid.clone(), text })
@@ -688,6 +707,8 @@ impl Team {
         documents.reverse();
         let slugs: std::collections::BTreeMap<String, String> = self.net_config().agents.into_iter().map(|(id, n)| (id, n.slug)).collect();
         // Every tool answer, by call id, to pair with the call that asked.
+        // Each call's own record from the trace: when it started and ended, and what was decided about it.
+        let facts = call_facts(&self.paths.trace(id));
         let mut results: HashMap<String, (String, bool)> = HashMap::new();
         for m in session.messages() {
             for c in m.content() {
@@ -704,36 +725,14 @@ impl Team {
             }
             while documents.last().is_some_and(|(at, _)| *at <= i) {
                 let (_, paths) = documents.pop().expect("checked");
-                out.push(Line { from: "documents", text: paths.join("\n"), talk: None, helpers: None, by: None });
+                out.push(Line { from: "documents", text: paths.join("\n"), talk: None, helpers: None, by: None, steps: None });
             }
-            for (call_id, name, args) in m.tool_calls() {
-                if name == crate::helpers::NAME {
-                    let (report, failed) = results.get(call_id).cloned().unwrap_or_default();
-                    let h = HelperLine { task: args["task"].as_str().unwrap_or_default().to_string(), report, failed };
-                    // Helpers sent together stay together.
-                    match out.last_mut() {
-                        Some(Line { helpers: Some(group), .. }) => group.push(h),
-                        _ => out.push(Line { from: "helpers", text: String::new(), talk: None, helpers: Some(vec![h]), by: None }),
-                    }
-                    continue;
-                }
-                let Some(mut talk) = talk_of(name, args, &team, &contacts, &slugs) else { continue };
-                let (answer, failed) = results.get(call_id).cloned().unwrap_or_default();
-                let asked = talk.asked.clone();
-                // Keep only the answer itself, without the tool's "X answered:" lead-in.
-                let reply = answer.split_once(" answered:\n").map(|(_, r)| r.to_string()).unwrap_or(answer);
-                let mut msgs = vec![TalkMsg { who: me_name.clone(), mine: true, text: asked }];
-                if !reply.trim().is_empty() {
-                    msgs.push(TalkMsg { who: if failed { "Cookie".into() } else { talk.with_name.clone() }, mine: false, text: reply });
-                }
-                talk.messages = msgs;
-                push_talk(&mut out, talk);
-            }
+            // What it said comes before the calls it made in the same message.
             let text = m.text();
             // Another of your agents answering here, brought in with @ (`mention`).
             if let cookie_harness::Origin::Untrusted(Source::Agent(by)) = m.origin() {
                 if team.iter().any(|a| &a.id == by) && !text.trim().is_empty() {
-                    out.push(Line { from: "guest", text, talk: None, helpers: None, by: Some(by.clone()) });
+                    out.push(Line { from: "guest", text, talk: None, helpers: None, by: Some(by.clone()), steps: None });
                     continue;
                 }
             }
@@ -745,14 +744,91 @@ impl Team {
                 _ => "agent",
             };
             if !text.trim().is_empty() {
-                out.push(Line { from, text, talk: None, helpers: None, by: None });
+                out.push(Line { from, text, talk: None, helpers: None, by: None, steps: None });
+            }
+            for (call_id, name, args) in m.tool_calls() {
+                if name == crate::helpers::NAME {
+                    let (report, failed) = results.get(call_id).cloned().unwrap_or_default();
+                    let h = HelperLine { task: args["task"].as_str().unwrap_or_default().to_string(), report, failed };
+                    // Helpers sent together stay together.
+                    match out.last_mut() {
+                        Some(Line { helpers: Some(group), .. }) => group.push(h),
+                        _ => out.push(Line { from: "helpers", text: String::new(), talk: None, helpers: Some(vec![h]), by: None, steps: None }),
+                    }
+                    continue;
+                }
+                let Some(mut talk) = talk_of(name, args, &team, &contacts, &slugs) else {
+                    let result = results.get(call_id);
+                    // Its plan: the latest version since the person last wrote, where it was last updated.
+                    if name == "todo_list" {
+                        if let Some((plan, false)) = result {
+                            let since = out.iter().rposition(|l| l.from == "you").map_or(0, |i| i + 1);
+                            if let Some(at) = out[since..].iter().rposition(|l| l.from == "plan") {
+                                out.remove(since + at);
+                            }
+                            out.push(Line { from: "plan", text: plan.clone(), ..Line::default() });
+                        }
+                        continue;
+                    }
+                    // Any other step: the same plain line the live view showed, with how long it took and what was decided.
+                    let (_, did, with) = crate::steps::words(self, name, args);
+                    let f = facts.get(call_id);
+                    let status = match (result, f.and_then(|f| f.verdict.as_deref())) {
+                        (_, Some("declined")) => "denied",
+                        (_, Some("refused")) => "blocked",
+                        (Some((o, _)), _) if o.starts_with("Interrupted:") => "interrupted",
+                        (None, _) => "interrupted",
+                        (Some((_, true)), _) => "failed",
+                        _ => "ok",
+                    };
+                    let step = StepLine {
+                        did: did.clone(),
+                        status,
+                        ms: f.and_then(|f| Some(f.end? .saturating_sub(f.start?))),
+                        approval: match f.and_then(|f| f.verdict.as_deref()) {
+                            Some("approved") => Some("allowed_once"),
+                            Some("earned_trust") => Some("allowed_always"),
+                            Some("declined") => Some("denied"),
+                            _ => None,
+                        },
+                        with,
+                    };
+                    let line = if status == "ok" { did } else { format!("{did} ({status})") };
+                    match out.last_mut() {
+                        Some(Line { from: "steps", text, steps: Some(all), .. }) => {
+                            text.push('\n');
+                            text.push_str(&line);
+                            all.push(step);
+                        }
+                        _ => out.push(Line { from: "steps", text: line, steps: Some(vec![step]), ..Line::default() }),
+                    }
+                    continue;
+                };
+                talk.ms = facts.get(call_id).and_then(|f| Some(f.end?.saturating_sub(f.start?)));
+                let (answer, failed) = results.get(call_id).cloned().unwrap_or_default();
+                let asked = talk.asked.clone();
+                // Keep only the answer itself, without the tool's "X answered:" lead-in.
+                let reply = answer.split_once(" answered:\n").map(|(_, r)| r.to_string()).unwrap_or(answer);
+                let mut msgs = vec![TalkMsg { who: me_name.clone(), mine: true, text: asked }];
+                if !reply.trim().is_empty() {
+                    msgs.push(TalkMsg { who: if failed { "Cookie".into() } else { talk.with_name.clone() }, mine: false, text: reply });
+                }
+                talk.messages = msgs;
+                push_talk(&mut out, talk);
             }
         }
         while let Some((_, t)) = incoming.pop() {
             push_talk(&mut out, t);
         }
         while let Some((_, paths)) = documents.pop() {
-            out.push(Line { from: "documents", text: paths.join("\n"), talk: None, helpers: None, by: None });
+            out.push(Line { from: "documents", text: paths.join("\n"), talk: None, helpers: None, by: None, steps: None });
+        }
+        // Its last job in this chat was cut off by Cookie closing: said so at the end, with a way to carry on.
+        let chat_jobs: Vec<Job> = util::read_jsonl::<Job>(&self.paths.jobs(id)).into_iter().filter(|j| matches!(j.trigger, Trigger::Chat)).collect();
+        if let Some(last) = chat_jobs.last() {
+            if last.status == JobStatus::Failed && last.error.as_deref().is_some_and(|e| e.contains(INTERRUPTED)) && !self.busy().iter().any(|(a, _)| a == id) {
+                out.push(Line { from: "interrupted", text: "Cookie closed while this was running, so it stopped partway. What it finished is above.".into(), ..Line::default() });
+            }
         }
         Ok(out)
     }
@@ -840,7 +916,7 @@ impl Team {
                 started_at: m["started_at"].as_u64().unwrap_or(0),
                 finished_at: Some(util::now()),
                 status: JobStatus::Failed,
-                error: Some("Cookie closed while this job was running, so it didn't finish. Anything it changed before then is in its record; nothing is done again on its own.".into()),
+                error: Some(format!("{INTERRUPTED}, so it didn't finish. Anything it changed before then is in its record; nothing is done again on its own.")),
                 version: a.version,
                 ..Default::default()
             };
@@ -858,11 +934,12 @@ impl Team {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct Line {
     /// "you", "agent", "file" (something the person attached; untrusted to the
-    /// model), "talk" (a conversation with another agent, in `talk`), or
-    /// "helpers" (helpers it sent side by side, in `helpers`).
+    /// model), "talk" (a conversation with another agent, in `talk`),
+    /// "helpers" (helpers it sent side by side, in `helpers`), or "steps"
+    /// (what it did in between, one plain line each).
     pub from: &'static str,
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -873,6 +950,53 @@ pub struct Line {
     /// "guest": which of your agents said it (brought in with @).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
+    /// "steps": each step, with how it ended, how long it took and what the person decided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps: Option<Vec<StepLine>>,
+}
+
+/// How a job cut off by Cookie closing is marked (and found again).
+const INTERRUPTED: &str = "Cookie closed while this job was running";
+
+/// One step as the chat keeps it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct StepLine {
+    pub did: String,
+    /// `ok`, `failed`, `denied`, `blocked` (a rule refused it) or `interrupted` (Cookie closed mid-step).
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ms: Option<u64>,
+    /// `allowed_once`, `allowed_always` (earned trust) or `denied`, when the person was asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval: Option<&'static str>,
+    /// The teammate it talked to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub with: Option<String>,
+}
+
+/// What the trace kept about one call.
+#[derive(Default)]
+struct CallFacts {
+    start: Option<u64>,
+    end: Option<u64>,
+    verdict: Option<String>,
+}
+
+/// Every call's start, end and decision from an agent's trace (its tamper-evident action log).
+fn call_facts(path: &std::path::Path) -> HashMap<String, CallFacts> {
+    let mut out: HashMap<String, CallFacts> = HashMap::new();
+    for v in util::read_jsonl::<serde_json::Value>(path) {
+        let Some(id) = v["fields"]["id"].as_str() else { continue };
+        let at = v["at"].as_u64();
+        let f = out.entry(id.to_string()).or_default();
+        match v["kind"].as_str() {
+            Some("call") => f.start = at,
+            Some("result") => f.end = at,
+            Some("decision") => f.verdict = v["fields"]["verdict"].as_str().map(str::to_string),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// One helper, as the chat keeps it.
@@ -898,6 +1022,9 @@ pub struct Talk {
     #[serde(skip)]
     asked: String,
     pub messages: Vec<TalkMsg>,
+    /// How long the conversation took, from the trace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -938,7 +1065,7 @@ fn push_talk(out: &mut Vec<Line>, talk: Talk) {
             return;
         }
     }
-    out.push(Line { from: "talk", text: String::new(), talk: Some(talk), helpers: None, by: None });
+    out.push(Line { from: "talk", text: String::new(), talk: Some(talk), helpers: None, by: None, steps: None });
 }
 
 /// Where each inbound job sits in the conversation: the length it recorded when it ended, or,
@@ -967,7 +1094,7 @@ fn talk_in(job: &Job, me_name: &str, team: &[AgentRecord], contacts: &[crate::ne
     let mut talk = match &job.trigger {
         Trigger::Handoff { from, .. } => {
             let other = team.iter().find(|a| &a.id == from);
-            Talk { kind: "team", with_name: other.map(|a| a.name.clone()).unwrap_or_else(|| "Another agent".into()), with_id: from.clone(), with_sign: None, with_address: None, asked: String::new(), messages: Vec::new() }
+            Talk { kind: "team", with_name: other.map(|a| a.name.clone()).unwrap_or_else(|| "Another agent".into()), with_id: from.clone(), with_sign: None, with_address: None, asked: String::new(), messages: Vec::new(), ms: None }
         }
         Trigger::Contact { contact, label, .. } => {
             let c = contacts.iter().find(|c| &c.id == contact || c.remote.to_string() == *contact);
@@ -979,14 +1106,15 @@ fn talk_in(job: &Job, me_name: &str, team: &[AgentRecord], contacts: &[crate::ne
                 with_address: c.map(|c| c.remote.to_string()),
                 asked: String::new(),
                 messages: Vec::new(),
+                ms: None,
             }
         }
-        Trigger::Mcp { client } => Talk { kind: "mcp", with_name: client_name(client), with_id: format!("mcp-{}", client_name(client).to_lowercase().replace(' ', "-")), with_sign: None, with_address: None, asked: String::new(), messages: Vec::new() },
-        Trigger::Peer { invite, label } => Talk { kind: "peer", with_name: label.clone(), with_id: invite.clone(), with_sign: None, with_address: None, asked: String::new(), messages: Vec::new() },
+        Trigger::Mcp { client } => Talk { kind: "mcp", with_name: client_name(client), with_id: format!("mcp-{}", client_name(client).to_lowercase().replace(' ', "-")), with_sign: None, with_address: None, asked: String::new(), messages: Vec::new(), ms: None },
+        Trigger::Peer { invite, label } => Talk { kind: "peer", with_name: label.clone(), with_id: invite.clone(), with_sign: None, with_address: None, asked: String::new(), messages: Vec::new(), ms: None },
         // You asked it in another agent's chat: the pill names that chat, and the words are yours.
         Trigger::Mention { chat } => {
             let host = team.iter().find(|a| &a.id == chat);
-            let mut t = Talk { kind: "mention", with_name: host.map(|a| format!("{}'s chat", a.name)).unwrap_or_else(|| "another chat".into()), with_id: chat.clone(), with_sign: None, with_address: None, asked: String::new(), messages: Vec::new() };
+            let mut t = Talk { kind: "mention", with_name: host.map(|a| format!("{}'s chat", a.name)).unwrap_or_else(|| "another chat".into()), with_id: chat.clone(), with_sign: None, with_address: None, asked: String::new(), messages: Vec::new(), ms: None };
             t.messages.push(TalkMsg { who: "You".into(), mine: false, text: job.input.clone() });
             let reply = if job.status == JobStatus::Done { job.answer.clone() } else { format!("Couldn't answer: {}", job.error.as_deref().unwrap_or("it stopped")) };
             if !reply.trim().is_empty() {
@@ -1015,7 +1143,7 @@ fn talk_of(name: &str, args: &serde_json::Value, team: &[AgentRecord], contacts:
     match name {
         "ask_agent" => {
             let other = team.iter().find(|a| a.name.eq_ignore_ascii_case(s("agent").trim()));
-            Some(Talk { kind: "team", with_name: other.map(|a| a.name.clone()).unwrap_or(s("agent")), with_id: other.map(|a| a.id.clone()).unwrap_or(s("agent")), with_sign: None, with_address: None, asked: s("task"), messages: Vec::new() })
+            Some(Talk { kind: "team", with_name: other.map(|a| a.name.clone()).unwrap_or(s("agent")), with_id: other.map(|a| a.id.clone()).unwrap_or(s("agent")), with_sign: None, with_address: None, asked: s("task"), messages: Vec::new(), ms: None })
         }
         "message_contact" | "propose_deal" => {
             let to = s("to");
@@ -1029,19 +1157,20 @@ fn talk_of(name: &str, args: &serde_json::Value, team: &[AgentRecord], contacts:
                 with_address: Some(to),
                 asked,
                 messages: Vec::new(),
+                ms: None,
             })
         }
         "message" => {
             let to = s("to");
             if let Some(c) = contacts.iter().find(|c| c.remote.to_string() == to) {
-                return Some(Talk { kind: "network", with_name: c.remote_name.clone(), with_id: c.remote_agent_id.clone().unwrap_or(to.clone()), with_sign: Some(c.sign.clone()), with_address: Some(to), asked: s("text"), messages: Vec::new() });
+                return Some(Talk { kind: "network", with_name: c.remote_name.clone(), with_id: c.remote_agent_id.clone().unwrap_or(to.clone()), with_sign: Some(c.sign.clone()), with_address: Some(to), asked: s("text"), messages: Vec::new(), ms: None });
             }
             if let Some(a) = team.iter().find(|a| format!("@{}", cookie_net::slugify(&a.name)) == to || slugs.get(&a.id).is_some_and(|sl| format!("@{sl}") == to)) {
-                return Some(Talk { kind: "team", with_name: a.name.clone(), with_id: a.id.clone(), with_sign: None, with_address: Some(to), asked: s("text"), messages: Vec::new() });
+                return Some(Talk { kind: "team", with_name: a.name.clone(), with_id: a.id.clone(), with_sign: None, with_address: Some(to), asked: s("text"), messages: Vec::new(), ms: None });
             }
-            Some(Talk { kind: "peer", with_name: "Another person's agent".into(), with_id: to.clone(), with_sign: None, with_address: Some(to), asked: s("text"), messages: Vec::new() })
+            Some(Talk { kind: "peer", with_name: "Another person's agent".into(), with_id: to.clone(), with_sign: None, with_address: Some(to), asked: s("text"), messages: Vec::new(), ms: None })
         }
-        "message_agent" => Some(Talk { kind: "peer", with_name: "Another person's agent".into(), with_id: s("to"), with_sign: None, with_address: Some(s("to")), asked: s("message"), messages: Vec::new() }),
+        "message_agent" => Some(Talk { kind: "peer", with_name: "Another person's agent".into(), with_id: s("to"), with_sign: None, with_address: Some(s("to")), asked: s("message"), messages: Vec::new(), ms: None }),
         _ => None,
     }
 }
@@ -1095,7 +1224,7 @@ mod tests {
 
     #[test]
     fn back_to_back_talks_with_one_partner_become_one() {
-        let t = |text: &str| Talk { kind: "team", with_name: "Writer".into(), with_id: "w".into(), with_sign: None, with_address: None, asked: String::new(), messages: vec![TalkMsg { who: "Writer".into(), mine: false, text: text.into() }] };
+        let t = |text: &str| Talk { kind: "team", with_name: "Writer".into(), with_id: "w".into(), with_sign: None, with_address: None, asked: String::new(), messages: vec![TalkMsg { who: "Writer".into(), mine: false, text: text.into() }], ms: None };
         let mut out = Vec::new();
         push_talk(&mut out, t("a"));
         push_talk(&mut out, t("b"));

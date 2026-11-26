@@ -178,7 +178,7 @@ impl Team {
             "onepassword_vaults_allowed": self.onepassword().vaults.len(),
             "sharing_over_http": {"on": s.server.enabled, "port": s.server.port},
             "wake_for_routines": s.wake,
-            "where_to_change_things": "Settings in Cookie's window (⌘,): General, About you, Models, Usage, Channels, Evolution, Sharing, Market, Privacy. You can read these; only the person changes them.",
+            "where_to_change_things": "Settings in Cookie's window (⌘,): General, About you, Models, Usage, Channels, Evolution, Skills, Spaces, Sharing, Market, Privacy, About. Many can be changed for the person with settings_set (they approve each change); the rest they change there.",
         }))
     }
 }
@@ -189,7 +189,7 @@ pub(crate) fn settings_tool(team: Weak<Team>, agent: String) -> Arc<dyn Tool> {
         "app_settings",
         "How Cookie is set up right now, read-only: your own permissions and limits, the team, which model providers and channels \
          are connected, which files agents may see, voice, the cloud computer and 1Password. Use it to answer the person's questions \
-         about the app or to tell them which setting to change; you can't change settings yourself.",
+         about the app. To change a setting for them, use settings_search and settings_set (they approve it); for how the app works, app_help.",
         json!({"type": "object", "properties": {}}),
         Effect::Read,
         move |_a: Value| {

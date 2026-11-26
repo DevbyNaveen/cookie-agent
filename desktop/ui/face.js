@@ -911,8 +911,13 @@ void main(){
         if (m === "done") { st.happyAt = now; m = "idle"; if (R && size >= 40) addFx(st, "sparkle"); }
         // Thinking, the fluid slows and gathers; working and writing, it runs.
         st.energyTarget = m === "working" ? 1 : m === "writing" ? 0.8 : m === "thinking" ? 0.35 : 0;
-        if (m === "writing" && st.mood !== "writing") st.scanAt = now;
-        if (st.mood !== m) { st.mood = m; st.nextGlance = 0; st.settled = false; st.nextBlink = now + gap(st); }
+        // About to write: the eyes snap to the middle with a quick blink, then the scan starts.
+        if (m === "writing" && st.mood !== "writing") {
+          st.scanAt = now + 240;
+          st.from = { ...st.gaze }; st.to = { x: 0, y: 0 }; st.sacStart = now; st.sacDur = 90;
+          if (st.blinkStart < 0) st.blinkStart = now + 60;
+        }
+        if (st.mood !== m) { st.mood = m; st.moodAt = now; st.nextGlance = 0; st.settled = false; st.nextBlink = now + gap(st); }
       },
       /** Hover: it notices you (a small "hi" and a look), and its fluid stirs while you stay. */
       peek(on) {
@@ -927,7 +932,12 @@ void main(){
       /** Voice: it's listening to you (a small "o"). */
       listen(on) { st.listening = !!on; if (on) wake(st); },
       /** A tool is running: its glyph circles the face. null takes it away. */
-      tool(name) { st.tool = name ? glyphFor(name) : null; st.orbit.textContent = st.tool ?? ""; if (name) wake(st); },
+      tool(name) {
+        st.tool = name ? glyphFor(name) : null; st.orbit.textContent = st.tool ?? "";
+        // The eyes show the kind of work: reading a page or a file, or reaching into memory.
+        st.act = name ? actOf(name) : null; st.actAt = performance.now(); st.line = 0;
+        if (name) wake(st);
+      },
       /** Something went wrong: a quick head-shake and a red flush. */
       error() { st.errAt = performance.now(); wake(st); },
       /** It heard its name: a small hop and wide eyes. */
@@ -1010,8 +1020,17 @@ void main(){
     st.roll = { axis, turns, start: performance.now(), ms };
   }
 
-  // At rest: one slow blink every 6–10 s. At work: the measured, per-agent rate.
-  const gap = (s) => s.mood === "idle" ? 6000 + Math.random() * 4000 : (60000 / s.blinksPerMin) * (0.45 + Math.random() * 1.1);
+  // At rest: one slow blink every 6–10 s. Thinking: a soft, slower rhythm. At work: the measured, per-agent rate.
+  const gap = (s) => s.mood === "idle" ? 6000 + Math.random() * 4000 : s.mood === "thinking" ? 2400 + Math.random() * 1800 : (60000 / s.blinksPerMin) * (0.45 + Math.random() * 1.1);
+  /** Thinking this long with nothing new: it is waiting on something slow, patiently. */
+  const PATIENT_AFTER = 4500;
+  /** What a tool is, for the eyes: reading, remembering, or other work. */
+  function actOf(name) {
+    const n = String(name || "").toLowerCase();
+    if (/recall|remember|memory|note|skill|about_person|search_history/.test(n)) return "recall";
+    if (/search|read|web|page|url|file|list|fetch|find|view|look|browse|connector_actions/.test(n)) return "read";
+    return "work";
+  }
 
   function target(mood) {
     if (mood === "thinking") return { x: -0.55 + Math.random() * 0.35, y: -0.75 };
@@ -1069,8 +1088,25 @@ void main(){
     let gazeX = s.from.x + (s.to.x - s.from.x) * e;
     let gazeY = s.from.y + (s.to.y - s.from.y) * e;
 
+    // Thinking: the eyes drift slowly along an arc above, as if reading its own thoughts.
+    // Too long with nothing new: it settles, eyes near you, waiting patiently.
+    const since = now - (s.moodAt ?? now);
+    const patient = s.mood === "thinking" && since > PATIENT_AFTER;
+    if (s.mood === "thinking") {
+      if (patient) { gazeX = Math.sin(sec * 0.35 + s.phase) * 0.16; gazeY = -0.12 + Math.sin(sec * 0.5) * 0.04; }
+      else { gazeX = Math.sin(sec * 0.72 + s.phase) * 0.56; gazeY = -0.6 + Math.sin(sec * 1.25 + s.phase) * 0.1; }
+    }
+    // Reading (a search, a page, a file): along a line in three quick hops, a sweep back, the next line down.
+    if (s.mood === "working" && s.act === "read") {
+      const t = now - (s.actAt ?? now), cycle = 680, p = (t % cycle) / cycle, line = Math.floor(t / cycle) % 4;
+      gazeX = p < 0.78 ? -0.58 + 0.58 * Math.min(2, Math.floor((p / 0.78) * 3)) : 0.58 - 1.16 * ((p - 0.78) / 0.22);
+      gazeY = 0.3 + line * 0.09;
+    }
+    // Reaching into memory: a look up and to the side, then back to the work.
+    if (s.mood === "working" && s.act === "recall" && now - (s.actAt ?? 0) < 1300) { gazeX = 0.6; gazeY = -0.72; }
+
     // Writing: the eyes read back along the line it's writing, then return for the next.
-    if (s.mood === "writing") {
+    if (s.mood === "writing" && now >= s.scanAt) {
       const p = ((now - s.scanAt) % 1150) / 1150;
       gazeX = p < 0.84 ? -0.62 + 1.24 * (p / 0.84) : 0.62 - 1.24 * ((p - 0.84) / 0.16);
       gazeY = 0.42 + Math.sin(sec * 9) * 0.03;
@@ -1095,15 +1131,20 @@ void main(){
       }
     }
     // Eased toward the goal, so a pointer flicking past doesn't snap the eyes.
-    s.gaze.x += (gazeX - s.gaze.x) * Math.min(1, dt * (s.glance || s.mood === "writing" ? 30 : 14));
-    s.gaze.y += (gazeY - s.gaze.y) * Math.min(1, dt * (s.glance || s.mood === "writing" ? 30 : 14));
+    // Eased: quick for a glance, reading and writing (saccades); slow for thinking (a drift).
+    const quick = s.glance || s.mood === "writing" || (s.mood === "working" && s.act === "read");
+    const rate = quick ? 30 : s.mood === "thinking" ? (patient ? 3 : 5) : 14;
+    s.gaze.x += (gazeX - s.gaze.x) * Math.min(1, dt * rate);
+    s.gaze.y += (gazeY - s.gaze.y) * Math.min(1, dt * rate);
 
     if (s.blinkStart < 0 && now >= s.nextBlink && !s.dozing) s.blinkStart = now;
     let lid = 0;
     if (s.blinkStart >= 0) {
-      const p = (now - s.blinkStart) / (s.mood === "thinking" ? 290 : 210);
+      const p = (now - s.blinkStart) / (s.mood === "thinking" ? (patient ? 520 : 380) : 210);
       if (p >= 1) { s.blinkStart = -1; s.nextBlink = now + gap(s); }
-      else lid = p < 0.38 ? p / 0.38 : 1 - (p - 0.38) / 0.62;
+      else if (p >= 0) lid = p < 0.38 ? p / 0.38 : 1 - (p - 0.38) / 0.62;
+      // Thinking: soft half-blinks; waiting patiently: slow full ones.
+      if (s.mood === "thinking" && !patient) lid *= 0.58;
     }
 
     // Done (or petted): happy, closed eyes for a moment.
@@ -1144,7 +1185,8 @@ void main(){
     // Body: still at rest. A "got it" squash on a new message, a sway while thinking,
     // a small bounce while working, a lean toward you while it waits for your yes.
     let sy = 1, sx = 1, ty = 0, rot = 0, lean = 1, shake = 0;
-    if (s.mood === "thinking") rot = Math.sin(sec * 1.4 + s.phase) * 3;
+    if (s.mood === "thinking") rot = Math.sin(sec * (patient ? 0.8 : 1.4) + s.phase) * (patient ? 1.5 : 3);
+    if (patient) ty = -Math.abs(Math.sin(sec * 1.6)) * 0.012;
     if (s.mood === "working") { const b = Math.abs(Math.sin(sec * 7 * s.bounce)); ty = -b * 0.03; sy += b * 0.025; }
     if (s.mood === "writing") { ty = -Math.abs(Math.sin(sec * 11)) * 0.012; }
     if (s.mood === "waiting") { lean = 1.06 + Math.max(0, Math.sin(sec * 2.2)) * 0.02; ty = -0.02; }
@@ -1181,7 +1223,8 @@ void main(){
 
     // Expressions ease in and out, so a smile or a squint arrives instead of snapping.
     s.happyK = ease(s.happyK, happy ? 1 : 0, dt, 16);
-    s.squintK = ease(s.squintK, s.mood === "working" ? 0.38 : s.mood === "writing" ? 0.26 : err >= 0 ? 0.3 : 0, dt, 9);
+    const thinkSquint = s.mood === "thinking" && !patient ? 0.08 + Math.max(0, Math.sin(sec * 0.55 + s.phase)) * 0.14 : 0;
+    s.squintK = ease(s.squintK, s.mood === "working" ? 0.38 : s.mood === "writing" ? 0.26 : err >= 0 ? 0.3 : thinkSquint, dt, 9);
     s.blushK = ease(s.blushK, Math.max(happy ? 0.85 : 0, s.squish), dt, 8);
 
     const S = s.size;

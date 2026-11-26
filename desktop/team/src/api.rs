@@ -25,7 +25,7 @@ fn ok<T: serde::Serialize>(v: T) -> Result<Value, String> {
 
 /// The fields of settings a surface may change (invites and Telegram's links
 /// change only through their own commands).
-fn apply_settings(s: &mut Settings, p: &Value) {
+pub(crate) fn apply_settings(s: &mut Settings, p: &Value) {
     if let Some(v) = p.get("prices").and_then(|v| serde_json::from_value(v.clone()).ok()) { s.prices = v; }
     if let Some(v) = p.get("checker_model") { s.checker_model = v.as_str().map(str::trim).filter(|m| !m.is_empty()).map(str::to_string); }
     if let Some(v) = p.get("daily_notices").and_then(Value::as_i64) { s.daily_notices = v.clamp(0, 50); }
@@ -130,6 +130,7 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
 
         /* jobs */
         "history" => ok(team.history(&arg::<String>(a, "id")?).await?),
+        "starters" => ok(team.starters(&arg::<String>(a, "id")?)),
         "send" => {
             let attachments: Vec<Attachment> = opt(a, "attachments").unwrap_or_default();
             // An @ in the message brings that agent in to answer here (`mention`).

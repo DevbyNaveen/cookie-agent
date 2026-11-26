@@ -209,17 +209,19 @@ pub fn html_deck(deck: &Value) -> String {
 <style>
 :root{{--bg:{bg};--fg:{fg};--muted:{muted};--accent:{accent}}}
 *{{box-sizing:border-box;margin:0}}html,body{{height:100%;background:var(--bg);color:var(--fg);font:400 24px/1.4 -apple-system,"Helvetica Neue",Arial,sans-serif}}
-.slide{{position:absolute;inset:0;padding:7vh 7vw;display:none;flex-direction:column;justify-content:center;gap:3vh}}.slide.on{{display:flex}}
+.slide{{position:relative;min-height:100vh;padding:7vh 7vw;display:flex;flex-direction:column;justify-content:center;gap:3vh;border-bottom:1px solid color-mix(in srgb,var(--muted) 25%,transparent)}}
+.js .slide{{position:absolute;inset:0;min-height:0;border:0;display:none}}.js .slide.on{{display:flex}}
 h1{{font-size:clamp(36px,6vw,80px);line-height:1.05;letter-spacing:-.02em}}h2{{font-size:clamp(28px,3.6vw,52px);letter-spacing:-.015em}}
 .sub{{color:var(--muted);font-size:clamp(18px,2vw,30px)}}.kicker{{color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.08em;font-size:16px}}
 blockquote{{font-size:clamp(26px,3.4vw,48px);line-height:1.25;max-width:22ch}}ul{{padding-left:1.1em;display:grid;gap:1.6vh;font-size:clamp(18px,2vw,30px)}}
 .cols{{display:grid;grid-template-columns:1fr 1fr;gap:4vw;align-items:center}}img{{max-width:100%;max-height:60vh;border-radius:12px;object-fit:contain}}.full img{{max-height:72vh}}
 .n{{position:fixed;right:2vw;bottom:2vh;color:var(--muted);font-size:14px}}
-@media print{{.slide{{display:flex!important;position:relative;height:100vh;page-break-after:always}}.n{{display:none}}}}
+.n:empty{{display:none}}
+@media print{{.slide,.js .slide{{display:flex!important;position:relative;height:100vh;border:0;page-break-after:always}}.n{{display:none}}}}
 </style></head><body>
 {slides}<div class=n></div>
 <script>
-const s=[...document.querySelectorAll('.slide')];let i=0;const n=document.querySelector('.n');
+document.documentElement.classList.add('js');const s=[...document.querySelectorAll('.slide')];let i=0;const n=document.querySelector('.n');
 const go=k=>{{i=Math.max(0,Math.min(s.length-1,k));s.forEach((x,j)=>x.classList.toggle('on',j===i));n.textContent=(i+1)+' / '+s.length;}};
 addEventListener('keydown',e=>{{if(['ArrowRight','PageDown',' '].includes(e.key))go(i+1);if(['ArrowLeft','PageUp'].includes(e.key))go(i-1);if(e.key==='p')print();}});
 addEventListener('click',e=>go(e.clientX>innerWidth/2?i+1:i-1));go(0);
@@ -327,6 +329,7 @@ mod tests {
         assert_eq!(h.matches("<section class=\"slide").count(), 2);
         assert!(h.contains("Hello &amp; welcome") && h.contains("&lt;script&gt;") && !h.contains("<li><script>"));
         assert!(h.contains("#FBFAF7"), "the light theme");
+        assert!(h.contains(".js .slide{position:absolute") && h.contains("classList.add('js')"), "without scripts every slide shows, stacked; with them it plays");
     }
 }
 

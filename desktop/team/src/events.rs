@@ -38,6 +38,11 @@ pub enum TeamEvent {
     JobStarted { job: String, agent: String, trigger: Trigger, input: String },
     Text { job: String, agent: String, text: String },
     Tool { job: String, agent: String, name: String },
+    /// One step of a job, once its arguments are known: what it is doing and,
+    /// when done, what it did, in plain words; `with`, the teammate it is talking to.
+    Step { job: String, agent: String, id: String, name: String, doing: String, did: String, with: Option<String> },
+    /// The step finished.
+    StepDone { job: String, agent: String, id: String, ok: bool },
     /// A board changed (`boards`): open views redraw.
     Board { id: String },
     /// Something new was written into this agent's chat from outside a job of its own (an answer from an agent brought in with @).
@@ -94,6 +99,8 @@ impl TeamEvent {
             TeamEvent::JobStarted { agent, .. }
             | TeamEvent::Text { agent, .. }
             | TeamEvent::Tool { agent, .. }
+            | TeamEvent::Step { agent, .. }
+            | TeamEvent::StepDone { agent, .. }
             | TeamEvent::Steered { agent, .. }
             | TeamEvent::Answered { agent, .. }
             | TeamEvent::Would { agent, .. }

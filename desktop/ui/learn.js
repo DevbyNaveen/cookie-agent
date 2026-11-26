@@ -64,7 +64,7 @@ function onTodos(ev) {
 
 function renderTodos(agent) {
   if (current?.id !== agent || view !== "chat") return;
-  let box = $("log").querySelector(".todo-box");
+  let box = $("log").querySelector(".todo-box:not(.todo-saved)");
   const items = todosOf.get(agent);
   if (!items?.length) { box?.remove(); return; }
   if (!box) {

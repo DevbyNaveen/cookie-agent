@@ -45,7 +45,7 @@ impl Team {
             .agents()
             .await
             .iter()
-            .filter(|a| a.shadow_of.is_none())
+            .filter(|a| a.shadow_of.is_none() && !crate::bench::is_probe(&a.id))
             .map(|a| json!({"address": format!("@{}", self.slug_of(a)), "name": a.name, "kind": "team", "id": a.id, "job": a.job}))
             .collect();
         let mut seen = std::collections::BTreeSet::new();
@@ -72,7 +72,7 @@ pub(crate) fn message_tool(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigge
     let mut targets: BTreeMap<String, (Target, String)> = BTreeMap::new();
     if rec.grants.team && chain.len() < MAX_CHAIN {
         let agents = team.agents.try_read().map(|g| g.clone()).unwrap_or_default();
-        for a in agents.into_iter().filter(|a| a.id != rec.id && a.shadow_of.is_none() && !chain.contains(&a.id)) {
+        for a in agents.into_iter().filter(|a| a.id != rec.id && a.shadow_of.is_none() && !crate::bench::is_probe(&a.id) && !chain.contains(&a.id)) {
             let label = format!("your agent {}: {}", a.name, util::clip(&a.job, 160));
             targets.insert(format!("@{}", team.slug_of(&a)), (Target::Teammate(a), label));
         }

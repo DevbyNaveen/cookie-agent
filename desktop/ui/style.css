@@ -1723,3 +1723,93 @@ footer.me { gap: 6px; }
 .by-hand[open] > summary::before { content: "– "; }
 .by-hand > .group, .by-hand > form { margin-bottom: 8px; }
 .helper-n.contractor { background: var(--accent-soft, var(--raise-2)); color: var(--accent-text, var(--text)); font-size: 10px; letter-spacing: .02em; }
+
+/* Cookie, the main agent: a small star on its face in the list */
+.main-agent { position: relative; display: inline-grid; flex: none; }
+.main-star { position: absolute; left: 5px; top: 4px; z-index: 2; width: 13px; height: 13px; border-radius: 50%; display: grid; place-items: center; background: var(--accent, #e07a3f); color: #fff; box-shadow: 0 0 0 2px var(--rail, var(--bg)); pointer-events: none; }
+.main-star svg { width: 8px; height: 8px; }
+li.agent.active .main-star { box-shadow: 0 0 0 2px var(--raise-2, var(--rail)); }
+
+/* The talk/send button wears the agent's colour, like your bubbles (`paintYou` sets --you-bg) */
+#chat #send.round.go:not(.stop):not(:disabled) { background: var(--you-bg, var(--accent)); color: var(--you-ink, var(--accent-ink)); transition: background .25s ease, filter .15s ease; }
+#chat #send.round.go:not(.stop):hover:not(:disabled) { background: var(--you-bg, var(--accent-hover)); filter: brightness(1.08); }
+
+/* Steps: what a job is doing, between its words. Live: dots, the step, its clock.
+   Done: one quiet line of what it did; open it for each step and how long it took. */
+.steps { margin-top: 10px; margin-bottom: 6px; font-size: 14.5px; line-height: 22px; color: var(--text-3); }
+.steps-head { all: unset; display: inline-flex; align-items: baseline; gap: 8px; cursor: pointer; max-width: 100%; color: var(--text-3); border-radius: 8px; padding: 2px 4px; margin-left: -4px; }
+.steps-head:hover { color: var(--text-2); background: var(--raise-2); }
+.steps-head:focus-visible { outline: 2px solid var(--accent); }
+.steps-head .steps-what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.steps-head.live .steps-what { color: var(--text-2); background: linear-gradient(90deg, var(--text-3) 0%, var(--text-1, #fff) 50%, var(--text-3) 100%) 0 0 / 200% 100%; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; animation: steps-shimmer 2.2s linear infinite; }
+.steps-dots { letter-spacing: 1px; font-size: 11px; color: var(--accent); animation: breathe-text 1.2s ease-in-out infinite; }
+.steps-time { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--text-3); opacity: .8; }
+.steps-more { font-size: 15px; opacity: .7; }
+.steps-sub { display: flex; align-items: center; gap: 7px; margin: 4px 0 0 22px; font-size: 13.5px; color: var(--text-3); }
+.steps-sub .face { width: 16px; height: 16px; margin: 0; }
+.steps-sub span { animation: breathe-text 1.6s ease-in-out infinite; }
+.steps-list { margin: 6px 0 2px 4px; padding-left: 12px; border-left: 1px solid var(--line, rgba(255,255,255,.1)); display: grid; gap: 3px; font-size: 13.5px; }
+.steps-item { display: flex; gap: 10px; justify-content: space-between; max-width: 560px; }
+.steps-item.live { color: var(--text-2); }
+.steps-item.failed { color: var(--danger, #e5484d); }
+@keyframes steps-shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .steps-head.live .steps-what, .steps-dots, .steps-sub span { animation: none; } }
+
+/* Composer box: attachments live inside it, above the line you type on. */
+.box { border-radius: 24px; background: var(--raise); box-shadow: 0 10px 30px -18px rgb(0 0 0 / .6); transition: background .15s, box-shadow .15s; }
+.box:focus-within { background: var(--raise-2); }
+/* The box draws the surface; the bar inside it never does, in any theme. */
+:root .box > .bar, :root .box > .bar:focus-within, :root[data-theme] .box > .bar, :root[data-theme] .box > .bar:focus-within { background: none !important; box-shadow: none !important; border-radius: inherit; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+:root[data-theme="white"] .box { box-shadow: 0 0 0 1px var(--line), 0 8px 24px -16px rgb(0 0 0 / .18); }
+:root[data-theme="white"] .box:focus-within { background: #fff; box-shadow: 0 0 0 1px var(--line-2), 0 10px 28px -16px rgb(0 0 0 / .22); }
+:root[data-theme="glass"] .box { background: rgb(255 255 255 / .08); -webkit-backdrop-filter: blur(24px) saturate(1.4); backdrop-filter: blur(24px) saturate(1.4); box-shadow: 0 0 0 1px rgb(255 255 255 / .06), 0 14px 36px -18px rgb(0 0 0 / .7); }
+:root[data-theme="glass"] .box:focus-within { background: rgb(255 255 255 / .11); }
+.box .chips { margin: 0; padding: 12px 12px 2px; gap: 8px; align-items: flex-end; }
+.tile { position: relative; width: 84px; height: 84px; border-radius: 14px; overflow: hidden; flex: none; background: var(--raise-2); box-shadow: 0 0 0 1px var(--line-2); animation: tile-in .22s cubic-bezier(.2,.9,.3,1.2); }
+.tile img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
+.tile.busy img { opacity: .5; }
+.tile-x { position: absolute; top: 5px; right: 5px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: rgb(0 0 0 / .62); color: #fff; opacity: 0; transition: opacity .15s; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.tile:hover .tile-x, .tile-x:focus-visible { opacity: 1; }
+.tile-x svg { width: 12px; height: 12px; }
+.box .chip { height: 56px; border-radius: 12px; align-self: flex-end; }
+@keyframes tile-in { from { transform: scale(.85); opacity: 0; } }
+
+/* A picture you sent: itself, big, on your side. */
+.sent-image { display: block; max-width: min(360px, 62%); max-height: 420px; width: auto; height: auto; margin-top: 10px; border-radius: 16px; box-shadow: 0 0 0 1px var(--line-2), 0 12px 30px -20px rgb(0 0 0 / .7); cursor: zoom-in; object-fit: cover; }
+.msg.file + .msg.you { margin-top: 6px; }
+
+/* Dropping files: the whole chat takes them. */
+.drop { position: absolute; inset: 10px; border-radius: 22px; display: grid; place-items: center; background: rgb(14 14 14 / .55); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); box-shadow: inset 0 0 0 2px var(--accent); pointer-events: none; z-index: 40; opacity: 0; transition: opacity .16s ease; }
+.drop.on { opacity: 1; }
+.drop-card { display: grid; justify-items: center; gap: 6px; color: var(--text-2); text-align: center; transform: scale(.96); transition: transform .2s cubic-bezier(.2,.9,.3,1.2); }
+.drop.on .drop-card { transform: none; }
+.drop-card svg { width: 34px; height: 34px; fill: none; stroke: var(--accent); stroke-width: 1.6; margin-bottom: 4px; }
+.drop-card strong { font-size: 17px; font-weight: 600; color: var(--text); }
+.drop-card span { font-size: 13.5px; color: var(--text-3); }
+@media (prefers-reduced-motion: reduce) { .tile, .drop, .drop-card { animation: none; transition: none; } }
+
+/* Answers sent from a form: a tidy card on your side, not a pasted prompt. */
+.msg.answers { margin-top: 18px; }
+.answers-card { max-width: min(520px, 78%); padding: 12px 14px 10px; border-radius: 18px; background: var(--raise); box-shadow: inset 0 0 0 1px var(--line-2); display: grid; gap: 8px; }
+.answers-head { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; letter-spacing: .01em; color: var(--you-bg, var(--accent)); }
+.answers-head svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.2; }
+.answers-row { display: grid; gap: 1px; padding-top: 7px; border-top: 1px solid var(--line, rgba(255,255,255,.07)); }
+.answers-row:first-of-type { border-top: 0; padding-top: 0; }
+.answers-q { font-size: 12.5px; color: var(--text-3); line-height: 1.35; }
+.answers-a { font-size: 14.5px; color: var(--text); line-height: 1.4; }
+.answers-a.blank { color: var(--text-3); font-style: italic; }
+
+/* Steps, as kept: who it talked to, how the person decided, how long each took. */
+.steps-did { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.steps-did .face { width: 14px; height: 14px; margin: 0; flex: none; }
+.steps-item { align-items: center; }
+.steps-item .steps-time { margin-left: auto; }
+.steps-approval { font-size: 11.5px; padding: 1px 7px; border-radius: 9px; background: var(--raise-2); color: var(--text-2); white-space: nowrap; }
+.steps-approval.allowed_once, .steps-approval.allowed_always { color: #3fb950; background: rgb(63 185 80 / .12); }
+.steps-approval.denied { color: var(--danger, #e5484d); background: rgb(229 72 77 / .12); }
+.steps-item.denied, .steps-item.blocked, .steps-item.interrupted { color: var(--text-3); }
+.steps-flag { font-size: 12.5px; color: var(--danger, #e5484d); opacity: .85; }
+.talk-time { font-size: 12.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.event.interrupted { display: flex; align-items: center; gap: 10px; justify-content: center; flex-wrap: wrap; margin: 14px auto 4px; color: var(--text-2); }
+.event.interrupted svg { width: 15px; height: 15px; }
+.todo-saved { margin-top: 10px; }
