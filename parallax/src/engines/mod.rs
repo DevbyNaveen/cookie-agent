@@ -1,6 +1,6 @@
 //! The engines: the brains of everyday software, without screens.
 //!
-//! files · sheet · document · pdf · image · video · data · browser · web ·
+//! files · sheet · document · pdf · image · video · motion · slides · data · browser · web ·
 //! blocks (the building blocks agents' own software is made of: tracker,
 //! board, calendar, chart, form). Each uses what the machine already has
 //! where it can (`sips` for images, `ffmpeg` for video, `sqlite3` for data,
@@ -13,8 +13,10 @@ pub mod data;
 pub mod document;
 pub mod files;
 pub mod image;
+pub mod motion;
 pub mod pdf;
 pub mod sheet;
+pub mod slides;
 pub mod video;
 pub mod web;
 
@@ -29,6 +31,8 @@ pub fn register_all(r: &mut Registry) {
     r.register("pdf", || Arc::new(pdf::Pdf));
     r.register("image", || Arc::new(image::Image));
     r.register("video", || Arc::new(video::Video));
+    r.register("motion", || Arc::new(motion::Motion));
+    r.register("slides", || Arc::new(slides::Slides));
     r.register("data", || Arc::new(data::Data));
     r.register("browser", || Arc::new(browser::Browser::default()));
     r.register("web", || Arc::new(web::Web));
