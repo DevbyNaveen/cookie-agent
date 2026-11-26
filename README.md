@@ -8,7 +8,7 @@
   <img src="docs/readme/faces/daily-brief.png" width="64" alt="Daily Brief">
 </p>
 
-<h1 align="center">Cookie</h1>
+<h1 align="center">Cookies</h1>
 <p align="center"><b>by <a href="https://enkeon.com">Enkeon</a></b></p>
 
 <h3 align="center">Beyond assistants. Agents that grow up.</h3>
