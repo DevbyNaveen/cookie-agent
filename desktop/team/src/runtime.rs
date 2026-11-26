@@ -103,7 +103,7 @@ mod note_tests {
 
 /// The jobs that learn: the agent's own work, not tests, shadows or reviews.
 fn learns(trigger: &Trigger) -> bool {
-    !matches!(trigger, Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Review | Trigger::Prep { .. } | Trigger::Rehearse)
+    !matches!(trigger, Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Review | Trigger::Prep { .. } | Trigger::Rehearse | Trigger::Workflow { .. })
 }
 
 pub(crate) fn instructions(team_names: &[(String, String)], rec: &AgentRecord, trigger: &Trigger, probation: bool) -> String {
@@ -243,14 +243,16 @@ impl Team {
             .confirm_data()
             // A mail or a page can't plant a memory: after reading one, what is kept must quote the
             // person, or the person decides it, marked "not in your words" (earned trust never does).
-            .grounded("remember", "text");
+            .grounded("remember", "text")
+            // A workflow is kept only with the person's yes: its prompts then carry their authority.
+            .always_ask(crate::workflows::SAVE_TOOL);
         for a in self.agents().await.iter().filter(|a| a.id != rec.id && a.shadow_of.is_none() && !crate::bench::is_probe(&a.id)) {
             policy = policy.allow(&format!("@{}", self.slug_of(a)));
         }
         policy
     }
 
-    async fn build_agent(self: &Arc<Self>, rec: &AgentRecord, trigger: &Trigger, mode: Mode, job: &str, text: &str, log: Arc<Mutex<Vec<crate::store::ApprovalRecord>>>, built: &mut Built) -> Result<Agent, String> {
+    pub(crate) async fn build_agent(self: &Arc<Self>, rec: &AgentRecord, trigger: &Trigger, mode: Mode, job: &str, text: &str, log: Arc<Mutex<Vec<crate::store::ApprovalRecord>>>, built: &mut Built) -> Result<Agent, String> {
         let settings = self.settings().await;
         // Teammates by name: never the throwaway copies an exam runs (`is_probe`).
         let names: Vec<(String, String)> = self.agents().await.into_iter().filter(|a| a.shadow_of.is_none() && !crate::bench::is_probe(&a.id)).map(|a| (a.id, a.name)).collect();

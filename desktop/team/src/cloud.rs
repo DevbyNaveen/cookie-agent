@@ -400,7 +400,7 @@ mod tests {
     async fn a_turn_the_cloud_took_is_not_run_again_here() {
         let dir = tempfile::tempdir().unwrap();
         let t = Team::open(dir.path()).unwrap();
-        let r = crate::store::Routine { id: "r1".into(), agent: "a".into(), task: "x".into(), schedule: crate::store::Schedule::Day { at: "08:00".into() }, enabled: true, created_at: 0, last_run: None, next_run: Some(100) };
+        let r = crate::store::Routine { id: "r1".into(), agent: "a".into(), task: "x".into(), schedule: crate::store::Schedule::Day { at: "08:00".into() }, enabled: true, created_at: 0, last_run: None, next_run: Some(100), workflow: None };
         t.routines.write().await.push(r);
         t.cloud_took_turn("r1", 100).await;
         let x = t.routines.read().await[0].clone();

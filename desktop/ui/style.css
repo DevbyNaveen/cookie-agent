@@ -2048,3 +2048,25 @@ li.agent.active .main-star { box-shadow: 0 0 0 2px var(--raise-2, var(--rail)); 
 .rh-hint, .rh-ran { font-size: 12px; color: var(--text-3); }
 
 @keyframes pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+
+/* Workflows: steps top to bottom, lit by the latest run. */
+.wf-card { padding: 14px 16px; display: grid; gap: 10px; }
+.wf-card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.wf-card-head .row-actions { margin-left: auto; }
+.wf-ver { font-size: 12px; color: var(--text-3); }
+.wf-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+.wf-step { position: relative; padding: 8px 0 10px 22px; display: grid; gap: 4px; }
+.wf-step::before { content: ""; position: absolute; left: 6px; top: 20px; bottom: -6px; width: 1px; background: var(--line-2); }
+.wf-step:last-child::before { display: none; }
+.wf-head { display: flex; align-items: baseline; gap: 8px; }
+.wf-dot { position: absolute; left: 1px; top: 12px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--line-2); background: var(--bg); }
+.wf-step.done .wf-dot { border-color: #3fb950; background: #3fb950; }
+.wf-step.running .wf-dot { border-color: var(--warn); background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+.wf-step.failed .wf-dot, .wf-step.interrupted .wf-dot { border-color: var(--danger); }
+.wf-kind { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-3); }
+.wf-title { font-size: 13.5px; font-weight: 600; }
+.wf-text { margin: 0; font-size: 13px; color: var(--text-2); }
+.wf-goes { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.wf-model { max-width: 260px; font-size: 12px !important; padding: 5px 9px !important; }
+.wf-out summary, .wf-answer summary { font-size: 12px; color: var(--text-3); cursor: pointer; }
+.wf-out pre { margin: 4px 0 0; padding: 8px 10px; border-radius: 9px; background: var(--raise-2); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; max-height: 220px; overflow: auto; }

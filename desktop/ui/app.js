@@ -1612,6 +1612,8 @@ function onTeamEvent(ev) {
       break;
     }
     case "twin": if (settingsTab === "scores" && $("settings").open) openSettings("scores"); break;
+    // A workflow saved, deleted, or a run moving on: its panel redraws.
+    case "workflow": if (profileOpenFor(ev.agent) && profileTab === "skills") refreshProfile(); break;
     case "board": onBoardChanged(ev.id); break;
     // A council proposal moved on: the desk that shows it redraws.
     case "council": refreshDesk(); break;

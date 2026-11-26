@@ -159,6 +159,14 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
             let agent = opt::<String>(a, "agent").unwrap_or_else(|| crate::front::COOKIE_ID.to_string());
             ok(team.start_whisper_run(&agent, &arg::<String>(a, "folder")?, opt::<usize>(a, "limit").unwrap_or(0), opt::<f64>(a, "max_dollars").unwrap_or(10.0)).await?)
         }
+        // Workflows (`workflows`): an agent's repeated work as steps, with versions, runs and per-step models.
+        "workflows" => ok(team.workflows(&arg::<String>(a, "id")?)),
+        "workflow_runs" => ok(team.workflow_runs(&arg::<String>(a, "id")?)),
+        "workflow_start" => ok(team.start_workflow(&arg::<String>(a, "id")?, &arg::<String>(a, "flow")?, opt::<String>(a, "input").unwrap_or_default(), true).await?),
+        "workflow_undo" => ok(team.undo_workflow(&arg::<String>(a, "id")?, &arg::<String>(a, "flow")?)?),
+        "workflow_delete" => ok(team.delete_workflow(&arg::<String>(a, "id")?, &arg::<String>(a, "flow")?)?),
+        "workflow_model" => ok(team.set_workflow_model(&arg::<String>(a, "id")?, &arg::<String>(a, "flow")?, &arg::<String>(a, "step")?, opt(a, "model"))?),
+        "routine_workflow" => ok(team.set_routine_workflow(&arg::<String>(a, "id")?, opt(a, "workflow")).await?),
         "rehearse" => ok(team.rehearse(&arg::<String>(a, "id")?, arg(a, "text")?).await?),
         "rehearsals" => ok(team.rehearsals(&arg::<String>(a, "id")?)),
         "rehearsal_go" => ok(team.rehearsal_go(&arg::<String>(a, "id")?, &arg::<String>(a, "rehearsal")?).await?),

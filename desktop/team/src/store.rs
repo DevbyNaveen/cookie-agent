@@ -328,6 +328,8 @@ pub enum Trigger {
     /// A rehearsal of a job before it runs for real (`twin::rehearsal`): reads are real,
     /// every change is recorded and shown, none is made.
     Rehearse,
+    /// A step of a saved workflow (`workflows`).
+    Workflow { flow: String, run: String },
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -476,6 +478,9 @@ pub struct Routine {
     pub last_run: Option<u64>,
     #[serde(default)]
     pub next_run: Option<u64>,
+    /// Run this saved workflow instead (`workflows`), with `task` as its input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
 }
 
 /// A saved test: an input and what a good answer must do.

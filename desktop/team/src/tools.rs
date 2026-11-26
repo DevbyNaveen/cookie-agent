@@ -133,6 +133,10 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
         // The council: propose a change to a teammate; three others vote, a test or the person decides.
         if !crate::bench::is_probe(&rec.id) && rec.shadow_of.is_none() {
             out.push(crate::council::propose_tool(Arc::downgrade(team), rec.id.clone()));
+            // Its repeated work as workflows (`workflows`): never from inside a workflow's own step.
+            if !matches!(trigger, Trigger::Workflow { .. } | Trigger::Rehearse) {
+                out.extend(crate::workflows::tools(team, &rec.id));
+            }
         }
     }
     // Cookie sees the whole team (who's working, what waits on the person).

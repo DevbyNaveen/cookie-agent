@@ -61,6 +61,8 @@ pub enum TeamEvent {
     Twin { run: String, state: String, done: usize, total: usize },
     /// A rehearsal started, finished or ran for real (`twin::rehearsal`).
     Rehearsal { agent: String, id: String, state: String },
+    /// A workflow was saved or deleted (`run: None`), or a run moved to a step (`state`: its id, or `end`).
+    Workflow { agent: String, flow: String, run: Option<String>, state: String },
     /// A board changed (`boards`): open views redraw.
     Board { id: String },
     /// Something new was written into this agent's chat from outside a job of its own (an answer from an agent brought in with @).
@@ -121,6 +123,7 @@ impl TeamEvent {
             | TeamEvent::StepDone { agent, .. }
             | TeamEvent::Receipt { agent, .. }
             | TeamEvent::Rehearsal { agent, .. }
+            | TeamEvent::Workflow { agent, .. }
             | TeamEvent::Helper { agent, .. }
             | TeamEvent::HelperStep { agent, .. }
             | TeamEvent::HelperConflict { agent, .. }

@@ -119,11 +119,25 @@ impl Team {
             enabled: true,
             created_at: now,
             last_run: None,
+            workflow: None,
         };
         let mut rs = self.routines.write().await;
         rs.push(r.clone());
         self.save_routines(&rs).await?;
         Ok(r)
+    }
+
+    /// Make a routine run one of its agent's saved workflows (or a plain job again, with `None`).
+    pub async fn set_routine_workflow(&self, id: &str, workflow: Option<String>) -> Result<Routine, String> {
+        let mut rs = self.routines.write().await;
+        let r = rs.iter_mut().find(|r| r.id == id).ok_or("No such routine.")?;
+        if let Some(w) = &workflow {
+            self.workflow(&r.agent, w)?;
+        }
+        r.workflow = workflow;
+        let out = r.clone();
+        self.save_routines(&rs).await?;
+        Ok(out)
     }
 
     pub async fn update_routine(&self, id: &str, task: Option<String>, schedule: Option<Schedule>) -> Result<Routine, String> {
@@ -161,7 +175,15 @@ impl Team {
     /// Run a routine now, outside its schedule.
     pub async fn run_routine_now(self: &Arc<Self>, id: &str) -> Result<String, String> {
         let r = self.routines.read().await.iter().find(|r| r.id == id).cloned().ok_or("No such routine.")?;
-        self.start_job(&r.agent, r.task.clone(), Vec::new(), Trigger::Routine { routine: r.id.clone() }).await
+        self.start_routine(&r).await
+    }
+
+    /// A routine's run: its saved workflow when it has one (the person wrote its task), else a job.
+    async fn start_routine(self: &Arc<Self>, r: &crate::store::Routine) -> Result<String, String> {
+        match &r.workflow {
+            Some(flow) => self.start_workflow(&r.agent, flow, r.task.clone(), true).await,
+            None => self.start_job(&r.agent, r.task.clone(), Vec::new(), Trigger::Routine { routine: r.id.clone() }).await,
+        }
     }
 
     async fn tick(self: &Arc<Self>) {
@@ -202,7 +224,7 @@ impl Team {
                 let _ = self.save_routines(&rs).await;
                 continue;
             }
-            let started = self.start_job(&r.agent, r.task.clone(), Vec::new(), Trigger::Routine { routine: r.id.clone() }).await;
+            let started = self.start_routine(&r).await;
             if started.is_err() && self.runs.lock().unwrap().contains_key(&r.agent) {
                 continue; // busy: try again on the next tick
             }

@@ -319,7 +319,7 @@ mod tests {
     async fn team_with(schedule: Schedule) -> (Arc<Team>, String, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("cookie-triggers-{}", util::random_hex(4)));
         let team = Team::open(&dir).unwrap();
-        let r = Routine { id: "r1".into(), agent: "a".into(), task: "Draft a reply".into(), schedule, enabled: true, created_at: 0, last_run: None, next_run: None };
+        let r = Routine { id: "r1".into(), agent: "a".into(), task: "Draft a reply".into(), schedule, enabled: true, created_at: 0, last_run: None, next_run: None, workflow: None };
         team.routines.write().await.push(r);
         (team, "r1".into(), dir)
     }

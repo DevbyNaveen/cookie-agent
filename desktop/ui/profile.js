@@ -8,7 +8,7 @@ const TABS = [
 const TAB_ALIAS = { routines: "skills", tests: "evolution", files: "memory", worlds: "computer" };
 // A tab made of several panels, each after the first under its own heading.
 const TAB_PARTS = {
-  skills: [["skills"], ["routines", "Routines"]],
+  skills: [["skills"], ["routines", "Routines"], ["workflows", "Workflows"]],
   memory: [["memory"], ["files", "Its files"]],
   evolution: [["evolution"], ["tests", "Tests and forks"]],
   computer: [["computer"], ["worlds", "Worlds"]],
@@ -955,3 +955,73 @@ function changesPart(changes) {
   g.append(el("p", "set-note", "Putting a file back works only while it still says what the agent wrote, so a later edit is never thrown away."));
   return [el("h3", "group-title", "Changes to your files"), g];
 }
+
+/* ---------- workflows: its repeated work as steps ---------- */
+const WF_KIND = { agent: "Does", parallel: "Side by side", check: "Checks", ask: "Asks you", approve: "Your yes", repeat: "Repeats", end: "Ends" };
+
+/** A workflow's steps, top to bottom, each lit by how the latest run went. */
+function workflowDiagram(f, run, a) {
+  const box = el("ol", "wf-steps");
+  const state = (id) => { const h = (run?.history ?? []).filter((x) => x.step === id).at(-1); return h ? h.state : null; };
+  for (const s of f.steps) {
+    const st = run?.state === "running" && run?.current === s.id ? "running" : state(s.id);
+    const li = el("li", "wf-step " + s.type + (st ? " " + st : "") + (s.id === f.start ? " start" : ""));
+    const head = el("div", "wf-head");
+    head.append(el("span", "wf-dot"), el("span", "wf-kind", WF_KIND[s.type] ?? s.type), el("strong", "wf-title", s.title || s.id));
+    li.append(head);
+    const text = s.prompt ?? s.question ?? s.text ?? s.answer ?? (s.prompts ? s.prompts.join("  ·  ") : "");
+    if (text) li.append(el("p", "wf-text", text.length > 220 ? text.slice(0, 219) + "…" : text));
+    const goes = [];
+    if (s.type === "check") goes.push(`if so → ${s.then}`, `otherwise → ${s.otherwise}`);
+    else if (s.type === "approve") goes.push(`yes → ${s.then}`, s.otherwise ? `no → ${s.otherwise}` : "no → stop");
+    else if (s.type === "repeat") goes.push(`repeats ${s.step}, at most ${s.max} times`);
+    if (s.next && s.type !== "check" && s.type !== "approve") goes.push(`then → ${s.next}`);
+    if (goes.length) li.append(el("small", "wf-goes", goes.join("   ")));
+    if (s.type === "agent" || s.type === "parallel") {
+      const m = input(s.model ?? "", `its model (empty: ${modelName?.(a.model) ?? a.model})`, { spellcheck: false });
+      m.setAttribute("list", "models");
+      m.classList.add("wf-model");
+      m.onchange = async () => { try { await call("workflow_model", { id: a.id, flow: f.id, step: s.id, model: m.value.trim() || null }); toast("Step model saved", m.value.trim() ? `${s.title || s.id} runs on ${m.value.trim()}` : "Back to the agent's own model", "good"); } catch (e) { toast("Couldn't set it", String(e), "error"); m.value = s.model ?? ""; } };
+      li.append(m);
+    }
+    const out = (run?.history ?? []).filter((x) => x.step === s.id).at(-1);
+    if (out?.output && run?.flow === f.id) { const d = el("details", "wf-out"); d.append(el("summary", null, out.state === "failed" ? "Why it stopped" : "What it said"), el("pre", null, out.output)); li.append(d); }
+    box.append(li);
+  }
+  return box;
+}
+
+PANELS.workflows = async (a) => {
+  const [flows, runs] = await Promise.all([call("workflows", { id: a.id }), call("workflow_runs", { id: a.id }).catch(() => [])]);
+  const out = [];
+  if (!flows.length) {
+    out.push(el("p", "set-note", `No workflows yet. When ${a.name} does the same work again and again, it can propose one: you see every step and say yes. Each step can run on its own model, and a run picks up where it stopped if Cookie closes.`));
+    return out;
+  }
+  for (const f of flows) {
+    const card = el("div", "group wf-card");
+    const latest = runs.find((r) => r.flow === f.id);
+    const head = el("div", "wf-card-head");
+    const st = latest ? { running: "running", done: "last run finished", failed: "last run stopped", stopped: "stopped by you" }[latest.state] : "never run";
+    head.append(el("strong", null, f.name), el("span", "wf-ver", `v${f.version} · ${f.steps.length} steps · ${st}`));
+    const acts = el("div", "row-actions");
+    const run = button(latest?.state === "running" ? "Running…" : "Run", "primary small", async () => {
+      const input = prompt(`Run “${f.name}” on what? (Leave empty if it needs nothing.)`, "");
+      if (input === null) return;
+      run.disabled = true;
+      try { await call("workflow_start", { id: a.id, flow: f.id, input }); toast("Workflow started", f.name, "good"); }
+      catch (e) { run.disabled = false; toast("Couldn't start it", String(e), "error"); }
+    });
+    run.disabled = latest?.state === "running";
+    acts.append(run);
+    if (f.version > 1) acts.append(button("Undo last change", "quiet small", async () => { try { await call("workflow_undo", { id: a.id, flow: f.id }); refreshProfile(); } catch (e) { toast("Couldn't undo", String(e), "error"); } }));
+    acts.append(button("Delete", "quiet small danger", async () => { if (!confirm(`Delete the workflow “${f.name}”?`)) return; try { await call("workflow_delete", { id: a.id, flow: f.id }); refreshProfile(); } catch (e) { toast("Couldn't delete", String(e), "error"); } }));
+    head.append(acts);
+    card.append(head, workflowDiagram(f, latest, a));
+    if (latest?.error) card.append(el("p", "error-line", latest.error));
+    if (latest?.state === "done" && latest.answer) { const d = el("details", "wf-answer"); d.append(el("summary", null, "Its last answer"), el("div", "md")); d.querySelector(".md").innerHTML = Md.render(latest.answer); card.append(d); }
+    if (latest?.resumed) card.append(el("p", "set-note", `Picked up ${latest.resumed === 1 ? "once" : latest.resumed + " times"} where it stopped, without repeating what it had begun.`));
+    out.push(card);
+  }
+  return out;
+};

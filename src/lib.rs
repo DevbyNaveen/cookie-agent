@@ -14,6 +14,7 @@ pub mod compaction;
 pub mod cookie;
 pub mod durable;
 pub mod enkeon;
+pub mod flow;
 #[cfg(test)]
 mod fuzz;
 pub mod handoff;

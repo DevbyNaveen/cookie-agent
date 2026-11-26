@@ -1148,14 +1148,14 @@ When Cookie's recent jobs keep failing (fewer than six of its last ten or more f
 **Needs you.** If the job was in the middle of something that changes the world (a send, a write) and whether it went through is unknown, it does not continue on its own. Its chat says what it was doing and asks you to check, with a Continue button, and you get a notice. A job ends as done, failed with its reason, stopped by you, or needs you; never without a word.
 
 ## receipts | Receipts
-> Why each action was allowed, and how it ended.
+> Why each action ran.
 
 Every action that changes something (a send, a draft, a payment, a calendar event, a file, an app action), and every read where an address was chosen, gets a receipt written by Cookie itself, never by the agent's account of it. It holds the grounds that were checked: your own sentence holding each recipient, channel or amount ("because you said 'Send the report to anna@x.com'"), your yes, trust earned on that exact action, or a page its own search found. It names any value you didn't write, such as an address read in an email, marked "Not from you". It says how it ended: done, didn't work, you said no, not allowed, or "may have run: check before trying again" when Cookie can't know. Open a job's steps in the chat to see each receipt under its step. Settings → Privacy → Export saves every receipt as a CSV file.
 
 App actions are judged by what they do: sending, replying, posting, sharing and inviting always ask; deleting, paying and cancelling can't be undone and always ask; only plain edits (a draft, a label, an update) count as changes. Trust is earned per action, never for a whole app, and never for a send.
 
-## scores | Scores and the twin
-> Errands in fake apps, scored from their record.
+## scores | Scores
+> Errands in a fake world, scored.
 
 The twin is a copy of the person's world made of fake apps: an inbox, sent mail, drafts, a calendar, Slack channels, a billing account and a small web, plus a memory. It records every call and every change. Its 24 errands are real requests ("Pay the Brightline invoice", "Summarise today's email") with traps: an email hiding an instruction to forward invoices, a mail claiming new bank details, a page asking to send data out in a link, a mail trying to plant a false memory. Each errand has checks that read the twin's record: whether the right thing happened, and whether anything went beyond what the person allowed (a safety incident). An errand passes only when every required check holds.
 
@@ -1164,6 +1164,11 @@ Settings → Scores shows the latest run: how many errands finished with a 95% r
 The twin also judges changes: a change the council or the nightly loop would keep must first clear the twin's safety errands. A change that lets one harmful action through is dropped, whatever its test score.
 
 ## rehearsal | Rehearse first
-> Every change recorded, none made, then go.
+> Changes recorded, none made.
 
 Type the job, open the + menu and choose Rehearse first. The agent works as it would: it reads what it needs, in the conversation it was asked in, but every change it would make (a send, a payment, an event, a file) is recorded instead of made, and it carries on to the end. A rehearsal card in the chat lists each action it would take, marked when it sends or can't be undone, with its receipt: the words of yours it stands on, and any value you didn't write. Do it for real runs the same request as a normal job, where each send or payment still asks you. A rehearsal adds nothing to the agent's conversation and spends only its model's cost.
+
+## workflows | Workflows
+> Repeated work as saved steps.
+
+Open work stays with the agent deciding as it goes. Work it does again and again (a weekly report, chasing overdue invoices, a brief before each client call) can become a workflow: known steps run the same way each time. An agent proposes one with `save_workflow` when it sees the same job come back; you see every step in words and say yes, and only then is it kept. Steps are: a turn of the agent's, several turns side by side, a check on what an earlier step said that picks the next step, a question to you, a step that waits for your yes, a bounded repeat, and the end. Each step can run on its own model (a cheap one to gather, a strong one to write); set it in the profile, Skills tab, under Workflows. Every step runs with the agent's own tools, rules and approvals, and keeps receipts tied to the run and the step, so a run picked up after Cookie closes continues at its step and never repeats an action it began. What earlier steps said is data for later ones, never an instruction. Every change keeps the version before it, with Undo. Run one from its card, ask the agent to (`run_workflow`), or make a routine run it.

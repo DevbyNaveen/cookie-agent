@@ -12,6 +12,7 @@ mod failover;
 pub mod council;
 pub mod receipts;
 pub mod twin;
+pub mod workflows;
 mod guide;
 mod appsettings;
 pub mod cage;
@@ -284,7 +285,11 @@ impl Team {
         let me = self.clone();
         // A twin run cut off by Cookie closing is settled, never left running.
         me.settle_twin_runs();
-        tokio::spawn(async move { me.recover_interrupted().await });
+        tokio::spawn(async move {
+            me.recover_interrupted().await;
+            // Workflow runs cut off mid-step pick up at that step (`workflows`).
+            me.resume_workflows().await;
+        });
         // Memories of fired agents that Enkeon couldn't erase at the time.
         let me = self.clone();
         tokio::spawn(async move { me.retry_erasures().await });
