@@ -130,6 +130,10 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
         // The app's own guide, and the settings it can change for the person (each change approved).
         out.push(crate::guide::help_tool());
         out.extend(crate::appsettings::tools(Arc::downgrade(team), rec.id.clone()));
+        // The council: propose a change to a teammate; three others vote, a test or the person decides.
+        if !crate::bench::is_probe(&rec.id) && rec.shadow_of.is_none() {
+            out.push(crate::council::propose_tool(Arc::downgrade(team), rec.id.clone()));
+        }
     }
     // Cookie sees the whole team (who's working, what waits on the person).
     if rec.id == crate::front::COOKIE_ID && !outside {

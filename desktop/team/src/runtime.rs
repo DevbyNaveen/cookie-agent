@@ -80,6 +80,8 @@ pub(crate) struct Built {
     /// What changes from job to job (lessons, tool record, rank, recipe),
     /// sent as this job's note rather than in the cached instructions.
     pub(crate) note: Option<String>,
+    /// A job picked up after Cookie closed keeps its first receipts, so nothing it began is admitted twice.
+    pub(crate) ledger_scope: Option<String>,
 }
 
 /// One note for the job from its blocks, or none when there is nothing to say.
@@ -351,11 +353,20 @@ impl Team {
         if let Some(p) = price {
             agent = agent.prices(p);
         }
+        // Its model out of reach: a backup answers instead of the job failing (`failover`).
+        let backups: Vec<String> = crate::failover::backups(&rec.model, settings.backup_models.get(&rec.id).map(String::as_str), &crate::failover::Routes::here())
+            .into_iter()
+            .filter(|m| Agent::new(m).is_ok())
+            .collect();
+        if !backups.is_empty() {
+            agent = agent.fallback_models(&backups).map_err(|e| e.to_string())?;
+        }
         if mode == Mode::Ask && !probation {
             if let Ok(trust) = cookie_harness::trust::EarnedTrust::open(self.paths.trust(&rec.id), 5) {
                 agent = agent.earned_trust(trust);
             }
-            if let Ok(ledger) = cookie_harness::durable::ActionLedger::open(self.paths.actions(&rec.id), &format!("{}:{job}", rec.id)) {
+            let scope = built.ledger_scope.clone().unwrap_or_else(|| job.to_string());
+            if let Ok(ledger) = cookie_harness::durable::ActionLedger::open(self.paths.actions(&rec.id), &format!("{}:{scope}", rec.id)) {
                 agent = agent.action_ledger(ledger);
             }
         }
@@ -422,6 +433,15 @@ impl Team {
     }
 
     async fn spawn_job_inner(self: &Arc<Self>, agent_id: &str, text: String, attachments: Vec<Attachment>, trigger: Trigger, done: Option<tokio::sync::oneshot::Sender<Job>>) -> Result<String, String> {
+        // A teammate standing in for Cookie answers what is sent to Cookie, in Cookie's chat (`council`).
+        let (agent_id, trigger) = match (agent_id == crate::front::COOKIE_ID, &trigger) {
+            (true, Trigger::Chat | Trigger::Telegram { .. }) => match self.stand_in_now().await {
+                Some(s) => (s, if matches!(trigger, Trigger::Chat) { Trigger::Mention { chat: crate::front::COOKIE_ID.into() } } else { trigger }),
+                None => (agent_id.to_string(), trigger),
+            },
+            _ => (agent_id.to_string(), trigger),
+        };
+        let agent_id = agent_id.as_str();
         let rec = self.agent(agent_id).await?;
         let text = text.trim().to_string();
         if text.is_empty() {
@@ -473,7 +493,9 @@ impl Team {
     #[allow(clippy::too_many_arguments)]
     async fn run_job(self: Arc<Self>, rec: AgentRecord, job_id: String, text: String, attachments: Vec<Attachment>, trigger: Trigger, mode: Mode, control: RunControl) -> Job {
         let started_at = util::now();
-        self.emit(TeamEvent::JobStarted { job: job_id.clone(), agent: rec.id.clone(), trigger: trigger.clone(), input: util::clip(&text, 2000) });
+        // The same job picked up again after Cookie closed: its receipts, its place, its words.
+        let resume = self.resumes.lock().unwrap().remove(&rec.id);
+        self.emit(TeamEvent::JobStarted { job: job_id.clone(), agent: rec.id.clone(), trigger: trigger.clone(), input: util::clip(&text, 2000), resumed: resume.is_some() });
         let log = Arc::new(Mutex::new(Vec::new()));
         let tools_used = Arc::new(Mutex::new(Vec::<String>::new()));
         let usage = Arc::new(Mutex::new((0u64, 0u64)));
@@ -481,9 +503,10 @@ impl Team {
         let cache = Arc::new(Mutex::new((0u64, 0u64, 0u64)));
         // Steered (the person added words) and cut off (it hit a limit).
         let marks = Arc::new(Mutex::new((0u32, false)));
-        let mut built = Built::default();
+        let mut built = Built { ledger_scope: resume.as_ref().map(|r| r.scope.clone()), ..Built::default() };
+        let switched: Arc<Mutex<Vec<String>>> = Default::default();
         let mut added: Vec<Message> = Vec::new();
-        self.mark_running(&rec.id, &job_id, &text, &trigger, started_at);
+        self.mark_running(&rec.id, &job_id, &text, &trigger, started_at, built.ledger_scope.as_deref());
         // Tests and shadows don't touch the agent's real conversation.
         let in_session = in_session(&trigger);
 
@@ -493,6 +516,10 @@ impl Team {
             let before = session.messages().len();
             // This job's note first, then the request itself, so the request is the last thing read.
             let mut input: Vec<Message> = built.note.take().map(Message::harness_note).into_iter().collect();
+            if resume.is_some() {
+                // Not the person's words again: a note, and the conversation it stopped in.
+                input.push(Message::harness_note(RESUME_NOTE.to_string()));
+            } else {
             input.push(match &trigger {
                 Trigger::Peer { label, .. } => Message::untrusted(text.clone(), Source::Agent(label.clone())),
                 Trigger::Handoff { from, .. } => Message::untrusted(text.clone(), Source::Agent(from.clone())),
@@ -503,8 +530,9 @@ impl Team {
             for f in &attachments {
                 input.extend(f.messages());
             }
+            }
             let (team, aid, jid) = (self.clone(), rec.id.clone(), job_id.clone());
-            let (tu, us, mk, ca) = (tools_used.clone(), usage.clone(), marks.clone(), cache.clone());
+            let (tu, us, mk, ca, sw) = (tools_used.clone(), usage.clone(), marks.clone(), cache.clone(), switched.clone());
             let mut forward = move |event: Event| match event {
                 Event::TextDelta(text) => team.emit(TeamEvent::Text { job: jid.clone(), agent: aid.clone(), text }),
                 Event::ToolCallStarted { id, name } => {
@@ -531,6 +559,18 @@ impl Team {
                     team.emit(TeamEvent::Steered { job: jid.clone(), agent: aid.clone(), text })
                 }
                 Event::Closing { .. } => mk.lock().unwrap().1 = true,
+                // Its model was out of reach and a backup took the turn: said where it happened, kept in the record.
+                Event::FellBack { from, to, reason } => {
+                    let (from, to) = (crate::failover::short(&from), crate::failover::short(&to));
+                    let id = {
+                        let mut s = sw.lock().unwrap();
+                        s.push(format!("{from} → {to}: {}", util::clip(&reason, 160)));
+                        format!("switch-{}", s.len())
+                    };
+                    let did = format!("Switched to {to}: {from} was out of reach");
+                    team.emit(TeamEvent::Step { job: jid.clone(), agent: aid.clone(), id: id.clone(), name: "model_switch".into(), doing: did.clone(), did, with: None, thread: None, sort: "other".into(), detail: None });
+                    team.emit(TeamEvent::StepDone { job: jid.clone(), agent: aid.clone(), id, ok: true });
+                }
                 Event::Usage(u) => {
                     {
                         let mut c = ca.lock().unwrap();
@@ -608,6 +648,9 @@ impl Team {
             input_tokens: fresh_in,
             cache_read_tokens: cache_read,
             cache_write_tokens: cache_write,
+            switched: switched.lock().unwrap().clone(),
+            resumed_from: resume.map(|r| r.of_job),
+            resumed_as: None,
         };
         let _ = util::append_jsonl(&self.paths.jobs(&rec.id), &job);
         self.clear_running(&rec.id);
@@ -843,7 +886,10 @@ impl Team {
         // Its last job in this chat was cut off by Cookie closing: said so at the end, with a way to carry on.
         let chat_jobs: Vec<Job> = util::read_jsonl::<Job>(&self.paths.jobs(id)).into_iter().filter(|j| matches!(j.trigger, Trigger::Chat)).collect();
         if let Some(last) = chat_jobs.last() {
-            if last.status == JobStatus::Failed && last.error.as_deref().is_some_and(|e| e.contains(INTERRUPTED)) && !self.busy().iter().any(|(a, _)| a == id) {
+            let idle = !self.busy().iter().any(|(a, _)| a == id);
+            if idle && last.status == JobStatus::NeedsYou {
+                out.push(Line { from: "interrupted", text: last.error.clone().unwrap_or_else(|| "It stopped where only you can say what happens next.".into()), ..Line::default() });
+            } else if idle && last.status == JobStatus::Failed && last.resumed_as.is_none() && last.error.as_deref().is_some_and(|e| e.contains(INTERRUPTED)) {
                 out.push(Line { from: "interrupted", text: "Cookie closed while this was running, so it stopped partway. What it finished is above.".into(), ..Line::default() });
             }
         }
@@ -905,8 +951,12 @@ impl Team {
         self.paths.agent(agent).join("running.json")
     }
 
-    fn mark_running(&self, agent: &str, job: &str, text: &str, trigger: &Trigger, started_at: u64) {
-        let marker = serde_json::json!({"job": job, "input": util::clip(text, 4000), "trigger": trigger, "started_at": started_at});
+    fn mark_running(&self, agent: &str, job: &str, text: &str, trigger: &Trigger, started_at: u64, scope: Option<&str>) {
+        let mut marker = serde_json::json!({"job": job, "input": util::clip(text, 4000), "trigger": trigger, "started_at": started_at});
+        if let Some(s) = scope {
+            // A picked-up job: its receipts are under the first one's scope, and a second cut-off ends it.
+            marker["scope"] = serde_json::json!(s);
+        }
         let _ = util::write_json(&self.running_path(agent), &marker);
     }
 
@@ -914,8 +964,11 @@ impl Team {
         let _ = std::fs::remove_file(self.running_path(agent));
     }
 
-    /// At start: jobs that were running when Cookie stopped.
-    pub(crate) async fn recover_interrupted(&self) {
+    /// At start: jobs that were running when Cookie stopped. Each ends one of three ways, never
+    /// silently: picked up again on its own (from its receipts: nothing it began runs twice),
+    /// waiting on the person (it was mid-way through a send or a write whose outcome is unknown),
+    /// or failed with the reason (too old, a second cut-off, or a kind of job that can't resume).
+    pub(crate) async fn recover_interrupted(self: &Arc<Self>) {
         for a in self.agents().await {
             let path = self.running_path(&a.id);
             let Ok(bytes) = std::fs::read(&path) else { continue };
@@ -925,21 +978,59 @@ impl Team {
             if id.is_empty() || util::read_jsonl::<Job>(&self.paths.jobs(&a.id)).iter().any(|j| j.id == id) {
                 continue;
             }
-            let job = Job {
+            let trigger: Trigger = serde_json::from_value(m["trigger"].clone()).unwrap_or_default();
+            let started_at = m["started_at"].as_u64().unwrap_or(0);
+            // Its receipts live under the scope it first ran with.
+            let scope = m["scope"].as_str().map(str::to_string).unwrap_or_else(|| id.clone());
+            let unknown = cookie_harness::durable::ActionLedger::open(self.paths.actions(&a.id), &format!("{}:{scope}", a.id)).and_then(|l| l.unknown()).unwrap_or_default();
+            let decision = resume_decision(&trigger, started_at, util::now(), m["scope"].is_string(), &unknown);
+            let mut job = Job {
                 id: id.clone(),
                 agent: a.id.clone(),
-                trigger: serde_json::from_value(m["trigger"].clone()).unwrap_or_default(),
+                trigger: trigger.clone(),
                 input: m["input"].as_str().unwrap_or_default().to_string(),
-                started_at: m["started_at"].as_u64().unwrap_or(0),
+                started_at,
                 finished_at: Some(util::now()),
                 status: JobStatus::Failed,
-                error: Some(format!("{INTERRUPTED}, so it didn't finish. Anything it changed before then is in its record; nothing is done again on its own.")),
                 version: a.version,
                 ..Default::default()
             };
+            match decision {
+                Resume::Continue => {
+                    job.error = Some(format!("{INTERRUPTED}; it picked up again where it stopped."));
+                    let new_id = self.resume_job(&a, &job, &scope).await;
+                    job.resumed_as = new_id.clone().ok();
+                    if let Err(e) = new_id {
+                        job.error = Some(format!("{INTERRUPTED}, and it couldn't pick up again ({e}). What it finished is in its record."));
+                        self.notice(&a.id, &format!("{}'s job was cut off", a.name), &util::clip(&job.input, 160), Some(&id), false);
+                    }
+                }
+                Resume::AskPerson(tools) => {
+                    job.status = JobStatus::NeedsYou;
+                    let what = tools.iter().map(|t| crate::steps::words(self, t, &serde_json::Value::Null).0.to_lowercase()).collect::<Vec<_>>().join(", ");
+                    job.error = Some(format!(
+                        "Cookie closed while it was {what}. Whether that went through is unknown, so it didn't pick up on its own (it never does a send or a change twice). Check, then continue."
+                    ));
+                    self.notice(&a.id, &format!("{} needs you", a.name), &format!("It was {what} when Cookie closed. Check whether that went through, then tell it to continue."), Some(&id), true);
+                }
+                Resume::Stop(why) => {
+                    job.error = Some(format!("{INTERRUPTED}, so it didn't finish ({why}). Anything it changed before then is in its record; nothing is done again on its own."));
+                    self.notice(&a.id, &format!("{}'s job was cut off", a.name), &util::clip(&job.input, 160), Some(&id), false);
+                }
+            }
             let _ = util::append_jsonl(&self.paths.jobs(&a.id), &job);
-            self.notice(&a.id, &format!("{}'s job was cut off", a.name), &util::clip(&job.input, 160), Some(&id), false);
         }
+    }
+
+    /// Start the same job again, a moment after Cookie is up (so an open window sees it start).
+    async fn resume_job(self: &Arc<Self>, a: &AgentRecord, job: &Job, scope: &str) -> Result<String, String> {
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        self.resumes.lock().unwrap().insert(a.id.clone(), Resumed { of_job: job.id.clone(), scope: scope.to_string() });
+        let started = self.spawn_job(&a.id, job.input.clone(), Vec::new(), job.trigger.clone(), None).await;
+        if started.is_err() {
+            self.resumes.lock().unwrap().remove(&a.id);
+        }
+        started
     }
 
     fn edit_job(&self, agent: &str, job: &str, f: impl FnOnce(&mut Job)) -> Result<(), String> {
@@ -974,6 +1065,49 @@ pub struct Line {
 
 /// How a job cut off by Cookie closing is marked (and found again).
 const INTERRUPTED: &str = "Cookie closed while this job was running";
+
+/// What a picked-up job reads instead of the person's words again.
+const RESUME_NOTE: &str = "Cookie closed while you were working on the request above, and has now started again. Continue from where \
+you stopped: your earlier steps and their results are above. Don't repeat a step that already finished; an action that changes \
+something (a send, a write, a payment) is never run twice, and one whose outcome is unknown is refused. If you can't tell whether \
+something went through, say so and ask rather than guess.";
+
+/// A job picked up again: the job it continues and the receipt scope it keeps.
+#[derive(Debug, Clone)]
+pub(crate) struct Resumed {
+    pub(crate) of_job: String,
+    pub(crate) scope: String,
+}
+
+/// How a cut-off job ends at restart.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Resume {
+    Continue,
+    /// Mid-way through these actions, whose outcome is unknown.
+    AskPerson(Vec<String>),
+    Stop(&'static str),
+}
+
+/// Picked up only when it is the person's own kind of job, recent, not a second cut-off, and
+/// nothing that changes the world is half done; half done means the person decides.
+pub(crate) fn resume_decision(trigger: &Trigger, started_at: u64, now: u64, already_resumed: bool, unknown: &[String]) -> Resume {
+    if !unknown.is_empty() {
+        return Resume::AskPerson(unknown.to_vec());
+    }
+    if !matches!(trigger, Trigger::Chat | Trigger::Telegram { .. } | Trigger::Routine { .. } | Trigger::Channel { .. } | Trigger::Mention { .. }) {
+        return Resume::Stop("only your own jobs pick up again");
+    }
+    if already_resumed {
+        return Resume::Stop("it was cut off twice");
+    }
+    if now.saturating_sub(started_at) > RESUME_WITHIN {
+        return Resume::Stop("it began more than half a day ago");
+    }
+    Resume::Continue
+}
+
+/// A job older than this when Cookie starts again is not picked up on its own.
+const RESUME_WITHIN: u64 = 12 * 3600;
 
 /// One step as the chat keeps it.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -1153,6 +1287,7 @@ fn talk_in(job: &Job, me_name: &str, team: &[AgentRecord], contacts: &[crate::ne
         JobStatus::Stopped => "Stopped before answering.".into(),
         JobStatus::Failed => format!("Couldn't answer: {}", job.error.as_deref().unwrap_or("it hit a problem")),
         JobStatus::Running => String::new(),
+        JobStatus::NeedsYou => format!("Waiting on you: {}", job.error.as_deref().unwrap_or("you decide what happens next")),
     };
     talk.messages.push(TalkMsg { who: talk.with_name.clone(), mine: false, text: job.input.clone() });
     if !reply.trim().is_empty() {
@@ -1265,5 +1400,25 @@ mod tests {
         let odd = Attachment { media_type: Some("image/tiff".into()), data: Some("AAAA".into()), ..Attachment::text("scan.tiff", "") }.messages();
         assert!(odd[0].text().contains("couldn't be read"), "an image type no model reads is said, not sent");
         assert!(Attachment::text("notes.txt", "hello").messages()[0].text().contains("hello"));
+    }
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+
+    #[test]
+    fn a_cut_off_job_picks_up_only_when_nothing_half_done_could_happen_twice() {
+        let now = 1_000_000;
+        assert_eq!(resume_decision(&Trigger::Chat, now - 60, now, false, &[]), Resume::Continue);
+        assert_eq!(resume_decision(&Trigger::Telegram { chat: "1".into() }, now - 60, now, false, &[]), Resume::Continue);
+        // Mid-way through a send whose outcome is unknown: the person decides, whatever else is true.
+        assert_eq!(resume_decision(&Trigger::Chat, now - 60, now, false, &["send_email".into()]), Resume::AskPerson(vec!["send_email".into()]));
+        assert_eq!(resume_decision(&Trigger::Chat, now - 60, now, true, &["write_file".into()]), Resume::AskPerson(vec!["write_file".into()]));
+        // Never a second time, never an old one, never someone else's.
+        assert!(matches!(resume_decision(&Trigger::Chat, now - 60, now, true, &[]), Resume::Stop(_)));
+        assert!(matches!(resume_decision(&Trigger::Chat, now - 13 * 3600, now, false, &[]), Resume::Stop(_)));
+        assert!(matches!(resume_decision(&Trigger::Peer { invite: "i".into(), label: "l".into() }, now - 60, now, false, &[]), Resume::Stop(_)));
+        assert!(matches!(resume_decision(&Trigger::Test { case: "c".into() }, now - 60, now, false, &[]), Resume::Stop(_)));
     }
 }

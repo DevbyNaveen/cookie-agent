@@ -35,7 +35,8 @@ pub struct Checker {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TeamEvent {
-    JobStarted { job: String, agent: String, trigger: Trigger, input: String },
+    /// `resumed`: the same job picked up again after Cookie closed mid-way.
+    JobStarted { job: String, agent: String, trigger: Trigger, input: String, resumed: bool },
     Text { job: String, agent: String, text: String },
     Tool { job: String, agent: String, name: String },
     /// One step of a job, once its arguments are known: what it is doing and,
@@ -52,6 +53,8 @@ pub enum TeamEvent {
     HelperStep { job: String, agent: String, n: usize, id: String, name: String, doing: String, did: String, state: String, host: Option<String> },
     /// Helpers sent together came back saying different things: what, between which, in words.
     HelperConflict { job: String, agent: String, between: Vec<usize>, about: String, detail: String },
+    /// A council proposal moved on (`council`): voted, tested, applied, or waiting on the person.
+    Council { id: String, state: String },
     /// A board changed (`boards`): open views redraw.
     Board { id: String },
     /// Something new was written into this agent's chat from outside a job of its own (an answer from an agent brought in with @).

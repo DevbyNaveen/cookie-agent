@@ -313,6 +313,10 @@ pub(crate) fn spawn(team: Arc<Team>) {
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => return,
             };
+            // A job from the phone picked up again after Cookie closed answers there too.
+            if let TeamEvent::JobStarted { job, trigger: Trigger::Telegram { chat }, resumed: true, .. } = &ev {
+                jobs.lock().unwrap().insert(job.clone(), chat.clone());
+            }
             // Progress of a job from the phone: kept here, sent by the pacer above.
             on_progress(&live, &jobs, &team, &ev);
             if matches!(ev, TeamEvent::Step { .. } | TeamEvent::StepDone { .. } | TeamEvent::Helper { .. } | TeamEvent::HelperStep { .. } | TeamEvent::HelperConflict { .. } | TeamEvent::Text { .. }) {

@@ -508,7 +508,7 @@ pub fn pick_cases(mut cases: Vec<BenchCase>, n: usize, day: u64) -> Vec<BenchCas
     cases
 }
 
-fn exam_json(e: &crate::bench::Exam) -> Value {
+pub(crate) fn exam_json(e: &crate::bench::Exam) -> Value {
     json!({
         "id": e.id, "cases": e.before.total,
         "before": {"passed": e.before.passed, "microdollars": e.before.microdollars, "tokens": e.before.tokens},

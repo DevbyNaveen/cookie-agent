@@ -35,13 +35,21 @@ async function renderDesk(agentId) {
   const wall = (typeof wallWaiting === "undefined" ? [] : wallWaiting).filter((e) => mine.has(e.world));
   if (wall.length) parts.push(deskCard(agentId, `From its worlds, waiting for your yes (${wall.length})`, wallGroup(wall)));
 
-  const [evs, wk, offers, promises] = await Promise.all([
+  const [evs, wk, offers, promises, council] = await Promise.all([
     call("evolve_status").catch(() => null),
     call("wakes").catch(() => null),
     call("routine_offers").catch(() => []),
     call("open_promises").catch(() => []),
+    call("council").catch(() => null),
   ]);
   if (stale()) return;
+
+  // The council: proposals about this agent (and, at the front desk, every one waiting on you).
+  const now = Date.now() / 1000;
+  const recent = (p) => ["voting", "testing", "queued", "to_person"].includes(p.state) || (p.state === "applied" && now - (p.decided_at || p.at) < 7 * 86400) || (["rejected", "failed_test", "declined", "approved", "undone"].includes(p.state) && now - (p.decided_at || p.at) < 2 * 86400);
+  const mineToo = (p) => p.target === agentId || (agentId === "cookie" && p.state === "to_person");
+  if (agentId === "cookie" && council?.stand_in) parts.push(standInCard(council.stand_in));
+  for (const p of (council?.proposals || []).filter((p) => mineToo(p) && recent(p)).slice(0, 4)) parts.push(councilCard(p));
 
   // Offers from the nightly round: split an agent doing two kinds of work, or retire one with none.
   for (const o of (evs?.offers || []).filter((o) => o.agent === agentId).slice(0, 2)) {
@@ -211,4 +219,74 @@ async function scanInbox(model) {
   catch (e) { inboxResult = { error: String(e) }; }
   inboxRunning = false;
   refreshDesk();
+}
+
+/* ---------- the council: agents improving each other, with every vote shown ---------- */
+const COUNCIL_STATE = { voting: "Voting", testing: "Testing on a copy", queued: "Agreed, tested tomorrow", to_person: "Yours to decide", applied: "Changed", undone: "Undone", rejected: "Not changed", failed_test: "Test said no", approved: "You said yes", declined: "You said no" };
+
+/** The last vote of each voter, and whether a second round changed it. */
+function councilVotes(votes) {
+  const last = new Map();
+  for (const v of votes || []) {
+    const was = last.get(v.voter);
+    if (!was || v.round >= was.round) last.set(v.voter, { ...v, changed: was ? was.yes !== v.yes : false });
+  }
+  return [...last.values()];
+}
+
+/** One proposal: what, why, who said what (and why), the test, and what you can do. */
+function councilCard(p) {
+  const body = el("div", "council");
+  const head = el("div", "council-head");
+  head.append(el("strong", "council-what", p.kind === "stand_in" ? `${agentById(p.change)?.name ?? "A teammate"} stands in for ${p.target_name}` : councilWhat(p)), el("span", "council-state " + p.state, COUNCIL_STATE[p.state] ?? p.state));
+  body.append(head);
+  const by = el("p", "council-why");
+  by.append(el("span", "council-by", p.by === "council" ? "The council's own check: " : `${p.by_name} proposed: `), p.why);
+  body.append(by);
+  const votes = councilVotes(p.votes);
+  if (votes.length) {
+    const yes = votes.filter((v) => v.yes).length;
+    const list = el("div", "council-votes");
+    list.append(el("span", "council-tally", `${yes}–${votes.length - yes}`));
+    for (const v of votes) {
+      const row = el("div", "vote " + (v.yes ? "yes" : "no"));
+      row.append(Faces.create(v.voter, 20).el, el("span", "vote-name", v.name), el("span", "vote-mark", v.yes ? "Yes" : "No"));
+      if (v.changed) row.append(el("span", "vote-changed", "changed after reading the others"));
+      row.append(el("span", "vote-reason", v.reason));
+      list.append(row);
+    }
+    body.append(list);
+  } else if (p.state === "voting") body.append(el("p", "council-note", "Three teammates are voting, each on their own."));
+  if (p.exam) body.append(el("p", "council-test", `Test on a copy: ${p.exam.before?.passed}/${p.exam.cases} → ${p.exam.after?.passed}/${p.exam.cases}`));
+  if (p.note) body.append(el("p", "council-note", p.note));
+  const acts = el("div", "row-actions");
+  if (p.state === "to_person") acts.append(
+    button("Decline", "quiet small", async () => { try { await call("council_decide", { id: p.id, yes: false }); refreshDesk(); } catch (e) { toast("Couldn't", String(e), "error"); } }),
+    button(p.kind === "stand_in" ? "Let it stand in" : "Approve", "primary small", async () => { try { await call("council_decide", { id: p.id, yes: true }); toast("Done", councilWhat(p), "good"); await loadRoster(); refreshDesk(); } catch (e) { toast("Couldn't", String(e), "error"); } }),
+  );
+  if (p.change_id && ["applied", "approved"].includes(p.state)) acts.append(button("Undo", "quiet small", async () => { try { await call("council_undo", { id: p.id }); toast("Undone", councilWhat(p)); refreshDesk(); } catch (e) { toast("Couldn't undo", String(e), "error"); } }));
+  if (acts.childElementCount) body.append(acts);
+  return deskCard(p.target, "The council", body);
+}
+
+function councilWhat(p) {
+  const name = p.target_name;
+  if (p.kind === "habit") return `New habit for ${name}: “${p.change}”`;
+  if (p.kind === "drop_habit") return `${name} drops a habit: “${p.change}”`;
+  if (p.kind === "model") return `${name} moves to ${modelName(p.change)}`;
+  if (p.kind === "grant") return `${name}: ${p.change.replace("=", " → ")}`;
+  if (p.kind === "limit") return `${name}: limit ${p.change.replace("=", " → ")}`;
+  return p.change;
+}
+
+/** A teammate answering in Cookie's place, and the way back. */
+function standInCard(s) {
+  const who = agentById(s.agent);
+  const g = el("div", "council");
+  g.append(el("p", "council-why", `${who?.name ?? "A teammate"} answers what you send to Cookie, here and on your phone, until Cookie passes its own tests again (checked once a day). Your approvals stay yours.`));
+  if (s.why) g.append(el("p", "council-note", s.why));
+  const acts = el("div", "row-actions");
+  acts.append(button("Cookie takes over again", "quiet small", async () => { await call("council_end_stand_in"); await loadRoster(); refreshDesk(); }));
+  g.append(acts);
+  return deskCard(s.agent, `Standing in for Cookie since ${new Date(s.since * 1000).toLocaleDateString([], { day: "numeric", month: "short" })}`, g);
 }

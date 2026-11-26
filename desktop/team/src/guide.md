@@ -1125,3 +1125,24 @@ Every agent's instructions include a short map of the app: one line per section 
 
 Settings: `settings_search` lists the settings an agent can read and change, with where each lives, what it is set to now and the values it takes (an empty query lists them all). `settings_set` changes one. The person sees an approval card with the new value every time, and nothing changes until they say yes. Team settings include interruptions a day, waking agents on memory changes, the checker model, night tuning (on, hour, cases, budget, exams), skills testing and its monthly budget, the Enkeon cloud store, serving the team over HTTP and its port, the Market address, and how far agents see files. Each agent's own settings include its name, job, model, face shape and colour, each permission (files, web, commands, memory, routines, team, Mac apps, browser, Parallax worlds, connected apps, helpers, contractors) and its limits (model calls and tokens per job, dollars per job and a month). An agent changes its own settings and the team's; only Cookie changes another agent's. Keys and passwords are never readable or settable by agents.
 
+## council | The council: agents improve each other
+> Any agent can propose a change to a teammate, Cookie included; three others vote, and a test or you decide.
+
+An agent that sees a teammate keep going wrong proposes a change with `propose_change`: a habit added or dropped, a different model, a permission, a limit, or (for Cookie only) a stand-in front desk. It names the jobs that show the problem; only the target's own job ids count as evidence. Each agent may propose at most three changes a week.
+
+Three teammates vote, picked at random. The proposer and the target never vote, and neither does an agent that is working or read a page, a mail or a file in the last half hour. Each votes yes or no with a reason, alone. If they split, each reads the others' reasons once and votes again. Every vote and reason is kept and shown in Today → Council.
+
+A habit added or dropped is a small change. If all three say yes, it is tested on a copy of the agent against its own test cases, which the proposer can't change. It is kept only if the result is as good or better for the same or less, and Today shows it with Undo ("Changed by the council, 3–0, test 4/6 → 6/6"). At most three council tests run a day; the rest wait for the next day. Without three test cases, or without three free voters, the decision is yours.
+
+Anything about power is always yours: a model, a permission, a limit, a stand-in. It reaches you only if most voters said yes, with the votes attached, in Today → Council, where you approve or decline. No vote ever gives an agent more power.
+
+When Cookie's recent jobs keep failing (fewer than six of its last ten or more finished cleanly), the council proposes the teammate doing best as a stand-in front desk. If you approve, that teammate answers what you send to Cookie, in Cookie's chat and on Telegram, until Cookie passes most of its own tests again (checked once a day), and then Cookie is back on its own. You can end it any time in Today. Approvals never move: whoever answers, you say yes.
+
+## durability | When something goes wrong mid-job
+> Jobs never end silently: a backup model takes over in an outage, and a job cut off by Cookie closing picks up again or asks you.
+
+**Backup model.** When an agent's model is out of reach (an outage, overload, throttling), a backup takes the turn and the job goes on. The chat shows a line where it happened ("Switched to Opus 5.5: Sonnet 5.5 was out of reach"), and the job's record keeps it. Set the backup per agent with the Backup model setting (`agent.backup_model`, through settings_set); left off, Cookie picks from the routes this Mac has: the same model through another provider first (Anthropic, your AWS account, Enkeon), then the next Claude tier. A model without a key here is never picked.
+
+**Picking up after Cookie closes.** If Cookie closes in the middle of a job, it picks up again on its own when Cookie starts: from where it stopped, using its receipts, so no send, write or payment it began is ever run twice. It does this only for your own jobs (chat, phone, routines, channels) that started less than twelve hours ago and weren't already picked up once.
+
+**Needs you.** If the job was in the middle of something that changes the world (a send, a write) and whether it went through is unknown, it does not continue on its own. Its chat says what it was doing and asks you to check, with a Continue button, and you get a notice. A job ends as done, failed with its reason, stopped by you, or needs you; never without a word.

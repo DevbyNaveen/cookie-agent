@@ -251,6 +251,10 @@ pub struct Settings {
     pub cloud: CloudCfg,
     /// The nightly exam loop (`evolve`). Off until you turn it on.
     pub evolve: crate::evolve::EvolveCfg,
+    /// Each agent's backup model, when the person chose one (`failover`); else Cookie picks.
+    pub backup_models: BTreeMap<String, String>,
+    /// A teammate standing in as the front desk while Cookie's results are poor (`council`).
+    pub stand_in: Option<crate::council::StandIn>,
 }
 
 /// What Cookie does with Enkeon's cloud (`cloud`). Both off until you say.
@@ -279,6 +283,8 @@ impl Default for Settings {
             wake: true,
             cloud: CloudCfg::default(),
             evolve: crate::evolve::EvolveCfg::default(),
+            backup_models: BTreeMap::new(),
+            stand_in: None,
         }
     }
 }
@@ -325,6 +331,10 @@ pub enum JobStatus {
     Done,
     Stopped,
     Failed,
+    /// It stopped where only the person can say what happens next: it was in
+    /// the middle of an action that changes something (a send, a write) when
+    /// Cookie closed, and whether that went through is unknown.
+    NeedsYou,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -410,6 +420,15 @@ pub struct Job {
     pub cache_read_tokens: u64,
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub cache_write_tokens: u64,
+    /// Its model was out of reach and a backup answered: "Sonnet 5.5 → Opus 5.5: overloaded".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub switched: Vec<String>,
+    /// It is the same job picked up again after Cookie closed mid-way (that job's id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed_from: Option<String>,
+    /// It was cut off by Cookie closing and picked up again as this job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed_as: Option<String>,
 }
 
 fn is_zero(n: &u32) -> bool {

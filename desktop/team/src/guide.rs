@@ -59,7 +59,7 @@ pub(crate) fn map() -> String {
     for x in sections() {
         // Title and the start of its summary: enough to know it exists; app_help has the rest.
         let words: Vec<&str> = x.summary.split_whitespace().collect();
-        let short = if words.len() > 12 { format!("{}…", words[..12].join(" ").trim_end_matches([',', ';', ':', '.'])) } else { x.summary.to_string() };
+        let short = if words.len() > 11 { format!("{}…", words[..11].join(" ").trim_end_matches([',', ';', ':', '.'])) } else { x.summary.to_string() };
         s.push_str(&format!("- {}: {}\n", x.title, short));
     }
     s.push_str(

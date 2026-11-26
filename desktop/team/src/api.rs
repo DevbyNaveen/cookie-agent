@@ -131,6 +131,11 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         /* jobs */
         "history" => ok(team.history(&arg::<String>(a, "id")?).await?),
         "starters" => ok(team.starters(&arg::<String>(a, "id")?)),
+        // The council (`council`): proposals with their votes, the person's decisions, Undo, the stand-in.
+        "council" => ok(team.council_view().await),
+        "council_decide" => ok(team.council_decide(&arg::<String>(a, "id")?, arg(a, "yes")?).await?),
+        "council_undo" => ok(team.council_undo(&arg::<String>(a, "id")?).await?),
+        "council_end_stand_in" => ok(team.end_stand_in("You ended it.").await?),
         "send" => {
             let attachments: Vec<Attachment> = opt(a, "attachments").unwrap_or_default();
             // An @ in the message brings that agent in to answer here (`mention`).

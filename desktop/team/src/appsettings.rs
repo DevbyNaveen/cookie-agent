@@ -59,6 +59,7 @@ pub(crate) const KEYS: &[Key] = &[
     Key { id: "agent.name", title: "Name", where_: "Its profile", kind: Kind::Text, agent: true, help: "The agent's name." },
     Key { id: "agent.job", title: "Job", where_: "Its profile", kind: Kind::Text, agent: true, help: "Its one job, in the person's words." },
     Key { id: "agent.model", title: "Model", where_: "The model chip under the composer, or its profile", kind: Kind::Model(false), agent: true, help: "provider:model, e.g. anthropic:claude-sonnet-5-5. A new model re-tests its skills." },
+    Key { id: "agent.backup_model", title: "Backup model", where_: "The model chip under the composer, or its profile", kind: Kind::Model(true), agent: true, help: "Answers when its model is out of reach (an outage, overload). `off` lets Cookie pick from the routes this Mac has: the same model another way first." },
     Key { id: "agent.look.shape", title: "Face shape", where_: "Its profile → look", kind: Kind::Choice(&crate::made::SHAPES), agent: true, help: "Its face's shape." },
     Key { id: "agent.look.color", title: "Face colour", where_: "Its profile → look", kind: Kind::Choice(&crate::made::COLORS), agent: true, help: "Its face's colour; its chat bubbles and send button follow it." },
     Key { id: "agent.grants.files", title: "Files", where_: "The permission chip under the composer", kind: Kind::Bool, agent: true, help: "Read, search and write files in its own folder." },
@@ -95,7 +96,7 @@ fn takes(k: &Key) -> String {
 }
 
 /// A value as given (string or JSON), checked against what the setting takes.
-fn parse(k: &Key, v: &Value) -> Result<Value, String> {
+pub(crate) fn parse(k: &Key, v: &Value) -> Result<Value, String> {
     let s = match v {
         Value::String(s) => s.trim().to_string(),
         other => other.to_string(),
@@ -173,6 +174,7 @@ impl Team {
                 "agent.name" => json!(a.name),
                 "agent.job" => json!(a.job),
                 "agent.model" => json!(a.model),
+                "agent.backup_model" => s.backup_models.get(&a.id).map(|m| json!(m)).unwrap_or(json!("off")),
                 "agent.look.shape" => look["shape"].clone(),
                 "agent.look.color" => look["color"].clone(),
                 id => match id.strip_prefix("agent.grants.") {
@@ -210,6 +212,20 @@ impl Team {
                 "agent.name" => p.name = v.as_str().map(str::to_string),
                 "agent.job" => p.job = v.as_str().map(str::to_string),
                 "agent.model" => p.model = v.as_str().map(str::to_string),
+                "agent.backup_model" => {
+                    let m = v.as_str().map(str::trim).filter(|m| !m.is_empty() && *m != "off").map(str::to_string);
+                    let id = a.id.clone();
+                    self.update_settings(move |s| match m {
+                        Some(m) => {
+                            s.backup_models.insert(id, m);
+                        }
+                        None => {
+                            s.backup_models.remove(&id);
+                        }
+                    })
+                    .await?;
+                    return Ok(());
+                }
                 "agent.look.shape" | "agent.look.color" => {
                     let look = util::read_json::<Value>(&self.paths.agent(&a.id).join("look.json"));
                     let (mut shape, mut color) = (look["shape"].as_str().map(str::to_string), look["color"].as_str().map(str::to_string));

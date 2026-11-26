@@ -169,6 +169,7 @@ fn job_result(name: &str, j: &Job) -> Value {
         JobStatus::Running => text_result(format!("{name} is still working on it.")),
         JobStatus::Stopped => error_result(format!("{name} was stopped before it finished.")),
         JobStatus::Failed => error_result(format!("{name} couldn't finish: {}", j.error.as_deref().unwrap_or("it hit a problem"))),
+        JobStatus::NeedsYou => error_result(format!("{name} is waiting on the person: {}", j.error.as_deref().unwrap_or("they decide what happens next"))),
     }
 }
 

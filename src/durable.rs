@@ -71,6 +71,32 @@ impl ActionLedger {
         )
     }
 
+    /// The tools of every attempt in this scope whose outcome is unknown (begun,
+    /// never acknowledged): what a restart must not guess about. Sorted, so a
+    /// person reads the same list each time.
+    pub fn unknown(&self) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        for entry in fs::read_dir(&self.directory)? {
+            let path = entry?.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+            let Some(key) = name.strip_suffix(".attempt") else { continue };
+            let acknowledged = fs::read(self.directory.join(format!("{key}.result")))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                .is_some_and(|v| v["state"] == "acknowledged");
+            if !acknowledged {
+                let tool = fs::read(&path)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                    .and_then(|v| v["tool"].as_str().map(str::to_string))
+                    .unwrap_or_else(|| "an action".into());
+                out.push(tool);
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
     /// Absence means no recorded attempt. A partial file, interrupted write or
     /// missing result remains unknown. Receipts contain no tool arguments.
     pub fn status(&self, tool: &str, args: &Value) -> Result<Option<&'static str>> {
@@ -111,6 +137,17 @@ mod tests {
             Some("acknowledged")
         );
         assert!(restarted.begin("update", &args).is_err());
+    }
+    #[test]
+    fn a_restart_lists_what_it_cannot_know() {
+        let root = tempfile::tempdir().unwrap();
+        let l = ActionLedger::open(root.path(), "job-9").unwrap();
+        assert!(l.unknown().unwrap().is_empty());
+        let sent = l.begin("send_email", &json!({"to": "a@example.test"})).unwrap();
+        l.begin("write_file", &json!({"path": "x"})).unwrap();
+        assert_eq!(l.unknown().unwrap(), vec!["send_email", "write_file"], "both begun, neither acknowledged");
+        l.acknowledged(&sent).unwrap();
+        assert_eq!(ActionLedger::open(root.path(), "job-9").unwrap().unknown().unwrap(), vec!["write_file"], "after a restart, only the one never acknowledged");
     }
     #[test]
     fn concurrent_process_handles_admit_only_one_attempt() {

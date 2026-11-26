@@ -43,7 +43,8 @@ pub fn score(jobs: &[Job], month_microdollars: u64, today: &str) -> Scorecard {
             JobStatus::Done => s.done += 1,
             JobStatus::Failed => s.failed += 1,
             JobStatus::Stopped => s.stopped += 1,
-            JobStatus::Running => {}
+            // Waiting on the person is neither done nor failed yet.
+            JobStatus::Running | JobStatus::NeedsYou => {}
         }
         match j.grade {
             Some(g) if g > 0 => s.graded_good += 1,

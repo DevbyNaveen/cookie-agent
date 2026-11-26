@@ -1438,6 +1438,8 @@ function onTeamEvent(ev) {
       setStatus(ev.agent, "Thinking…");
       setMood(ev.agent, "received");
       if (ev.trigger.kind === "handoff" && ev.trigger.from) glanceBetween(ev.trigger.from, ev.agent);
+      // Picked up again after Cookie closed: said where it happens, before it carries on.
+      if (ev.resumed && current?.id === chatOf(job) && view === "chat") $("log").append(event([icon("sparkle"), "Cookie closed while this was running; ", strong(agentById(ev.agent)?.name ?? "it"), " picked up where it stopped"]));
       if (current?.id === chatOf(job)) { $("suggest").hidden = true; attachLive(job); syncSend(); }
       break;
     }
@@ -1508,6 +1510,8 @@ function onTeamEvent(ev) {
       renderNeeds();
       renderRoster();
       setMood(ev.approval.agent, "waiting");
+      // In the list too: it waits on you, not on its work.
+      setStatus(ev.approval.agent, "Needs you");
       if (current?.id === ev.approval.agent && view === "chat") {
         // What it wrote so far stays above the card; what it writes after goes below.
         for (const job of live.values()) if (job.agent === ev.approval.agent && job.ui) { job.ui.split = job.acc.length; clearPending(job); }
@@ -1553,6 +1557,8 @@ function onTeamEvent(ev) {
       break;
     }
     case "board": onBoardChanged(ev.id); break;
+    // A council proposal moved on: the desk that shows it redraws.
+    case "council": refreshDesk(); break;
     case "chat_changed": {
       // An answer from an agent brought in with @ was kept: redraw from the record.
       if (current?.id === ev.agent && view === "chat" && ![...live.values()].some((j) => j.agent === ev.agent && !j.inbound)) {
@@ -1561,7 +1567,7 @@ function onTeamEvent(ev) {
       }
       break;
     }
-    case "question": onQuestion(ev.question); break;
+    case "question": onQuestion(ev.question); if (ev.question?.agent) setStatus(ev.question.agent, "Needs you"); break;
     case "todos": onTodos(ev); break;
     case "learned": onLearned(ev); break;
     case "answered": {
@@ -1577,7 +1583,7 @@ function onTeamEvent(ev) {
       });
       renderNeeds();
       renderRoster();
-      if (ev.agent && busy.has(ev.agent)) setMood(ev.agent, "working");
+      if (ev.agent && busy.has(ev.agent)) { setMood(ev.agent, "working"); if (!approvals.some((a) => a.agent === ev.agent)) setStatus(ev.agent, "Working…"); }
       break;
     }
     case "would": {
