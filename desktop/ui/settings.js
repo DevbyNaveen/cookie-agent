@@ -358,6 +358,11 @@ const SETTINGS = {
       setRow("Text it reads is never an instruction", "Files, pages, mail and other agents' words are data. They can't tell an agent to send or delete.", el("span", "status-pill ok", "On")),
       setRow("Sending, deleting and paying ask you first", "No agent earns the right to skip that, however good its record.", el("span", "status-pill ok", "Always")),
       setRow("Every action is signed", "Each agent keeps a hashed, chained, signed log of what it did.", el("span", "status-pill ok", "On")),
+      setRow("Every action has a receipt", "What it did, the words of yours it stands on, anything in it you didn't write, and how it ended.",
+        button("Export…", "quiet small", async () => {
+          try { const path = await call("receipts_export"); toast("Receipts saved", path, "good"); if (!Api.web) Api.reveal(path); }
+          catch (e) { toast("Couldn't export", String(e), "error"); }
+        })),
     );
     const ch = el("div", "group edit");
     const model = input(s.challenge_model ?? "", "model for the public challenge, or empty for off", { spellcheck: false });

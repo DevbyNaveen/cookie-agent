@@ -22,6 +22,9 @@ pub enum Decision {
 #[derive(Debug, Default, Clone)]
 pub struct Provenance {
     trusted: Vec<Vec<String>>,
+    /// The person's messages as they wrote them (clipped), for the quote a
+    /// receipt carries (`because`). Same order as `trusted`.
+    said: Vec<String>,
     untrusted_seen: bool,
     /// Web addresses that appeared, word for word, in what a finding tool
     /// returned (`Policy::found_by`): a search's results, a page's links.
@@ -56,12 +59,69 @@ fn normalize(text: &str) -> String {
     text.trim().to_lowercase()
 }
 
+/// A message cut into sentences, each trimmed: at `.`, `!`, `?` followed by a
+/// space or the end, and at line breaks. A dot inside an address stays.
+fn sentences(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    for (i, &(at, c)) in chars.iter().enumerate() {
+        let next = chars.get(i + 1).map(|&(_, n)| n);
+        let ends = c == '\n' || (matches!(c, '.' | '!' | '?') && next.is_none_or(char::is_whitespace));
+        if ends {
+            let end = at + c.len_utf8();
+            let s = text[start..end].trim();
+            if !s.is_empty() {
+                out.push(s);
+            }
+            start = end;
+        }
+    }
+    let rest = text[start..].trim();
+    if !rest.is_empty() {
+        out.push(rest);
+    }
+    out
+}
+
+fn clip_quote(text: &str) -> String {
+    let t = text.trim();
+    if t.chars().count() > 300 { format!("{}…", t.chars().take(300).collect::<String>().trim_end()) } else { t.to_string() }
+}
+
 impl Provenance {
     pub(crate) fn trust(&mut self, text: &str) {
         let words = words(text);
         if !words.is_empty() {
             self.trusted.push(words);
+            self.said.push(text.chars().take(8000).collect());
         }
+    }
+
+    /// The person's own sentence that holds `value` word for word, newest
+    /// message first: what a receipt quotes as "because you said …". None when
+    /// they never wrote it.
+    pub fn because(&self, value: &str) -> Option<String> {
+        let value = words(value);
+        if value.is_empty() {
+            return None;
+        }
+        let holds = |text: &[String]| text.windows(value.len()).any(|w| w == value.as_slice());
+        for (said, written) in self.said.iter().zip(&self.trusted).rev() {
+            if !holds(written) {
+                continue;
+            }
+            // The sentence it is in; the whole message when no sentence alone holds it
+            // (a value split across a line break, say).
+            let sentence = sentences(said).into_iter().find(|s| holds(&words(s))).unwrap_or(said.as_str());
+            return Some(clip_quote(sentence));
+        }
+        None
+    }
+
+    /// The person's latest message, for an action nothing guarded chose.
+    pub fn request(&self) -> Option<String> {
+        self.said.last().map(|s| clip_quote(s))
     }
 
     pub(crate) fn observe(&mut self, message: &Message) {
@@ -159,7 +219,17 @@ fn leaves(value: &Value, out: &mut Vec<String>) -> bool {
     }
 }
 
+/// Every checkable value a guarded argument holds (see `leaves`), for receipts.
+pub(crate) fn leaves_of(value: &Value, out: &mut Vec<String>) {
+    let _ = leaves(value, out);
+}
+
 impl Policy {
+    /// Whether `value` is a destination this policy allows without the person typing it.
+    pub(crate) fn allows(&self, value: &str) -> bool {
+        self.allowed.contains(&normalize(value))
+    }
+
     /// A destination that may be used even when the person didn't type it.
     pub fn allow(mut self, value: &str) -> Self {
         self.allowed.push(normalize(value));
@@ -240,7 +310,9 @@ impl Policy {
                     continue;
                 }
                 if provenance.origin_of(&value).is_untrusted() {
-                    if !self.confirm_data {
+                    // A read that goes where data says (a URL a page wrote) is how the
+                    // person's things leave without a send: never put to them, refused.
+                    if !self.confirm_data || spec.effect == Effect::Read {
                         return Decision::Deny(format!(
                             "`{arg}` = \"{value}\" came from content the person didn't write, so it can't choose who, where or how much. Ask the person to say it themselves."
                         ));
@@ -394,10 +466,10 @@ mod tests {
             }
             d => panic!("{d:?}"),
         }
-        // A guarded read (a URL can carry data out) is asked too, not let through.
+        // A guarded read (a URL can carry data out) is refused even so: a look-up is never put to the person.
         let fetch = spec(Effect::Read, &["url"]);
         assert!(matches!(Policy::default().confirm_data().decide(&fetch, &json!({"url": "https://x.io/?d=1"}), &p, "get".into()),
-                         Decision::Ask { .. }));
+                         Decision::Deny(_)));
         // What the person wrote carries no warning.
         let p = seen(&[Message::user("email anna@x.com"), Message::untrusted("x", Source::Web)]);
         match Policy::default().confirm_data().decide(&pay, &json!({"to": "anna@x.com"}), &p, "send".into()) {

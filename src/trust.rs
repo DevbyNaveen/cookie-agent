@@ -229,6 +229,56 @@ mod tests {
         assert_eq!(asked.load(Ordering::SeqCst), 2, "a folder from the page is still put to the person");
     }
 
+    /// One tool with many actions (an app's): trust earned on one never covers another, and never a send.
+    struct AppCall(crate::tool::ToolSpec, Arc<AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl Tool for AppCall {
+        fn spec(&self) -> &crate::tool::ToolSpec {
+            &self.0
+        }
+        async fn call(&self, _: serde_json::Value) -> std::result::Result<String, String> {
+            self.1.fetch_add(1, Ordering::SeqCst);
+            Ok("done".into())
+        }
+        fn judged(&self, args: &serde_json::Value) -> Option<crate::tool::ToolSpec> {
+            let mut s = self.0.clone();
+            let action = args["name"].as_str().unwrap_or_default();
+            s.effect = if action.contains("SEND") { Effect::Outbound } else { Effect::Write };
+            s.description = format!("{}\n{action}", s.description);
+            Some(s)
+        }
+    }
+
+    #[tokio::test]
+    async fn trust_earned_on_one_app_action_never_answers_for_another_or_for_a_send() {
+        let trust = EarnedTrust::in_memory(1);
+        let (asked, ran) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let run = |action: &'static str| {
+            let (trust, asked, ran) = (trust.clone(), asked.clone(), ran.clone());
+            async move {
+                let p = Arc::new(Scripted::new(vec![
+                    Scripted::call("p", "read_page", json!({})),
+                    Scripted::call("c", "connector_call", json!({"name": action, "arguments": {}})),
+                    Scripted::text("ok"),
+                ]));
+                let spec = tool("connector_call", "app", json!({"type": "object"}), Effect::Write, |_| async move { Ok(String::new()) }).spec().clone();
+                Agent::with_provider(p, "m").tool(page()).tool(AppCall(spec, ran)).earned_trust(trust)
+                    .approver(PersonApprover(move |_: &ApprovalRequest| { asked.fetch_add(1, Ordering::SeqCst); true }))
+                    .run_in(&mut Session::in_memory(), Message::user("tidy my inbox"), &Default::default()).await.unwrap();
+            }
+        };
+        run("gmail::GMAIL_ADD_LABEL").await;
+        run("gmail::GMAIL_ADD_LABEL").await;
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "labelling earned its trust");
+        run("gmail::GMAIL_CREATE_DRAFT").await;
+        assert_eq!(asked.load(Ordering::SeqCst), 2, "a different action of the same tool earns its own");
+        run("gmail::GMAIL_SEND_EMAIL").await;
+        run("gmail::GMAIL_SEND_EMAIL").await;
+        assert_eq!(asked.load(Ordering::SeqCst), 4, "a send is put to the person every time");
+        assert_eq!(ran.load(Ordering::SeqCst), 5);
+    }
+
     #[tokio::test]
     async fn earned_trust_survives_a_restart_and_can_be_revoked() {
         let dir = tempfile::tempdir().unwrap();

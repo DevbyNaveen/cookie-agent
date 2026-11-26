@@ -293,12 +293,12 @@ mod apps {
         (!app.is_empty() && !action.is_empty() && !NOT_APPS.contains(&app)).then_some(app)
     }
 
-    /// Whether an app action only reads: its first word after the app's name is a reading verb.
-    pub(super) fn reads_only(name: &str) -> bool {
-        let Some(app) = app_of(name) else { return false };
+    /// The words of an app action after its app's name: `gmail::GMAIL_SEND_EMAIL` → SEND, EMAIL.
+    fn action_words(name: &str) -> Vec<String> {
+        let Some(app) = app_of(name) else { return Vec::new() };
         let action = name.split_once("::").map(|(_, a)| a).unwrap_or_default().to_ascii_uppercase();
         let flat = app.replace(['_', '-'], "").to_ascii_uppercase();
-        let mut words = action.split('_').peekable();
+        let mut words = action.split('_').filter(|w| !w.is_empty()).peekable();
         // The action names its app first (GMAIL_, GOOGLECALENDAR_), sometimes split (GOOGLE_CALENDAR_).
         let mut seen = String::new();
         while let Some(w) = words.peek() {
@@ -308,7 +308,63 @@ mod apps {
             seen.push_str(w);
             words.next();
         }
-        words.next().is_some_and(|verb| READ_VERBS.contains(&verb))
+        words.map(str::to_string).collect()
+    }
+
+    /// Whether an app action only reads: its first word after the app's name is a reading verb.
+    pub(super) fn reads_only(name: &str) -> bool {
+        action_words(name).first().is_some_and(|verb| READ_VERBS.contains(&verb.as_str()))
+    }
+
+    /// Words that make an action delete, pay or end something: it can't be taken back.
+    const DESTROY_WORDS: [&str; 16] = [
+        "DELETE", "TRASH", "REMOVE", "PURGE", "DESTROY", "ERASE", "CANCEL", "REFUND", "PAY", "CHARGE", "PURCHASE", "BUY", "TRANSFER", "WITHDRAW", "REVOKE", "UNSUBSCRIBE",
+    ];
+    /// Words that make an action reach someone else: it sends, posts, shares or invites.
+    const OUTBOUND_WORDS: [&str; 20] = [
+        "SEND", "REPLY", "FORWARD", "POST", "PUBLISH", "SHARE", "INVITE", "COMMENT", "MESSAGE", "TWEET", "NOTIFY", "BROADCAST", "MENTION", "DM",
+        "SUBMIT", "SCHEDULE", "RSVP", "ANNOUNCE", "TRANSMIT", "MAIL",
+    ];
+    /// Words of an action that only changes the person's own things.
+    const WRITE_WORDS: [&str; 26] = [
+        "DRAFT", "CREATE", "UPDATE", "ADD", "LABEL", "MODIFY", "MOVE", "MARK", "STAR", "UNSTAR", "PIN", "UNPIN", "RENAME", "EDIT", "SET", "INSERT",
+        "UPSERT", "APPEND", "COPY", "UPLOAD", "PATCH", "SAVE", "ARCHIVE", "UNARCHIVE", "TAG", "SORT",
+    ];
+    /// Argument names that choose who, where or how much: checked against the
+    /// person's own words, and put to them marked when they came from data.
+    const CHOOSING_ARGS: [&str; 26] = [
+        "to", "recipient", "recipients", "recipient_email", "recipient_emails", "cc", "bcc", "email", "emails", "email_address", "channel", "channel_id",
+        "channel_name", "user", "user_id", "users", "attendees", "phone", "phone_number", "number", "url", "webhook_url", "amount", "iban", "account",
+        "chat_id",
+    ];
+
+    /// What one app action really does, judged from its name and arguments:
+    /// its effect, and the arguments that choose who, where or how much.
+    /// Unknown verbs count as sending: asking once too often is the safe mistake.
+    pub(crate) fn judge(name: &str, args: &Value) -> (Effect, Vec<String>) {
+        let words = action_words(name);
+        let has = |set: &[&str]| words.iter().any(|w| set.contains(&w.as_str()));
+        let arguments = args.get("arguments").and_then(Value::as_object);
+        let guarded = |effect: Effect| -> Vec<String> {
+            if effect == Effect::Write {
+                return Vec::new();
+            }
+            arguments
+                .map(|a| a.keys().filter(|k| CHOOSING_ARGS.contains(&k.to_ascii_lowercase().as_str())).map(|k| format!("/arguments/{k}")).collect())
+                .unwrap_or_default()
+        };
+        // A calendar event with guests sends them an invitation.
+        let invites = arguments.is_some_and(|a| a.get("attendees").is_some_and(|v| v.as_array().is_some_and(|x| !x.is_empty()) || v.as_str().is_some_and(|s| !s.trim().is_empty())));
+        let effect = if has(&DESTROY_WORDS) {
+            Effect::Destroy
+        } else if has(&OUTBOUND_WORDS) || invites {
+            Effect::Outbound
+        } else if words.iter().find(|w| !matches!(w.as_str(), "BATCH" | "BULK")).is_some_and(|w| WRITE_WORDS.contains(&w.as_str())) {
+            Effect::Write
+        } else {
+            Effect::Outbound
+        };
+        (effect, guarded(effect))
     }
 
     /// The JSON the catalog answers with, without the briefing the gateway adds around it.
@@ -427,6 +483,20 @@ mod apps {
             app_of(name).ok_or_else(|| format!("`{name}` isn't an app action (they look like gmail::GMAIL_SEND_EMAIL)."))?;
             self.invoke.call(json!({"name": name, "arguments": args.get("arguments").cloned().unwrap_or_else(|| json!({}))})).await
         }
+        /// Each action as what it is: a send asks every time and earned trust never
+        /// answers for it; a recipient is checked against the person's words; and
+        /// trust earned on one action (labelling) never covers another (sending).
+        fn judged(&self, args: &Value) -> Option<ToolSpec> {
+            let name = args["name"].as_str().map(str::trim).unwrap_or_default();
+            let (effect, guarded_args) = judge(name, args);
+            let mut spec = self.spec.clone();
+            spec.effect = effect;
+            spec.guarded_args = guarded_args;
+            spec.parallel_safe = false;
+            spec.description = format!("{}\n\nThis action: {name}", spec.description);
+            Some(spec)
+        }
+
         fn preview(&self, args: &Value) -> String {
             let name = args["name"].as_str().unwrap_or("?");
             let app = app_of(name).unwrap_or("an app");
@@ -567,6 +637,29 @@ mod tests {
         let text = "── brief ──\n{\"tools\": [{\"name\": \"gmail::GMAIL_FETCH_EMAILS\", \"description\": \"[external] Fetch\", \"required_arguments\": []}, {\"name\": \"scrapling::get\"}]}\n── Working now ──";
         let out = found(text);
         assert!(out.contains("GMAIL_FETCH_EMAILS") && out.contains("\"run_with\": \"connector_actions\"") && !out.contains("scrapling"), "{out}");
+    }
+
+    /// One tool, many actions: each is judged as what it does, so sending asks
+    /// every time, a recipient is checked, and trust earned labelling never sends.
+    #[test]
+    fn each_app_action_is_judged_as_what_it_does() {
+        use super::apps::judge;
+        use crate::tool::Effect;
+        let send = serde_json::json!({"name": "gmail::GMAIL_SEND_EMAIL", "arguments": {"recipient_email": "a@x.com", "body": "hi"}});
+        assert_eq!(judge("gmail::GMAIL_SEND_EMAIL", &send), (Effect::Outbound, vec!["/arguments/recipient_email".to_string()]));
+        let args = |a: serde_json::Value| serde_json::json!({"arguments": a});
+        assert_eq!(judge("gmail::GMAIL_REPLY_TO_THREAD", &args(serde_json::json!({"thread_id": "t"}))).0, Effect::Outbound);
+        assert_eq!(judge("slack::SLACK_SENDS_A_MESSAGE", &args(serde_json::json!({"channel": "C1"}))), (Effect::Outbound, vec!["/arguments/channel".to_string()]));
+        assert_eq!(judge("gmail::GMAIL_MOVE_TO_TRASH", &args(serde_json::json!({}))).0, Effect::Destroy);
+        assert_eq!(judge("stripe::STRIPE_CREATE_REFUND", &args(serde_json::json!({"amount": 5}))), (Effect::Destroy, vec!["/arguments/amount".to_string()]));
+        assert_eq!(judge("gmail::GMAIL_CREATE_EMAIL_DRAFT", &args(serde_json::json!({"recipient_email": "a@x.com"}))), (Effect::Write, vec![]), "a draft sends nothing");
+        assert_eq!(judge("gmail::GMAIL_ADD_LABEL_TO_EMAIL", &args(serde_json::json!({}))).0, Effect::Write);
+        assert_eq!(judge("gmail::GMAIL_BATCH_MODIFY_MESSAGES", &args(serde_json::json!({}))).0, Effect::Write);
+        // An event with guests invites them; without, it is the person's own calendar.
+        assert_eq!(judge("googlecalendar::GOOGLECALENDAR_CREATE_EVENT", &args(serde_json::json!({"attendees": ["b@x.com"]}))).0, Effect::Outbound);
+        assert_eq!(judge("googlecalendar::GOOGLECALENDAR_CREATE_EVENT", &args(serde_json::json!({"summary": "gym"}))).0, Effect::Write);
+        // A verb Cookie doesn't know: treated as sending.
+        assert_eq!(judge("github::GITHUB_MERGE_PULL_REQUEST", &args(serde_json::json!({}))).0, Effect::Outbound);
     }
 
     use super::*;

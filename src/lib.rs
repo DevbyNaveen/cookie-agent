@@ -30,6 +30,7 @@ pub mod policy;
 pub mod provider;
 pub mod providers;
 pub mod quarantine;
+pub mod receipt;
 pub mod redact;
 pub mod replay;
 pub mod sandbox;

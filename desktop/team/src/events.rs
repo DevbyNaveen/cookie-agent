@@ -48,6 +48,8 @@ pub enum TeamEvent {
     Step { job: String, agent: String, id: String, name: String, doing: String, did: String, with: Option<String>, thread: Option<String>, sort: String, detail: Option<String> },
     /// The step finished.
     StepDone { job: String, agent: String, id: String, ok: bool },
+    /// What an action came to, and why it was allowed (`receipts`).
+    Receipt { job: String, agent: String, receipt: crate::receipts::ActionReceipt },
     /// One step a helper or contractor took, live: `n` is its number in the job, `state` is
     /// `running`, `done` or `failed`; `host`, the site it read or searched, when there is one.
     HelperStep { job: String, agent: String, n: usize, id: String, name: String, doing: String, did: String, state: String, host: Option<String> },
@@ -113,6 +115,7 @@ impl TeamEvent {
             | TeamEvent::Tool { agent, .. }
             | TeamEvent::Step { agent, .. }
             | TeamEvent::StepDone { agent, .. }
+            | TeamEvent::Receipt { agent, .. }
             | TeamEvent::Helper { agent, .. }
             | TeamEvent::HelperStep { agent, .. }
             | TeamEvent::HelperConflict { agent, .. }

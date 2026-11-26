@@ -750,7 +750,7 @@ function line(l) {
     const g = { steps: new Map(), closed: true, el: el("div", "steps") };
     const list = l.steps ?? l.text.split("\n").filter(Boolean).map((did) => ({ did, status: "ok" }));
     // Times come from the record; a step without one shows none rather than a guess.
-    list.forEach((s, i) => g.steps.set("h" + i, { id: "h" + i, did: s.did, doing: s.did, ok: s.status === "ok", status: s.status, approval: s.approval, with: s.with, sort: s.kind, detail: s.detail, start: 0, end: s.ms ?? null, saved: true, thread: s.thread?.task, t: s.thread ? savedThread(s.thread) : null }));
+    list.forEach((s, i) => g.steps.set("h" + i, { id: "h" + i, did: s.did, doing: s.did, ok: s.status === "ok", status: s.status, approval: s.approval, with: s.with, sort: s.kind, detail: s.detail, start: 0, end: s.ms ?? null, saved: true, thread: s.thread?.task, t: s.thread ? savedThread(s.thread) : null, receipt: s.receipt ?? null }));
     g.saved = true;
     g.conflicts = list.find((s) => s.thread?.conflicts?.length)?.thread.conflicts ?? [];
     paintGroup(g);
@@ -1186,7 +1186,7 @@ function paintGroup(g) {
   const tally = [searches && plural(searches, "search", "searches"), pages && plural(pages, "page")].filter(Boolean).join(" · ");
   const head = el("button", "steps-head");
   head.type = "button";
-  const extra = plain.length > 1 || threads.length || mates.length || plain.some((s) => s.approval || (s.status && s.status !== "ok") || (s.end == null && !s.saved && s.ok === false));
+  const extra = plain.length > 1 || threads.length || mates.length || plain.some((s) => s.receipt || s.approval || (s.status && s.status !== "ok") || (s.end == null && !s.saved && s.ok === false));
   if (running) {
     head.classList.add("live");
     let what;
@@ -1216,6 +1216,7 @@ function paintGroup(g) {
     const odd = { failed: "didn't work", denied: "you said no", blocked: "not allowed", interrupted: "interrupted" };
     const flags = [...new Set(steps.filter((s) => !s.thread).map((s) => odd[s.status ?? (s.ok ? "ok" : "failed")]).filter(Boolean))];
     if (threads.some((t) => t.state === "failed")) flags.push("a helper couldn't finish");
+    if (steps.some((s) => s.receipt?.outcome === "unknown")) flags.push("may have run: check");
     if ((g.conflicts ?? g.job?.conflicts ?? []).length) flags.push("helpers disagreed");
     if (flags.length) head.append(el("span", "steps-flag", flags.join(" · ")));
   }
@@ -1282,12 +1283,45 @@ function paintGroup(g) {
       const ms = done ? stepMs(s) : now - s.start;
       if (ms != null) r.append(el("span", "steps-time", secs(ms)));
       list.append(r);
+      if (s.receipt) list.append(receiptLine(s.receipt));
     }
     kids.push(list);
   }
   g.el.classList.toggle("has-threads", !!showCrew);
   g.el.replaceChildren(...kids);
   if (threadView && g.steps.size && [...g.steps.values()].some((s) => threadView.key && s.thread === threadView.key)) renderThread();
+}
+
+/** Why an action was allowed, under its step: the person's own words, their yes, what came from data, how it ended. */
+function receiptLine(r) {
+  const box = el("div", "receipt" + (r.outcome === "unknown" ? " unknown" : r.from_data?.length ? " data" : ""));
+  const why = [];
+  const said = [...new Set((r.because ?? []).filter((b) => b.kind === "said" || b.kind === "request").map((b) => b.quote))];
+  if (said.length) why.push(["Because you said ", ...said.flatMap((q, i) => [i ? " and " : "", el("q", null, q)])]);
+  const kinds = new Set((r.because ?? []).map((b) => b.kind));
+  if (kinds.has("approved")) why.push(["you said yes"]);
+  if (kinds.has("earned_trust")) why.push(["you've said yes to this every time"]);
+  for (const b of r.because ?? []) {
+    if (b.kind === "allowed_destination") why.push([`${b.value} is a destination you allowed`]);
+    if (b.kind === "found") why.push([`its own search found ${b.value}`]);
+  }
+  const text = el("span", "receipt-why");
+  why.forEach((parts, i) => {
+    if (i) text.append(", and ");
+    // The first ground starts the sentence.
+    const [head, ...rest] = parts;
+    text.append(i === 0 && typeof head === "string" ? head.charAt(0).toUpperCase() + head.slice(1) : head, ...rest);
+  });
+  if (!why.length) text.append(r.decision === "refused" ? "Not allowed" : r.decision === "declined" ? "You said no" : "Nothing of yours chose it");
+  box.append(icon("shield"), text);
+  if (r.from_data?.length) {
+    const d = el("span", "receipt-data");
+    d.append("Not from you: ", ...r.from_data.flatMap((v, i) => [i ? ", " : "", el("code", null, v)]));
+    box.append(d);
+  }
+  const ends = { done: "Done", failed: "Didn't work", declined: "You said no", refused: "Not allowed", not_run: "Not run", unknown: "May have run: check before trying again" }[r.outcome];
+  if (ends) { const o = el("span", "receipt-outcome " + r.outcome, ends); if (r.note && r.outcome !== "done") o.title = r.note; box.append(o); }
+  return box;
 }
 
 /** A step's duration: from the record when saved, from the clock when watched live. */
@@ -1454,6 +1488,12 @@ function onTeamEvent(ev) {
       const job = live.get(ev.job);
       const s = job?.groups?.at(-1)?.steps.get(ev.id) ?? job?.groups?.flatMap((g) => [...g.steps.values()]).find((x) => x.id === ev.id);
       if (s) { s.end = Date.now(); s.ok = ev.ok; s.sub = null; paintGroup(job.groups.find((g) => g.steps.has(ev.id))); }
+      break;
+    }
+    case "receipt": {
+      const job = live.get(ev.job);
+      const g = job?.groups?.find((x) => x.steps.has(ev.receipt.id));
+      if (g) { g.steps.get(ev.receipt.id).receipt = ev.receipt; paintGroup(g); }
       break;
     }
     case "text": {

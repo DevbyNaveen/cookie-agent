@@ -429,6 +429,9 @@ pub struct Job {
     /// It was cut off by Cookie closing and picked up again as this job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumed_as: Option<String>,
+    /// Every action it took: why it was allowed and what it came to (`receipts`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub receipts: Vec<crate::receipts::ActionReceipt>,
 }
 
 fn is_zero(n: &u32) -> bool {

@@ -117,6 +117,9 @@ pub enum Event {
     /// `from` was out of reach, so `to` was asked the same turn
     /// (`Agent::fallback_models`).
     FellBack { from: String, to: String, reason: String },
+    /// What an action came to, why it was allowed, and which of its values
+    /// the person didn't write (`receipt`). Sent once its result is known.
+    Receipt(crate::receipt::Receipt),
 }
 
 /// How many times a cut-off reply is continued before the run gives up.
@@ -886,6 +889,30 @@ mod tests {
                 .run("email anna@x.com").await.unwrap();
         }
         assert_eq!(sent.load(Ordering::SeqCst), 1, "admission survives a new agent instance");
+    }
+
+    #[tokio::test]
+    async fn every_action_comes_with_a_receipt_of_its_grounds_and_outcome() {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let (a, _) = agent(vec![
+            Scripted::call("c1", "send_email", json!({"to": "anna@x.com"})),
+            Scripted::call("c2", "send_email", json!({"to": "evil@x.com"})),
+            Scripted::text("Sent to Anna."),
+        ]);
+        let a = a.tool(send_email(sent)).approver(FnApprover(|_: &ApprovalRequest| true));
+        let mut receipts = Vec::new();
+        let mut s = Session::in_memory();
+        a.run_streaming_all(&mut s, vec![Message::user("Tell anna@x.com I'm late. Thanks")], &RunControl::default(), &mut |e| {
+            if let Event::Receipt(r) = e { receipts.push(r) }
+        })
+        .await
+        .unwrap();
+        assert_eq!(receipts.len(), 2, "{receipts:?}");
+        assert_eq!((receipts[0].decision.as_str(), receipts[0].outcome.as_str()), ("approved", "done"));
+        assert_eq!(receipts[0].said(), vec!["Tell anna@x.com I'm late."]);
+        // Nobody wrote evil@x.com, and nothing untrusted was read: the model made it up, and the receipt says no one said it.
+        assert!(receipts[1].said().is_empty(), "{:?}", receipts[1]);
+        assert_eq!(receipts[1].from_data, vec!["to = evil@x.com".to_string()]);
     }
 
     #[tokio::test]

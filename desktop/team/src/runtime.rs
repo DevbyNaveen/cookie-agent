@@ -229,6 +229,24 @@ impl Team {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// The rules every job of `rec` runs under, and its twin rehearsals too (`twin`).
+    pub(crate) async fn job_policy(&self, rec: &AgentRecord) -> cookie_harness::policy::Policy {
+        // Your own agents are inside the team: their addresses are safe to write
+        // to even when one was only read from a tool result (a fresh hire's reply).
+        // A change to the person's own files, a setting, or a new hire is put to them every time.
+        let mut policy = cookie_harness::policy::Policy::default().always_ask(crate::access::WRITE_TOOL).always_ask("settings_set").always_ask("hire_agent")
+            // Research opens the pages its own search found, and the links on pages it read; never one it made up.
+            .found_by("web_search").found_by("read_url").found_by("read_page").found_by("browser_read")
+            // A recipient, channel or amount found in a thread or a bill is put to the person, marked
+            // "not from you", instead of refused: they can recognise it; earned trust never answers it.
+            // Reads chosen by data stay refused (`Policy::decide`).
+            .confirm_data();
+        for a in self.agents().await.iter().filter(|a| a.id != rec.id && a.shadow_of.is_none() && !crate::bench::is_probe(&a.id)) {
+            policy = policy.allow(&format!("@{}", self.slug_of(a)));
+        }
+        policy
+    }
+
     async fn build_agent(self: &Arc<Self>, rec: &AgentRecord, trigger: &Trigger, mode: Mode, job: &str, text: &str, log: Arc<Mutex<Vec<crate::store::ApprovalRecord>>>, built: &mut Built) -> Result<Agent, String> {
         let settings = self.settings().await;
         // Teammates by name: never the throwaway copies an exam runs (`is_probe`).
@@ -325,15 +343,7 @@ impl Team {
             base.push_str("\n\n");
             base.push_str(&n);
         }
-        // Your own agents are inside the team: their addresses are safe to write
-        // to even when one was only read from a tool result (a fresh hire's reply).
-        // A change to the person's own files, a setting, or a new hire is put to them every time.
-        let mut policy = cookie_harness::policy::Policy::default().always_ask(crate::access::WRITE_TOOL).always_ask("settings_set").always_ask("hire_agent")
-            // Research opens the pages its own search found, and the links on pages it read; never one it made up.
-            .found_by("web_search").found_by("read_url").found_by("read_page").found_by("browser_read");
-        for a in self.agents().await.iter().filter(|a| a.id != rec.id && a.shadow_of.is_none() && !crate::bench::is_probe(&a.id)) {
-            policy = policy.allow(&format!("@{}", self.slug_of(a)));
-        }
+        let policy = self.job_policy(rec).await;
         let mut agent = Agent::new(&rec.model)
             .map_err(|e| e.to_string())?
             .instructions(base)
@@ -505,6 +515,7 @@ impl Team {
         let marks = Arc::new(Mutex::new((0u32, false)));
         let mut built = Built { ledger_scope: resume.as_ref().map(|r| r.scope.clone()), ..Built::default() };
         let switched: Arc<Mutex<Vec<String>>> = Default::default();
+        let receipts: Arc<Mutex<crate::receipts::Collector>> = Default::default();
         let mut added: Vec<Message> = Vec::new();
         self.mark_running(&rec.id, &job_id, &text, &trigger, started_at, built.ledger_scope.as_deref());
         // Tests and shadows don't touch the agent's real conversation.
@@ -532,7 +543,7 @@ impl Team {
             }
             }
             let (team, aid, jid) = (self.clone(), rec.id.clone(), job_id.clone());
-            let (tu, us, mk, ca, sw) = (tools_used.clone(), usage.clone(), marks.clone(), cache.clone(), switched.clone());
+            let (tu, us, mk, ca, sw, rc) = (tools_used.clone(), usage.clone(), marks.clone(), cache.clone(), switched.clone(), receipts.clone());
             let mut forward = move |event: Event| match event {
                 Event::TextDelta(text) => team.emit(TeamEvent::Text { job: jid.clone(), agent: aid.clone(), text }),
                 Event::ToolCallStarted { id, name } => {
@@ -551,7 +562,12 @@ impl Team {
                     // The same key the helper's own events carry, so the screen ties them to this step.
                     let thread = crate::steps::thread_key(&name, &args);
                     let (kind, detail) = crate::steps::brief(&name, &args);
+                    rc.lock().unwrap().words(&id, &did);
                     team.emit(TeamEvent::Step { job: jid.clone(), agent: aid.clone(), id, name, doing, did, with, thread, sort: kind.into(), detail })
+                }
+                Event::Receipt(r) => {
+                    let receipt = rc.lock().unwrap().add(r);
+                    team.emit(TeamEvent::Receipt { job: jid.clone(), agent: aid.clone(), receipt });
                 }
                 Event::ToolFinished { id, is_error } => team.emit(TeamEvent::StepDone { job: jid.clone(), agent: aid.clone(), id, ok: !is_error }),
                 Event::Steered { text } => {
@@ -651,6 +667,7 @@ impl Team {
             switched: switched.lock().unwrap().clone(),
             resumed_from: resume.map(|r| r.of_job),
             resumed_as: None,
+            receipts: receipts.lock().unwrap().take(),
         };
         let _ = util::append_jsonl(&self.paths.jobs(&rec.id), &job);
         self.clear_running(&rec.id);
@@ -762,6 +779,12 @@ impl Team {
         // Each call's own record from the trace: when it started and ended, and what was decided about it.
         let facts = call_facts(&self.paths.trace(id));
         let threads = crate::threads::load(self, id);
+        // Every action's receipt, by its call id.
+        let mut receipts: HashMap<String, crate::receipts::ActionReceipt> = util::read_jsonl::<Job>(&self.paths.jobs(id))
+            .into_iter()
+            .flat_map(|j| j.receipts)
+            .map(|r| (r.receipt.id.clone(), r))
+            .collect();
         let mut results: HashMap<String, (String, bool)> = HashMap::new();
         for m in session.messages() {
             for c in m.content() {
@@ -852,6 +875,7 @@ impl Team {
                                 }
                             })
                         }),
+                        receipt: receipts.remove(call_id),
                     };
                     let line = if status == "ok" { did } else { format!("{did} ({status})") };
                     match out.last_mut() {
@@ -1130,6 +1154,9 @@ pub struct StepLine {
     /// A helper or contractor it sent: its own thread.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread: Option<crate::threads::ThreadRecord>,
+    /// Why it was allowed and what it came to, when it changed something (`receipts`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<crate::receipts::ActionReceipt>,
 }
 
 /// What the trace kept about one call.

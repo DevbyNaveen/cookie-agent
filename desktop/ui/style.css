@@ -1973,3 +1973,16 @@ li.agent.active .main-star { box-shadow: 0 0 0 2px var(--raise-2, var(--rail)); 
 .vote.no .vote-mark { background: rgb(236 106 94 / .14); color: var(--danger); }
 .vote-changed { font-size: 11.5px; color: var(--warn); }
 .vote-reason { grid-column: 2 / -1; color: var(--text-2); line-height: 1.45; }
+
+/* Receipts: why an action was allowed, under its step. */
+.receipt { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; max-width: 560px; margin: -1px 0 4px; padding: 5px 9px; border-radius: 9px; background: var(--raise); color: var(--text-2); font-size: 12.5px; line-height: 1.45; }
+.receipt > svg { width: 12px; height: 12px; flex: none; align-self: center; color: var(--text-3); }
+.receipt-why { flex: 1 1 260px; min-width: 0; }
+.receipt-why q { color: var(--text); quotes: "“" "”"; }
+.receipt-data { flex-basis: 100%; color: var(--warn); }
+.receipt-data code { font: 11.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 0 4px; border-radius: 5px; background: rgb(224 166 74 / .12); overflow-wrap: anywhere; }
+.receipt-outcome { margin-left: auto; font-size: 11.5px; padding: 1px 7px; border-radius: 9px; background: var(--raise-2); white-space: nowrap; }
+.receipt-outcome.done { color: #3fb950; background: rgb(63 185 80 / .12); }
+.receipt-outcome.failed, .receipt-outcome.refused { color: var(--danger); background: rgb(229 72 77 / .12); }
+.receipt-outcome.unknown { color: var(--warn); background: rgb(224 166 74 / .14); white-space: normal; }
+.receipt.unknown { box-shadow: inset 2px 0 0 var(--warn); }

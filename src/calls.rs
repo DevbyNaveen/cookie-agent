@@ -87,6 +87,9 @@ impl Agent {
         let mut outcomes: Vec<Option<(String, bool)>> = vec![None; calls.len()];
         let mut approved: Vec<(usize, Arc<dyn Tool>)> = Vec::new();
         let mut stop = Stop::No;
+        // Each call as the policy judges it: a tool with many actions behind one
+        // name (an app's) says what this call does (`Tool::judged`).
+        let mut specs: Vec<Option<crate::tool::ToolSpec>> = vec![None; calls.len()];
 
         // Actions that need a person, put to them together once every call is decided.
         let mut asks: Vec<(usize, Arc<dyn Tool>, ApprovalRequest)> = Vec::new();
@@ -119,9 +122,10 @@ impl Agent {
                 outcomes[index] = Some((format!("There is no tool called `{name}`."), true));
                 continue;
             };
+            let spec = crate::tool::judged_spec(tool.as_ref(), args);
             // The same change twice is one change: the second is answered
             // with what the first returned, never sent again.
-            if tool.spec().effect != Effect::Read {
+            if spec.effect != Effect::Read {
                 if let Some(earlier) = loop_guard.already_done(name, args) {
                     outcomes[index] = Some((format!("{ALREADY_DONE}{earlier}"), false));
                     continue;
@@ -138,7 +142,8 @@ impl Agent {
                     continue;
                 }
             }
-            match policy.decide(tool.spec(), args, provenance, tool.preview(args)) {
+            specs[index] = Some(spec.clone());
+            match policy.decide(&spec, args, provenance, tool.preview(args)) {
                 Decision::Allow => {
                     decided.push((index, "allowed"));
                     approved.push((index, tool));
@@ -149,14 +154,14 @@ impl Agent {
                     outcomes[index] = Some((NOT_RUN_CANCELLED.into(), true));
                 }
                 // Earned trust answers only for values the person wrote; data is always put to them.
-                Decision::Ask { ref from_data, .. } if from_data.is_empty() && !policy.always_asks(name) && self.trust.as_ref().is_some_and(|t| t.allows(tool.spec())) => {
+                Decision::Ask { ref from_data, .. } if from_data.is_empty() && !policy.always_asks(name) && self.trust.as_ref().is_some_and(|t| t.allows(&spec)) => {
                     on_event(Event::RanOnEarnedTrust { tool: name.clone() });
                     decided.push((index, "earned_trust"));
                     approved.push((index, tool));
                 }
                 Decision::Ask { preview, reason, from_data } => {
                     on_event(Event::AskedPerson { tool: name.clone(), preview: preview.clone() });
-                    let request = ApprovalRequest { tool: name.clone(), effect: tool.spec().effect, preview, reason, from_data };
+                    let request = ApprovalRequest { tool: name.clone(), effect: spec.effect, preview, reason, from_data };
                     asks.push((index, tool, request));
                 }
                 Decision::Deny(reason) => {
@@ -181,8 +186,8 @@ impl Agent {
                 // A short or missing answer is a no.
                 let yes = answers.get(position).copied().unwrap_or(false);
                 // Only a person's answer counts, and a cancelled wait is no answer.
-                if let (Some(trust), true, false) = (&self.trust, approver.is_person(), cancel.is_cancelled()) {
-                    if let Err(error) = trust.record(tool.spec(), yes) {
+                if let (Some(trust), true, false, Some(spec)) = (&self.trust, approver.is_person(), cancel.is_cancelled(), specs[index].as_ref()) {
+                    if let Err(error) = trust.record(spec, yes) {
                         tracing::warn!(%error, "could not record the approval for earned trust");
                     }
                 }
@@ -201,15 +206,17 @@ impl Agent {
             approved.sort_by_key(|(index, _)| *index);
         }
         // What ran and what it was, for what is remembered afterwards.
+        let effect_of = |index: usize, tool: &Arc<dyn Tool>| specs[index].as_ref().map_or(tool.spec().effect, |s| s.effect);
         let ran: Vec<(usize, Effect, String)> =
-            approved.iter().map(|(index, tool)| (*index, tool.spec().effect, tool.spec().name.clone())).collect();
+            approved.iter().map(|(index, tool)| (*index, effect_of(*index, tool), tool.spec().name.clone())).collect();
 
         let run_one = |index: usize, tool: Arc<dyn Tool>| {
             let (id, name, args) = calls[index].clone();
+            let effect = effect_of(index, &tool);
             let span = telemetry::tool_span(&name, &id);
             let recorder = span.clone();
             async move {
-                let attempt = if tool.spec().effect != Effect::Read {
+                let attempt = if effect != Effect::Read {
                     match self.action_ledger.as_ref().map(|ledger|ledger.begin(&name,&args)).transpose() {
                         Ok(key) => key,
                         Err(e) => return (index, Err(e.to_string())),
@@ -269,6 +276,19 @@ impl Agent {
             }
         }
 
+        // A receipt for every action that reached the policy: why it was
+        // allowed, what came from data, and what it came to.
+        decided.sort_by_key(|(index, _)| *index);
+        for &(index, decision) in &decided {
+            let (id, _, args) = &calls[index];
+            let Some(spec) = specs[index].as_ref() else { continue };
+            if !crate::receipt::Receipt::wanted(spec) {
+                continue;
+            }
+            let result = outcomes[index].as_ref().map(|(o, e)| (o.as_str(), *e));
+            on_event(Event::Receipt(crate::receipt::Receipt::of(id, spec, args, policy, provenance, decision, result)));
+        }
+
         let results = calls
             .iter()
             .zip(outcomes)
@@ -277,7 +297,6 @@ impl Agent {
                 Content::ToolResult { id: id.clone(), output, is_error }
             })
             .collect();
-        decided.sort_by_key(|(index, _)| *index);
         (results, stop, decided)
     }
 

@@ -186,6 +186,21 @@ pub trait Tool: Send + Sync {
     fn preview(&self, args: &Value) -> String {
         format!("{} {}", self.spec().name, args)
     }
+
+    /// This one call as the policy must judge it, when the tool does many
+    /// different things behind one name (an app's actions: label, draft, send,
+    /// delete). The returned spec keeps the tool's name and gives this call's
+    /// own effect, the arguments that choose who, where or how much, and a
+    /// description of its own so earned trust is counted per action, never
+    /// for the whole tool. `None` (the default): the tool's own spec.
+    fn judged(&self, _args: &Value) -> Option<ToolSpec> {
+        None
+    }
+}
+
+/// The spec a call is judged by: its own (`Tool::judged`), else the tool's.
+pub(crate) fn judged_spec(tool: &dyn Tool, args: &Value) -> ToolSpec {
+    tool.judged(args).filter(|s| s.name == tool.spec().name).unwrap_or_else(|| tool.spec().clone())
 }
 
 type PreviewFn = Box<dyn Fn(&Value) -> String + Send + Sync>;

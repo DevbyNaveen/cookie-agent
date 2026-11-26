@@ -10,6 +10,7 @@ mod steps;
 mod threads;
 mod failover;
 pub mod council;
+pub mod receipts;
 mod guide;
 mod appsettings;
 pub mod cage;
