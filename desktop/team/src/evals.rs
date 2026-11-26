@@ -151,6 +151,11 @@ impl Team {
     /// skills and notes; every change it would make recorded and refused;
     /// `tuning` when the copy runs with other settings.
     pub(crate) async fn run_probe_job(self: &Arc<Self>, probe: &AgentRecord, input: &str, trigger: Trigger, tuning: Option<crate::tuning::Tuning>) -> Result<crate::store::Job, String> {
+        self.run_probe_job_with(probe, input, trigger, tuning, None).await
+    }
+
+    /// The same, with its skills changed first (`autoskills::SkillDelta`).
+    pub(crate) async fn run_probe_job_with(self: &Arc<Self>, probe: &AgentRecord, input: &str, trigger: Trigger, tuning: Option<crate::tuning::Tuning>, skills: Option<&crate::autoskills::SkillDelta>) -> Result<crate::store::Job, String> {
         let original = crate::bench::original(&probe.id).to_string();
         let home = self.paths.agent(&probe.id);
         let _ = std::fs::remove_dir_all(&home);
@@ -163,6 +168,9 @@ impl Team {
         }
         if let Some(t) = &tuning {
             util::write_json(&home.join("tuning.json"), t)?;
+        }
+        if let Some(d) = skills {
+            d.apply(self, &probe.id)?;
         }
         let mut agents = self.agents.write().await;
         agents.retain(|a| a.id != probe.id);

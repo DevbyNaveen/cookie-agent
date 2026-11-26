@@ -37,7 +37,15 @@ function profileShell(a) {
   const who = el("div", "pf-who");
   const addr = el("button", "pf-addr");
   addr.type = "button";
-  who.append(profileFace.el, el("h2", "pf-name", a.name), addr);
+  // The face opens its look: shape and colour.
+  const faceBtn = el("button", "pf-face");
+  faceBtn.type = "button";
+  faceBtn.title = "Change its look";
+  faceBtn.setAttribute("aria-label", `Change ${a.name}'s look`);
+  const pen = icon("pencil"); pen.classList.add("pf-face-pen");
+  faceBtn.append(profileFace.el, pen);
+  faceBtn.onclick = async () => { await openProfile("about"); $("profile").querySelector(".pf-look")?.scrollIntoView({ block: "start", behavior: "smooth" }); };
+  who.append(faceBtn, el("h2", "pf-name", a.name), addr);
   if (a.origin) who.append(el("span", "tag", "hired from a pack"));
   const tabs = el("div", "pf-tabs");
   tabs.setAttribute("role", "tablist");
@@ -106,6 +114,71 @@ async function openProfile(tab = profileTab, keepScroll = false) {
   main.scrollTop = scroll;
 }
 
+/* ---------- its look: shape and colour ---------- */
+const COLOR_LABEL = { amber: "Amber", berry: "Berry", blueberry: "Blueberry", matcha: "Matcha", plum: "Plum", mint: "Mint", caramel: "Caramel", rose: "Rose", lemon: "Lemon", lagoon: "Lagoon", chocolate: "Chocolate" };
+
+/** Choose a shape (each drawn live in its current colour) and a colour; or go back to its own. */
+function lookPicker(a) {
+  const now = Faces.lookOf(a.id);
+  const box = el("div", "group look-pick");
+  const shapes = el("div", "look-shapes");
+  shapes.setAttribute("role", "radiogroup");
+  shapes.setAttribute("aria-label", "Shape");
+  for (const shape of Faces.allShapes) {
+    const b = el("button", "look-shape" + (shape === now.shape ? " on" : ""));
+    b.type = "button";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(shape === now.shape));
+    b.setAttribute("aria-label", shape);
+    b.title = shape[0].toUpperCase() + shape.slice(1);
+    const pid = `look-${a.id}-${shape}`;
+    Faces.setLook(pid, { shape, color: now.color });
+    b.append(Faces.create(pid, 40).el);
+    b.onclick = () => saveAgentLook(a, { shape, color: now.color });
+    shapes.append(b);
+  }
+  const colors = el("div", "look-colors");
+  colors.setAttribute("role", "radiogroup");
+  colors.setAttribute("aria-label", "Colour");
+  for (const c of Faces.colors) {
+    const b = el("button", "look-color" + (c === now.color ? " on" : ""));
+    b.type = "button";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", String(c === now.color));
+    b.setAttribute("aria-label", COLOR_LABEL[c]);
+    b.title = COLOR_LABEL[c];
+    b.style.setProperty("--sw", Faces.swatch(c));
+    b.onclick = () => saveAgentLook(a, { shape: now.shape, color: c });
+    colors.append(b);
+  }
+  box.append(setRow("Shape", "Its face, wherever it shows.", null), shapes, setRow("Colour", COLOR_LABEL[now.color] ?? "", null), colors);
+  if (now.chosen) {
+    const reset = button("Use its own look", "quiet small", () => saveAgentLook(a, null));
+    const end = el("div", "form-end"); end.append(reset);
+    box.append(end);
+  }
+  return box;
+}
+
+async function saveAgentLook(a, l) {
+  try {
+    const r = await call("set_agent_look", { id: a.id, shape: l?.shape ?? null, color: l?.color ?? null });
+    Faces.setLook(a.id, r);
+    renderRoster();
+    if (current?.id === a.id) {
+      pillFace?.stop();
+      pillFace = Faces.create(a.id, 26);
+      if (busy.has(a.id)) pillFace.setMood("working");
+      $("who-face").replaceChildren(pillFace.el);
+      paintYou(a.id); // your bubbles wear its colour
+    }
+    profileShellFor = null;
+    await openProfile("about");
+    const f = profileFace;
+    f?.perk?.();
+  } catch (e) { toast("Couldn't change its look", String(e), "error"); }
+}
+
 /** Cost before → after, in dollars when priced, else tokens. */
 function costLine(b, a) {
   if (b.microdollars && a.microdollars) return `${dollars(b.microdollars)} → ${dollars(a.microdollars)}`;
@@ -137,6 +210,7 @@ const GRANT_INFO = [
   ["routines", "Set routines", "Set up its own standing jobs (asks you first)."],
   ["team", "Ask teammates", "Hand tasks to your other agents."],
   ["helpers", "Helpers", "Send up to 4 helpers at once to look things up side by side. They only read, and use its budget."],
+  ["contractors", "Contractors", "Bring in a temporary specialist for one piece of a job (breadth, a side job, a second opinion, untrusted input). It only reads and drafts, uses its budget, and is gone after."],
   ["apps", "Connected apps", "Use the apps you connected in Enkeon (Gmail, Slack, …). Each call is billed per call by the connector; Record counts them."],
   ["mac", "Use this Mac", "When you ask, or the job needs your own apps: open apps, files and Settings; read any window, Chrome and Electron apps too; press, type and use menus, behind your windows. Each change asks you until it has earned your trust. Reminders, Notes, Calendar, Contacts, iMessage. macOS asks once."],
 ];
@@ -179,6 +253,7 @@ function showSecret(made) {
 
 const PANELS = {
   async about(a) {
+    const lookPart = lookPicker(a);
     const form = el("form", "group edit");
     form.innerHTML = `
       <label class="row-field"><span>Name</span><input name="name" maxlength="40" required></label>
@@ -205,7 +280,7 @@ const PANELS = {
     const access = el("div", "group");
     let grants = { ...a.grants };
     for (const [k, title, note] of GRANT_INFO) {
-      access.append(setRow(title, note, toggle(k === "apps" || k === "helpers" ? grants[k] !== false : !!grants[k], async (v) => {
+      access.append(setRow(title, note, toggle(k === "apps" || k === "helpers" || k === "contractors" ? grants[k] !== false : !!grants[k], async (v) => {
         grants = { ...grants, [k]: v };
         await call("update_agent", { id: a.id, patch: { grants } }).catch((e) => toast("Couldn't change that", String(e), "error"));
         loadRoster();
@@ -246,15 +321,16 @@ const PANELS = {
     if (a.origin) facts.append(fact("Signed by", a.origin.publisher_key.slice(0, 16) + "…"));
     const danger = el("button", "btn quiet danger full", "Fire this agent");
     danger.onclick = () => { closeProfile(); fireCurrent(); };
-    return [el("h3", "group-title", "Setup"), form, end, el("h3", "group-title", "What it can use"), access,
+    return [el("h3", "group-title pf-look", "Look"), lookPart, el("h3", "group-title", "Setup"), form, end, el("h3", "group-title", "What it can use"), access,
       el("h3", "group-title", "Limits"), limits, limitsEnd, el("h3", "group-title", "Probation"), prob,
       el("h3", "group-title", "About"), facts, ...(a.id === "cookie" ? [el("p", "set-note", "Cookie stays: it's your front door. Change its model or what it can use above.")] : [danger])];
   },
 
   async record(a) {
-    const [card, jobs, rank, lessons, changes] = await Promise.all([
+    const [card, jobs, rank, lessons, changes, contracts] = await Promise.all([
       call("scorecard", { id: a.id }), call("jobs", { id: a.id }), call("rank", { id: a.id }),
       call("lessons", { id: a.id }).catch(() => []), call("file_changes", { id: a.id }).catch(() => []),
+      call("contracts", { id: a.id }).catch(() => []),
     ]);
     const learned = [...rankPart(a, rank), ...lessonsPart(a, lessons), ...changesPart(changes)];
     if (!card.jobs) {
@@ -293,7 +369,19 @@ const PANELS = {
 
     const list = el("div", "job-list");
     for (const j of jobs.slice(0, 30)) list.append(jobRow(a, j));
-    return [stats, ...learned, el("h3", "group-title", "Money and work"), money, el("h3", "group-title", "Cache"), cacheG, el("h3", "group-title", "Recent jobs"), list];
+    // Contractors it brought in: what for, what they used (by the record), and whether the work was accepted.
+    const hired = [];
+    if (contracts.length) {
+      const cg = el("div", "group");
+      const OUT = { accepted: "accepted", not_accepted: "not accepted", pending: "job still open" };
+      const clip = (t, n) => { t = String(t || ""); return t.length > n ? t.slice(0, n - 1) + "…" : t; };
+      for (const c of contracts.slice(0, 12)) {
+        const used = c.tools_used.length ? `used ${[...new Set(c.tools_used)].join(", ")}` : "used no tools";
+        cg.append(setRow(`${c.role} (${c.kind})`, [clip(c.task, 120), c.state === "gap" ? `Gap: ${c.note}` : used, c.skills.length ? `skills: ${c.skills.join(", ")}` : "", fmtTime(c.at)].filter(Boolean).join(" · "), el("span", "tag", c.state === "done" ? OUT[c.outcome] ?? c.outcome : c.state.replace("_", " "))));
+      }
+      hired.push(el("h3", "group-title", "Contractors"), cg);
+    }
+    return [stats, ...learned, ...hired, el("h3", "group-title", "Money and work"), money, el("h3", "group-title", "Cache"), cacheG, el("h3", "group-title", "Recent jobs"), list];
   },
 
   async routines(a) {

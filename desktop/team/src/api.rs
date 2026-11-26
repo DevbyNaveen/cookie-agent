@@ -88,8 +88,28 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "list_agents" => ok(team.rows().await),
         "mark_read" => ok(team.mark_read(&arg::<String>(a, "id")?)?),
         "arrange" => ok(team.arrange(&arg::<String>(a, "id")?, arg::<crate::SidebarPatch>(a, "patch")?).await?),
-        "hire_agent" => ok(team.hire(arg::<Hire>(a, "hire")?).await?),
-        "update_agent" => ok(team.update(&arg::<String>(a, "id")?, arg::<Patch>(a, "patch")?).await?),
+        "hire_agent" => {
+            let hired = team.hire(arg::<Hire>(a, "hire")?).await?;
+            // Its skills are picked and tested in the background (`autoskills`): nothing to choose at hire.
+            let (t, id) = (team.clone(), hired.id.clone());
+            tokio::spawn(async move {
+                if let Err(e) = t.auto_skill_agent(&id).await {
+                    tracing::warn!("skills for {id}: {e}");
+                }
+            });
+            ok(hired)
+        }
+        "update_agent" => {
+            let id = arg::<String>(a, "id")?;
+            let before = team.agent(&id).await.ok().map(|r| r.model);
+            let updated = team.update(&id, arg::<Patch>(a, "patch")?).await?;
+            // A new model: its core skills are tested again; what it now does as well without, retires.
+            if before.is_some_and(|m| m != updated.model) {
+                let (t, id) = (team.clone(), id.clone());
+                tokio::spawn(async move { t.recheck_skills(&id).await });
+            }
+            ok(updated)
+        }
         "fire_agent" => ok(team.fire(&arg::<String>(a, "id")?, opt(a, "handover").unwrap_or(false)).await?),
         "handovers" => ok(team.handovers().into_iter().map(|(file, title)| json!({"file": file, "title": title})).collect::<Vec<_>>()),
         "agent_workspace" => {
@@ -120,7 +140,18 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "steer" => ok(team.steer(&arg::<String>(a, "id")?, &arg::<String>(a, "text")?)),
         "busy" => ok(team.busy().into_iter().map(|(agent, job)| json!({"agent": agent, "job": job})).collect::<Vec<_>>()),
         "jobs" => ok(team.jobs(&arg::<String>(a, "id")?)),
-        "grade" => ok(team.grade(&arg::<String>(a, "id")?, &arg::<String>(a, "job")?, opt(a, "grade"))?),
+        "grade" => {
+            let (agent, job, grade) = (arg::<String>(a, "id")?, arg::<String>(a, "job")?, opt::<i8>(a, "grade"));
+            team.grade(&agent, &job, grade)?;
+            // A grade is the person's decision about the work: evidence in the agent's own space (`brain`).
+            if let (Some(g), Ok(rec)) = (grade, team.agent(&agent).await) {
+                if let Some(j) = team.jobs(&agent).into_iter().find(|j| j.id == job) {
+                    let t = team.clone();
+                    tokio::spawn(async move { t.write_evidence(&rec, &j, Some(g)).await });
+                }
+            }
+            ok(json!(null))
+        }
         "mark_promise" => ok(team.mark_promise(&arg::<String>(a, "id")?, &arg::<String>(a, "job")?, arg(a, "index")?, &arg::<String>(a, "state")?)?),
         "scorecard" => ok(team.scorecard(&arg::<String>(a, "id")?)),
         /* what it learned from its own work */
@@ -274,7 +305,7 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "exam" => {
             let id: String = arg(a, "id")?;
             let cases = crate::evolve::pick_cases(team.bench_for(&id), opt::<usize>(a, "cases").unwrap_or(6).clamp(1, 20), util::now() / 86_400);
-            let variant = crate::bench::Variant { model: opt::<String>(a, "model"), tuning: None };
+            let variant = crate::bench::Variant { model: opt::<String>(a, "model"), tuning: None, skills: None };
             let what = variant.model.as_ref().map(|m| format!("Model: {m}")).unwrap_or_else(|| "As it is".into());
             ok(team.exam(&id, &what, cases, variant).await?)
         }
@@ -334,6 +365,8 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "data_summary" => ok(team.data_summary()),
         "mcps" => ok(team.mcps()),
         "agent_files" => ok(team.agent_files(&arg::<String>(a, "id")?).await?),
+        "agent_looks" => ok(team.agent_looks().await),
+        "set_agent_look" => ok(team.set_agent_look(&arg::<String>(a, "id")?, opt::<String>(a, "shape"), opt::<String>(a, "color")).await?),
         "agent_pin" => ok(team.set_agent_pin(&arg::<String>(a, "id")?, opt::<String>(a, "path")).await?),
         "add_folder" => ok(team.add_folder(&arg::<String>(a, "agent")?, &arg::<String>(a, "path")?).await?),
         "attach_paths" => ok(team.attach_paths(&arg::<String>(a, "agent")?, arg::<Vec<String>>(a, "paths")?).await?),
@@ -422,6 +455,49 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
             ok(team.review(&rec, true, true).await?)
         }
         "skill_catalog" => ok(team.catalog(&arg::<String>(a, "id")?)),
+        /* skills that look after themselves (`autoskills`, `shelf`) */
+        "skills_view" => ok(team.skills_view(&arg::<String>(a, "id")?)),
+        "skill_diff" => ok(team.skill_diff(&arg::<String>(a, "id")?, &arg::<String>(a, "name")?, &arg::<String>(a, "version")?)?),
+        "skill_undo" => ok(team.undo_skill_change(&arg::<String>(a, "id")?, &arg::<String>(a, "name")?, &arg::<String>(a, "version")?)?),
+        "skill_add_by_hand" => ok(team.add_skill_by_hand(&arg::<String>(a, "id")?, opt::<String>(a, "shelf").as_deref(), opt::<String>(a, "path").as_deref()).await?),
+        "skills_retest" => {
+            let (t, id) = (team.clone(), arg::<String>(a, "id")?);
+            tokio::spawn(async move { t.recheck_skills(&id).await });
+            ok(json!({"started": true}))
+        }
+        "skills_pick_again" => {
+            let id = arg::<String>(a, "id")?;
+            let _ = std::fs::remove_file(team.paths.agent(&id).join("learning").join("picked.json"));
+            let t = team.clone();
+            tokio::spawn(async move {
+                let _ = t.auto_skill_agent(&id).await;
+            });
+            ok(json!({"started": true}))
+        }
+        "shelf" => ok(team.shelf_view()),
+        "shelf_refresh" => ok(team.refresh_shelf(true).await?),
+        "shelf_sources" => ok(team.set_shelf_sources(arg::<Vec<String>>(a, "sources")?)?),
+        "shelf_decide" => ok(team.decide_held(&arg::<String>(a, "name")?, arg::<bool>(a, "accept")?)?),
+        "shelf_search" => {
+            let q = arg::<String>(a, "query")?;
+            let docs = team.shelf_docs();
+            ok(crate::shelf::rank(&q, &docs, 12, 1).into_iter().filter_map(|(k, _)| docs.iter().find(|d| d.key == k).map(|d| json!({"name": d.name, "description": d.description}))).collect::<Vec<_>>())
+        }
+        "auto_skills_cfg" => ok(team.auto_cfg()),
+        "set_auto_skills_cfg" => ok(team.set_auto_cfg(opt::<bool>(a, "tests"), opt::<f64>(a, "month_dollars"))?),
+        /* the brain: spaces, owners, following (`brain`) */
+        "spaces_view" => ok(team.spaces_view().await),
+        "spaces_refresh" => ok(team.refresh_spaces(true).await?),
+        "set_space_owner" => ok(team.set_space_owner(&arg::<String>(a, "space")?, opt::<String>(a, "owner"), opt::<bool>(a, "wakes"))?),
+        "followed" => {
+            let id = arg::<String>(a, "id")?;
+            let spaces = team.spaces();
+            ok(team.followed(&id).into_iter().map(|s| { let x = spaces.get(&s).cloned(); json!({"space": s, "owns": x.as_ref().is_some_and(|x| x.owner.as_deref() == Some(id.as_str())), "wakes": x.as_ref().is_some_and(|x| x.wakes), "memory_count": x.map(|x| x.memory_count)}) }).collect::<Vec<_>>())
+        }
+        "set_follow" => ok(team.set_follow(&arg::<String>(a, "id")?, &arg::<String>(a, "space")?, arg::<bool>(a, "on")?, "you", "You added it.")?),
+        /* contractors */
+        "contracts" => ok(team.contracts(&arg::<String>(a, "id")?)),
+        "accept_hire_offer" => ok(team.accept_hire_offer(&arg::<String>(a, "offer")?, &arg::<String>(a, "name")?, &arg::<String>(a, "job")?, opt::<String>(a, "model")).await?),
         "install_skill" => ok(team.install_skill(&arg::<String>(a, "id")?, &arg::<String>(a, "folder")?)?),
         "import_skill" => ok(team.import_skill_path(&arg::<String>(a, "id")?, &arg::<String>(a, "path")?)?),
         "search_history" => ok(team.search_history(&arg::<String>(a, "id")?, &arg::<String>(a, "query")?, opt(a, "limit").unwrap_or(10))),

@@ -39,6 +39,7 @@ PANELS.memory = async (a) => {
   parts.push(where);
   if (view.pending_erase) parts.push(el("p", "mem-note", `${view.pending_erase} memor${view.pending_erase === 1 ? "y" : "ies"} of fired agents still wait to be erased from Enkeon; Cookie retries when it starts.`));
   if (view.mode === "off") return parts;
+  if (view.mode === "enkeon") parts.push(...(await followsSection(a)));
 
   // Ask what it knows.
   const ask = el("form", "mem-ask");
@@ -160,3 +161,70 @@ function memRow(a, m, mode) {
   };
   return r;
 }
+
+/* ---------- the spaces it follows (`brain`) ---------- */
+async function followsSection(a) {
+  const [follows, sv] = await Promise.all([call("followed", { id: a.id }).catch(() => []), call("spaces_view").catch(() => null)]);
+  const out = [el("h3", "group-title", `Spaces it follows (${follows.length})`)];
+  const g = el("div", "group");
+  if (!follows.length) g.append(setRow("None yet", "Cookie gives it the spaces that belong to its job (a lead's, a repository's) as they appear. You can add any.", null));
+  for (const f of follows.slice(0, 40)) {
+    const note = [f.owns ? (f.wakes ? "It owns this: new things here can wake it" : "It owns this") : "It reads this", f.memory_count != null ? `${f.memory_count} memories` : ""].filter(Boolean).join(" · ");
+    g.append(setRow(f.space, note, f.owns ? el("span", "tag", "owner") : button("Stop", "quiet small", async () => { await call("set_follow", { id: a.id, space: f.space, on: false }); refreshProfile(); })));
+  }
+  if (follows.length > 40) g.append(setRow(`And ${follows.length - 40} more`, "Settings → Spaces lists them all.", null));
+  out.push(g);
+  if (sv?.spaces?.length) {
+    const add = el("form", "group edit about-add");
+    const pick = el("select", "pick");
+    pick.append(el("option", null, "Follow another space…"));
+    for (const s of sv.spaces.filter((s) => !follows.some((f) => f.space === s.name))) { const o = el("option", null, `${s.name} (${s.memory_count})`); o.value = s.name; pick.append(o); }
+    pick.onchange = async () => { if (!pick.value || pick.selectedIndex === 0) return; await call("set_follow", { id: a.id, space: pick.value, on: true }); refreshProfile(); };
+    add.append(pick);
+    out.push(add);
+  }
+  out.push(el("p", "muted small", "It reads its own space, your shared memory and these; it writes only to its own. Before each job Cookie hands it what bears on the task from them."));
+  return out;
+}
+
+/* ---------- Settings → Spaces ---------- */
+async function spacesSettings() {
+  const v = await call("spaces_view");
+  const parts = [el("h2", null, "Spaces")];
+  parts.push(el("p", "muted", "Your memory is kept in spaces: one per client, lead, repository and project. Cookie gives each new one to the agent whose job it belongs to, which reads it and is woken by what's new there. The rest stay with Cookie, read but never waking it. Your choice always stands."));
+  const head = el("div", "group");
+  head.append(setRow(`${v.spaces.length} spaces`, (v.read_at ? `Read ${fmtTime(v.read_at)}` : "Not read yet") + (v.plans ? ` · ${v.plans} open plans watched` : "") + (v.last_error ? ` · ${v.last_error}` : ""), button("Read now", "quiet small", async (e) => {
+    const b = e.currentTarget; b.disabled = true; b.textContent = "Reading…";
+    try { const r = await call("spaces_refresh"); toast("Spaces read", `${r.new?.length ?? 0} new, ${r.assigned?.length ?? 0} given an owner.`, "good"); refreshSettings(); }
+    catch (err) { toast("Couldn't read them", String(err), "error"); b.disabled = false; b.textContent = "Read now"; }
+  })));
+  parts.push(head);
+  const names = Object.fromEntries(v.agents.map((x) => [x.id, x.name]));
+  const filter = input("", "Find a space");
+  const list = el("div", "group");
+  const draw = () => {
+    const q = filter.value.trim().toLowerCase();
+    const rows = v.spaces.filter((s) => !q || s.name.includes(q) || (names[s.owner] ?? "").toLowerCase().includes(q)).slice(0, 80);
+    list.replaceChildren(...rows.map((s) => {
+      const sel = el("select", "pick");
+      for (const ag of v.agents) { const o = el("option", null, ag.name); o.value = ag.id; o.selected = s.owner === ag.id; sel.append(o); }
+      if (!s.owner) { const o = el("option", null, "Nobody yet"); o.selected = true; o.value = ""; sel.prepend(o); }
+      sel.onchange = async () => { try { await call("set_space_owner", { space: s.name, owner: sel.value || null }); toast("Owner set", `${s.name} → ${names[sel.value] ?? "Cookie"}`, "good"); refreshSettings(); } catch (e) { toast("Couldn't set it", String(e), "error"); } };
+      const wake = toggle(!!s.wakes, async (on) => { await call("set_space_owner", { space: s.name, owner: s.owner, wakes: on }); }, `${s.name} wakes its owner`);
+      const ctl = el("div", "row-actions");
+      ctl.append(sel, wake);
+      return setRow(s.name, [`${s.memory_count} memories`, s.held_plans ? `${s.held_plans} open plans` : "", s.why, s.by === "you" ? "your choice" : ""].filter(Boolean).join(" · "), ctl);
+    }));
+  };
+  filter.oninput = draw;
+  draw();
+  parts.push(filter, list);
+  if (v.shared?.length) {
+    parts.push(el("h3", "group-title", "Shared with the whole team"));
+    const sh = el("div", "group");
+    for (const f of v.shared.slice(0, 20)) sh.append(setRow(f.statement, `${names[f.agent] ?? f.agent} · ${f.why} · ${fmtTime(f.at)}`, null));
+    parts.push(sh);
+  }
+  return parts;
+}
+SETTINGS.spaces = spacesSettings;

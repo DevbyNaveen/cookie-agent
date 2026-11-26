@@ -53,6 +53,10 @@ pub struct Grants {
     /// when on, so packs signed before it still verify.
     #[serde(skip_serializing_if = "is_true")]
     pub helpers: bool,
+    /// Bring in a temporary specialist for one piece of a job (`contractors`). Left out of the JSON
+    /// when on, so packs signed before it still verify.
+    #[serde(skip_serializing_if = "is_true")]
+    pub contractors: bool,
 }
 
 fn is_true(b: &bool) -> bool {
@@ -61,14 +65,14 @@ fn is_true(b: &bool) -> bool {
 
 impl Default for Grants {
     fn default() -> Self {
-        Self { files: true, web: true, shell: false, memory: true, routines: true, team: true, peers: Vec::new(), mac: false, browser: false, worlds: true, apps: true, helpers: true }
+        Self { files: true, web: true, shell: false, memory: true, routines: true, team: true, peers: Vec::new(), mac: false, browser: false, worlds: true, apps: true, helpers: true, contractors: true }
     }
 }
 
 impl Grants {
     /// Nothing at all: what an imported agent starts with.
     pub fn none() -> Self {
-        Self { files: false, web: false, shell: false, memory: false, routines: false, team: false, peers: Vec::new(), mac: false, browser: false, worlds: false, apps: false, helpers: false }
+        Self { files: false, web: false, shell: false, memory: false, routines: false, team: false, peers: Vec::new(), mac: false, browser: false, worlds: false, apps: false, helpers: false, contractors: false }
     }
 }
 
@@ -370,6 +374,9 @@ pub struct Job {
     /// The person's grade: 1 good, -1 not good.
     #[serde(default)]
     pub grade: Option<i8>,
+    /// The skills loaded in it (`autoskills`): by themselves or with load_skill.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
     /// The setup version that ran it.
     #[serde(default)]
     pub version: u32,

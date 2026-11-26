@@ -87,6 +87,8 @@ impl Team {
             tests: self.tests(agent).len(),
             passport,
         };
+        // Its memory stays in Enkeon for a successor (`brain::succeed`), not erased like a firing's.
+        crate::brain::keep_space(agent);
         // Its handover note needs it awake for one last job.
         if self.is_asleep(agent) {
             self.wake_agent(agent).await?;
@@ -105,6 +107,8 @@ impl Team {
         let a: Archive = serde_json::from_slice(&std::fs::read(dir.join("archive.json")).map_err(|_| "No such archive.")?).map_err(|e| e.to_string())?;
         let home = self.paths.agent(agent);
         std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
+        // What its predecessor knew: it follows the old space, and takes over the spaces it owned.
+        self.succeed(&a.agent, agent, &a.name);
         for part in KEPT {
             let src = dir.join(part);
             if src.exists() && !home.join(part).exists() {

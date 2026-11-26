@@ -79,6 +79,9 @@ struct BenchFile {
 pub struct Variant {
     pub model: Option<String>,
     pub tuning: Option<Tuning>,
+    /// Its skills changed (`autoskills`): some taken away, some added, some edited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills: Option<crate::autoskills::SkillDelta>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -120,6 +123,9 @@ pub struct Exam {
     pub agent: String,
     pub what: String,
     pub variant: Variant,
+    /// What the "before" side ran with, when not the agent as it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<Variant>,
     pub before: Side,
     pub after: Side,
     pub started_at: u64,
@@ -297,6 +303,11 @@ impl Team {
 
     /// Run `cases` on the agent as it is and on a copy with `variant`, paired.
     pub async fn exam(self: &Arc<Self>, agent: &str, what: &str, cases: Vec<BenchCase>, variant: Variant) -> Result<Exam, String> {
+        self.exam_between(agent, what, cases, Variant::default(), variant).await
+    }
+
+    /// Run `cases` on two copies of the agent, `baseline` and `variant`, paired.
+    pub async fn exam_between(self: &Arc<Self>, agent: &str, what: &str, cases: Vec<BenchCase>, baseline: Variant, variant: Variant) -> Result<Exam, String> {
         let rec = self.agent(agent).await?;
         if cases.is_empty() {
             return Err("No bench cases for this agent yet.".into());
@@ -306,8 +317,16 @@ impl Team {
         }
         // One judge for both sides: the checker model, else the agent's own (never the candidate's).
         let judge = self.settings().await.checker_model.unwrap_or_else(|| rec.model.clone());
-        let mut exam = Exam { id: util::new_id("exam"), agent: agent.into(), what: what.into(), variant: variant.clone(), started_at: util::now(), ..Exam::default() };
-        for (side, v) in [(0usize, Variant::default()), (1, variant)] {
+        let mut exam = Exam {
+            id: util::new_id("exam"),
+            agent: agent.into(),
+            what: what.into(),
+            variant: variant.clone(),
+            baseline: (baseline != Variant::default()).then(|| baseline.clone()),
+            started_at: util::now(),
+            ..Exam::default()
+        };
+        for (side, v) in [(0usize, baseline), (1, variant)] {
             let results = self.race(&rec, &cases, &v, &judge, side).await;
             for r in results {
                 if side == 0 { exam.before.add(r) } else { exam.after.add(r) }
@@ -345,7 +364,7 @@ impl Team {
         }
         let tuning = v.tuning.clone().unwrap_or_else(|| self.tuning(&rec.id));
         let began = std::time::Instant::now();
-        let job = match self.run_probe_job(&probe, &case.input, Trigger::Test { case: case.id.clone() }, Some(tuning)).await {
+        let job = match self.run_probe_job_with(&probe, &case.input, Trigger::Test { case: case.id.clone() }, Some(tuning), v.skills.as_ref()).await {
             Ok(j) => j,
             Err(e) => return CaseResult { case: case.id.clone(), pass: false, reason: format!("It didn't finish: {e}"), ms: began.elapsed().as_millis() as u64, ..CaseResult::default() },
         };

@@ -214,7 +214,7 @@ impl Team {
             }
             // One change a night: a proven habit first, else a knob.
             if let Some((kind, what, tuning)) = self.next_change(&a.id) {
-                match self.exam(&a.id, &what, cases.clone(), Variant { model: None, tuning: Some(tuning.clone()) }).await {
+                match self.exam(&a.id, &what, cases.clone(), Variant { model: None, tuning: Some(tuning.clone()), skills: None }).await {
                     Ok(e) => {
                         n.exams += 1;
                         n.microdollars += e.before.microdollars + e.after.microdollars;
@@ -314,7 +314,7 @@ impl Team {
             if tried.contains(&what) {
                 continue;
             }
-            match self.exam(&a.id, &what, cases.to_vec(), Variant { model: Some(model.clone()), tuning: None }).await {
+            match self.exam(&a.id, &what, cases.to_vec(), Variant { model: Some(model.clone()), tuning: None, skills: None }).await {
                 Ok(e) => {
                     n.exams += 1;
                     n.microdollars += e.before.microdollars + e.after.microdollars;

@@ -177,7 +177,8 @@ impl Team {
             let Some(face) = memory_face(gateway, key, &id).await else { continue };
             let own = attention::branch_in(face["source_uri"].as_str().unwrap_or(""));
             let branch = if own == "main" { event_branch.clone() } else { own };
-            let Some(agent) = owner_of(&branch, &agents) else { continue };
+            // Its own space, `main` for Cookie, or a space an agent owns (`brain`).
+            let Some(agent) = self.space_waker(&branch, &agents) else { continue };
             let about: Vec<String> = face["about"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
             let write = attention::Write {
                 id: id.clone(),
@@ -193,7 +194,8 @@ impl Team {
                 by: by.clone(),
             };
             let now = now_f();
-            let signal = attention::signal_of(&write, &[], now);
+            // The person's open plans: new about someone a plan is owed to is a hard cue.
+            let signal = attention::signal_of(&write, &crate::brain::owed(), now);
             let mut subs = self.subjects(&agent);
             let (key, _) = attention::subject_of(&branch, &about);
             let s = subs.entry(key).or_insert_with(|| Subject::new(&branch, &about, now));
@@ -290,6 +292,15 @@ impl Team {
             }
             let _ = util::write_jsonl(&self.wakes_path(), &all);
         }
+    }
+
+    /// A hard cue from outside the stream (a plan coming due), into the agent's subject.
+    pub(crate) fn add_cue(&self, agent: &str, branch: &str, about: &[String], signal: attention::Signal, now: f64) {
+        let mut subs = self.subjects(agent);
+        let (key, _) = attention::subject_of(branch, about);
+        let s = subs.entry(key).or_insert_with(|| Subject::new(branch, about, now));
+        attention::add(s, signal, now);
+        self.save_subjects(agent, &subs);
     }
 
     pub fn wake_status(&self) -> Value {

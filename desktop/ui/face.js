@@ -92,18 +92,44 @@ const Faces = (() => {
     return [f(0), f(8), f(4)];
   }
 
-  function look(id) {
+  // The person's own choice of shape and colour, per agent (Profile → About → Look).
+  const COLORS = ["amber", "berry", "blueberry", "matcha", "plum", "mint", "caramel", "rose", "lemon", "lagoon"];
+  let chosen = new Map();
+  const COOKIE_BROWN = () => ({ deep: hsl(21, 64, 24), mid: hsl(26, 60, 42), light: hsl(34, 64, 80) });
+  function tones(color) {
+    if (color === "chocolate") return COOKIE_BROWN();
+    const i = COLORS.indexOf(color);
+    if (i < 0) return null;
+    const [h, s] = HUES[i];
+    return { deep: hsl(h, s, 34), mid: hsl((h + 6) % 360, s, 58), light: hsl((h + 14) % 360, Math.min(s, 70), 92) };
+  }
+
+  function look(key) {
+    const base = drawnLook(key);
+    // Only the person's own agents wear a chosen look (another person's agent keeps its own).
+    const id = ownSalt && key.startsWith(ownSalt + ":") ? key.slice(ownSalt.length + 1) : key;
+    const c = chosen.get(id);
+    if (!c) return base;
+    const out = { ...base };
+    if (c.shape && SHAPES.includes(c.shape)) out.shape = c.shape;
+    const t = c.color && tones(c.color);
+    if (t) Object.assign(out, t, { color: c.color });
+    return out;
+  }
+
+  function drawnLook(id) {
     const seed = seedOf(id);
     // Half the distance between the eyes, a little different per agent.
     const ex = 0.25 + ((seed >>> 7) % 3) * 0.025;
     // Cookie, the agent everyone starts with: a round biscuit, in brown.
     if (id === "cookie") {
       // The same spread as every agent (deep 34, mid 58, light 92), in brown: chocolate, caramel, cream.
-      return { seed, ex: 0.27, shape: "biscuit", deep: hsl(21, 64, 24), mid: hsl(26, 60, 42), light: hsl(34, 64, 80) };
+      return { seed, ex: 0.27, shape: "biscuit", color: "chocolate", ...COOKIE_BROWN() };
     }
     const [h, s] = HUES[(seed >>> 3) % HUES.length];
     return {
       seed, ex,
+      color: COLORS[(seed >>> 3) % HUES.length],
       shape: DEALT[seed % DEALT.length],
       deep: hsl(h, s, 34), mid: hsl((h + 6) % 360, s, 58), light: hsl((h + 14) % 360, Math.min(s, 70), 92),
     };
@@ -1289,5 +1315,21 @@ void main(){
   /** How long an idle face waits before it dozes. */
   function setDozeAfter(ms) { dozeAfter = ms; }
 
-  return { create, look, setSalt, saltOf, color, of, wave, setDozeAfter, glyphFor, idFor, shapes: DEALT, shapeOf, hexOf, portrait };
+  /** Every chosen look, `{id: {shape, color}}`; faces drawn after this wear them. */
+  function setLooks(map) { chosen = new Map(Object.entries(map || {})); }
+  /** One agent's chosen look (null: back to the face its id gives it). */
+  function setLook(id, l) { if (l && (l.shape || l.color)) chosen.set(id, l); else chosen.delete(id); }
+  /** A colour's middle tone as CSS, for a swatch. */
+  function swatch(color) {
+    const t = tones(color);
+    return t ? `rgb(${t.mid.map((v) => Math.round(v * 255)).join(" ")})` : "transparent";
+  }
+  /** The shape and colour an agent's face is drawn with now. */
+  function lookOf(id) {
+    const lk = look(ownSalt && id !== "cookie" ? ownSalt + ":" + id : id);
+    const c = chosen.get(id) || {};
+    return { shape: lk.shape, color: lk.color, chosen: !!(c.shape || c.color) };
+  }
+
+  return { create, look, setSalt, setLooks, setLook, swatch, lookOf, allShapes: SHAPES, colors: [...COLORS, "chocolate"], saltOf, color, of, wave, setDozeAfter, glyphFor, idFor, shapes: DEALT, shapeOf, hexOf, portrait };
 })();

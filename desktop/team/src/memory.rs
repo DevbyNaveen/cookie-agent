@@ -92,15 +92,59 @@ fn enkeon() -> Option<Enkeon> {
     crate::pair::enkeon()
 }
 
-/// The text of an Enkeon tool reply, or why it failed.
-async fn call(tool: &str, args: Value) -> Result<String, String> {
+/// The same, for examples and live tests.
+pub async fn enkeon_call_pub(tool: &str, args: Value) -> Result<String, String> {
+    call(tool, args).await
+}
+
+/// An Enkeon tool, called by the host (not by a model): `brain` primes and records with it.
+pub(crate) async fn enkeon_call(tool: &str, args: Value) -> Result<String, String> {
+    call(tool, args).await
+}
+
+/// One open connection to Enkeon for the host's own calls, kept across calls (a new one per call
+/// costs a handshake and the session brief), and dropped when the pairing changes or it fails.
+static CLIENT: std::sync::LazyLock<tokio::sync::Mutex<Option<(String, Arc<cookie_harness::mcp::McpClient>)>>> = std::sync::LazyLock::new(|| tokio::sync::Mutex::new(None));
+
+async fn client() -> Result<Arc<cookie_harness::mcp::McpClient>, String> {
+    let who = crate::pair::gateway_and_key().map(|(g, k)| format!("{g}|{}", &k[..k.len().min(12)])).unwrap_or_default();
+    let mut g = CLIENT.lock().await;
+    if let Some((w, c)) = g.as_ref() {
+        if *w == who {
+            return Ok(c.clone());
+        }
+    }
     let e = enkeon().ok_or("Enkeon isn't connected on this computer.")?;
-    let client = e.client().await.map_err(|e| format!("Couldn't reach Enkeon: {e}"))?;
-    let (text, is_error) = tokio::time::timeout(std::time::Duration::from_secs(20), client.call_tool(tool, args))
-        .await
-        .map_err(|_| "Enkeon didn't answer in 20 seconds.".to_string())?
-        .map_err(|e| e.to_string())?;
-    if is_error { Err(text) } else { Ok(text) }
+    let c = Arc::new(e.client().await.map_err(|e| format!("Couldn't reach Enkeon: {e}"))?);
+    *g = Some((who, c.clone()));
+    Ok(c)
+}
+
+/// The text of an Enkeon tool reply, or why it failed. A brain busy with a background pass is retried a few times.
+async fn call(tool: &str, args: Value) -> Result<String, String> {
+    let mut last = String::new();
+    for attempt in 0..4u64 {
+        let c = client().await?;
+        match tokio::time::timeout(std::time::Duration::from_secs(20), c.call_tool(tool, args.clone())).await {
+            Err(_) => return Err("Enkeon didn't answer in 20 seconds.".into()),
+            Ok(Ok((text, false))) => return Ok(text),
+            Ok(Ok((text, true))) => return Err(text),
+            Ok(Err(e)) => {
+                last = e.to_string();
+                if last.contains("busy") {
+                    tokio::time::sleep(std::time::Duration::from_millis(300 * (attempt + 1))).await;
+                    continue;
+                }
+                // A dropped connection: a fresh one next time.
+                *CLIENT.lock().await = None;
+                if attempt == 0 {
+                    continue;
+                }
+                return Err(last);
+            }
+        }
+    }
+    Err(last)
 }
 
 impl Team {
@@ -111,10 +155,17 @@ impl Team {
         let on_saved = Arc::new(move |m: SavedMemory| {
             let _ = util::append_jsonl(&file, &Kept { id: m.id, text: m.text, kind: m.kind, updates: m.updates, at: util::now(), by: by.into() });
         });
+        // The spaces it follows: its recall may read one by name (`brain`); it still files only into its own.
+        let follows = self.followed(agent);
         enkeon().map(|e| {
-            let e = e.space(&space_of(agent)).on_saved(on_saved);
+            let e = e.space(&space_of(agent)).also_read(follows).on_saved(on_saved);
             if own_web { e.without("web_search") } else { e }
         })
+    }
+
+    /// A memory the harness saved for this agent: in its ledger, so the person sees it and erasing the agent erases it.
+    pub(crate) fn note_kept(&self, agent: &str, id: &str, text: &str, kind: Option<&str>, by: &str) {
+        let _ = util::append_jsonl(&ledger(self, agent), &Kept { id: id.into(), text: text.into(), kind: kind.map(str::to_string), updates: None, at: util::now(), by: by.into() });
     }
 
     fn kept(&self, agent: &str) -> Vec<Kept> {
@@ -279,8 +330,12 @@ impl Team {
     /// When an agent is fired: erase everything it kept in Enkeon, and its space.
     /// What can't be erased now waits in a list and is retried at the next start.
     pub(crate) async fn erase_memory_of(&self, agent: &str) -> (usize, usize) {
+        // Retired: its space stays for a successor (`brain::succeed`).
+        if crate::brain::keeps_space(agent) {
+            return (0, 0);
+        }
         let ids: Vec<String> = self.kept(agent).into_iter().map(|k| k.id).collect();
-        if ids.is_empty() || enkeon().is_none() {
+        if enkeon().is_none() {
             return (0, ids.len());
         }
         let (mut done, mut left) = (0, Vec::new());
@@ -290,7 +345,14 @@ impl Team {
                 Err(_) => left.push(id),
             }
         }
-        let _ = call("delete_branch", json!({"branch": space_of(agent), "workspace": null})).await;
+        // Whatever else is filed only in its space (written by another tool, or missing from the ledger):
+        // forgotten too, because deleting a space moves what is only there back to `main`.
+        let (swept, unswept) = self.forget_space(&space_of(agent)).await;
+        done += swept;
+        left.extend(unswept);
+        if left.is_empty() {
+            let _ = call("delete_branch", json!({"branch": space_of(agent), "workspace": null})).await;
+        }
         let n = left.len();
         if n > 0 {
             let mut pending: Vec<String> = util::read_json(&pending_file(self));

@@ -65,7 +65,8 @@ const humanSize = (b) => b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFix
 // The sidebar preview: Markdown marks dropped, one line.
 const plain = (t) => (t ?? "").replace(/```[\s\S]*?```/g, " ").replace(/[*`#>]+/g, "").replace(/(^|\s)_+|_+(?=\s|$)/g, "$1").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/\s+/g, " ").trim();
 /** "search_inbox" → "Using search inbox". The tool's own name, made readable; never invented. */
-const toolPhrase = (name) => "Using " + name.replace(/^external::[^:]+::/, "").replace(/[_\-.]+/g, " ").trim();
+const TOOL_WORDS = { hire_contractor: "Bringing in a contractor", find_skill: "Looking for a skill", load_skill: "Loading a skill", share_with_team: "Sharing with the team", recall: "Remembering" };
+const toolPhrase = (name) => TOOL_WORDS[name] ?? "Using " + name.replace(/^external::[^:]+::/, "").replace(/[_\-.]+/g, " ").trim();
 const agentById = (id) => rows.find((r) => r.id === id);
 
 function select(options, value, onChange) {
@@ -716,7 +717,9 @@ function helpersCard(agentId) {
   const tally = () => {
     const all = [...rows.values()];
     const done = all.filter((r) => r.state === "done" || r.state === "failed").length;
-    title.textContent = `${name} sent ${all.length} helper${all.length === 1 ? "" : "s"}`;
+    // Contractors ride in the same card, numbered from 100 (`contractors`).
+    const h = [...rows.keys()].filter((n) => n < 100).length, c = rows.size - h;
+    title.textContent = `${name} ${[h ? `sent ${h} helper${h === 1 ? "" : "s"}` : "", c ? `brought in ${c} contractor${c === 1 ? "" : "s"}` : ""].filter(Boolean).join(" and ")}`;
     count.textContent = done === all.length ? "" : `${done} of ${all.length} back`;
     card.classList.toggle("busy", done < all.length);
   };
@@ -729,7 +732,7 @@ function helpersCard(agentId) {
         const li = el("li", "helper");
         const btn = el("button", "helper-row");
         btn.type = "button";
-        const num = el("span", "helper-n", String(n));
+        const num = el("span", "helper-n" + (n >= 100 ? " contractor" : ""), n >= 100 ? `C${n - 100}` : String(n));
         const text = el("span", "helper-task", task);
         const st = el("span", "helper-state");
         btn.append(num, text, st);
@@ -957,8 +960,15 @@ function onTeamEvent(ev) {
       if (typeof Voice !== "undefined") Voice.onText(ev);
       if (!job.started || job.toolOn) { job.started = true; job.toolOn = false; setMood(ev.agent, "writing"); allFaces(ev.agent, (f) => f.tool(null)); setStatus(ev.agent, "Writing…"); }
       if (job.ui && current?.id === chatOf(job)) {
-        if (job.ui.status.isConnected) { job.ui.status.replaceWith(job.ui.row); job.ui.face.stop(); }
-        job.ui.reply.innerHTML = Md.render(job.acc);
+        // Words go at the end of the chat: after an approval card asked in the middle, never above it.
+        if (job.ui.status.isConnected) { job.ui.status.remove(); job.ui.face.stop(); $("log").append(job.ui.row); }
+        else if (job.ui.split != null && job.ui.row.isConnected && job.ui.row.nextElementSibling) {
+          const row = job.ui.row.cloneNode(false), reply = el("div", "bubble md");
+          row.append(reply);
+          $("log").append(row);
+          job.ui.row = row; job.ui.reply = reply; job.ui.from = job.ui.split; job.ui.split = null;
+        }
+        job.ui.reply.innerHTML = Md.render(job.acc.slice(job.ui.from ?? 0));
         scrollDown();
       }
       break;
@@ -981,7 +991,12 @@ function onTeamEvent(ev) {
       renderNeeds();
       renderRoster();
       setMood(ev.approval.agent, "waiting");
-      if (current?.id === ev.approval.agent && view === "chat") { $("log").append(approvalCard(ev.approval)); scrollDown(true); }
+      if (current?.id === ev.approval.agent && view === "chat") {
+        // What it wrote so far stays above the card; what it writes after goes below.
+        for (const job of live.values()) if (job.agent === ev.approval.agent && job.ui) job.ui.split = job.acc.length;
+        $("log").append(approvalCard(ev.approval));
+        scrollDown(true);
+      }
       refreshDesk();
       break;
     }
@@ -1406,7 +1421,7 @@ const noMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 let crew = [], picked = null, crewTimers = [];
 
 function trick(c, name) {
-  if (noMotion || c.busy) return;
+  if (noMotion || c.busy || $("hire-sheet").open) return;
   const n = name ?? TRICK_NAMES.filter((t) => t !== c.last)[Math.floor(Math.random() * (TRICK_NAMES.length - 1))];
   c.last = n; c.busy = true;
   const f = c.face;
@@ -1459,7 +1474,7 @@ function stopCrew() {
   crew.forEach((c) => c.face?.stop());
   crew = [];
   lookFaces.forEach((f) => f.stop()); lookFaces = [];
-  $("hire-looks")?.setAttribute("hidden", "");
+  closeHireSheet();
 }
 
 function renderStarters() {
@@ -1489,7 +1504,6 @@ function renderStarters() {
     c.card = b; c.acro = acro;
     b.onmouseenter = () => !c.own && trick(c);
     b.onclick = () => (c.hired ? (stopCrew(), openAgent(c.hired.id)) : pick(c));
-    b.ondblclick = () => !c.own && !c.hired && hireNow();
     li.append(b);
     // Its own rhythm: a first trick soon, then one every few seconds.
     if (!c.own) {
@@ -1501,21 +1515,62 @@ function renderStarters() {
   crew = cards;
 }
 
+/* ---------- the hire sheet: one agent, everything about it ---------- */
+let sheetFace = null;
+function paintSheetFace(c) {
+  const old = sheetFace;
+  sheetFace = c.id ? Faces.create(c.id, 112, undefined, { view: 2.2 }) : null;
+  const slot = $("hs-face");
+  if (!sheetFace) { old?.stop(); slot.replaceChildren(); return; }
+  const now = sheetFace;
+  now.el.classList.add("hs-in");
+  // Anything else in the slot fades and goes: only the current face stays.
+  for (const n of slot.children) n.classList.add("hs-out");
+  slot.append(now.el);
+  try { old?.stop(); } catch {}
+  setTimeout(() => { for (const n of [...slot.children]) if (n !== now.el) n.remove(); }, 180);
+}
+
 function pick(c) {
   picked = c;
   for (const x of crew) { x.card.classList.toggle("on", x === c); x.card.setAttribute("aria-selected", String(x === c)); }
-  $("hire-form").hidden = !c.own || false;
-  if (c.own) { $("hire-form").hidden = false; $("hire-form").name.focus(); }
-  else { $("hire-form").hidden = true; trick(c, "doubleflip"); setTimeout(() => c.face.celebrate?.(), 650); }
+  const form = $("hire-form");
+  // Your own starts with a face of its own too (any shape; pick another below).
+  if (c.own && !c.id) c.id = Faces.idFor("agent");
+  form.name.value = c.own ? "" : c.name;
+  form.job.value = c.own ? "" : c.job;
+  form.model.value = form.model.value || defaultModel();
+  $("hs-name").textContent = c.own ? "Your own agent" : c.name;
+  $("hs-tag").textContent = c.own ? "Give it a name and one job." : c.template ? "Comes with its own software" : "Ready to hire";
+  $("hire-error").hidden = true;
+  paintSheetFace(c);
   showLooks(c);
   syncHireBtn();
+  const d = $("hire-sheet");
+  if (!d.open) d.showModal();
+  (c.own ? form.name : $("hire-btn")).focus();
+  if (!c.own) setTimeout(() => sheetFace?.perk?.(), 280);
 }
+
+function closeHireSheet() {
+  const d = $("hire-sheet");
+  if (d.open) d.close();
+}
+$("hire-sheet").addEventListener("close", () => {
+  try { sheetFace?.stop(); } catch {}
+  sheetFace = null;
+  $("hs-face").replaceChildren();
+  lookFaces.forEach((f) => f.stop()); lookFaces = [];
+  for (const x of crew) { x.card?.classList.remove("on"); x.card?.setAttribute("aria-selected", "false"); }
+  picked = null;
+});
+$("hs-x").onclick = closeHireSheet;
 
 // Pick a look: one option in every shape (new colours on "More"). The face picked is the
 // face hired, because a face is drawn from the id it's hired with.
 function showLooks(c) {
   let box = $("hire-looks");
-  if (!box) { box = el("div", "hire-looks"); box.id = "hire-looks"; $("hire-form").before(box); }
+  if (!box) { box = el("div", "hire-looks"); box.id = "hire-looks"; $("hire-form").prepend(box); }
   lookFaces.forEach((f) => f.stop()); lookFaces = [];
   const slug = c.own ? "agent" : slugOf(c.name);
   const row = el("div", "looks");
@@ -1527,11 +1582,11 @@ function showLooks(c) {
     b.type = "button";
     b.title = shape[0].toUpperCase() + shape.slice(1);
     b.setAttribute("aria-label", b.title);
-    const f = Faces.create(id, 50);
+    const f = Faces.create(id, 38);
     lookFaces.push(f);
     b.append(f.el);
     b.onmouseenter = () => f.perk();
-    b.onclick = () => setLook(c, id, b);
+    b.onclick = () => pickHireLook(c, id, b);
     row.append(b);
   }
   const more = el("button", "btn quiet looks-more", "More colours");
@@ -1541,7 +1596,7 @@ function showLooks(c) {
   box.hidden = false;
 }
 
-function setLook(c, id, b) {
+function pickHireLook(c, id, b) {
   for (const x of b.parentNode.children) x.classList.toggle("on", x === b);
   c.id = id;
   if (!c.own) crewIds.set(c.name, id);
@@ -1549,14 +1604,15 @@ function setLook(c, id, b) {
   c.face = Faces.create(id, 108, undefined, { view: 2.5 });
   c.acro.replaceChildren(c.face.el);
   c.busy = false;
-  trick(c, "supernova");
+  paintSheetFace(c);
+  sheetFace?.perk();
 }
 
 function syncHireBtn() {
   const f = $("hire-form");
-  const ready = picked && (!picked.own || (f.name.value.trim() && f.job.value.trim()));
-  $("hire-btn").disabled = !ready;
-  $("hire-btn").textContent = picked && !picked.own ? `Hire ${picked.name}` : picked?.own && f.name.value.trim() ? `Hire ${f.name.value.trim()}` : "Hire";
+  const name = f.name.value.trim();
+  $("hire-btn").disabled = !(picked && name && f.job.value.trim());
+  $("hire-btn").textContent = name ? `Hire ${name}` : "Hire";
 }
 
 function defaultModel() {
@@ -1572,16 +1628,12 @@ async function openHire(prefill) {
   picked = null;
   const form = $("hire-form");
   form.reset();
-  form.hidden = true;
   form.model.value = defaultModel();
-  // The model only asks to be chosen when there's none to use.
-  form.model.hidden = !!form.model.value;
   $("hire-error").hidden = true;
-  $("hire-cancel").hidden = rows.length === 0;
   $("hire-title").textContent = rows.filter((r) => r.id !== "cookie").length ? "Hire" : "Build your team";
   renderStarters();
   const [handovers, archives] = await Promise.all([call("handovers").catch(() => []), call("archives").catch(() => [])]);
-  form.handover.hidden = handovers.length + archives.length === 0;
+  $("hs-handover").hidden = handovers.length + archives.length === 0;
   // A retired agent's archive brings its lessons, skills, tests and habits with its handover note.
   const learned = archives.map((a) => { const o = el("option", null, `Everything ${a.name} learned (${a.lessons} lessons, ${a.skills} skills)`); o.value = "archive:" + a.id; return o; });
   form.handover.replaceChildren(el("option", null, "Start fresh"), ...learned, ...handovers.map((h) => { const o = el("option", null, h.title); o.value = h.file; return o; }));
@@ -1608,18 +1660,17 @@ async function hireNow() {
   const form = $("hire-form");
   const model = form.model.value.trim() || defaultModel();
   $("hire-error").hidden = true;
-  if (!model) { form.hidden = false; form.model.hidden = false; form.model.focus(); $("hire-error").textContent = "Add a model key in Settings → Models first."; $("hire-error").hidden = false; return; }
-  const hire = picked.own
-    ? (form.handover.value.startsWith("archive:")
-        ? { name: form.name.value, job: form.job.value, model, inherit: form.handover.value.slice("archive:".length) }
-        : { name: form.name.value, job: form.job.value, model, handover: form.handover.value || null })
-    : { name: picked.name, job: picked.job, model, id: picked.id, template: picked.template ?? null };
-  // A look picked for your own agent comes with it.
-  if (picked.own && picked.id) hire.id = picked.id;
+  if (!model) { form.model.focus(); $("hire-error").textContent = "Add a model key in Settings → Models first."; $("hire-error").hidden = false; return; }
+  // What the sheet says is what's hired: a starter's name and job can be changed before.
+  const from = form.handover.value;
+  const hire = { name: form.name.value.trim(), job: form.job.value.trim(), model, id: picked.id ?? null, template: picked.own ? null : picked.template ?? null };
+  if (from.startsWith("archive:")) hire.inherit = from.slice("archive:".length);
+  else hire.handover = from || null;
   $("hire-btn").disabled = true;
   try {
     const agent = await call("hire_agent", { hire });
-    crewIds.delete(hire.name);
+    crewIds.delete(picked?.name ?? hire.name);
+    closeHireSheet();
     try { localStorage.setItem("cookie.lastModel", agent.model); } catch {}
     stopCrew();
     await loadRoster();
@@ -1633,7 +1684,7 @@ async function hireNow() {
 }
 
 $("hire-btn").onclick = hireNow;
-$("hire-cancel").onclick = () => { stopCrew(); rows.length && openAgent(rows[0].id); };
+$("hire-cancel").onclick = closeHireSheet;
 $("new-agent").onclick = () => openHire();
 
 /* ---------- fire ---------- */
@@ -1916,6 +1967,7 @@ async function boot() {
   $("models").replaceChildren(...Object.values(MODELS).flat().map((m) => { const o = el("option"); o.value = m; return o; }));
   await loadApprovals();
   await loadQuestions();
+  Faces.setLooks(await call("agent_looks").catch(() => ({})));
   await loadRoster();
   ensureAddress();
   refreshWall();
@@ -1978,6 +2030,7 @@ function modelHint(id) {
   return t ? `${t} · ${prov}` : prov;
 }
 function renderModelChip() {
+  renderPermChip();
   const b = $("model-chip");
   if (!b) return;
   b.hidden = !current;
@@ -2091,3 +2144,101 @@ $("roster").addEventListener("focusin", (e) => { const li = e.target.closest("li
 $("roster").addEventListener("focusout", hideRailTip);
 $("roster").addEventListener("scroll", hideRailTip, { passive: true });
 $("roster").addEventListener("click", hideRailTip);
+
+/* ---------- permissions, under the composer (left) ---------- */
+// The ones a person changes most, right where they talk to the agent. The rest are in its profile.
+const PERM_QUICK = [
+  ["web", "The web", "Read pages and search"],
+  ["shell", "Run commands", "In its own sandbox"],
+  ["mac", "Use this Mac", "Open apps, read windows; acting asks you"],
+  ["browser", "Its own browser", "Each click and typing asks you"],
+  ["apps", "Connected apps", "Gmail, Slack… through Enkeon"],
+  ["files", "Files", "Its folder, and yours as set above"],
+];
+const grantOn = (a, k) => (k === "apps" || k === "helpers" || k === "worlds" ? a.grants?.[k] !== false : !!a.grants?.[k]);
+let accessNow = null;
+const ACCESS_SHORT = { own: "Its own folder", folders: "Folders you chose", home: "Your home folder" };
+
+async function renderPermChip() {
+  const b = $("perm-chip");
+  if (!b) return;
+  b.hidden = !current;
+  if (!current) return;
+  if (!accessNow) accessNow = await call("access").catch(() => ({ level: "own", folders: [] }));
+  const n = PERM_QUICK.filter(([k]) => grantOn(current, k)).length;
+  const files = grantOn(current, "files") ? ACCESS_SHORT[accessNow.level] ?? "Its own folder" : "No files";
+  b.replaceChildren(icon("shield"), el("span", null, files), el("small", null, `${n} of ${PERM_QUICK.length} on`));
+  b.title = `What ${current.name} can use. Click to change.`;
+}
+
+$("perm-chip").onclick = async () => {
+  const old = document.querySelector(".perm-menu");
+  if (old) { old.remove(); return; }
+  const agent = current;
+  if (!agent) return;
+  accessNow = await call("access").catch(() => accessNow ?? { level: "own", folders: [] });
+  const m = el("div", "pop perm-menu");
+  m.setAttribute("role", "menu");
+  m.setAttribute("aria-label", `What ${agent.name} can use`);
+
+  // Your files: one choice for every agent, the same as Settings → Privacy.
+  m.append(el("p", "pm-title", "Your files"));
+  for (const k of ACCESS_KINDS) {
+    const r = el("button", "pm-row" + (accessNow.level === k.id ? " on" : ""));
+    r.type = "button";
+    r.setAttribute("role", "menuitemradio");
+    r.setAttribute("aria-checked", String(accessNow.level === k.id));
+    const t = el("span", "row-text");
+    const sub = k.id === "folders" && accessNow.folders?.length ? accessNow.folders.map((f) => f.split("/").pop()).join(", ") : k.id === "folders" ? "Pick a folder" : k.id === "home" ? "Not ~/Library or secrets" : "Nothing else on your Mac";
+    t.append(el("span", null, k.title), el("small", null, sub));
+    r.append(icon(k.icon), t);
+    if (accessNow.level === k.id) r.append(icon("check"));
+    r.onclick = async () => {
+      let folders = accessNow.folders || [];
+      if (k.id === "folders") {
+        const path = await Api.pickFolder().catch(() => null);
+        if (!path && !folders.length) return;
+        if (path && !folders.includes(path)) folders = [...folders, path];
+      }
+      try {
+        accessNow = await call("set_access", { level: k.id, folders });
+        if (accessNow == null || typeof accessNow !== "object") accessNow = await call("access");
+        toast("Agents now see", (ACCESS_SHORT[accessNow.level] ?? k.title).toLowerCase(), "good");
+      } catch (e) { toast("Couldn't change that", String(e), "error"); }
+      m.remove();
+      renderPermChip();
+    };
+    m.append(r);
+  }
+
+  // This agent: its switches, saved as soon as they're flipped.
+  m.append(el("p", "pm-title", `${agent.name} can`));
+  let grants = { ...agent.grants };
+  for (const [k, title, note] of PERM_QUICK) {
+    const row = el("div", "pm-row pm-switch");
+    const t = el("span", "row-text");
+    t.append(el("span", null, title), el("small", null, note));
+    row.append(t, toggle(grantOn(agent, k), async (v) => {
+      grants = { ...grants, [k]: v };
+      try {
+        const up = await call("update_agent", { id: agent.id, patch: { grants } });
+        agent.grants = up?.grants ?? grants;
+        const r = agentById(agent.id); if (r) r.grants = agent.grants;
+        renderPermChip();
+      } catch (e) { toast("Couldn't change that", String(e), "error"); }
+    }, title));
+    m.append(row);
+  }
+  const all = el("button", "pm-more");
+  all.type = "button";
+  const chev = icon("up"); chev.style.transform = "rotate(90deg)";
+  all.append(el("span", null, "All permissions and limits"), chev);
+  all.onclick = () => { m.remove(); openProfile("about"); };
+  m.append(all);
+
+  $("composer").append(m);
+  const away = (e) => { if (!m.contains(e.target) && !$("perm-chip").contains(e.target)) { m.remove(); document.removeEventListener("mousedown", away); } };
+  setTimeout(() => document.addEventListener("mousedown", away), 0);
+  m.addEventListener("keydown", (e) => { if (e.key === "Escape") { m.remove(); $("perm-chip").focus(); } });
+  m.querySelector("button")?.focus();
+};

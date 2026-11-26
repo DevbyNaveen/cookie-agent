@@ -272,6 +272,9 @@ impl Team {
         // Helpers to send out side by side are made of these same tools (see the end).
         let helpers_may = crate::helpers::allowed(rec, trigger, probation) && mode == Mode::Ask && !crate::bench::is_probe(&rec.id);
         let for_helpers = if helpers_may { all_tools.clone() } else { Vec::new() };
+        // Contractors are made of the same tools: only the ones that read (`contractors`).
+        let contractors_may = crate::contractors::allowed(rec, trigger, probation) && mode == Mode::Ask;
+        let for_contractors = if contractors_may { all_tools.clone() } else { Vec::new() };
         built.tools = all_tools.iter().map(|t| t.spec().name.clone()).collect();
         if learns(trigger) {
             let mut notes: Vec<String> = Vec::new();
@@ -290,7 +293,16 @@ impl Team {
             if let Trigger::Routine { routine } = trigger {
                 notes.extend(self.brief_for(&rec.id, routine));
             }
+            // Core skills that fit, loaded by the harness rather than left to the agent (`autoskills`).
+            notes.extend(self.auto_load(&rec.id, job, text));
+            // What its memory says about this task, recalled for it before it starts (`brain`).
+            if !matches!(trigger, Trigger::Contact { .. } | Trigger::Room { .. } | Trigger::Peer { .. }) {
+                notes.extend(self.prime(rec, job, text).await);
+            }
             built.note = job_note(&notes);
+        } else if matches!(trigger, Trigger::Test { .. } | Trigger::Shadow { .. }) {
+            // A test runs as the agent would: its fitting skills loaded the same way.
+            built.note = self.auto_load(&rec.id, job, text).map(|b| job_note(&[b])).flatten();
         }
         // Its tuning: proven habits (stable, so cached), compaction, effort, cache lifetime.
         let tuning = self.tuning(&rec.id);
@@ -353,6 +365,9 @@ impl Team {
             // Its own space in Enkeon too, read only: never what saves, sends or calls an app.
             let enkeon = if rec.grants.memory { self.enkeon_for(&rec.id, "agent", rec.grants.web && cookie_harness::local::Search::from_env().is_some()) } else { None };
             agent = agent.tools(crate::helpers::tool(self, rec, job, &for_helpers, price, enkeon));
+        }
+        if contractors_may {
+            agent = agent.tools(crate::contractors::tool(self, rec, job, &for_contractors, price));
         }
         Ok(agent)
     }
@@ -553,6 +568,7 @@ impl Team {
             tokens,
             microdollars,
             grade: None,
+            skills: crate::autoskills::take_job_skills(&job_id),
             version: rec.version,
             steps: calls.iter().map(|(s, _)| s.clone()).collect(),
             steered,
@@ -582,6 +598,11 @@ impl Team {
     /// What follows a job: news for the person, and a copy for any shadow fork.
     async fn after_job(self: &Arc<Self>, rec: &AgentRecord, job: &Job) {
         self.maybe_review(rec, job);
+        // How the skills it loaded did (`autoskills`), and the contractors it brought in (`contractors`).
+        self.record_outcome(rec, job);
+        self.settle_contracts(rec, job);
+        // The answer read against what stands, and the person's decisions written as evidence (`brain`).
+        self.after_job_brain(rec, job);
         match (&job.trigger, job.status) {
             (Trigger::Routine { .. } | Trigger::Peer { .. }, JobStatus::Done) => {
                 let quiet = job.answer.trim().trim_end_matches('.').eq_ignore_ascii_case("nothing new");
@@ -760,6 +781,7 @@ impl Team {
         if let (Some(j), Some(-1)) = (before, grade) {
             if j.grade != Some(-1) {
                 self.rescore_lessons(agent, &j);
+                self.regrade_skills(agent, &j);
             }
         }
         Ok(())

@@ -131,51 +131,117 @@ function onLearned(ev) {
   if (profileOpenFor(ev.agent) && ["skills", "about"].includes(profileTab)) refreshProfile();
 }
 
-const ORIGIN = { learned: "learned", written: "written", bundled: "from Cookie", imported: "added" };
+const ORIGIN = { learned: "learned here", written: "written", bundled: "from Cookie", imported: "added by you", shelf: "from the shelf" };
+const STAGE = {
+  core: ["Core", "Loaded by itself when a task fits."],
+  oncall: ["On call", "Found with find_skill when a task asks for it."],
+  trial: ["Being tested", "Tried with and without, on tests it never sees."],
+  retired: ["Retired", "It did as well without these. One click restores one."],
+};
+const CHANGE_WORD = { picked: "Picked", core: "Now core", oncall: "On call", retired: "Retired", edited: "Improved", new: "New skill", not_kept: "Not kept", updated: "Updated", added_by_you: "You added", undone: "Undone" };
+
+function testLine(t) {
+  if (!t) return "";
+  const m = typeof modelName === "function" ? modelName(t.model) : t.model;
+  return `With it ${t.with}/${t.total} · without ${t.without}/${t.total} · ${m} · ${fmtDate(t.at)}`;
+}
 
 async function skillsPanel(a) {
-  const [skills, learning] = await Promise.all([call("skills", { id: a.id }), call("learning", { id: a.id })]);
+  const [view, learning] = await Promise.all([call("skills_view", { id: a.id }), call("learning", { id: a.id })]);
   const parts = [];
   const g = el("div", "group");
-  g.append(setRow("Learns from your conversations", `Every ${learning.memory_every} conversations it re-reads the latest and keeps what should last: how you like this work done, as skills you can read, change and undo.`, toggle(learning.enabled, async (on) => { await call("set_learning", { id: a.id, on }); })));
-  const learnRow = setRow("Learn now", "Review the latest conversation right away.", button("Learn now", "quiet small", async (e) => {
+  g.append(setRow("Learns from your conversations", `Every ${learning.memory_every} conversations it proposes small improvements from what you said and decided. Each is tested first and kept only if it's no worse.`, toggle(learning.enabled, async (on) => { await call("set_learning", { id: a.id, on }); }, "Learns from your conversations")));
+  g.append(setRow("Learn now", "Review the latest conversation right away.", button("Learn now", "quiet small", async (e) => {
     const b = e.currentTarget; b.disabled = true; b.textContent = "Learning…";
     try {
       const r = await call("learn_now", { id: a.id });
-      toast(r.changes.length ? `${a.name} learned` : "Nothing new to keep", r.changes.length ? r.changes.join(" · ") : r.summary, r.changes.length ? "good" : "");
+      toast(r.changes.length ? `${a.name} proposed changes` : "Nothing new to keep", r.changes.length ? "They're tested next, and kept only if no worse." : r.summary, r.changes.length ? "good" : "");
       refreshProfile();
     } catch (err) { toast("Couldn't learn", String(err), "error"); b.disabled = false; b.textContent = "Learn now"; }
-  }));
-  g.append(learnRow);
+  })));
   parts.push(g);
 
-  const live = skills.filter((s) => !s.archived), old = skills.filter((s) => s.archived);
-  parts.push(el("h3", "group-title", `Skills (${live.length})`));
-  const list = el("div", "group");
-  if (!live.length) list.append(setRow("No skills yet", "Correct it the way you'd correct a colleague; it keeps the lesson here. Or add one from Cookie's catalog below.", null));
-  for (const s of live) list.append(skillRow(a, s));
-  parts.push(list);
-  parts.push(button("New skill", "quiet small", () => editSkill(a, null)));
-  if (old.length) {
-    parts.push(el("h3", "group-title", `Archived (${old.length})`));
-    const ol = el("div", "group");
-    for (const s of old) ol.append(skillRow(a, s));
-    parts.push(ol);
+  // What Cookie is doing on its own.
+  const auto = el("p", "muted small skills-auto");
+  const spent = view.tests.spent_microdollars ? `$${(view.tests.spent_microdollars / 1e6).toFixed(2)}` : `${(view.tests.spent_tokens || 0).toLocaleString()} tokens`;
+  auto.textContent = `Cookie picks, tests and updates ${a.name}'s skills itself. ` + (view.picked_at ? `Picked ${fmtDate(view.picked_at)}. ` : "Picking them now. ") + (view.tests.on ? `Tests this month: ${spent} of $${view.tests.month_dollars}.` : "Tests are off (Settings → Skills).");
+  parts.push(auto);
+  if (view.waiting || view.proposed.length) {
+    const w = el("div", "group");
+    if (view.waiting) w.append(setRow(`${view.waiting} proposed change${view.waiting === 1 ? "" : "s"} waiting for tests`, "Kept only if its tests are no worse with them.", null));
+    for (const p of view.proposed) w.append(setRow(`New: ${p.name}`, `Came up in ${p.seen} of ${p.needs} reviews before it's tried.`, null));
+    parts.push(w);
   }
-  if (typeof catalogSection === "function") parts.push(...(await catalogSection(a)));
+
+  for (const stage of ["core", "oncall", "trial", "retired"]) {
+    const list = view.skills.filter((s) => s.stage === stage);
+    if (!list.length && stage !== "core") continue;
+    const [title, note] = STAGE[stage];
+    parts.push(el("h3", "group-title", stage === "core" ? `${title} (${list.length} of 3)` : `${title} (${list.length})`));
+    const box = el("div", "group");
+    const testing = view.skills.some((x) => x.stage === "trial");
+    if (!list.length) box.append(setRow("None yet", testing ? "Its picks are being tested: a skill becomes core only if it helps." : view.picked_at ? "Nothing on the shelf helped enough yet. It finds skills while it works, and learns its own." : "Cookie is choosing and testing them.", null));
+    for (const s of list) box.append(skillRow(a, s));
+    parts.push(box, el("p", "muted small", note));
+  }
+
+  if (view.changes.length) {
+    parts.push(el("h3", "group-title", "Recent changes"));
+    const ch = el("div", "group");
+    for (const c of view.changes.slice(0, 12)) {
+      const r = setRow(`${CHANGE_WORD[c.kind] ?? c.kind}: ${c.skill}`, [c.what, testLine(c.test), fmtTime(c.at)].filter(Boolean).join(" · "), null);
+      if (c.version) {
+        const acts = el("div", "row-actions");
+        acts.append(button("See change", "quiet small", () => showDiff(a, c.skill, c.version, r)), button("Undo", "quiet small", async () => {
+          try { await call("skill_undo", { id: a.id, name: c.skill, version: c.version }); toast("Undone", `${c.skill} is as it was.`, "good"); refreshProfile(); }
+          catch (e) { toast("Couldn't undo", String(e), "error"); }
+        }));
+        r.append(acts);
+      }
+      ch.append(r);
+    }
+    parts.push(ch);
+  }
+
+  const acts = el("div", "row-actions wrap");
+  acts.append(
+    button("Test again", "quiet small", async () => { await call("skills_retest", { id: a.id }); toast("Testing", `${a.name}'s core skills, with and without.`, ""); }),
+    button("Pick again", "quiet small", async () => { await call("skills_pick_again", { id: a.id }); toast("Picking", `Cookie reads ${a.name}'s job and the shelf again.`, ""); }),
+  );
+  parts.push(acts);
+  parts.push(...byHandSection(a));
   return parts;
+}
+
+/** A change, line by line, under its row. */
+async function showDiff(a, name, version, row) {
+  const open = row.nextElementSibling?.classList.contains("skill-diff");
+  if (open) { row.nextElementSibling.remove(); return; }
+  try {
+    const lines = await call("skill_diff", { id: a.id, name, version });
+    const pre = el("pre", "skill-diff");
+    for (const l of lines.filter((l, i, all) => !l.startsWith("  ") || all.slice(Math.max(0, i - 2), i + 3).some((x) => !x.startsWith("  ")))) {
+      const span = el("span", l.startsWith("+ ") ? "add" : l.startsWith("- ") ? "del" : "same", l);
+      pre.append(span, "\n");
+    }
+    row.after(pre);
+  } catch (e) { toast("Couldn't show it", String(e), "error"); }
 }
 
 function skillRow(a, s) {
   const r = el("button", "row link-row skill-row");
   const t = el("div", "row-text");
-  t.append(el("span", null, s.name), el("small", null, s.description));
+  const lines = [s.description];
+  if (s.why) lines.push(s.why);
+  const tl = testLine(s.test);
+  if (tl) lines.push(tl);
+  if (s.wins || s.losses) lines.push(`Went well ${s.wins} of ${s.wins + s.losses} times it was used`);
+  t.append(el("span", null, s.name), el("small", null, lines.join(" · ")));
   const tags = el("div", "skill-tags");
-  tags.append(el("span", "tag", ORIGIN[s.origin] ?? s.origin));
-  if (s.pinned) tags.append(el("span", "tag", "pinned"));
-  if (s.uses) tags.append(el("span", "muted small", `used ${s.uses}×`));
+  tags.append(el("span", "tag", s.source?.source?.startsWith("github:") ? s.source.source.slice(7) : ORIGIN[s.origin] ?? s.origin));
+  if (s.update_available) tags.append(el("span", "tag", "update"));
   r.append(t, tags);
-  r.onclick = () => openSkill(a, s);
+  r.onclick = () => openSkill(a, { ...s, archived: s.stage === "retired" });
   return r;
 }
 
@@ -210,10 +276,15 @@ async function openSkill(a, s, file = "SKILL.md") {
   const versions = await call("skill_versions", { id: a.id, name: s.name }).catch(() => []);
   const vbox = el("div", "group");
   for (const v of versions.filter((v) => v.files.includes(file)).slice(0, 8)) {
-    vbox.append(setRow(`Before ${fmtTime(v.at)}`, file, button("Put back", "quiet small", async () => {
+    const row = setRow(`Before ${fmtTime(v.at)}`, file, null);
+    const acts = el("div", "row-actions");
+    if (file === "SKILL.md") acts.append(button("See change", "quiet small", () => showDiff(a, s.name, v.version, row)));
+    acts.append(button("Put back", "quiet small", async () => {
       try { await call("skill_revert", { id: a.id, name: s.name, version: v.version, file }); toast("Put back", `${s.name}/${file} as it was`, "good"); openSkill(a, s, file); }
       catch (e) { toast("Couldn't put it back", String(e), "error"); }
-    })));
+    }));
+    row.append(acts);
+    vbox.append(row);
   }
   body.replaceChildren(head, files, view, acts, ...(vbox.children.length ? [el("h3", "group-title", "Earlier versions"), vbox] : []));
 }
@@ -238,32 +309,99 @@ function editSkill(a, s, file = "SKILL.md", text = "") {
   body.firstChild.append(button("Cancel", "quiet small", () => s ? openSkill(a, s, file) : openProfile("skills")), strong(s ? `${s.name}/${file}` : "New skill"));
 }
 
-/* ---------- Cookie's catalog, and skills from a folder ---------- */
-async function catalogSection(a) {
-  const items = await call("skill_catalog", { id: a.id }).catch(() => []);
-  const out = [el("h3", "group-title", "From Cookie's catalog")];
-  const g = el("div", "group");
-  for (const it of items) {
-    g.append(setRow(it.name, it.description, it.installed ? el("span", "tag", "added") : button("Add", "quiet small", async () => {
-      try { await call("install_skill", { id: a.id, folder: it.folder }); toast("Skill added", `${a.name} now has ${it.name}.`, "good"); openProfile("skills"); }
-      catch (e) { toast("Couldn't add it", String(e), "error"); }
-    })));
-  }
-  out.push(g);
+/* ---------- by hand: the fallback ---------- */
+function byHandSection(a) {
+  const det = el("details", "by-hand");
+  det.append(el("summary", null, "Add a skill yourself"));
+  const find = el("form", "group edit about-add");
+  const q = input("", "Search Cookie's shelf, e.g. spreadsheet, meeting notes");
+  find.append(q, button("Search", "quiet small", () => find.requestSubmit()));
+  const results = el("div", "group");
+  results.hidden = true;
+  find.onsubmit = async (e) => {
+    e.preventDefault();
+    const found = await call("shelf_search", { query: q.value }).catch(() => []);
+    results.replaceChildren(...(found.length ? found.map((it) => setRow(it.name, it.description, button("Add", "quiet small", async () => {
+      try { await call("skill_add_by_hand", { id: a.id, shelf: it.name }); toast("Added", `${it.name} is being tested for ${a.name}.`, "good"); refreshProfile(); }
+      catch (err) { toast("Couldn't add it", String(err), "error"); }
+    }))) : [setRow("Nothing on the shelf matches", "Try other words.", null)]));
+    results.hidden = false;
+  };
+  det.append(find, results);
   if (!Api.web) {
     const f = el("form", "group edit about-add");
     const p = input("", "A folder on this Mac with a SKILL.md, e.g. ~/skills/cold-email");
     f.append(p, button("Add", "quiet small", () => f.requestSubmit()));
     f.onsubmit = async (e) => {
       e.preventDefault();
-      try { const n = await call("import_skill", { id: a.id, path: p.value }); toast("Skill added", n, "good"); openProfile("skills"); }
+      try { const n = await call("skill_add_by_hand", { id: a.id, path: p.value }); toast("Added", `${n} is being tested for ${a.name}.`, "good"); refreshProfile(); }
       catch (err) { toast("Couldn't add it", String(err), "error"); }
     };
-    out.push(el("h3", "group-title", "From a folder"), f, el("p", "muted small", "Every file is checked first: no secrets, no instructions aimed at the agent, no shell pipes from the internet."));
+    det.append(f);
   }
-  out.push(el("p", "muted small", "Catalog skills adapted from Hermes Agent (MIT, Nous Research)."));
-  return out;
+  det.append(button("Write one yourself", "quiet small", () => editSkill(a, null)), el("p", "muted small", "Whatever you add goes through the same checks and tests as the skills Cookie picks."));
+  return [det];
 }
+
+/* ---------- Settings → Skills: the shelf ---------- */
+async function skillsSettings() {
+  const [shelf, cfg] = await Promise.all([call("shelf"), call("auto_skills_cfg")]);
+  const parts = [el("h2", null, "Skills")];
+  parts.push(el("p", "muted", "Agents draw skills only from Cookie's shelf, never straight from the internet. Every skill on it passed a format and licence check, a content scan for instructions aimed at the agent, and a check of what power it needs. Cookie refreshes it daily and tests each skill on each agent before relying on it."));
+  const g = el("div", "group");
+  g.append(setRow("Test skills automatically", "Each skill runs with and without on practice tasks before an agent relies on it. Tests use model calls.", toggle(cfg.tests, async (on) => { await call("set_auto_skills_cfg", { tests: on }); })));
+  const cap = input(String(cfg.month_dollars), "3");
+  cap.type = "number"; cap.min = 0; cap.step = "0.5"; cap.classList.add("num-in");
+  cap.onchange = async () => { try { await call("set_auto_skills_cfg", { month_dollars: +cap.value }); toast("Saved", `Skill tests stop at $${cap.value} a month.`, "good"); } catch (e) { toast("Couldn't save", String(e), "error"); } };
+  g.append(setRow("Monthly limit for tests", "Tests wait for next month past it.", cap));
+  parts.push(g);
+
+  parts.push(el("h3", "group-title", "The shelf"));
+  const s = el("div", "group");
+  s.append(setRow(`${shelf.vetted} vetted skill${shelf.vetted === 1 ? "" : "s"}`, (shelf.refreshed_at ? `Checked ${fmtTime(shelf.refreshed_at)}` : "Not checked yet") + (shelf.refused ? ` · ${shelf.refused} refused` : "") + (shelf.last_error ? ` · ${shelf.last_error}` : ""), button("Check now", "quiet small", async (e) => {
+    const b = e.currentTarget; b.disabled = true; b.textContent = "Checking…";
+    try { const r = await call("shelf_refresh"); toast("Shelf checked", `${r.added?.length ?? 0} new, ${r.changed?.length ?? 0} updated, ${r.refused?.length ?? 0} refused.`, "good"); refreshSettings(); }
+    catch (err) { toast("Couldn't check", String(err), "error"); b.disabled = false; b.textContent = "Check now"; }
+  })));
+  parts.push(s);
+
+  if (shelf.held.length) {
+    parts.push(el("h3", "group-title", "Updates that want more"));
+    const h = el("div", "group");
+    for (const it of shelf.held) {
+      const r = setRow(it.name, `${it.grew.join("; ")}. Agents keep the old version until you decide.`, null);
+      const acts = el("div", "row-actions");
+      acts.append(button("Keep old", "quiet small", async () => { await call("shelf_decide", { name: it.name, accept: false }); refreshSettings(); }), button("Let it in", "primary small", async () => { await call("shelf_decide", { name: it.name, accept: true }); toast("Updated", `${it.name} is tested again on each agent.`, "good"); refreshSettings(); }));
+      r.append(acts);
+      h.append(r);
+    }
+    parts.push(h);
+  }
+
+  parts.push(el("h3", "group-title", "Sources"));
+  const src = el("form", "group edit about-add");
+  const si = input(shelf.sources.map((x) => x.replace(/^github:/, "")).join(", "), "owner/repo, owner/repo");
+  src.append(si, button("Save", "quiet small", () => src.requestSubmit()));
+  src.onsubmit = async (e) => {
+    e.preventDefault();
+    try { await call("shelf_sources", { sources: si.value.split(",").map((x) => x.trim()).filter(Boolean) }); toast("Sources saved", "They're read at the next check.", "good"); refreshSettings(); }
+    catch (err) { toast("Couldn't save", String(err), "error"); }
+  };
+  parts.push(src, el("p", "muted small", "Public GitHub repositories of skills (Agent Skills format). Only skills under an open licence are kept."));
+
+  const list = shelf.skills.slice().sort((x, y) => x.state.localeCompare(y.state) || x.name.localeCompare(y.name));
+  const det = el("details", "by-hand");
+  det.append(el("summary", null, `Everything on the shelf (${list.length})`));
+  const all = el("div", "group");
+  for (const k of list) {
+    const why = k.state === "refused" ? `Refused: ${k.reasons.join("; ")}` : [k.description, k.source === "bundled" ? "from Cookie" : k.source.replace(/^github:/, ""), k.license, k.power?.scripts?.length ? `scripts: ${k.power.scripts.length}` : "", k.power?.network ? "uses the network" : ""].filter(Boolean).join(" · ");
+    all.append(setRow(k.name, why, el("span", "tag", k.state)));
+  }
+  det.append(all);
+  parts.push(det);
+  return parts;
+}
+SETTINGS.skills = skillsSettings;
 
 /* ---------- about you (Settings) ---------- */
 async function aboutYouPane() {

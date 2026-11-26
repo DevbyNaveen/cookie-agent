@@ -1560,7 +1560,8 @@ footer.me { gap: 6px; }
 .attach-menu .am-chev { width: 14px; height: 14px; transform: rotate(90deg); }
 .chip-ic { width: 16px; height: 16px; color: var(--text-2); }
 /* The model this agent answers with, under the composer */
-.composer-foot { display: flex; justify-content: flex-end; padding: 6px 10px 0; }
+.composer-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 10px 0; }
+.composer-foot > .model-chip:only-child, .composer-foot > #perm-chip[hidden] + .model-chip { margin-left: auto; }
 .model-chip { display: inline-flex; align-items: baseline; gap: 6px; padding: 3px 8px; border-radius: 8px; font-size: 13px; color: var(--text-2); }
 .model-chip small { font-size: 12px; color: var(--text-3); }
 .model-chip:hover { background: var(--raise); color: var(--text); }
@@ -1635,3 +1636,90 @@ footer.me { gap: 6px; }
 .rail-tip strong { font-size: 13.5px; font-weight: 600; color: var(--text); }
 .rail-tip span { font-size: 12.5px; color: var(--text-2); line-height: 1.35; }
 :root[data-theme="white"] .rail-tip, :root[data-theme="light"] .rail-tip { background: rgb(255 255 255 / .96); box-shadow: 0 10px 28px -12px rgb(0 0 0 / .25); }
+
+/* Profile: the face opens its look */
+.pf-face { position: relative; display: grid; place-items: center; border-radius: 50%; padding: 4px; margin-bottom: 8px; }
+.pf-face .face { margin: 0; }
+.pf-face-pen { position: absolute; right: 0; bottom: 2px; width: 22px; height: 22px; padding: 4px; border-radius: 50%; background: var(--raise-2); color: var(--text); opacity: 0; transform: scale(.85); transition: opacity .15s var(--ease), transform .15s var(--ease); }
+.pf-face:hover .pf-face-pen, .pf-face:focus-visible .pf-face-pen { opacity: 1; transform: none; }
+.pf-face:focus-visible { outline: none; background: var(--raise); }
+/* Its look: shapes drawn live, colours as swatches; fills, no rings */
+.look-pick { padding: 6px 14px 14px; }
+.look-pick > .row { padding-left: 0; padding-right: 0; padding-bottom: 2px; }
+.look-shapes { display: grid; grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); gap: 4px; padding: 4px 0 10px; }
+.look-shape { display: grid; place-items: center; height: 60px; border-radius: 14px; transition: background .15s var(--ease); }
+.look-shape:hover { background: var(--raise); }
+.look-shape.on, .look-shape:focus-visible { background: var(--raise-2); outline: none; }
+.look-colors { display: flex; flex-wrap: wrap; gap: 10px; padding: 6px 2px 8px; }
+.look-color { width: 30px; height: 30px; border-radius: 50%; background: var(--sw); position: relative; transition: transform .15s var(--ease); }
+.look-color:hover { transform: scale(1.08); }
+.look-color.on::after, .look-color:focus-visible::after { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: rgb(255 255 255 / .92); }
+.look-color:focus-visible { outline: none; }
+
+/* Hiring one agent: a sheet like the profile (face and name left, everything about it right) */
+.hire-sheet[open] { width: min(860px, 94vw); height: min(680px, 88vh); display: grid; grid-template-columns: 236px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.hs-who { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 6px; padding: 40px 20px; background: var(--raise); }
+.hs-face { display: grid; place-items: center; width: 140px; height: 140px; margin-bottom: 10px; }
+.hs-face > .face { grid-area: 1 / 1; }
+.hs-face > .hs-in { animation: hs-in .26s var(--ease) both; }
+.hs-face > .hs-out { animation: hs-out .18s ease both; }
+@keyframes hs-in { from { opacity: 0; transform: scale(.86) translateY(6px); } }
+@keyframes hs-out { to { opacity: 0; transform: scale(.9); } }
+.hs-name { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.015em; }
+.hs-tag { margin: 0; font-size: 13px; color: var(--text-3, var(--text-2)); }
+.hs-main { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; padding: 34px 32px 0; }
+.hire-sheet .hire-own { max-width: none; margin: 0; gap: 14px; animation: none; }
+.hs-field { display: flex; flex-direction: column; gap: 6px; }
+.hs-field > span { font-size: 13px; font-weight: 600; color: var(--text-2); }
+.hs-field[hidden] { display: none; }
+.hs-field select { font: inherit; font-size: 14px; color: var(--text); background: var(--raise); border: 0; border-radius: 14px; padding: 11px 12px; }
+.hs-note { margin: 2px 0 0; font-size: 12.5px; color: var(--text-3, var(--text-2)); }
+.hire-sheet .hire-looks { max-width: none; align-items: stretch; gap: 8px; margin: 0; animation: none; }
+.hire-sheet .looks-title { font-size: 13px; }
+.hire-sheet .looks { justify-content: flex-start; }
+.hire-sheet .looks { gap: 2px; }
+.hire-sheet .look { width: 50px; height: 50px; border-radius: 14px; }
+.hire-sheet .looks-more { align-self: flex-start; margin-left: -4px; }
+.hire-sheet .hire-go { position: sticky; bottom: 0; margin-top: auto; padding: 18px 2px 22px; justify-content: flex-end; background: linear-gradient(to top, var(--rail) 72%, transparent); }
+.hire-sheet .hire-btn { min-width: 0; padding-inline: 24px; }
+.hire-sheet .hire-btn:focus { outline: none; }
+.hire-sheet .hire-btn:focus-visible { box-shadow: 0 0 0 2px var(--focus); }
+.hs-main { scrollbar-gutter: stable; }
+.hire-sheet .error-line { margin: 10px 0 0; }
+@media (max-width: 720px) {
+  .hire-sheet[open] { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .hs-who { padding: 22px 16px 14px; }
+  .hs-face { width: 96px; height: 96px; }
+  .hs-main { padding: 20px 18px 0; }
+}
+
+/* Permissions under the composer, on the left: a drop-up, borderless, like the model menu */
+.perm-chip { align-items: center; }
+.perm-chip svg { width: 14px; height: 14px; color: var(--text-3, var(--text-2)); }
+.perm-menu { position: absolute; left: 24px; bottom: 34px; z-index: 40; width: 330px; max-height: min(560px, 70vh); overflow-y: auto; padding: 6px; border: 0; border-radius: 16px; display: flex; flex-direction: column; animation: pop .16s var(--ease); }
+.perm-menu .pm-title { margin: 8px 11px 4px; font-size: 12px; font-weight: 600; color: var(--text-3, var(--text-2)); }
+.perm-menu .pm-row { display: flex; align-items: center; gap: 11px; padding: 8px 11px; border-radius: 11px; text-align: left; }
+.perm-menu button.pm-row:hover, .perm-menu button.pm-row:focus-visible { background: var(--raise-2); outline: none; }
+.perm-menu .pm-row > svg { width: 16px; height: 16px; flex: none; color: var(--text-2); }
+.perm-menu .pm-row > svg:last-child:not(:first-child) { color: var(--accent, var(--text)); }
+.perm-menu .row-text { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.perm-menu .row-text span { font-size: 14px; }
+.perm-menu .row-text small { font-size: 12px; color: var(--text-3, var(--text-2)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.perm-menu .pm-switch .switch { flex: none; }
+.perm-menu .pm-more { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; padding: 9px 11px; border-radius: 11px; font-size: 13px; color: var(--text-2); }
+.perm-menu .pm-more:hover, .perm-menu .pm-more:focus-visible { background: var(--raise-2); color: var(--text); outline: none; }
+.perm-menu .pm-more svg { width: 14px; height: 14px; }
+
+/* Skills that look after themselves */
+.skills-auto { margin: 2px 4px 10px; }
+.skill-diff { margin: 0 0 8px; padding: 10px 12px; border-radius: 12px; background: var(--raise); font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-x: auto; }
+.skill-diff .add { color: #7ccf8a; }
+.skill-diff .del { color: #e88b84; text-decoration: line-through; text-decoration-thickness: 1px; }
+.skill-diff .same { color: var(--text-3, var(--text-2)); }
+.by-hand { margin-top: 14px; }
+.by-hand > summary { cursor: pointer; padding: 8px 4px; font-size: 13px; color: var(--text-2); list-style: none; }
+.by-hand > summary::-webkit-details-marker { display: none; }
+.by-hand > summary::before { content: "+ "; }
+.by-hand[open] > summary::before { content: "– "; }
+.by-hand > .group, .by-hand > form { margin-bottom: 8px; }
+.helper-n.contractor { background: var(--accent-soft, var(--raise-2)); color: var(--accent-text, var(--text)); font-size: 10px; letter-spacing: .02em; }

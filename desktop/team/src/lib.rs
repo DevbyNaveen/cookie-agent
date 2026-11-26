@@ -10,6 +10,11 @@ pub mod cage;
 pub mod approvals;
 pub mod apps;
 pub mod made;
+pub mod shelf;
+pub mod brain;
+pub mod media;
+pub mod autoskills;
+pub mod contractors;
 pub mod attach;
 pub mod bench;
 pub mod boards;
@@ -508,6 +513,10 @@ impl Team {
         // Its memories go with it: erased from Enkeon (from its ledger, inside the folder
         // about to be deleted), and retried at the next start if Enkeon can't be reached.
         for g in &gone {
+            // The spaces it owned go back to Cookie, unless it is retiring for a successor.
+            if !crate::brain::keeps_space(g) {
+                self.release_spaces(g);
+            }
             let (erased, waiting) = self.erase_memory_of(g).await;
             if erased + waiting > 0 {
                 tracing::info!(agent = %g, erased, waiting, "erased a fired agent's memories");

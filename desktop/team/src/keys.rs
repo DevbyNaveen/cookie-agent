@@ -22,6 +22,9 @@ pub const PROVIDERS: &[(&str, &str, &str)] = &[
     ("exa", "Exa search", "EXA_API_KEY"),
     ("brave", "Brave search", "BRAVE_SEARCH_API_KEY"),
     ("elevenlabs", "ElevenLabs voice", "ELEVENLABS_API_KEY"),
+    // Images and video made with Higgsfield (`media`): a key ID and its secret, from console.higgsfield.ai.
+    ("higgsfield", "Higgsfield: API key ID", "HF_API_KEY_ID"),
+    ("higgsfield_secret", "Higgsfield: API key secret", "HF_API_KEY_SECRET"),
 ];
 
 pub struct Keys {

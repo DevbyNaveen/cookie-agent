@@ -46,7 +46,8 @@ async function renderDesk(agentId) {
   // Offers from the nightly round: split an agent doing two kinds of work, or retire one with none.
   for (const o of (evs?.offers || []).filter((o) => o.agent === agentId).slice(0, 2)) {
     const g = el("div", "group");
-    const r = setRow(o.kind === "split" ? `Split ${who.name} in two?` : `Retire ${who.name}?`, o.kind === "split" ? `${o.why} For example: “${(o.kinds[1] || [])[0] ?? ""}”.` : `${o.why} What it learned is kept for whoever you hire next.`, null);
+    const hireName = o.kind === "hire" ? (o.kinds[0] || [])[0] ?? "" : "";
+    const r = setRow(o.kind === "split" ? `Split ${who.name} in two?` : o.kind === "hire" ? `Hire a ${hireName} for good?` : `Retire ${who.name}?`, o.kind === "split" ? `${o.why} For example: “${(o.kinds[1] || [])[0] ?? ""}”.` : o.kind === "hire" ? `${o.why} Its job: “${(o.kinds[0] || [])[1] ?? ""}”.` : `${o.why} What it learned is kept for whoever you hire next.`, null);
     const acts = el("div", "row-actions");
     if (o.kind === "split") acts.append(button("Split", "primary small", async () => {
       const name = prompt(`Name the new agent that takes work like “${(o.kinds[1] || [])[0] ?? ""}”`);
@@ -55,6 +56,16 @@ async function renderDesk(agentId) {
       if (!job) return;
       const child = await call("accept_split", { offer: o.id, name, job });
       await loadRoster(); toast("Split", `${child.name} takes that work now.`, "good"); refreshDesk();
+    }));
+    else if (o.kind === "hire") acts.append(button("Hire", "primary small", async () => {
+      const name = prompt("Its name", hireName);
+      if (!name) return;
+      const job = prompt("Its one job", (o.kinds[0] || [])[1] ?? "");
+      if (!job) return;
+      try {
+        const hired = await call("accept_hire_offer", { offer: o.id, name, job });
+        await loadRoster(); toast("Hired", `${hired.name} is on the team; Cookie is picking its skills.`, "good"); refreshDesk();
+      } catch (e) { toast("Couldn't hire", String(e), "error"); }
     }));
     else acts.append(button("Retire", "primary small", async () => {
       if (!confirm(`Retire ${who.name}? It writes a handover note, what it learned is kept for a successor, and it is let go.`)) return;

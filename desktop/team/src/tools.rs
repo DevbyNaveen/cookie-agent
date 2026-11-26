@@ -112,6 +112,18 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
     if g.files && !outside {
         out.extend(crate::access::tools(team, &rec.id, job));
     }
+    // Images and video made with Higgsfield, when it is set up (`media`): each one approved first.
+    if !outside && g.apps && crate::media::ready() && !crate::bench::is_probe(&rec.id) {
+        out.extend(crate::media::tools(team, &rec.id));
+    }
+    // A fact for the whole team, with the person's yes (`brain`).
+    if !outside && rec.grants.memory && crate::pair::enkeon().is_some() && !crate::bench::is_probe(&rec.id) {
+        out.push(crate::brain::share_tool(team, &rec.id));
+    }
+    // A skill for a kind of task its core skills don't cover (`autoskills`).
+    if !outside {
+        out.extend(crate::autoskills::tools(team, &rec.id, job));
+    }
     // How Cookie is set up, read-only (names and on/off, never a secret).
     if !outside {
         out.push(crate::made::settings_tool(Arc::downgrade(team), rec.id.clone()));

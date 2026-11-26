@@ -166,6 +166,10 @@ impl Team {
 
     async fn tick(self: &Arc<Self>) {
         self.curate().await;
+        // Skills: the shelf once a day, then one agent's picking or learning at a time (`autoskills`).
+        self.skills_tick().await;
+        // The brain: its spaces and their owners, open plans and their due cues (`brain`).
+        self.brain_tick().await;
         self.maybe_post_retro().await;
         // The nightly exam loop, when it is on and its hour has come.
         self.maybe_evolve().await;

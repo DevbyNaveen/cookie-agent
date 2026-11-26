@@ -22,6 +22,9 @@ const MAX_FILES: usize = 300;
 const MAX_DEPTH: usize = 5;
 /// Pinning the space instead of a file.
 pub const SPACE: &str = "@space";
+/// The faces an agent can wear and the colours it can come in (`ui/face.js` draws them).
+pub const SHAPES: [&str; 12] = ["gumdrop", "bun", "macaron", "mochi", "biscuit", "orb", "crystal", "wisp", "bot", "cloud", "star", "ghost"];
+pub const COLORS: [&str; 11] = ["amber", "berry", "blueberry", "matcha", "plum", "mint", "caramel", "rose", "lemon", "lagoon", "chocolate"];
 
 impl Team {
     /// The files in an agent's folder, newest first: path (in its folder), name, kind, size, when.
@@ -95,6 +98,47 @@ impl Team {
                 Ok(Some(rel))
             }
         }
+    }
+
+    fn look_file(&self, agent: &str) -> std::path::PathBuf {
+        self.paths.agent(agent).join("look.json")
+    }
+
+    /// The shape and colour the person chose for every agent that has one: `{id: {shape, color}}`.
+    pub async fn agent_looks(&self) -> Value {
+        let ids: Vec<String> = self.agents.read().await.iter().map(|r| r.id.clone()).collect();
+        let mut out = serde_json::Map::new();
+        for id in ids {
+            let v = util::read_json::<Value>(&self.look_file(&id));
+            if v.is_object() && (v["shape"].is_string() || v["color"].is_string()) {
+                out.insert(id, v);
+            }
+        }
+        Value::Object(out)
+    }
+
+    /// Choose an agent's shape and colour (either may be left as drawn); both `None` goes back to its own.
+    pub async fn set_agent_look(&self, agent: &str, shape: Option<String>, color: Option<String>) -> Result<Value, String> {
+        self.agent(agent).await?;
+        let shape = shape.map(|x| x.trim().to_ascii_lowercase()).filter(|x| !x.is_empty());
+        let color = color.map(|x| x.trim().to_ascii_lowercase()).filter(|x| !x.is_empty());
+        if let Some(x) = &shape {
+            if !SHAPES.contains(&x.as_str()) {
+                return Err(format!("`{x}` isn't a shape: {}.", SHAPES.join(", ")));
+            }
+        }
+        if let Some(x) = &color {
+            if !COLORS.contains(&x.as_str()) {
+                return Err(format!("`{x}` isn't a colour: {}.", COLORS.join(", ")));
+            }
+        }
+        if shape.is_none() && color.is_none() {
+            let _ = std::fs::remove_file(self.look_file(agent));
+            return Ok(Value::Null);
+        }
+        let v = json!({"shape": shape, "color": color});
+        util::write_json(&self.look_file(agent), &v)?;
+        Ok(v)
     }
 
     /// How Cookie is set up, as an agent may read it: names and on/off, never a secret.
@@ -192,6 +236,13 @@ mod tests {
         assert!(team.set_agent_pin(&rec.id, Some("../../agents.json".into())).await.is_err(), "never outside its folder");
         assert!(team.set_agent_pin(&rec.id, None).await.unwrap().is_none());
         assert!(team.agent_pin(&rec.id).is_none());
+
+        assert_eq!(team.set_agent_look(&rec.id, Some("Star".into()), Some("mint".into())).await.unwrap(), json!({"shape": "star", "color": "mint"}));
+        assert_eq!(team.agent_looks().await[&rec.id]["shape"], "star");
+        assert!(team.set_agent_look(&rec.id, Some("dragon".into()), None).await.is_err(), "only shapes it can draw");
+        assert!(team.set_agent_look(&rec.id, None, Some("#ff0000".into())).await.is_err(), "only its colours");
+        assert!(team.set_agent_look(&rec.id, None, None).await.unwrap().is_null());
+        assert!(team.agent_looks().await.get(&rec.id).is_none(), "back to the face its id gives it");
 
         let s = team.app_settings_for(&rec.id).await.unwrap();
         let text = s.to_string();

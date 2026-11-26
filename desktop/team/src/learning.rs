@@ -72,6 +72,35 @@ pub struct SkillMeta {
     pub uses: u32,
     /// Supporting files, relative to the skill's folder.
     pub files: Vec<String>,
+    /// Where it stands (`autoskills`): `core` (loaded by itself when a task fits),
+    /// `oncall` (found with find_skill), `trial` (being tested), `retired`.
+    /// Empty for skills from before: read as core.
+    pub status: String,
+    /// Why it is here, in a line the person can read.
+    pub why: String,
+    /// The shelf skill it was copied from, and that copy's hash then.
+    pub shelf: Option<String>,
+    pub base_hash: Option<String>,
+    /// Its last test: with it, without it, on the same cases.
+    pub test: Option<crate::autoskills::SkillTest>,
+    /// Jobs it was loaded in that went well, and that didn't.
+    pub wins: u32,
+    pub losses: u32,
+    /// The shelf copy changed and this agent's copy has its own edits: kept as it is.
+    pub update_available: bool,
+}
+
+impl SkillMeta {
+    /// Its status, reading the skills from before statuses as core.
+    pub fn stage(&self) -> &str {
+        if self.archived {
+            "retired"
+        } else if self.status.is_empty() {
+            "core"
+        } else {
+            self.status.as_str()
+        }
+    }
 }
 
 fn valid_name(n: &str) -> bool {
@@ -166,20 +195,20 @@ impl crate::store::Paths {
 }
 
 impl Team {
-    fn meta_path(&self, id: &str) -> PathBuf {
+    pub(crate) fn meta_path(&self, id: &str) -> PathBuf {
         self.paths.skills(id).join(".meta.json")
     }
 
-    fn metas(&self, id: &str) -> BTreeMap<String, SkillMeta> {
+    pub(crate) fn metas(&self, id: &str) -> BTreeMap<String, SkillMeta> {
         util::read_json(&self.meta_path(id))
     }
 
-    fn save_metas(&self, id: &str, m: &BTreeMap<String, SkillMeta>) -> Result<(), String> {
+    pub(crate) fn save_metas(&self, id: &str, m: &BTreeMap<String, SkillMeta>) -> Result<(), String> {
         let _ = std::fs::create_dir_all(self.paths.skills(id));
         util::write_json(&self.meta_path(id), m)
     }
 
-    fn skill_dir(&self, id: &str, name: &str, archived: bool) -> PathBuf {
+    pub(crate) fn skill_dir(&self, id: &str, name: &str, archived: bool) -> PathBuf {
         let base = self.paths.skills(id);
         if archived { base.join(".archive").join(name) } else { base.join(name) }
     }
@@ -213,12 +242,15 @@ impl Team {
 
     /// The index that rides in the agent's instructions.
     pub(crate) fn skills_block(&self, id: &str) -> Option<String> {
-        let live: Vec<SkillMeta> = self.skills(id).into_iter().filter(|s| !s.archived).collect();
+        let all = self.skills(id);
+        let live: Vec<SkillMeta> = all.iter().filter(|s| s.stage() == "core").cloned().collect();
+        let more = all.iter().filter(|s| matches!(s.stage(), "oncall" | "trial")).count();
+        let find = "For a kind of task none of these covers, find_skill searches your other skills and Cookie's shelf, and load_skill loads one for this task.";
         if live.is_empty() {
-            return None;
+            return Some(format!("Skills: {find}{}", if more > 0 { format!(" ({more} of your own are on call.)") } else { String::new() }));
         }
         let mut s = String::from(
-            "Your skills: how you do recurring kinds of work for this person. When a task fits one, load it with skill_view first and follow it.\n",
+            "Your core skills: how you do your main kinds of work for this person. When one fits a task it is loaded into this job's notes; follow it. skill_view reads one in full.\n",
         );
         for m in live.iter().take(INDEX_SKILLS) {
             s.push_str(&format!("- {}: {}\n", m.name, util::clip(&m.description, INDEX_DESC)));
@@ -226,6 +258,7 @@ impl Team {
         if live.len() > INDEX_SKILLS {
             s.push_str(&format!("({} more: skills_list shows them all.)\n", live.len() - INDEX_SKILLS));
         }
+        s.push_str(find);
         Some(s)
     }
 
@@ -311,7 +344,7 @@ impl Team {
         self.skill_write(id, name, rel, &updated, "written").map(|_| format!("Patched {name}/{rel}."))
     }
 
-    fn keep_version(&self, id: &str, name: &str, rel: &str) -> Result<(), String> {
+    pub(crate) fn keep_version(&self, id: &str, name: &str, rel: &str) -> Result<(), String> {
         let src = self.skill_dir(id, name, false).join(rel);
         let stamp = format!("{}-{}", util::now(), util::random_hex(2));
         let dst = self.paths.skills(id).join(".history").join(name).join(&stamp).join(rel);
@@ -587,6 +620,22 @@ impl Team {
                 _ => {}
             }
         }
+        // What the person decided about recent work: the clearest signal of what to keep or change.
+        let mut decided = String::new();
+        for j in self.jobs(&rec.id).into_iter().filter(|j| !matches!(j.trigger, Trigger::Review | Trigger::Test { .. } | Trigger::Shadow { .. })).take(12) {
+            let asked = util::clip(&j.input, 120);
+            for a in j.approvals.iter().filter(|a| a.outcome == "no") {
+                decided.push_str(&format!("- They said no to {} ({}) while you worked on: {asked}\n", a.tool, util::clip(&a.preview, 160)));
+            }
+            match j.grade {
+                Some(-1) => decided.push_str(&format!("- They graded this answer not good: {asked}\n")),
+                Some(1) => decided.push_str(&format!("- They graded this answer good: {asked}\n")),
+                _ => {}
+            }
+        }
+        if !decided.is_empty() {
+            transcript.push_str(&format!("WHAT THE PERSON DECIDED ABOUT RECENT WORK:\n{decided}\n"));
+        }
         let transcript: String = transcript.chars().rev().take(40_000).collect::<Vec<_>>().into_iter().rev().collect();
         let prompt = match (memory, skills) {
             (true, false) => MEMORY_REVIEW,
@@ -610,7 +659,10 @@ impl Team {
             instructions.push_str(&b);
         }
         let viewed = Arc::new(Mutex::new(HashSet::new()));
-        let mut tools = skill_tools(self, &rec.id, viewed, "learned");
+        // It reads skills and proposes; it never writes one directly (`autoskills`: tested first).
+        let review_id = util::new_id("review");
+        let mut tools: Vec<Arc<dyn Tool>> = skill_tools(self, &rec.id, viewed, "learned").into_iter().filter(|t| t.spec().name != "skill_manage").collect();
+        tools.extend(crate::autoskills::propose_tools(self, &rec.id, &review_id));
         tools.extend(about_tools(self));
         let mut agent = Agent::new(&rec.model)
             .map_err(|e| e.to_string())?
@@ -675,6 +727,7 @@ impl Team {
             self.emit(TeamEvent::Learned { agent: rec.id.clone(), changes: changes.clone() });
             self.notice(&rec.id, &format!("{} learned something", rec.name), &changes.join(" · "), Some(&job.id), false);
         }
+        // What it proposed for its skills is tested on the next tick (one skill task at a time), kept only if no worse.
         result.map(|summary| json!({"changes": changes, "summary": util::clip(&summary, 2000)}))
     }
 
@@ -972,16 +1025,20 @@ conversation tried that never actually worked.\n\n";
 const MEMORY_REVIEW: &str = "Review the conversation and keep what should outlast it. \
 If something stands out, save it once, in the right place. If nothing is worth keeping, say 'Nothing to save.' and stop.";
 
-const SKILL_REVIEW: &str = "Review the conversation and update your skills. Be active: most conversations with real work produce at least \
-one small improvement.\n\nSignals (any one is enough): the person corrected your style, format, length or approach ('too long', 'don't do X', \
-'always Y') — put that in the skill for that kind of task; a non-obvious technique or working order of steps emerged; a skill you used turned \
-out wrong or incomplete — fix it now.\n\nPrefer, in order: (1) patch a skill you used in the conversation (load it with skill_view first); \
-(2) patch an existing skill that covers this kind of task (skills_list, then skill_view); (3) add a supporting file to one; (4) create a new \
-skill named for the KIND of task, never for today's specific case. If the conversation went smoothly with nothing new, say 'Nothing to save.'";
+const SKILL_REVIEW: &str = "Review the conversation and improve your skills, in small steps. Nothing you propose is live until tests you \
+can't see say it's no worse, so propose only what the conversation shows.\n\nSignals (any one is enough): the person corrected your style, \
+format, length or approach ('too long', 'don't do X', 'always Y'); they said no to something you tried, or graded an answer not good; a \
+non-obvious working order of steps emerged; a skill you used turned out wrong or incomplete.\n\nPrefer, in order: (1) propose_skill_edit on a \
+skill you used (load it with skill_view first): add one line, replace one line, or remove one — never rewrite the whole skill; (2) the same on \
+an existing skill that covers this kind of task (skills_list, then skill_view); (3) propose_new_skill for a KIND of task no skill covers, \
+never for today's specific case. Each line is a rule plus why, with the person's words or decision as evidence. If nothing stands out, \
+say 'Nothing to save.'";
 
 const COMBINED_REVIEW: &str = "Review the conversation and update two things: what you know (about the person, and about the work), and your \
 skills (how to do this kind of task for them). Act on whichever has real signal. Corrections of style or approach belong in the skill for \
-that task, not only in notes. If genuinely nothing stands out, say 'Nothing to save.'";
+that task, not only in notes. For skills, propose small itemized edits (propose_skill_edit: one line added, replaced or removed) or a new \
+skill for a kind of task none covers (propose_new_skill); never rewrite a whole skill. Nothing you propose is live until tests you can't see \
+say it's no worse. If genuinely nothing stands out, say 'Nothing to save.'";
 
 /// The full review instructions: the routing, the shape of a good skill, and what never to keep.
 pub(crate) fn review_rules() -> String {
@@ -1023,7 +1080,7 @@ mod tests {
 
 /* ---------- Cookie's skill catalog ---------- */
 
-mod catalog {
+pub(crate) mod catalog {
     include!(concat!(env!("OUT_DIR"), "/catalog.rs"));
 }
 
