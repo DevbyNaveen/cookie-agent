@@ -14,3 +14,4 @@ evals/agentdojo/runs*.log
 # Local keys and settings never leave this computer
 .env
 .env.*
+/parallax/target
