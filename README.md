@@ -1,5 +1,11 @@
 <p align="center">
-  <img src="desktop/src-tauri/icons/128x128@2x.png" width="128" alt="Cookie">
+  <img src="docs/readme/faces/research-scout.png" width="64" alt="Research Scout">
+  <img src="docs/readme/faces/chief-of-staff.png" width="72" alt="Chief of Staff">
+  <img src="docs/readme/faces/writing-desk.png" width="80" alt="Writing Desk">
+  <img src="docs/readme/faces/cookie.png" width="120" alt="Cookie">
+  <img src="docs/readme/faces/inbox-triage.png" width="80" alt="Inbox Triage">
+  <img src="docs/readme/faces/gym-trainer.png" width="72" alt="Gym Trainer">
+  <img src="docs/readme/faces/daily-brief.png" width="64" alt="Daily Brief">
 </p>
 
 <h1 align="center">Cookie</h1>
@@ -18,9 +24,19 @@
   <a href="#reference">Reference</a>
 </p>
 
+<p align="center">
+  <img src="docs/readme/cookie-chat.png" width="860" alt="Cookie on the Mac: the team down the left, a chat with the Gym Trainer agent">
+</p>
+
 ---
 
 ## The app
+
+<p align="center"><sub>The starter crew. Every agent is a small 3D character, drawn live on your Mac in its own shape and colours.</sub></p>
+<table align="center">
+<tr><td align="center" width="128"><img src="docs/readme/faces/inbox-triage.png" width="88" alt=""><br><sub><b>Inbox Triage</b></sub></td><td align="center" width="128"><img src="docs/readme/faces/research-scout.png" width="88" alt=""><br><sub><b>Research Scout</b></sub></td><td align="center" width="128"><img src="docs/readme/faces/chief-of-staff.png" width="88" alt=""><br><sub><b>Chief of Staff</b></sub></td><td align="center" width="128"><img src="docs/readme/faces/gym-trainer.png" width="88" alt=""><br><sub><b>Gym Trainer</b></sub></td><td align="center" width="128"><img src="docs/readme/faces/writing-desk.png" width="88" alt=""><br><sub><b>Writing Desk</b></sub></td><td align="center" width="128"><img src="docs/readme/faces/lead-pipeline-desk.png" width="88" alt=""><br><sub><b>Lead Pipeline Desk</b></sub></td></tr>
+<tr><td align="center" width="128"><img src="docs/readme/faces/invoice-chaser.png" width="88" alt=""><br><sub><b>Invoice Chaser</b></sub></td><td align="center" width="128"><img src="docs/readme/faces/meeting-notes.png" width="88" alt=""><br><sub><b>Meeting Notes</b></sub></td><td align="center" width="128"><img src="docs/readme/faces/daily-brief.png" width="88" alt=""><br><sub><b>Daily Brief</b></sub></td><td align="center" width="128"><img src="docs/readme/faces/travel-planner.png" width="88" alt=""><br><sub><b>Travel Planner</b></sub></td><td align="center" width="128"><img src="docs/readme/faces/learning-coach.png" width="88" alt=""><br><sub><b>Learning Coach</b></sub></td><td align="center" width="128"><img src="docs/readme/faces/cookie.png" width="88" alt=""><br><sub><b>Cookie</b></sub></td></tr>
+</table>
 
 Cookie is a desktop app. You hire agents, each with one job in your words,
 its own face and its own folder, and talk to them like teammates.
