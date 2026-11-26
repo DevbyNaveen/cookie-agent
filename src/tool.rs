@@ -119,6 +119,40 @@ pub struct ToolContext {
     pub(crate) handoff: HandoffSlot,
     /// Where sub-agents leave long answers for `read_artifact`.
     pub(crate) artifacts: crate::artifacts::Artifacts,
+    /// Who sees a sub-agent's events the moment they happen (`ToolContext::watched`).
+    pub(crate) watch: Option<Watch>,
+}
+
+/// Sees each event of a sub-agent as it happens, not only when it returns.
+pub type Watch = Arc<dyn Fn(&crate::agent::Event) + Send + Sync>;
+
+impl ToolContext {
+    /// This context, with its sub-agents' events also shown to `watch` live
+    /// (a screen showing what a helper is doing right now). They still reach
+    /// the caller when the call returns.
+    pub fn watched(&self, watch: Watch) -> Self {
+        Self { watch: Some(watch), ..self.clone() }
+    }
+
+    /// This context with a stop of its own: the returned token stops only what
+    /// runs under it, and stopping the run still stops it too.
+    pub fn stoppable(&self) -> (Self, CancellationToken) {
+        let token = self.cancel.child_token();
+        (Self { cancel: token.clone(), ..self.clone() }, token)
+    }
+
+    /// Whether the run this call belongs to was stopped.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+
+    /// Put a request to the person this run asks (its approver); no when nobody can answer.
+    pub async fn ask_person(&self, request: &crate::approval::ApprovalRequest) -> bool {
+        match &self.approver {
+            Some(approver) => approver.approve(request).await,
+            None => false,
+        }
+    }
 }
 
 impl std::fmt::Debug for ToolContext {

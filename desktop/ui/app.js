@@ -12,10 +12,12 @@ const box = (tag, cls, ...kids) => { const n = el(tag, cls); n.append(...kids.fi
 // The project's own model ids (README, examples, the Swift app): suggestions, never a default.
 const MODELS = {
   // Signed in with Enkeon: Bedrock's models through Enkeon, on Cookie credits. No keys of your own.
-  enkeon: ["enkeon:eu.anthropic.claude-sonnet-4-6"],
-  anthropic: ["anthropic:claude-sonnet-4-6", "anthropic:claude-haiku-4-5", "anthropic:claude-opus-4-6"],
-  // Your own AWS account (Settings → Models): the model Enkeon's cloud runs on.
-  bedrock: ["bedrock:eu.anthropic.claude-sonnet-4-6"],
+  // The Claude 5 family; Sonnet 4.6 stays on Enkeon as the model its cloud has run longest.
+  enkeon: ["enkeon:eu.anthropic.claude-sonnet-5-5", "enkeon:eu.anthropic.claude-opus-5-5", "enkeon:eu.anthropic.claude-haiku-5-5", "enkeon:eu.anthropic.claude-sonnet-4-6"],
+  // Filled at start from Anthropic's own list when a key is saved (`provider_models`); these until then.
+  anthropic: ["anthropic:claude-sonnet-5-5", "anthropic:claude-opus-5-5", "anthropic:claude-haiku-5-5", "anthropic:claude-fable-5-2"],
+  // Your own AWS account (Settings → Models). `eu.` stays in the EU; Fable is offered only worldwide (`global.`).
+  bedrock: ["bedrock:eu.anthropic.claude-sonnet-5-5", "bedrock:eu.anthropic.claude-opus-5-5", "bedrock:eu.anthropic.claude-haiku-5-5", "bedrock:global.anthropic.claude-fable-5-2"],
   // Filled at start with every model pulled into Ollama on this Mac.
   ollama: [],
   openai: ["openai:gpt-6"],
@@ -298,6 +300,7 @@ async function openAgent(id) {
   const r = agentById(id);
   if (!r) return;
   closePage();
+  closeThread();
   if (current && current.id !== id) drafts.set(current.id, $("input").value);
   closeTalk();
   current = r;
@@ -732,83 +735,24 @@ function documentsLine(agentId, paths) {
   return row;
 }
 
-/* ---------- helpers: the read-only assistants a job sends out side by side ---------- */
-const HELPER_STATE = { waiting: "Waiting", working: "Working", done: "Done", failed: "Couldn't finish" };
-
-/** A card of the helpers one job sent: each task while it works, then its report, a click away. */
-function helpersCard(agentId) {
-  const card = el("div", "helpers");
-  const head = el("div", "helpers-head");
-  const face = Faces.create(agentId, 18);
-  const title = el("span", "helpers-title");
-  const count = el("span", "helpers-count");
-  head.append(face.el, title, count);
-  const list = el("ol", "helpers-list");
-  card.append(head, list);
-  const rows = new Map();
-  const name = agentById(agentId)?.name ?? "It";
-  const tally = () => {
-    const all = [...rows.values()];
-    const done = all.filter((r) => r.state === "done" || r.state === "failed").length;
-    // Contractors ride in the same card, numbered from 100 (`contractors`).
-    const h = [...rows.keys()].filter((n) => n < 100).length, c = rows.size - h;
-    title.textContent = `${name} ${[h ? `sent ${h} helper${h === 1 ? "" : "s"}` : "", c ? `brought in ${c} contractor${c === 1 ? "" : "s"}` : ""].filter(Boolean).join(" and ")}`;
-    count.textContent = done === all.length ? "" : `${done} of ${all.length} back`;
-    card.classList.toggle("busy", done < all.length);
-  };
-  return {
-    el: card,
-    /** Add or move on helper `n`: its task, `waiting` / `working` / `done` / `failed`, and its report. */
-    set(n, task, state, note = "") {
-      let r = rows.get(n);
-      if (!r) {
-        const li = el("li", "helper");
-        const btn = el("button", "helper-row");
-        btn.type = "button";
-        const num = el("span", "helper-n" + (n >= 100 ? " contractor" : ""), n >= 100 ? `C${n - 100}` : String(n));
-        const text = el("span", "helper-task", task);
-        const st = el("span", "helper-state");
-        btn.append(num, text, st);
-        const report = el("div", "helper-report md");
-        report.hidden = true;
-        btn.onclick = () => {
-          if (!r.note) return;
-          report.hidden = !report.hidden;
-          li.classList.toggle("open", !report.hidden);
-          btn.setAttribute("aria-expanded", String(!report.hidden));
-        };
-        li.append(btn, report);
-        list.append(li);
-        r = { li, btn, st, report, text, state: "", note: "" };
-        rows.set(n, r);
-      }
-      if (task) r.text.textContent = task;
-      r.state = state;
-      r.note = note;
-      r.li.className = `helper ${state}${r.report.hidden ? "" : " open"}`;
-      r.st.replaceChildren(...(state === "done" ? [icon("check")] : state === "failed" ? [icon("x")] : []), HELPER_STATE[state] ?? state);
-      r.btn.disabled = !note;
-      r.btn.setAttribute("aria-label", `Helper ${n}: ${task || r.text.textContent}. ${HELPER_STATE[state] ?? state}${note ? ". Show its report" : ""}`);
-      if (note) { r.report.innerHTML = Md.render(note); hydrateMd(r.report, agentId); }
-      tally();
-    },
-  };
-}
-
 function line(l) {
   if (l.from === "talk") return talkPill(l.talk);
   if (l.from === "documents") return documentsLine(current?.id, l.text.split("\n").filter(Boolean));
+  // Older chats kept helpers as their own group: shown as threads, like today's.
   if (l.from === "helpers") {
-    const c = helpersCard(current?.id);
-    l.helpers.forEach((h, i) => c.set(i + 1, h.task, h.failed ? "failed" : "done", h.report));
-    return c.el;
+    const g = { steps: new Map(), closed: true, el: el("div", "steps"), saved: true };
+    l.helpers.forEach((h, i) => g.steps.set("h" + i, { id: "h" + i, did: "Helper", doing: "Helper", ok: !h.failed, status: h.failed ? "failed" : "ok", start: 0, end: null, saved: true, thread: h.task, t: savedThread({ n: i + 1, task: h.task, title: h.task.split(/[.\n:;?]/)[0].split(/\s+/).slice(0, 7).join(" "), state: h.failed ? "failed" : "done", report: h.report }) }));
+    paintGroup(g);
+    return g.el;
   }
   // Steps it took between its words, kept in the record: one folded line, open for each.
   if (l.from === "steps") {
     const g = { steps: new Map(), closed: true, el: el("div", "steps") };
     const list = l.steps ?? l.text.split("\n").filter(Boolean).map((did) => ({ did, status: "ok" }));
     // Times come from the record; a step without one shows none rather than a guess.
-    list.forEach((s, i) => g.steps.set("h" + i, { id: "h" + i, did: s.did, doing: s.did, ok: s.status === "ok", status: s.status, approval: s.approval, with: s.with, start: 0, end: s.ms ?? null, saved: true }));
+    list.forEach((s, i) => g.steps.set("h" + i, { id: "h" + i, did: s.did, doing: s.did, ok: s.status === "ok", status: s.status, approval: s.approval, with: s.with, sort: s.kind, detail: s.detail, start: 0, end: s.ms ?? null, saved: true, thread: s.thread?.task, t: s.thread ? savedThread(s.thread) : null }));
+    g.saved = true;
+    g.conflicts = list.find((s) => s.thread?.conflicts?.length)?.thread.conflicts ?? [];
     paintGroup(g);
     return g.el;
   }
@@ -1015,7 +959,6 @@ function attachLive(job) {
   if (job.acc) { reply.innerHTML = Md.render(job.acc.slice(job.ui?.from ?? job.from ?? 0)); $("log").append(row); }
   else if (!job.groups?.some((g) => !g.closed)) $("log").append(status);
   job.ui = { status, face, text, row, reply, announced: true, from: job.ui?.from ?? job.from };
-  if (job.helpers) for (const h of job.helpers.values()) placeHelpers(job).set(h.n, h.task, h.state, h.note);
   renderTodos(job.agent);
   scrollDown();
 }
@@ -1036,12 +979,18 @@ function dropSaidSoFar(job) {
 
 /* ---------- steps: what a job is doing, in order with its words ---------- */
 
-/** One step began: it joins the open run of steps, or starts one where the chat is now. */
+/** One step began (or its words arrived): it joins the open run of steps, or starts one where the chat is now. */
 function addStep(job, ev) {
+  clearPending(job);
+  // The same step again, now with its arguments: better words, same place.
+  for (const g of job.groups ?? []) {
+    const s = g.steps.get(ev.id);
+    if (s) { s.name = ev.name; s.doing = ev.doing; s.did = ev.did; s.with = ev.with ?? s.with; s.thread = ev.thread ?? s.thread; s.sort = ev.sort ?? s.sort; s.detail = ev.detail ?? s.detail; paintGroup(g); return; }
+  }
   job.groups ??= [];
   let g = job.groups.at(-1);
   if (!g || g.closed) {
-    g = { steps: new Map(), closed: false, agent: job.agent, el: el("div", "steps"), job };
+    g = { steps: new Map(), closed: false, agent: job.agent, el: el("div", "steps"), job, start: Date.now() };
     job.groups.push(g);
     if (job.ui && current?.id === chatOf(job) && view === "chat") {
       if (job.ui.status.isConnected) { job.ui.status.remove(); job.ui.face.stop(); }
@@ -1049,104 +998,436 @@ function addStep(job, ev) {
       job.ui.fresh = true;
     }
   }
-  g.steps.set(ev.id, { id: ev.id, name: ev.name, doing: ev.doing, did: ev.did, with: ev.with, start: Date.now(), end: null, ok: true, sub: null });
+  g.steps.set(ev.id, { id: ev.id, name: ev.name, doing: ev.doing, did: ev.did, with: ev.with, thread: ev.thread, sort: ev.sort, detail: ev.detail, start: Date.now(), end: null, ok: true, sub: null });
   paintGroup(g);
   tickSteps();
   scrollDown();
 }
 
-const secs = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`; };
+const clipText = (t, n) => (t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t);
+const FOLDS = ["search", "page", "memory", "file"];
 
-/** "··· Messaging Enkeon Growth 17s ›" while a step runs; "Messaged Enkeon Growth, searched the web ›" once done. */
+/** Steps folded the way a reader takes them in (Perplexity-style): "Searched 2 queries · read 3 sites". */
+function foldSteps(steps) {
+  const by = { search: [], page: [], memory: [], file: [] };
+  const order = [];
+  for (const s of steps) {
+    const k = FOLDS.includes(s.sort) ? s.sort : "other:" + s.did;
+    if (!order.includes(k)) order.push(k);
+    if (FOLDS.includes(s.sort)) by[s.sort].push(s);
+  }
+  const uniq = (list) => [...new Set(list.map((s) => s.detail).filter(Boolean))];
+  const queries = uniq(by.search), hosts = uniq(by.page), files = uniq(by.file);
+  const parts = order.map((k) => {
+    if (k === "search") return queries.length === 1 ? `Searched “${clipText(queries[0], 40)}”` : `Searched ${plural(queries.length || by.search.length, "query", "queries")}`;
+    if (k === "page") return hosts.length === 1 ? `Read ${hosts[0]}` : `Read ${plural(hosts.length || by.page.length, "site")}`;
+    if (k === "memory") return by.memory.length > 1 ? `Checked memory ${by.memory.length} times` : "Checked memory";
+    if (k === "file") return files.length === 1 ? `Read ${files[0]}` : `Read ${plural(files.length || by.file.length, "file")}`;
+    return k.slice(6);
+  });
+  return { parts, queries, hosts, files, by };
+}
+
+/** The running step, said short: the query or site it is on, never the whole list. */
+const liveLabel = (s) => (s.sort === "search" && s.detail ? `Searching “${clipText(s.detail, 36)}”` : s.sort === "page" && s.detail ? `Reading ${s.detail}` : s.sort === "memory" ? "Checking memory" : clipText(s.doing, 64));
+
+/** A row of site icons. */
+function favStack(hosts, max = 4) {
+  const box = el("span", "steps-favs");
+  hosts.slice(0, max).forEach((h) => box.append(favicon(h)));
+  if (hosts.length > max) box.append(el("span", "fav more", `+${hosts.length - max}`));
+  return box;
+}
+
+const secs = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`; };
+const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+
+/* ---------- threads: each helper or contractor a job sends, as its own live thread ---------- */
+
+/** A helper's thread, from the job's live events (created on its first sign of life). */
+function liveThread(job, n) {
+  job.threads ??= new Map();
+  let t = job.threads.get(n);
+  if (!t) { t = { n, key: "", title: n >= 100 ? "Contractor" : `Helper ${n}`, state: "waiting", note: "", steps: new Map(), started: Date.now(), last: Date.now(), end: null, jobId: job.id, agent: job.agent }; job.threads.set(n, t); }
+  return t;
+}
+
+/** A kept thread (from the record) in the same shape as a live one. */
+function savedThread(r) {
+  const steps = new Map((r.steps ?? []).map((x, i) => ["s" + i, { id: "s" + i, did: x.did, doing: x.did, state: x.ok === false ? "failed" : "done", host: x.host, kind: x.kind, ms: x.ms, saved: true }]));
+  return { n: r.n ?? 1, key: r.task, task: r.task, title: r.title || "Helper", state: r.state || "done", note: r.report ?? "", steps, ms: r.ms || null, saved: true };
+}
+
+/** The thread a step sent: live by its key, or the kept one. */
+function threadOfStep(g, s) {
+  if (s.t) return s.t;
+  if (!s.thread || !g.job) return null;
+  const t = [...(g.job.threads?.values() ?? [])].find((x) => x.key === s.thread);
+  return t ?? { n: 0, key: s.thread, title: (s.doing || "").replace(/^Helper: /, "") || "Helper", state: "waiting", note: "", steps: new Map(), started: s.start, last: s.start, end: null, pending: true };
+}
+
+const threadLive = (t) => !t.saved && (t.state === "working" || t.state === "waiting");
+const threadSteps = (t) => [...t.steps.values()];
+const threadCounts = (t) => {
+  const st = threadSteps(t);
+  return { pages: st.filter((x) => x.kind === "page" || x.name === "read_url").filter((x) => x.state === "done").length, searches: st.filter((x) => x.kind === "search" || x.name === "web_search").length };
+};
+const threadHosts = (t) => [...new Set(threadSteps(t).map((x) => x.host).filter(Boolean))];
+const threadMs = (t) => (t.saved ? t.ms : (t.end ?? Date.now()) - t.started);
+
+/** What a thread is doing right now, or what it came to. */
+function threadNow(t) {
+  if (t.state === "failed") return "Couldn't finish";
+  if (t.state === "stopped") return "Stopped by you";
+  const st = threadSteps(t);
+  if (!threadLive(t)) {
+    const c = threadCounts(t);
+    const bits = [c.searches && plural(c.searches, "search", "searches"), c.pages && plural(c.pages, "page")].filter(Boolean);
+    return bits.length ? bits.join(" · ") : "Done";
+  }
+  if (t.state === "waiting") return t.pending ? "Getting its brief" : "Waiting its turn";
+  const running = st.filter((x) => x.state === "running").at(-1);
+  if (running) return running.doing;
+  const last = st.at(-1);
+  return last ? last.did : "Reading its brief";
+}
+
+/** A site's own icon, or its first letter when it has none. */
+function favicon(host) {
+  const box = el("span", "fav");
+  box.title = host;
+  const img = el("img");
+  img.alt = "";
+  img.loading = "lazy";
+  img.referrerPolicy = "no-referrer";
+  img.src = `https://${host}/favicon.ico`;
+  img.onerror = () => { box.classList.add("letter"); box.replaceChildren(host.replace(/^www\./, "")[0]?.toUpperCase() ?? "•"); };
+  box.append(img);
+  return box;
+}
+
+/** A helper's badge: its number, a ring that turns while it works, a tick when done. */
+function threadBadge(t) {
+  const b = el("span", "th-badge " + t.state + (t.n >= 100 ? " contractor" : ""));
+  b.append(el("span", "th-n", t.n >= 100 ? `C${t.n - 100}` : t.n ? String(t.n) : "•"));
+  return b;
+}
+
+/** One thread in the chat: badge, title, what it is doing now, the sites it read, its time; click to open it. */
+function threadRow(t, g) {
+  const r = el("div", "thread " + t.state);
+  r.setAttribute("role", "button");
+  r.tabIndex = 0;
+  const main = el("span", "th-main");
+  main.append(el("span", "th-title", t.title), el("span", "th-now", threadNow(t)));
+  const side = el("span", "th-side");
+  const hosts = threadHosts(t);
+  if (hosts.length) { const favs = el("span", "th-favs"); hosts.slice(-4).forEach((h) => favs.append(favicon(h))); if (hosts.length > 4) favs.append(el("span", "fav more", `+${hosts.length - 4}`)); side.append(favs); }
+  const quiet = threadLive(t) && t.state === "working" && Date.now() - t.last > 30_000;
+  const time = el("span", "th-time" + (quiet ? " quiet" : ""), quiet ? `quiet ${secs(Date.now() - t.last)}` : t.saved && !t.ms ? "" : secs(threadMs(t)));
+  side.append(time);
+  if (threadLive(t) && t.n && t.jobId) {
+    const stop = el("button", "th-stop");
+    stop.type = "button";
+    stop.title = "Stop this helper";
+    stop.setAttribute("aria-label", `Stop ${t.title}`);
+    stop.append(icon("x"));
+    stop.onclick = (e) => { e.stopPropagation(); call("stop_helper", { job: t.jobId, n: t.n }).catch(() => {}); stop.disabled = true; };
+    side.append(stop);
+  }
+  r.append(threadBadge(t), main, side);
+  const open = () => openThread(t, g);
+  r.onclick = open;
+  r.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
+  r.setAttribute("aria-label", `${t.title}: ${threadNow(t)}. Open its thread`);
+  return r;
+}
+
+/** A teammate it is talking to, as a thread too: its face, what it is doing; click opens its chat. */
+function mateRow(s) {
+  const r = el("div", "thread mate " + (s.end == null && !s.saved ? "working" : "done"));
+  r.setAttribute("role", "button");
+  r.tabIndex = 0;
+  const face = Faces.create(s.with, 22);
+  if (s.end == null && !s.saved) face.setMood("working");
+  const badge = el("span", "th-badge face-badge");
+  badge.append(face.el);
+  const main = el("span", "th-main");
+  const name = agentById(s.with)?.name ?? "Teammate";
+  main.append(el("span", "th-title", name), el("span", "th-now", s.end == null && !s.saved ? (s.sub ?? "Reading your message") : "Answered"));
+  const side = el("span", "th-side");
+  const ms = stepMs(s) ?? (s.saved ? null : Date.now() - s.start);
+  if (ms != null) side.append(el("span", "th-time", secs(ms)));
+  r.append(badge, main, side);
+  const open = () => openAgent(s.with);
+  r.onclick = open;
+  r.onkeydown = (e) => { if (e.key === "Enter") open(); };
+  r.setAttribute("aria-label", `${name}: open its chat`);
+  return r;
+}
+
+/** "··· Working with 3 helpers · 5 pages 1m 12s" while it runs; "Searched the web, 3 helpers · 22 pages 2m 11s ›" once done. */
 function paintGroup(g) {
   if (!g) return;
   const steps = [...g.steps.values()];
-  const running = steps.filter((s) => !s.saved && s.end == null);
+  const plain = steps.filter((s) => !s.thread && !s.with);
+  const mates = steps.filter((s) => s.with && !s.thread);
+  const threads = steps.filter((s) => s.thread).map((s) => threadOfStep(g, s)).filter(Boolean);
+  const runningPlain = plain.filter((s) => !s.saved && s.end == null);
+  const liveThreads = threads.filter(threadLive);
+  const liveMates = mates.filter((s) => !s.saved && s.end == null);
+  const live = !g.closed || runningPlain.length || liveThreads.length || liveMates.length;
+  const running = runningPlain.length || liveThreads.length || liveMates.length;
   const now = Date.now();
+  const contractors = threads.filter((t) => t.n >= 100).length, helpers = threads.length - contractors;
+  const crew = [helpers && plural(helpers, "helper"), contractors && plural(contractors, "contractor")].filter(Boolean).join(" and ");
+  const pages = threads.reduce((n, t) => n + threadCounts(t).pages, 0);
+  const searches = threads.reduce((n, t) => n + threadCounts(t).searches, 0);
+  const tally = [searches && plural(searches, "search", "searches"), pages && plural(pages, "page")].filter(Boolean).join(" · ");
   const head = el("button", "steps-head");
   head.type = "button";
-  if (running.length) {
-    const s = running.at(-1);
+  const extra = plain.length > 1 || threads.length || mates.length || plain.some((s) => s.approval || (s.status && s.status !== "ok") || (s.end == null && !s.saved && s.ok === false));
+  if (running) {
     head.classList.add("live");
-    head.append(el("span", "steps-dots", "•••"), el("span", "steps-what", s.doing), el("span", "steps-time", secs(now - s.start)));
+    let what;
+    if (liveThreads.length) what = `Working with ${crew}`;
+    else if (liveMates.length) what = liveMates.at(-1).doing;
+    else what = liveLabel(runningPlain.at(-1));
+    head.append(el("span", "steps-dots", "•••"), el("span", "steps-what", what));
+    if (liveThreads.length && tally) head.append(el("span", "steps-tally", tally));
+    else {
+      // What it has already looked at in this run: the sites, as icons.
+      const doneHosts = foldSteps(plain.filter((s) => s.end != null && s.ok)).hosts;
+      if (doneHosts.length) head.append(favStack(doneHosts, 3));
+    }
+    const since = liveThreads.length ? g.start ?? runningPlain[0]?.start : (runningPlain.at(-1) ?? liveMates.at(-1)).start;
+    head.append(el("span", "steps-time", secs(now - (since ?? now))));
   } else {
-    const said = [];
-    for (const s of steps) if (!said.includes(s.did)) said.push(s.did);
-    const line = said.slice(0, 3).map((t, i) => (i ? t.charAt(0).toLowerCase() + t.slice(1) : t)).join(", ") + (said.length > 3 ? `, and ${said.length - 3} more` : "");
+    const fold = foldSteps(plain);
+    const said = [...fold.parts];
+    for (const s of mates) if (!said.includes(s.did)) said.push(s.did);
+    if (threads.length) said.push(`${crew}${pages ? ` · ${plural(pages, "page")} read` : ""}`);
+    const line = said.slice(0, 3).map((t, i) => (i ? t.charAt(0).toLowerCase() + t.slice(1) : t)).join(" · ") + (said.length > 3 ? ` · ${said.length - 3} more` : "");
     head.append(el("span", "steps-what", line));
-    const total = steps.reduce((n, s) => n + (stepMs(s) ?? 0), 0);
+    if (fold.hosts.length) head.append(favStack(fold.hosts));
+    // Helpers run side by side: their longest, not their sum.
+    const total = [...plain, ...mates].reduce((n, s) => n + (stepMs(s) ?? 0), 0) + Math.max(0, ...threads.map((t) => threadMs(t) ?? 0));
     if (total >= 1000) head.append(el("span", "steps-time", secs(total)));
-    // What didn't go to plan, said in the line itself.
     const odd = { failed: "didn't work", denied: "you said no", blocked: "not allowed", interrupted: "interrupted" };
-    const flags = [...new Set(steps.map((s) => odd[s.status ?? (s.ok ? "ok" : "failed")]).filter(Boolean))];
+    const flags = [...new Set(steps.filter((s) => !s.thread).map((s) => odd[s.status ?? (s.ok ? "ok" : "failed")]).filter(Boolean))];
+    if (threads.some((t) => t.state === "failed")) flags.push("a helper couldn't finish");
+    if ((g.conflicts ?? g.job?.conflicts ?? []).length) flags.push("helpers disagreed");
     if (flags.length) head.append(el("span", "steps-flag", flags.join(" · ")));
   }
-  head.append(el("span", "steps-more", "›"));
-  const list = el("div", "steps-list");
-  list.hidden = !g.openList;
-  for (const s of steps) {
-    const done = s.end != null || s.saved;
-    const st = s.status ?? (s.ok ? "ok" : "failed");
-    const r = el("div", "steps-item" + (done ? (st === "ok" ? "" : " " + st) : " live"));
-    const what = el("span", "steps-did", done ? s.did : s.doing);
-    if (s.with) what.prepend(Faces.create(s.with, 14).el);
-    r.append(what);
-    // How the person decided, in place: allowed once, allowed from now on, or no.
-    const said = { allowed_once: "Allowed once", allowed_always: "Allowed from now on", denied: "Denied" }[s.approval];
-    if (said) r.append(el("span", "steps-approval " + s.approval, said));
-    if (st === "interrupted") r.append(el("span", "steps-approval denied", "Interrupted"));
-    const ms = done ? stepMs(s) : now - s.start;
-    if (ms != null) r.append(el("span", "steps-time", secs(ms)));
-    list.append(r);
-  }
-  head.onclick = () => { g.openList = !g.openList; paintGroup(g); };
+  if (extra) head.append(el("span", "steps-more" + (g.openList ? " open" : ""), "›"));
+  else head.classList.add("still");
+  head.setAttribute("aria-expanded", String(!!g.openList));
+  head.onclick = () => { if (!extra) return; g.openList = !g.openList; paintGroup(g); };
   const kids = [head];
-  // The teammate it is waiting on: its face and what it is doing right now.
-  const talking = running.find((s) => s.with);
-  if (talking) {
-    const sub = el("div", "steps-sub");
-    sub.append(Faces.create(talking.with, 16).el, el("span", null, `${agentById(talking.with)?.name ?? "Teammate"} · ${talking.sub ?? "Reading your message"}`));
-    kids.push(sub);
+  // Threads and teammates: on show while they work, folded into the line once done (open it to see them).
+  const showCrew = (threads.length || mates.length) && (running || g.openList);
+  if (showCrew) {
+    const box = el("div", "threads" + (running ? " live" : ""));
+    for (const s of steps) {
+      if (s.thread) { const t = threadOfStep(g, s); if (t) box.append(threadRow(t, g)); }
+      else if (s.with) box.append(mateRow(s));
+    }
+    for (const c of g.conflicts ?? g.job?.conflicts ?? []) {
+      const row = el("div", "th-conflict");
+      row.append(el("span", "th-bolt", "⚡"), el("span", null, `Helpers ${c.between.join(" and ")} disagree on ${c.about}`), el("small", null, c.detail));
+      box.append(row);
+    }
+    kids.push(box);
   }
-  kids.push(list);
+  // Opened: the queries as pills, the sites as chips, every other step on its own line with its time.
+  if (g.openList && plain.length && extra) {
+    const list = el("div", "steps-list");
+    const fold = foldSteps(plain);
+    if (fold.by.search.length) {
+      const row = el("div", "steps-fold");
+      row.append(el("span", "steps-fold-label", "Searched"));
+      const pills = el("span", "steps-pills");
+      for (const s of fold.by.search) {
+        const live = s.end == null && !s.saved;
+        const pill = el("span", "q-pill" + (live ? " live" : "") + (s.ok === false || (s.status && s.status !== "ok") ? " failed" : ""));
+        pill.append(icon("search"), el("span", null, s.detail || "the web"));
+        pills.append(pill);
+      }
+      row.append(pills);
+      list.append(row);
+    }
+    if (fold.by.page.length) {
+      const row = el("div", "steps-fold");
+      row.append(el("span", "steps-fold-label", "Read"));
+      const chips = el("span", "steps-pills");
+      for (const s of fold.by.page) {
+        const st = s.status ?? (s.ok ? "ok" : "failed");
+        const chip = el("span", "site-chip" + (s.end == null && !s.saved ? " live" : st === "ok" ? "" : " failed"));
+        if (s.detail) chip.append(favicon(s.detail));
+        chip.append(el("span", null, s.detail || "a page"));
+        if (st !== "ok" && (s.end != null || s.saved)) chip.title = { failed: "Couldn't open it", denied: "You said no", blocked: "Not allowed", interrupted: "Interrupted" }[st] ?? st;
+        chips.append(chip);
+      }
+      row.append(chips);
+      list.append(row);
+    }
+    for (const s of plain.filter((x) => x.sort !== "search" && x.sort !== "page")) {
+      const done = s.end != null || s.saved;
+      const st = s.status ?? (s.ok ? "ok" : "failed");
+      const r = el("div", "steps-item" + (done ? (st === "ok" ? "" : " " + st) : " live"));
+      r.append(el("span", "steps-did", done ? s.did : s.doing));
+      const said = { allowed_once: "Allowed once", allowed_always: "Allowed from now on", denied: "Denied" }[s.approval];
+      if (said) r.append(el("span", "steps-approval " + s.approval, said));
+      if (st === "interrupted") r.append(el("span", "steps-approval denied", "Interrupted"));
+      const ms = done ? stepMs(s) : now - s.start;
+      if (ms != null) r.append(el("span", "steps-time", secs(ms)));
+      list.append(r);
+    }
+    kids.push(list);
+  }
+  g.el.classList.toggle("has-threads", !!showCrew);
   g.el.replaceChildren(...kids);
+  if (threadView && g.steps.size && [...g.steps.values()].some((s) => threadView.key && s.thread === threadView.key)) renderThread();
 }
 
 /** A step's duration: from the record when saved, from the clock when watched live. */
 const stepMs = (s) => (s.saved ? s.end : s.end != null ? s.end - s.start : null);
 
 let stepTimer = null;
-/** The running steps' clocks, once a second, only while one runs. */
+/** The running steps' and threads' clocks, once a second, only while something runs. */
 function tickSteps() {
   if (stepTimer) return;
   stepTimer = setInterval(() => {
     let any = false;
     for (const j of live.values()) for (const g of j.groups ?? []) {
-      if ([...g.steps.values()].some((s) => !s.end)) {
-        any = true;
-        const t = g.el.querySelector(".steps-head.live .steps-time");
-        const s = [...g.steps.values()].filter((x) => !x.end).at(-1);
-        if (t && s) t.textContent = secs(Date.now() - s.start);
-      }
+      const running = [...g.steps.values()].some((s) => !s.end) || [...(j.threads?.values() ?? [])].some(threadLive);
+      if (running) { any = true; paintGroup(g); }
     }
+    if (threadView) renderThread();
     if (!any) { clearInterval(stepTimer); stepTimer = null; }
   }, 1000);
 }
 
-/** The job's helpers card, in the chat just above where its answer is coming. */
-function placeHelpers(job) {
-  if (!job.ui.helpers?.el.isConnected) {
-    job.ui.helpers = helpersCard(job.agent);
-    const before = job.ui.status.isConnected ? job.ui.status : job.ui.row.isConnected ? job.ui.row : null;
-    if (before) before.before(job.ui.helpers.el); else $("log").append(job.ui.helpers.el);
+/** The group a thread's step sits in. */
+const groupOfThread = (job, t) => (job.groups ?? []).find((g) => [...g.steps.values()].some((s) => s.thread && s.thread === t.key));
+
+/* ---------- the thread view: one helper's whole thread, beside the chat ---------- */
+let threadView = null;
+
+function openThread(t, g) {
+  threadView = { t, g, key: t.key, n: t.n, jobId: t.jobId };
+  const v = $("thread-view");
+  v.hidden = false;
+  $("chat").classList.add("thread-open");
+  renderThread();
+  requestAnimationFrame(() => v.classList.add("open"));
+  v.querySelector(".tv-close")?.focus({ preventScroll: true });
+}
+
+function closeThread() {
+  const v = $("thread-view");
+  if (!v || v.hidden) return;
+  threadView = null;
+  v.classList.remove("open");
+  $("chat").classList.remove("thread-open");
+  setTimeout(() => { if (!threadView) { v.hidden = true; v.replaceChildren(); } }, 180);
+}
+
+function renderThread() {
+  if (!threadView) return;
+  // The live one when its job still runs, else what was shown.
+  const job = threadView.jobId ? [...live.values()].find((j) => j.id === threadView.jobId) : null;
+  const t = (job && threadView.n && job.threads?.get(threadView.n)) || threadView.t;
+  threadView.t = t;
+  const v = $("thread-view");
+  const keepScroll = v.querySelector(".tv-body")?.scrollTop ?? 0;
+  const head = el("div", "tv-head");
+  const close = el("button", "round soft tv-close");
+  close.type = "button";
+  close.setAttribute("aria-label", "Close the thread");
+  close.append(icon("x"));
+  close.onclick = closeThread;
+  const titles = el("div", "tv-titles");
+  const sender = agentById(t.agent ?? threadView.g?.agent ?? current?.id)?.name ?? "It";
+  titles.append(el("div", "tv-title", t.title), el("div", "tv-sub", `${t.n >= 100 ? "Contractor" : "Helper"}${t.n ? " " + (t.n >= 100 ? t.n - 100 : t.n) : ""} · sent by ${sender}`));
+  const state = el("span", "tv-state " + t.state, { working: "Working", waiting: "Waiting", done: "Done", failed: "Couldn't finish", stopped: "Stopped" }[t.state] ?? t.state);
+  head.append(threadBadge(t), titles, state, close);
+  const body = el("div", "tv-body");
+  // Its brief: what it was asked, word for word.
+  const task = t.key || t.task;
+  if (task) {
+    const sec = el("section", "tv-sec");
+    sec.append(el("h4", null, "Its brief"), el("p", "tv-task", task));
+    body.append(sec);
   }
-  return job.ui.helpers;
+  // What it did, in order, each with its time and site.
+  const st = threadSteps(t);
+  const tl = el("section", "tv-sec");
+  tl.append(el("h4", null, `What it did${st.length ? ` · ${st.length}` : ""}`));
+  const ol = el("ol", "tv-steps");
+  if (!st.length) ol.append(el("li", "tv-step muted", threadLive(t) ? "Reading its brief…" : "No steps were kept for this one."));
+  for (const x of st) {
+    const li = el("li", "tv-step " + (x.state ?? "done"));
+    const mark = el("span", "tv-mark");
+    if (x.host) mark.append(favicon(x.host)); else mark.append(el("span", "tv-dot"));
+    const ms = x.saved ? x.ms : x.end ? x.end - x.start : x.state === "running" ? Date.now() - x.start : null;
+    li.append(mark, el("span", "tv-did", x.state === "running" ? x.doing : x.did));
+    if (ms != null && (ms >= 500 || x.state === "running")) li.append(el("span", "tv-time", secs(ms)));
+    ol.append(li);
+  }
+  tl.append(ol);
+  body.append(tl);
+  // Where its facts came from.
+  const hosts = threadHosts(t);
+  if (hosts.length) {
+    const sec = el("section", "tv-sec");
+    sec.append(el("h4", null, `Sites it read · ${hosts.length}`));
+    const list = el("div", "tv-sources");
+    for (const h of hosts) { const a = el("span", "tv-source"); a.append(favicon(h), el("span", null, h)); list.append(a); }
+    sec.append(list);
+    body.append(sec);
+  }
+  // Its report, once back.
+  if (t.note && !threadLive(t)) {
+    const sec = el("section", "tv-sec");
+    sec.append(el("h4", null, t.state === "done" ? "Its report" : "What went wrong"));
+    const rep = el("div", "tv-report md");
+    rep.innerHTML = Md.render(t.note);
+    hydrateMd(rep, t.agent ?? current?.id);
+    sec.append(rep);
+    body.append(sec);
+  }
+  const foot = el("div", "tv-foot");
+  foot.append(el("span", "tv-time-total", t.saved && !t.ms ? "" : `${threadLive(t) ? "Working for" : "Took"} ${secs(threadMs(t) ?? 0)}`));
+  if (threadLive(t) && t.n && t.jobId) foot.append(button("Stop this helper", "quiet small", () => call("stop_helper", { job: t.jobId, n: t.n }).catch(() => {})));
+  v.replaceChildren(head, body, foot);
+  body.scrollTop = keepScroll;
+}
+
+/* ---------- the gap between words and work: a quiet pulse, never a dead pause ---------- */
+function armPending(job) {
+  clearTimeout(job.pendingTimer);
+  job.pendingTimer = setTimeout(() => showPending(job), 600);
+}
+function showPending(job) {
+  if (!live.has(job.id) || !job.ui || current?.id !== chatOf(job) || view !== "chat") return;
+  if (job.groups?.some((g) => !g.closed) || job.ui.pending?.isConnected) return;
+  const p = el("div", "steps pending");
+  p.append(el("span", "steps-dots", "•••"));
+  p.setAttribute("aria-hidden", "true");
+  job.ui.pending = p;
+  $("log").append(p);
+  scrollDown();
+}
+function clearPending(job) {
+  clearTimeout(job?.pendingTimer);
+  job?.ui?.pending?.remove();
 }
 
 function onTeamEvent(ev) {
   switch (ev.kind) {
     case "job_started": {
-      const job = { agent: ev.agent, trigger: ev.trigger, input: ev.input, acc: "", started: false, ui: null, mine: ev.trigger.kind === "chat" };
+      const job = { id: ev.job, agent: ev.agent, trigger: ev.trigger, input: ev.input, acc: "", started: false, ui: null, mine: ev.trigger.kind === "chat" };
       // Another agent asked this one: on its own, outside the chat; it folds into a conversation when done.
       job.inbound = ["handoff", "peer", "contact", "mention"].includes(ev.trigger.kind);
       if (["test", "shadow"].includes(ev.trigger.kind)) return; // private runs: their panels follow them
@@ -1176,6 +1457,7 @@ function onTeamEvent(ev) {
     case "text": {
       const job = live.get(ev.job);
       if (!job) return;
+      clearPending(job);
       // Words after a run of steps start a new bubble below them; the steps fold into one line.
       const open = job.groups?.at(-1);
       if (open && !open.closed) { open.closed = true; paintGroup(open); job.from = job.acc.length; if (job.ui) { job.ui.from = job.from; job.ui.fresh = true; } }
@@ -1204,6 +1486,8 @@ function onTeamEvent(ev) {
         job.ui.reply.innerHTML = Md.render(job.acc.slice(job.ui.from ?? 0));
         scrollDown();
       }
+      // Its words paused: if nothing follows soon, a quiet pulse shows it is still going.
+      armPending(job);
       break;
     }
     case "tool": {
@@ -1226,7 +1510,7 @@ function onTeamEvent(ev) {
       setMood(ev.approval.agent, "waiting");
       if (current?.id === ev.approval.agent && view === "chat") {
         // What it wrote so far stays above the card; what it writes after goes below.
-        for (const job of live.values()) if (job.agent === ev.approval.agent && job.ui) job.ui.split = job.acc.length;
+        for (const job of live.values()) if (job.agent === ev.approval.agent && job.ui) { job.ui.split = job.acc.length; clearPending(job); }
         $("log").append(approvalCard(ev.approval));
         scrollDown(true);
       }
@@ -1236,9 +1520,36 @@ function onTeamEvent(ev) {
     case "helper": {
       const job = live.get(ev.job);
       if (!job) return;
-      (job.helpers ??= new Map()).set(ev.n, ev);
-      if (ev.state === "working" || ev.state === "waiting") { job.statusText = "Working with helpers"; setStatus(ev.agent, "Working with helpers…"); if (job.ui?.status) job.ui.text.textContent = job.statusText; }
-      if (job.ui && current?.id === ev.agent && view === "chat") { placeHelpers(job).set(ev.n, ev.task, ev.state, ev.note); scrollDown(); }
+      const t = liveThread(job, ev.n);
+      t.key = ev.task; t.title = ev.title || t.title; t.note = ev.note || t.note; t.pending = false;
+      if (ev.state === "working" && t.state !== "working") { t.started = Date.now(); t.last = Date.now(); }
+      t.state = ev.state;
+      if (["done", "failed", "stopped"].includes(ev.state)) t.end = Date.now();
+      if (ev.state === "working" || ev.state === "waiting") { job.statusText = "Working with helpers"; setStatus(ev.agent, "Working with helpers…"); }
+      paintGroup(groupOfThread(job, t));
+      tickSteps();
+      if (threadView?.jobId === job.id && threadView.n === ev.n) renderThread();
+      break;
+    }
+    case "helper_step": {
+      const job = live.get(ev.job);
+      if (!job) return;
+      const t = liveThread(job, ev.n);
+      t.last = Date.now();
+      if (t.state === "waiting") t.state = "working";
+      const x = t.steps.get(ev.id) ?? { id: ev.id, start: Date.now(), end: null };
+      Object.assign(x, { name: ev.name || x.name, doing: ev.doing, did: ev.did, state: ev.state, host: ev.host ?? x.host, kind: ev.name === "web_search" ? "search" : ev.name === "read_url" ? "page" : x.kind });
+      if (ev.state !== "running") x.end = Date.now();
+      t.steps.set(ev.id, x);
+      paintGroup(groupOfThread(job, t));
+      if (threadView?.jobId === job.id && threadView.n === ev.n) renderThread();
+      break;
+    }
+    case "helper_conflict": {
+      const job = live.get(ev.job);
+      if (!job) return;
+      (job.conflicts ??= []).push(ev);
+      for (const g of job.groups ?? []) if ([...g.steps.values()].some((s) => s.thread)) paintGroup(g);
       break;
     }
     case "board": onBoardChanged(ev.id); break;
@@ -1274,15 +1585,20 @@ function onTeamEvent(ev) {
       break;
     }
     case "steered": {
-      if (current?.id === ev.agent && view === "chat") $("log").append(event([icon("sparkle"), strong(agentById(ev.agent)?.name ?? ""), " took in what you added"]));
+      // What you added while it worked: no longer waiting, it has read it.
+      const b = current?.id === ev.agent && view === "chat" ? $("log").querySelector(".bubble.steer.queued") : null;
+      if (b) b.classList.remove("queued");
+      else if (current?.id === ev.agent && view === "chat") $("log").append(event([icon("sparkle"), strong(agentById(ev.agent)?.name ?? ""), " took in what you added"]));
       break;
     }
     case "job_finished": {
       const job = live.get(ev.job);
       if (typeof Voice !== "undefined") Voice.onDone(ev, job);
       if (!job) { if (profileOpenFor(ev.agent)) refreshProfile(); return; }
+      clearPending(job);
       live.delete(ev.job);
       busy.delete(ev.agent);
+      for (const t of job.threads?.values() ?? []) if (threadLive(t)) { t.state = ev.status === "stopped" ? "stopped" : "failed"; t.end = Date.now(); }
       for (const g of job.groups ?? []) { for (const s of g.steps.values()) s.end ??= Date.now(); g.closed = true; paintGroup(g); }
       allFaces(ev.agent, (f) => f.tool(null));
       if (ev.status === "failed") setTimeout(() => allFaces(ev.agent, (f) => f.error()), 60);
@@ -1460,7 +1776,7 @@ $("composer").onsubmit = async (e) => {
     if (await call("steer", { id: agent.id, text })) {
       $("input").value = ""; autosize(); drafts.delete(agent.id);
       const you = line({ from: "you", text });
-      you.querySelector(".bubble").classList.add("steer");
+      you.querySelector(".bubble").classList.add("steer", "queued");
       const statusRow = $("log").querySelector(".status");
       statusRow ? statusRow.before(you) : $("log").append(you);
       scrollDown(true);
@@ -2073,6 +2389,7 @@ document.addEventListener("keydown", (e) => {
   if (mod && (e.key === "u" || e.key === "U") && current && !document.querySelector("dialog[open]")) { e.preventDefault(); pickAndAttach(); }
   if (mod && e.key === "\\") { e.preventDefault(); toggleRail(); }
   if (mod && e.key === "t") { e.preventDefault(); openNextNeed(); }
+  if (e.key === "Escape" && !$("thread-view").hidden && !document.querySelector("dialog[open]")) { e.preventDefault(); closeThread(); return; }
   if (e.key === "Escape" && !$("doc-view").hidden && !document.querySelector("dialog[open]")) { e.preventDefault(); closePage(); return; }
 });
 
@@ -2204,6 +2521,8 @@ async function boot() {
   providers = keys;
   // Local models: whatever Ollama has pulled, free and offline.
   try { const lm = await call("local_models"); MODELS.ollama = (lm.installed || []).map((m) => "ollama:" + m); if (MODELS.ollama.length) providers.push("ollama"); } catch {}
+  // Anthropic's own list, live: the newest models without waiting for an update of Cookie.
+  if (providers.includes("anthropic")) call("provider_models", { provider: "anthropic" }).then((ids) => { if (ids?.length) MODELS.anthropic = ids; }).catch(() => {});
   $("me-name").textContent = name || "You";
   $("me-btn").setAttribute("aria-label", `${name || "You"}: account and settings`);
   meInitials = (name || "You").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
@@ -2265,12 +2584,12 @@ function askLinkPin() {
 /* ---------- the model, under the composer ---------- */
 function modelName(id) {
   const [prov, rest = ""] = String(id || "").split(/:(.*)/s);
-  const m = rest.match(/(opus|sonnet|haiku)-(\d+)-(\d+)/i);
-  if (m) return `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}.${m[3]}`;
+  const m = rest.match(/(opus|sonnet|haiku|fable)-(\d+)(?:-(\d{1,2}))?(?!\d)/i);
+  if (m) return `${m[1][0].toUpperCase()}${m[1].slice(1).toLowerCase()} ${m[2]}${m[3] ? "." + m[3] : ""}`;
   return rest.replace(/^eu\.|^us\./, "") || prov;
 }
 function modelHint(id) {
-  const t = /opus/i.test(id) ? "Hardest jobs, costs most" : /sonnet/i.test(id) ? "Everyday work" : /haiku/i.test(id) ? "Fast and cheapest" : id.startsWith("ollama:") ? "Free, on this Mac" : "";
+  const t = /fable/i.test(id) ? "Newest and most capable" + (/global\./.test(id) ? ", runs worldwide" : "") : /opus/i.test(id) ? "Hardest jobs, costs most" : /sonnet/i.test(id) ? "Everyday work" : /haiku/i.test(id) ? "Fast and cheapest" : id.startsWith("ollama:") ? "Free, on this Mac" : "";
   const prov = PROVIDER_NAME[id.split(":")[0]] || id.split(":")[0];
   return t ? `${t} · ${prov}` : prov;
 }

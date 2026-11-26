@@ -40,15 +40,24 @@ pub enum TeamEvent {
     Tool { job: String, agent: String, name: String },
     /// One step of a job, once its arguments are known: what it is doing and,
     /// when done, what it did, in plain words; `with`, the teammate it is talking to.
-    Step { job: String, agent: String, id: String, name: String, doing: String, did: String, with: Option<String> },
+    /// Sent first with the tool's name alone (the moment the model starts the call), then again with the
+    /// full wording once its arguments are in. `thread`: the task of a helper or contractor this step sends,
+    /// which ties the step to that helper's own events.
+    /// `sort` (`search`, `page`, `memory`, `file` or `other`) and `detail` (its query, site or file) fold steps into short lines.
+    Step { job: String, agent: String, id: String, name: String, doing: String, did: String, with: Option<String>, thread: Option<String>, sort: String, detail: Option<String> },
     /// The step finished.
     StepDone { job: String, agent: String, id: String, ok: bool },
+    /// One step a helper or contractor took, live: `n` is its number in the job, `state` is
+    /// `running`, `done` or `failed`; `host`, the site it read or searched, when there is one.
+    HelperStep { job: String, agent: String, n: usize, id: String, name: String, doing: String, did: String, state: String, host: Option<String> },
+    /// Helpers sent together came back saying different things: what, between which, in words.
+    HelperConflict { job: String, agent: String, between: Vec<usize>, about: String, detail: String },
     /// A board changed (`boards`): open views redraw.
     Board { id: String },
     /// Something new was written into this agent's chat from outside a job of its own (an answer from an agent brought in with @).
     ChatChanged { agent: String },
     /// A helper the job sent: its number in the job, its task, `waiting`, `working`, `done` or `failed`, and its report or error.
-    Helper { job: String, agent: String, n: usize, task: String, state: String, note: String },
+    Helper { job: String, agent: String, n: usize, task: String, state: String, note: String, title: String },
     Steered { job: String, agent: String, text: String },
     Asked { approval: Approval },
     Answered { id: String, agent: String, yes: bool, by: String },
@@ -101,6 +110,9 @@ impl TeamEvent {
             | TeamEvent::Tool { agent, .. }
             | TeamEvent::Step { agent, .. }
             | TeamEvent::StepDone { agent, .. }
+            | TeamEvent::Helper { agent, .. }
+            | TeamEvent::HelperStep { agent, .. }
+            | TeamEvent::HelperConflict { agent, .. }
             | TeamEvent::Steered { agent, .. }
             | TeamEvent::Answered { agent, .. }
             | TeamEvent::Would { agent, .. }

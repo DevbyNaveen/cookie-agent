@@ -230,8 +230,16 @@ impl Agent {
         let mut meter = Meter::pooled(pools);
         let mut open = Vec::new();
         let span = crate::telemetry::agent_span(Some(name), &self.model, self.provider_name.as_deref());
+        // Live to whoever watches (a screen), and kept for the caller either way.
+        let watch = context.watch.clone();
+        let mut sink = |e: Event| {
+            if let Some(w) = &watch {
+                w(&e);
+            }
+            events.push(e)
+        };
         let result = self
-            .drive(session, vec![input], &control, &mut |e| events.push(e), &mut open, start, &mut meter)
+            .drive(session, vec![input], &control, &mut sink, &mut open, start, &mut meter)
             .instrument(span.clone())
             .await;
         if let Err(error) = &result {

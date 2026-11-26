@@ -137,6 +137,12 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
             ok(team.send_in_chat(&arg::<String>(a, "id")?, arg(a, "text")?, attachments).await?)
         }
         "stop" => ok(team.stop(&arg::<String>(a, "id")?)),
+        // One helper, not the job: the rest go on.
+        "stop_helper" => {
+            let key = format!("{}#{}", arg::<String>(a, "job")?, arg::<usize>(a, "n")?);
+            let token = team.helper_stops.lock().unwrap().get(&key).cloned();
+            ok(token.map(|t| t.cancel()).is_some())
+        }
         "stop_all" => ok(team.stop_all()),
         "steer" => ok(team.steer(&arg::<String>(a, "id")?, &arg::<String>(a, "text")?)),
         "busy" => ok(team.busy().into_iter().map(|(agent, job)| json!({"agent": agent, "job": job})).collect::<Vec<_>>()),
@@ -342,6 +348,8 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "verify_passport" => ok(crate::passport::verify(&arg::<crate::passport::Passport>(a, "passport")?)?),
         "cache_view" => ok(team.cache_view(&arg::<String>(a, "id")?).await),
         "local_models" => ok(team.local_models_status().await),
+        // The models a provider offers right now, newest first, so the menu never names an old one.
+        "provider_models" => ok(team.provider_models(&arg::<String>(a, "provider")?).await),
         "browser" => ok(team.browser_view(&arg::<String>(a, "id")?).await),
         "browser_login" => ok(team.browser_login(&arg::<String>(a, "id")?, opt::<String>(a, "url")).await?),
         "browser_forget" => ok(team.browser_forget(&arg::<String>(a, "id")?).await?),

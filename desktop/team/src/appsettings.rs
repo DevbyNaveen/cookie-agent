@@ -58,7 +58,7 @@ pub(crate) const KEYS: &[Key] = &[
     // One agent's
     Key { id: "agent.name", title: "Name", where_: "Its profile", kind: Kind::Text, agent: true, help: "The agent's name." },
     Key { id: "agent.job", title: "Job", where_: "Its profile", kind: Kind::Text, agent: true, help: "Its one job, in the person's words." },
-    Key { id: "agent.model", title: "Model", where_: "The model chip under the composer, or its profile", kind: Kind::Model(false), agent: true, help: "provider:model, e.g. anthropic:claude-sonnet-4-6. A new model re-tests its skills." },
+    Key { id: "agent.model", title: "Model", where_: "The model chip under the composer, or its profile", kind: Kind::Model(false), agent: true, help: "provider:model, e.g. anthropic:claude-sonnet-5-5. A new model re-tests its skills." },
     Key { id: "agent.look.shape", title: "Face shape", where_: "Its profile → look", kind: Kind::Choice(&crate::made::SHAPES), agent: true, help: "Its face's shape." },
     Key { id: "agent.look.color", title: "Face colour", where_: "Its profile → look", kind: Kind::Choice(&crate::made::COLORS), agent: true, help: "Its face's colour; its chat bubbles and send button follow it." },
     Key { id: "agent.grants.files", title: "Files", where_: "The permission chip under the composer", kind: Kind::Bool, agent: true, help: "Read, search and write files in its own folder." },

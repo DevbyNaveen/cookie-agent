@@ -9,10 +9,17 @@
 //! plain text goes to the chat's current agent (`/use Name` to switch);
 //! `/agents` lists them; every yes an agent needs arrives with Approve and Deny
 //! buttons, and news from routines arrives within the day's notice budget.
+//!
+//! While a job from the phone works, one message shows what it is doing and
+//! is edited in place (at most every 1.5 s, Telegram's own pace): each step
+//! as a sentence, each helper on its own line with what it is reading right
+//! now, and where helpers disagreed. When it finishes, that message folds to
+//! one line and the answer follows.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use cookie_harness::cookie::channel;
 use serde_json::{json, Value};
@@ -87,8 +94,198 @@ impl Team {
     }
 }
 
+/// What one job from the phone is doing, as its progress message shows it.
+struct Live {
+    chat: String,
+    agent: String,
+    started: Instant,
+    message: Option<i64>,
+    /// (call id, doing, did, finished ok?, kind, detail)
+    steps: Vec<(String, String, String, Option<bool>, String, Option<String>)>,
+    /// Helper number: (title, state, what it is doing now, pages read).
+    helpers: BTreeMap<usize, (String, String, String, usize)>,
+    conflicts: Vec<String>,
+    dirty: bool,
+    last_edit: Option<Instant>,
+}
+
+impl Live {
+    fn render(&self, done: bool) -> String {
+        let secs = self.started.elapsed().as_secs();
+        let time = if secs < 60 { format!("{secs}s") } else { format!("{}m {}s", secs / 60, secs % 60) };
+        let mut out = Vec::new();
+        if done {
+            // Folded: what it did, in one line.
+            // Folded the way a reader takes it in: "Searched 2 queries · read 3 sites".
+            let mut said: Vec<String> = Vec::new();
+            let count = |k: &str| {
+                let mut d: Vec<&String> = self.steps.iter().filter(|s| s.4 == k).filter_map(|s| s.5.as_ref()).collect();
+                d.sort();
+                d.dedup();
+                d.len().max(usize::from(self.steps.iter().any(|s| s.4 == k)))
+            };
+            for (_, _, did, _, kind, _) in &self.steps {
+                let line = match kind.as_str() {
+                    "search" => format!("Searched {} quer{}", count("search"), if count("search") == 1 { "y" } else { "ies" }),
+                    "page" => format!("Read {} site{}", count("page"), if count("page") == 1 { "" } else { "s" }),
+                    "memory" => "Checked memory".to_string(),
+                    "file" => format!("Read {} file{}", count("file"), if count("file") == 1 { "" } else { "s" }),
+                    _ => did.clone(),
+                };
+                if !said.contains(&line) {
+                    said.push(line);
+                }
+            }
+            if !self.helpers.is_empty() {
+                let pages: usize = self.helpers.values().map(|h| h.3).sum();
+                said.push(format!("{} helper{}, {pages} page{} read", self.helpers.len(), if self.helpers.len() == 1 { "" } else { "s" }, if pages == 1 { "" } else { "s" }));
+            }
+            let mut line = said.iter().take(4).cloned().collect::<Vec<_>>().join(" · ");
+            if said.len() > 4 {
+                line.push_str(&format!(" · and {} more", said.len() - 4));
+            }
+            return format!("✓ {} · {time}", if line.is_empty() { "Done".into() } else { line });
+        }
+        out.push(format!("⏳ {} is working · {time}", self.agent));
+        let shown = self.steps.len().saturating_sub(8);
+        if shown > 0 {
+            out.push(format!("… {shown} earlier step{}", if shown == 1 { "" } else { "s" }));
+        }
+        for (_, doing, did, ok, _, _) in self.steps.iter().skip(shown) {
+            out.push(match ok {
+                None => format!("● {doing}"),
+                Some(true) => format!("✓ {did}"),
+                Some(false) => format!("✗ {did}"),
+            });
+        }
+        if !self.helpers.is_empty() {
+            let working = self.helpers.values().filter(|h| h.1 == "working" || h.1 == "waiting").count();
+            let pages: usize = self.helpers.values().map(|h| h.3).sum();
+            out.push(format!("{} {} helper{} · {pages} page{} read", if working > 0 { "●" } else { "✓" }, self.helpers.len(), if self.helpers.len() == 1 { "" } else { "s" }, if pages == 1 { "" } else { "s" }));
+            for (n, (title, state, now, _)) in &self.helpers {
+                let mark = match state.as_str() {
+                    "done" => "✓",
+                    "failed" | "stopped" => "✗",
+                    "waiting" => "○",
+                    _ => "●",
+                };
+                let label = if *n >= 100 { format!("C{}", n - 100) } else { n.to_string() };
+                let tail = if now.is_empty() || state == "done" { String::new() } else { format!(" — {}", util::clip(now, 60)) };
+                out.push(format!("   {label} {mark} {title}{tail}"));
+            }
+        }
+        for c in &self.conflicts {
+            out.push(format!("⚡ {c}"));
+        }
+        out.join("\n")
+    }
+}
+
+/// Keep one job's progress up to date as its events arrive.
+fn on_progress(live: &Mutex<HashMap<String, Live>>, jobs: &Mutex<HashMap<String, String>>, team: &Team, ev: &TeamEvent) {
+    let job = match ev {
+        TeamEvent::Step { job, .. } | TeamEvent::StepDone { job, .. } | TeamEvent::Helper { job, .. } | TeamEvent::HelperStep { job, .. } | TeamEvent::HelperConflict { job, .. } => job,
+        _ => return,
+    };
+    let Some(chat) = jobs.lock().unwrap().get(job).cloned() else { return };
+    let mut all = live.lock().unwrap();
+    let l = all.entry(job.clone()).or_insert_with(|| Live {
+        chat,
+        agent: ev.agent().and_then(|a| team.agents.try_read().ok().and_then(|r| r.iter().find(|x| x.id == a).map(|x| x.name.clone()))).unwrap_or_else(|| "It".into()),
+        started: Instant::now(),
+        message: None,
+        steps: Vec::new(),
+        helpers: BTreeMap::new(),
+        conflicts: Vec::new(),
+        dirty: false,
+        last_edit: None,
+    });
+    match ev {
+        TeamEvent::Step { id, name, doing, did, sort, detail, .. } => {
+            // Helpers and contractors show as their own lines, not as a step.
+            if name == crate::helpers::NAME || name == crate::contractors::NAME {
+                return;
+            }
+            match l.steps.iter_mut().find(|s| &s.0 == id) {
+                Some(s) => {
+                    s.1 = doing.clone();
+                    s.2 = did.clone();
+                    s.4 = sort.clone();
+                    s.5 = detail.clone();
+                }
+                None => l.steps.push((id.clone(), doing.clone(), did.clone(), None, sort.clone(), detail.clone())),
+            }
+        }
+        TeamEvent::StepDone { id, ok, .. } => {
+            if let Some(s) = l.steps.iter_mut().find(|s| &s.0 == id) {
+                s.3 = Some(*ok);
+            }
+        }
+        TeamEvent::Helper { n, title, state, .. } => {
+            let h = l.helpers.entry(*n).or_insert_with(|| (title.clone(), String::new(), String::new(), 0));
+            h.0 = title.clone();
+            h.1 = state.clone();
+        }
+        TeamEvent::HelperStep { n, doing, did, state, name, .. } => {
+            let h = l.helpers.entry(*n).or_insert_with(|| ("Helper".into(), "working".into(), String::new(), 0));
+            h.2 = if state == "running" { doing.clone() } else { did.clone() };
+            if state == "done" && name == "read_url" {
+                h.3 += 1;
+            }
+        }
+        TeamEvent::HelperConflict { between, about, .. } => {
+            let who = between.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(" and ");
+            l.conflicts.push(format!("Helpers {who} disagree on {about}; checking"));
+        }
+        _ => {}
+    }
+    l.dirty = true;
+}
+
+/// Send or edit each changed progress message, no faster than Telegram allows.
+async fn flush_progress(team: &Team, live: &Mutex<HashMap<String, Live>>) {
+    let Some(token) = team.keys.get("telegram") else { return };
+    let bot = Bot { http: reqwest::Client::new(), token };
+    let due: Vec<(String, String, Option<i64>, String)> = {
+        let mut all = live.lock().unwrap();
+        all.iter_mut()
+            .filter(|(_, l)| l.dirty && l.last_edit.is_none_or(|t| t.elapsed() >= Duration::from_millis(1500)))
+            .map(|(job, l)| {
+                l.dirty = false;
+                l.last_edit = Some(Instant::now());
+                (job.clone(), l.chat.clone(), l.message, l.render(false))
+            })
+            .collect()
+    };
+    for (job, chat, message, text) in due {
+        match message {
+            Some(id) => {
+                let _ = bot.call("editMessageText", json!({"chat_id": chat, "message_id": id, "text": text})).await;
+            }
+            None => {
+                if let Ok(m) = bot.call("sendMessage", json!({"chat_id": chat, "text": text, "disable_notification": true})).await {
+                    if let Some(l) = live.lock().unwrap().get_mut(&job) {
+                        l.message = m["message_id"].as_i64();
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn spawn(team: Arc<Team>) {
     let jobs: Arc<Mutex<HashMap<String, String>>> = Default::default();
+    let live: Arc<Mutex<HashMap<String, Live>>> = Default::default();
+    // Progress: each changed message is edited at most every 1.5 s.
+    let (t, l) = (team.clone(), live.clone());
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if l.lock().unwrap().values().any(|x| x.dirty) {
+                flush_progress(&t, &l).await;
+            }
+        }
+    });
     // Poller: reads messages and button presses.
     let (t, j) = (team.clone(), jobs.clone());
     tokio::spawn(async move {
@@ -116,6 +313,11 @@ pub(crate) fn spawn(team: Arc<Team>) {
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => return,
             };
+            // Progress of a job from the phone: kept here, sent by the pacer above.
+            on_progress(&live, &jobs, &team, &ev);
+            if matches!(ev, TeamEvent::Step { .. } | TeamEvent::StepDone { .. } | TeamEvent::Helper { .. } | TeamEvent::HelperStep { .. } | TeamEvent::HelperConflict { .. } | TeamEvent::Text { .. }) {
+                continue;
+            }
             let s = team.settings().await;
             if !s.telegram.enabled || s.telegram.chats.is_empty() {
                 continue;
@@ -125,6 +327,13 @@ pub(crate) fn spawn(team: Arc<Team>) {
             match ev {
                 TeamEvent::JobFinished { job, answer, error, .. } => {
                     let chat = jobs.lock().unwrap().remove(&job);
+                    // Its progress folds to one line before the answer arrives under it.
+                    let progress = live.lock().unwrap().remove(&job);
+                    if let Some(p) = progress {
+                        if let Some(id) = p.message {
+                            let _ = bot.call("editMessageText", json!({"chat_id": p.chat, "message_id": id, "text": p.render(true)})).await;
+                        }
+                    }
                     if let Some(chat) = chat {
                         let text = if answer.is_empty() { error.unwrap_or_else(|| "Stopped.".into()) } else { answer };
                         bot.say(&chat, &text).await;

@@ -326,7 +326,9 @@ impl Team {
         // Your own agents are inside the team: their addresses are safe to write
         // to even when one was only read from a tool result (a fresh hire's reply).
         // A change to the person's own files, a setting, or a new hire is put to them every time.
-        let mut policy = cookie_harness::policy::Policy::default().always_ask(crate::access::WRITE_TOOL).always_ask("settings_set").always_ask("hire_agent");
+        let mut policy = cookie_harness::policy::Policy::default().always_ask(crate::access::WRITE_TOOL).always_ask("settings_set").always_ask("hire_agent")
+            // Research opens the pages its own search found, and the links on pages it read; never one it made up.
+            .found_by("web_search").found_by("read_url").found_by("read_page").found_by("browser_read");
         for a in self.agents().await.iter().filter(|a| a.id != rec.id && a.shadow_of.is_none() && !crate::bench::is_probe(&a.id)) {
             policy = policy.allow(&format!("@{}", self.slug_of(a)));
         }
@@ -378,7 +380,7 @@ impl Team {
         if helpers_may {
             // Its own space in Enkeon too, read only: never what saves, sends or calls an app.
             let enkeon = if rec.grants.memory { self.enkeon_for(&rec.id, "agent", rec.grants.web && cookie_harness::local::Search::from_env().is_some()) } else { None };
-            agent = agent.tools(crate::helpers::tool(self, rec, job, &for_helpers, price, enkeon));
+            agent = agent.tools(crate::helpers::tool(self, rec, job, &for_helpers, price, enkeon, matches!(trigger, Trigger::Chat)));
         }
         if contractors_may {
             agent = agent.tools(crate::contractors::tool(self, rec, job, &for_contractors, price));
@@ -505,16 +507,23 @@ impl Team {
             let (tu, us, mk, ca) = (tools_used.clone(), usage.clone(), marks.clone(), cache.clone());
             let mut forward = move |event: Event| match event {
                 Event::TextDelta(text) => team.emit(TeamEvent::Text { job: jid.clone(), agent: aid.clone(), text }),
-                Event::ToolCallStarted { name, .. } => {
+                Event::ToolCallStarted { id, name } => {
                     tu.lock().unwrap().push(name.clone());
                     if name == "connector_call" {
                         team.count_app_call(&aid);
                     }
+                    // On screen at once, from the tool's name alone: no gap between its words and its work.
+                    let (doing, did, with) = crate::steps::words(&team, &name, &serde_json::Value::Null);
+                    let (kind, detail) = crate::steps::brief(&name, &serde_json::Value::Null);
+                    team.emit(TeamEvent::Step { job: jid.clone(), agent: aid.clone(), id, name: name.clone(), doing, did, with, thread: None, sort: kind.into(), detail });
                     team.emit(TeamEvent::Tool { job: jid.clone(), agent: aid.clone(), name })
                 }
                 Event::ToolCallReady { id, name, args } => {
                     let (doing, did, with) = crate::steps::words(&team, &name, &args);
-                    team.emit(TeamEvent::Step { job: jid.clone(), agent: aid.clone(), id, name, doing, did, with })
+                    // The same key the helper's own events carry, so the screen ties them to this step.
+                    let thread = crate::steps::thread_key(&name, &args);
+                    let (kind, detail) = crate::steps::brief(&name, &args);
+                    team.emit(TeamEvent::Step { job: jid.clone(), agent: aid.clone(), id, name, doing, did, with, thread, sort: kind.into(), detail })
                 }
                 Event::ToolFinished { id, is_error } => team.emit(TeamEvent::StepDone { job: jid.clone(), agent: aid.clone(), id, ok: !is_error }),
                 Event::Steered { text } => {
@@ -709,6 +718,7 @@ impl Team {
         // Every tool answer, by call id, to pair with the call that asked.
         // Each call's own record from the trace: when it started and ended, and what was decided about it.
         let facts = call_facts(&self.paths.trace(id));
+        let threads = crate::threads::load(self, id);
         let mut results: HashMap<String, (String, bool)> = HashMap::new();
         for m in session.messages() {
             for c in m.content() {
@@ -747,16 +757,6 @@ impl Team {
                 out.push(Line { from, text, talk: None, helpers: None, by: None, steps: None });
             }
             for (call_id, name, args) in m.tool_calls() {
-                if name == crate::helpers::NAME {
-                    let (report, failed) = results.get(call_id).cloned().unwrap_or_default();
-                    let h = HelperLine { task: args["task"].as_str().unwrap_or_default().to_string(), report, failed };
-                    // Helpers sent together stay together.
-                    match out.last_mut() {
-                        Some(Line { helpers: Some(group), .. }) => group.push(h),
-                        _ => out.push(Line { from: "helpers", text: String::new(), talk: None, helpers: Some(vec![h]), by: None, steps: None }),
-                    }
-                    continue;
-                }
                 let Some(mut talk) = talk_of(name, args, &team, &contacts, &slugs) else {
                     let result = results.get(call_id);
                     // Its plan: the latest version since the person last wrote, where it was last updated.
@@ -781,7 +781,10 @@ impl Team {
                         (Some((_, true)), _) => "failed",
                         _ => "ok",
                     };
+                    let (kind, detail) = crate::steps::brief(name, args);
                     let step = StepLine {
+                        kind,
+                        detail,
                         did: did.clone(),
                         status,
                         ms: f.and_then(|f| Some(f.end? .saturating_sub(f.start?))),
@@ -792,6 +795,20 @@ impl Team {
                             _ => None,
                         },
                         with,
+                        // A helper or contractor: its whole thread, as kept (or what the record alone holds, for older chats).
+                        thread: crate::steps::thread_key(name, args).map(|key| {
+                            threads.get(&key).cloned().unwrap_or_else(|| {
+                                let (report, failed) = result.cloned().unwrap_or_default();
+                                crate::threads::ThreadRecord {
+                                    title: if name == crate::helpers::NAME { crate::steps::helper_title(args) } else { args["role"].as_str().unwrap_or("Contractor").to_string() },
+                                    task: key,
+                                    state: if failed { "failed".into() } else { "done".into() },
+                                    report,
+                                    ms: f.and_then(|f| Some(f.end?.saturating_sub(f.start?))).unwrap_or(0),
+                                    ..Default::default()
+                                }
+                            })
+                        }),
                     };
                     let line = if status == "ok" { did } else { format!("{did} ({status})") };
                     match out.last_mut() {
@@ -961,6 +978,10 @@ const INTERRUPTED: &str = "Cookie closed while this job was running";
 /// One step as the chat keeps it.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct StepLine {
+    /// `search`, `page`, `memory`, `file` or `other`, with its query, site or file (`steps::brief`).
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     pub did: String,
     /// `ok`, `failed`, `denied`, `blocked` (a rule refused it) or `interrupted` (Cookie closed mid-step).
     pub status: &'static str,
@@ -972,6 +993,9 @@ pub struct StepLine {
     /// The teammate it talked to.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub with: Option<String>,
+    /// A helper or contractor it sent: its own thread.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread: Option<crate::threads::ThreadRecord>,
 }
 
 /// What the trace kept about one call.

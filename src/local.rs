@@ -31,7 +31,7 @@ pub fn default_model() -> Result<String, String> {
         }
     }
     if std::env::var("ANTHROPIC_API_KEY").is_ok_and(|k| !k.trim().is_empty()) {
-        return Ok("anthropic:claude-sonnet-4-6".into());
+        return Ok("anthropic:claude-sonnet-5-5".into());
     }
     Err(MISSING_MODEL.into())
 }

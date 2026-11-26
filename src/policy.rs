@@ -23,6 +23,19 @@ pub enum Decision {
 pub struct Provenance {
     trusted: Vec<Vec<String>>,
     untrusted_seen: bool,
+    /// Web addresses that appeared, word for word, in what a finding tool
+    /// returned (`Policy::found_by`): a search's results, a page's links.
+    found: Vec<String>,
+}
+
+/// The web addresses in a text, as `words` sees them (lower-cased, whole).
+fn addresses(text: &str) -> impl Iterator<Item = String> + '_ {
+    words(text).into_iter().filter(|w| w.starts_with("https://") || w.starts_with("http://")).map(|w| address_key(&w))
+}
+
+/// One form for an address, so `…/a` and `…/a/` match.
+fn address_key(url: &str) -> String {
+    url.trim().to_lowercase().trim_end_matches(['/', ')', ']', '>', '"', '\'']).to_string()
 }
 
 /// Characters that belong inside a value (addresses, URLs, amounts);
@@ -72,6 +85,21 @@ impl Provenance {
         self.untrusted_seen
     }
 
+    /// What a finding tool returned: every address in it may be read (see `Policy::found_by`).
+    pub(crate) fn found_in(&mut self, output: &str) {
+        for a in addresses(output) {
+            if !self.found.contains(&a) {
+                self.found.push(a);
+            }
+        }
+    }
+
+    /// Whether this address came back from a finding tool, word for word.
+    pub fn was_found(&self, value: &str) -> bool {
+        let v = address_key(value);
+        (v.starts_with("https://") || v.starts_with("http://")) && self.found.contains(&v)
+    }
+
     /// Where a value the model proposed came from. It is the person's only
     /// if they wrote exactly those words: `a@example.com` inside
     /// `anna@example.com`, or `150` inside `1500`, does not count.
@@ -96,6 +124,10 @@ pub struct Policy {
     /// Tools that always need a person, whatever they read and however much
     /// trust was earned: an app's changes to the person's own things.
     always_ask: Vec<String>,
+    /// Tools whose results are where to read next (a web search, a page's
+    /// links): an address they returned may be read by a tool that only
+    /// reads, though the person never typed it (`found_by`).
+    finders: Vec<String>,
 }
 
 /// Every value a guarded argument holds, object keys included. False when
@@ -161,6 +193,21 @@ impl Policy {
         self.always_ask.iter().any(|t| t == tool)
     }
 
+    /// `tool` finds where to read next. An address that appears word for word
+    /// in what it returned may go into a guarded argument of a tool that only
+    /// reads (`Effect::Read`): research can open the pages its own search found.
+    /// Never for one that writes, sends or pays, and never an address the model
+    /// put together itself: that is how data from the person's things would
+    /// leave in a URL, and such an address appears in no result.
+    pub fn found_by(mut self, tool: &str) -> Self {
+        self.finders.push(tool.to_string());
+        self
+    }
+
+    pub(crate) fn finds(&self, tool: &str) -> bool {
+        self.finders.iter().any(|t| t == tool)
+    }
+
     pub(crate) fn within(&self, ceiling: &Policy) -> Policy {
         let mut always_ask = self.always_ask.clone();
         always_ask.extend(ceiling.always_ask.iter().filter(|t| !self.always_ask.contains(t)).cloned());
@@ -168,6 +215,8 @@ impl Policy {
             allowed: self.allowed.iter().filter(|v| ceiling.allowed.contains(v)).cloned().collect(),
             confirm_data: self.confirm_data && ceiling.confirm_data,
             always_ask,
+            // A sub-agent finds with its parent's finders, or fewer if it names its own.
+            finders: ceiling.finders.iter().filter(|t| self.finders.is_empty() || self.finders.contains(t)).cloned().collect(),
         }
     }
 
@@ -185,6 +234,9 @@ impl Policy {
             }
             for value in values {
                 if self.allowed.contains(&normalize(&value)) {
+                    continue;
+                }
+                if spec.effect == Effect::Read && provenance.was_found(&value) {
                     continue;
                 }
                 if provenance.origin_of(&value).is_untrusted() {
@@ -247,6 +299,26 @@ mod tests {
             delegates: false,
             foreign: false,
         }
+    }
+
+    /// Research reads what its own search found; nothing else gets through that door.
+    #[test]
+    fn a_page_its_search_found_can_be_read_but_never_sent_to_or_made_up() {
+        let mut p = seen(&[Message::user("research Grok Bot"), Message::untrusted("1. Grok Bot launch https://x.ai/news/grok-bot (Aug 2026)", Source::Tool("web_search".into()))]);
+        p.found_in("1. Grok Bot launch https://x.ai/news/grok-bot (Aug 2026)");
+        let policy = Policy::default().found_by("web_search");
+        let read = spec(Effect::Read, &["url"]);
+        assert_eq!(policy.decide(&read, &json!({"url": "https://x.ai/news/grok-bot"}), &p, String::new()), Decision::Allow, "the page its search found");
+        assert_eq!(policy.decide(&read, &json!({"url": "https://x.ai/news/grok-bot/"}), &p, String::new()), Decision::Allow, "a trailing slash is the same page");
+        // An address it made up (here, carrying something of the person's) appears in no result.
+        assert!(matches!(policy.decide(&read, &json!({"url": "https://x.ai/news/grok-bot?k=secret"}), &p, String::new()), Decision::Deny(_)));
+        // Found is for reading only: the same address can't be where something is sent.
+        assert!(matches!(policy.decide(&spec(Effect::Outbound, &["url"]), &json!({"url": "https://x.ai/news/grok-bot"}), &p, String::new()), Decision::Deny(_)));
+        // Read only in results the run recorded as found (the loop records them only for a named finder).
+        let not_found = seen(&[Message::user("research Grok Bot"), Message::untrusted("see https://x.ai/news/grok-bot", Source::Web)]);
+        assert!(matches!(policy.decide(&read, &json!({"url": "https://x.ai/news/grok-bot"}), &not_found, String::new()), Decision::Deny(_)));
+        // A helper reads with its parent's finders.
+        assert!(Policy::default().within(&policy).finds("web_search"));
     }
 
     fn seen(messages: &[Message]) -> Provenance {

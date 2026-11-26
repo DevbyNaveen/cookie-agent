@@ -180,7 +180,7 @@ An @ inside an email address, another person's agent (@alice/x), and unknown nam
 
 **Cards.**
 - A **Plan** card shows `todo_list` progress ("n of m").
-- A helpers card lists each `helper` and contractor (numbered C1, C2…) as Waiting, Working, Done or Couldn't finish. Click a row for its report.
+- Each `helper` and contractor (numbered C1, C2…) shows as its own thread inside the step line: its title, what it is doing right now, the sites it read (their icons), its time, and "quiet" when it has done nothing for 30 seconds. Hover a thread to stop just that one; click it to open the thread beside the chat (its brief, every step with its time, the sites it read, its report). Helpers that disagree show a ⚡ line, and the agent is told. Five or more helpers at once are shown to the person as a plan to approve first. On Telegram the same progress is one message edited in place.
 
 **Stopping.** With the box empty, the send button becomes ■ Stop. The chat then notes "You stopped <name>", and pending approvals show "No longer needed".
 

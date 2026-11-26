@@ -127,8 +127,10 @@ pub(crate) fn allowed(rec: &AgentRecord, trigger: &Trigger, probation: bool) -> 
 pub fn size_model(own: &str, size: &str) -> String {
     let (prov, _) = own.split_once(':').unwrap_or((own, ""));
     let pick = match (prov, size) {
-        ("anthropic", "small") => Some("anthropic:claude-haiku-4-5"),
-        ("anthropic", "strong") => Some("anthropic:claude-opus-4-6"),
+        ("anthropic", "small") => Some("anthropic:claude-haiku-5-5"),
+        ("anthropic", "strong") => Some("anthropic:claude-opus-5-5"),
+        ("bedrock", "small") => Some("bedrock:eu.anthropic.claude-haiku-5-5"),
+        ("bedrock", "strong") => Some("bedrock:eu.anthropic.claude-opus-5-5"),
         _ => None,
     };
     match pick {
@@ -194,7 +196,8 @@ struct Contractors {
 impl Contractors {
     fn emit(&self, n: usize, task: &str, state: &str, note: &str) {
         if let Some(team) = self.team.upgrade() {
-            team.emit(TeamEvent::Helper { job: self.job.clone(), agent: self.rec.id.clone(), n: 100 + n, task: util::clip(task, 400), state: state.into(), note: util::clip(note, 1200) });
+            let title = task.split_once(": ").map(|(r, _)| r).unwrap_or("Contractor");
+            team.emit(TeamEvent::Helper { job: self.job.clone(), agent: self.rec.id.clone(), n: 100 + n, task: util::clip(task, 400), state: state.into(), note: util::clip(note, 1200), title: util::clip(title, 48) });
         }
     }
 
@@ -314,7 +317,11 @@ impl Tool for Contractors {
         let _permit = self.gate.acquire().await.map_err(|_| "Contractors are closed.".to_string())?;
         self.emit(n, &format!("{role}: {task}"), "working", "");
         let began = std::time::Instant::now();
-        let result = tokio::time::timeout(WALL, inner.call_in(json!({"task": brief}), context)).await;
+        // Its own thread: each step live in the chat, kept for after a reload.
+        let key = format!("{role}: {task}");
+        let thread = crate::threads::Thread::new(self.team.clone(), &self.rec.id, &self.job, 100 + n, &util::clip(&key, 400), &util::clip(&role, 48));
+        let watched = context.watched(thread.watch());
+        let result = tokio::time::timeout(WALL, inner.call_in(json!({"task": brief}), &watched)).await;
         c.ms = began.elapsed().as_millis() as u64;
         // What it really called, as its tools recorded it.
         c.tools_used = calls.lock().unwrap().clone();
@@ -339,8 +346,14 @@ impl Tool for Contractors {
             }
         };
         match &out {
-            Ok(r) => self.emit(n, &format!("{role}: {task}"), "done", r),
-            Err(e) => self.emit(n, &format!("{role}: {task}"), "failed", e),
+            Ok(r) => {
+                thread.save("done", r);
+                self.emit(n, &key, "done", r)
+            }
+            Err(e) => {
+                thread.save("failed", e);
+                self.emit(n, &key, "failed", e)
+            }
         }
         self.record(&c);
         out

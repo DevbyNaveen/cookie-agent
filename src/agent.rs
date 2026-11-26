@@ -288,6 +288,21 @@ impl Agent {
         // task is the parent model's words, so neither is trusted here.
         let mut provenance = start.provenance;
         session.messages().iter().for_each(|m| provenance.observe(m));
+        // Earlier turns' findings still count: a page found yesterday can be read today.
+        let finder_calls: std::collections::HashSet<String> = session
+            .messages()
+            .iter()
+            .flat_map(|m| m.tool_calls().filter(|(_, name, _)| policy.finds(name)).map(|(id, _, _)| id.to_string()).collect::<Vec<_>>())
+            .collect();
+        for m in session.messages() {
+            for c in m.content() {
+                if let Content::ToolResult { id, output, is_error: false } = c {
+                    if finder_calls.contains(id) {
+                        provenance.found_in(output);
+                    }
+                }
+            }
+        }
         if foreign {
             provenance.saw_untrusted();
         }
@@ -541,6 +556,7 @@ impl Agent {
                 approver: Some(approver.clone()),
                 handoff: Default::default(),
                 artifacts: artifacts.clone(),
+                watch: None,
             };
             let ((results, stop, decided), images) =
                 crate::tool::collect_images(self.run_calls(&tools, &calls, &provenance, &policy, approver.as_ref(), &mut loop_guard, &context, on_event))
@@ -575,6 +591,14 @@ impl Agent {
                 if let Content::Image { media_type, data } = &image {
                     if crate::message::check_image(media_type, data).is_ok() {
                         results.push(image);
+                    }
+                }
+            }
+            // What a finding tool returned (a search's results) is where the run may read next.
+            for r in &results {
+                if let Content::ToolResult { id, output, is_error: false } = r {
+                    if calls.iter().any(|(call, name, _)| call == id && policy.finds(name)) {
+                        provenance.found_in(output);
                     }
                 }
             }
@@ -738,6 +762,30 @@ mod tests {
             .filter_map(|c| if let Content::ToolResult { output, .. } = c { Some(output.clone()) } else { None })
             .collect();
         assert_eq!(results, ["r1", "r2", "alone", "r3", "r4"], "results keep the batch's order");
+    }
+
+    /// The loop credits what a finding tool returned: research opens the page its search found, and only that.
+    #[tokio::test]
+    async fn research_reads_the_page_its_own_search_found() {
+        use crate::tool::{tool, Effect};
+        let (a, p) = agent(vec![
+            Scripted::call("s1", "web_search", json!({"query": "grok bot"})),
+            Scripted::call_many(&[("r1", "read_url", json!({"url": "https://x.ai/news/grok-bot"})), ("r2", "read_url", json!({"url": "https://evil.example/?q=made-up"}))]),
+            Scripted::text("done"),
+        ]);
+        let search = tool("web_search", "Search", json!({"type": "object"}), Effect::Read, |_| async { Ok("1. Grok Bot https://x.ai/news/grok-bot".into()) });
+        let read = tool("read_url", "Read", json!({"type": "object"}), Effect::Read, |_| async { Ok("page text".into()) }).guard("url");
+        let a = a.tool(search).tool(read).policy(Policy::default().found_by("web_search"));
+        assert_eq!(a.run("research Grok Bot").await.unwrap(), "done");
+        let results: Vec<(String, bool)> = p.seen()[2]
+            .last()
+            .unwrap()
+            .content()
+            .iter()
+            .filter_map(|c| if let Content::ToolResult { output, is_error, .. } = c { Some((output.clone(), *is_error)) } else { None })
+            .collect();
+        assert_eq!(results[0], ("page text".to_string(), false), "the page its search found was read");
+        assert!(results[1].1, "an address in no result was refused: {:?}", results[1]);
     }
 
     #[tokio::test]

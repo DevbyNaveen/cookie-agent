@@ -153,3 +153,26 @@ mod tests {
         assert_eq!(local_model("anthropic:claude-haiku-4-5"), None);
     }
 }
+
+impl crate::Team {
+    /// Models a hosted provider offers to this key, newest first (`provider:model`); empty when it can't be asked.
+    pub async fn provider_models(&self, provider: &str) -> Vec<String> {
+        if provider != "anthropic" {
+            return Vec::new();
+        }
+        let Some(key) = self.keys.get("anthropic") else { return Vec::new() };
+        let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(8)).build().unwrap_or_default();
+        let Ok(r) = http.get("https://api.anthropic.com/v1/models?limit=50").header("x-api-key", key).header("anthropic-version", "2023-06-01").send().await else { return Vec::new() };
+        let Ok(v) = r.json::<serde_json::Value>().await else { return Vec::new() };
+        v["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m["id"].as_str())
+            // Claude 4.5 and later: what the harness caches and prices well.
+            .filter(|id| id.starts_with("claude-") && !id.starts_with("claude-3") && !id.contains("-4-0") && !id.contains("-4-1") && !id.ends_with("-4"))
+            .take(8)
+            .map(|id| format!("anthropic:{id}"))
+            .collect()
+    }
+}

@@ -7,6 +7,7 @@
 pub mod access;
 pub mod api;
 mod steps;
+mod threads;
 mod guide;
 mod appsettings;
 pub mod cage;
@@ -190,6 +191,8 @@ pub struct Team {
     pub(crate) routines: RwLock<Vec<Routine>>,
     pub(crate) runs: std::sync::Mutex<HashMap<String, runtime::Run>>,
     pub(crate) pending: std::sync::Mutex<HashMap<String, approvals::Pending>>,
+    /// Each running helper's own stop, by `job#n` (the person can stop one and keep the rest).
+    pub(crate) helper_stops: std::sync::Mutex<HashMap<String, cookie_harness::CancellationToken>>,
     pub(crate) traces: std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cookie_harness::trace::TraceLog>>>>,
     pub(crate) notices: std::sync::Mutex<approvals::NoticeBook>,
     pub(crate) net: network::Net,
@@ -234,6 +237,7 @@ impl Team {
             routines: RwLock::new(routines),
             runs: Default::default(),
             pending: Default::default(),
+            helper_stops: Default::default(),
             traces: Default::default(),
             notices: Default::default(),
             net: Default::default(),
