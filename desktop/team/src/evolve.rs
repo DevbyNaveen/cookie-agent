@@ -220,7 +220,12 @@ impl Team {
                         n.microdollars += e.before.microdollars + e.after.microdollars;
                         let v = crate::bench::verdict(&e.before, &e.after);
                         let exam = exam_json(&e);
-                        if matches!(v, Verdict::Keep | Verdict::Cheaper) {
+                        // Better on the bench is not enough: the twin's harm checks must all still hold.
+                        let safe = if matches!(v, Verdict::Keep | Verdict::Cheaper) { self.twin_gate(a, Some(&tuning), crate::twin::GATE_SCENARIOS).await } else { Ok(()) };
+                        if let Err(broken) = safe {
+                            self.record_tried(&a.id, kind, &what, "dropped", exam);
+                            n.log.push(format!("{}: better on the bench but unsafe in the twin, dropped — {what} ({})", a.name, broken.join(" · ")));
+                        } else if matches!(v, Verdict::Keep | Verdict::Cheaper) {
                             let _ = self.apply_change(&a.id, kind, &what, "nightly", Some(tuning), None, Some(exam)).await;
                             n.log.push(format!("{}: kept — {what}", a.name));
                         } else {

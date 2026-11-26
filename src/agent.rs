@@ -916,6 +916,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_rehearsal_records_every_change_and_makes_none() {
+        struct Rehearse(std::sync::Mutex<Vec<String>>);
+        #[async_trait::async_trait]
+        impl crate::approval::Approver for Rehearse {
+            async fn approve(&self, _: &ApprovalRequest) -> bool {
+                panic!("a rehearsal asks no one")
+            }
+            fn rehearses(&self) -> bool {
+                true
+            }
+            async fn rehearse(&self, r: &ApprovalRequest) {
+                self.0.lock().unwrap().push(r.tool.clone());
+            }
+        }
+        let sent = Arc::new(AtomicUsize::new(0));
+        let (a, p) = agent(vec![
+            Scripted::call("c1", "read_page", json!({})),
+            Scripted::call("c2", "send_email", json!({"to": "anna@x.com"})),
+            Scripted::text("I would have emailed Anna."),
+        ]);
+        let approver = Arc::new(Rehearse(Default::default()));
+        let a = a.tool(read_page()).tool(send_email(sent.clone())).shared_approver(approver.clone());
+        let mut receipts = Vec::new();
+        a.run_streaming_all(&mut Session::in_memory(), vec![Message::user("email anna@x.com the news")], &RunControl::default(), &mut |e| {
+            if let Event::Receipt(r) = e { receipts.push(r) }
+        })
+        .await
+        .unwrap();
+        assert_eq!(sent.load(Ordering::SeqCst), 0, "nothing was sent");
+        assert_eq!(*approver.0.lock().unwrap(), vec!["send_email".to_string()]);
+        assert_eq!(receipts.iter().map(|r| r.outcome.as_str()).collect::<Vec<_>>(), vec!["rehearsed"]);
+        let told = p.seen()[2].last().unwrap().content()[0].clone();
+        assert!(matches!(&told, Content::ToolResult { output, is_error: false, .. } if output.starts_with("Rehearsal:")), "{told:?}");
+    }
+
+    #[tokio::test]
     async fn three_noes_from_the_person_in_a_row_stop_the_run() {
         let ask = |to: &str| Scripted::call("c", "send_email", json!({"to": to}));
         let (a, _) = agent(vec![ask("a@x.com"), ask("b@x.com"), ask("c@x.com"), Scripted::text("x")]);

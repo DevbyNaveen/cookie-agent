@@ -175,6 +175,8 @@ impl Team {
         self.maybe_evolve().await;
         // The council's day: queued tests, Cookie's health, a stand-in stepping back (`council`).
         self.council_tick().await;
+        // The twin's nightly scores, when on (`twin`).
+        self.maybe_twin_nightly().await;
         // Idle agents get ready for routines due soon; local models stay loaded while used.
         self.maybe_prepare().await;
         self.keep_local_models_warm().await;

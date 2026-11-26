@@ -218,7 +218,7 @@ fn diff(work: &Path, now: &[(String, u64)], snap: &Path, then: &[(String, u64)])
 pub(crate) fn tools(team: &Arc<Team>, agent: &str, agent_name: &str, trigger: &Trigger) -> Vec<Arc<dyn Tool>> {
     let mut out: Vec<Arc<dyn Tool>> = vec![Arc::new(todo_tool(Arc::downgrade(team), agent.to_string()))];
     // A board the person can watch: never for someone else's agent or a test run.
-    if !matches!(trigger, Trigger::Contact { .. } | Trigger::Room { .. } | Trigger::Peer { .. } | Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Prep { .. }) {
+    if !matches!(trigger, Trigger::Contact { .. } | Trigger::Room { .. } | Trigger::Peer { .. } | Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Prep { .. } | Trigger::Rehearse) {
         out.push(crate::boards::board_tool(Arc::downgrade(team), agent.to_string()));
     }
     // Someone outside can't make the agent question the person.

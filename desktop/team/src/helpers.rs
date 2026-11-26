@@ -59,7 +59,7 @@ pub(crate) fn allowed(rec: &AgentRecord, trigger: &Trigger, probation: bool) -> 
         && !probation
         && !matches!(
             trigger,
-            Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Room { .. } | Trigger::Contact { .. } | Trigger::Peer { .. } | Trigger::Review | Trigger::Prep { .. }
+            Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Room { .. } | Trigger::Contact { .. } | Trigger::Peer { .. } | Trigger::Review | Trigger::Prep { .. } | Trigger::Rehearse
         )
 }
 

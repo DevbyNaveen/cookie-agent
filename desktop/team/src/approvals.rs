@@ -30,6 +30,9 @@ pub(crate) enum Mode {
     Ask,
     /// Record what it would do, refuse it (probation, shadow, tests).
     Record,
+    /// A rehearsal: every change it would make is recorded and shown, none is
+    /// made, and it carries on to the end of its plan (`twin::rehearsal`).
+    Rehearse,
 }
 
 /// The approver a job's agent asks.
@@ -69,6 +72,22 @@ impl Drop for Forget<'_> {
 
 #[async_trait]
 impl Approver for Broker {
+    fn rehearses(&self) -> bool {
+        self.mode == Mode::Rehearse
+    }
+
+    async fn rehearse(&self, req: &ApprovalRequest) {
+        let Some(team) = self.team.upgrade() else { return };
+        self.log.lock().unwrap().push(ApprovalRecord {
+            tool: req.tool.clone(),
+            effect: effect_name(req.effect).into(),
+            preview: util::clip(&req.preview, 2000),
+            outcome: "rehearsed".into(),
+            checker: None,
+        });
+        team.emit(TeamEvent::Would { job: self.job.clone(), agent: self.agent.clone(), tool: req.tool.clone(), preview: util::clip(&req.preview, 600) });
+    }
+
     async fn approve(&self, req: &ApprovalRequest) -> bool {
         let Some(team) = self.team.upgrade() else { return false };
         // Your agents write to each other freely; what each one then does still asks you.

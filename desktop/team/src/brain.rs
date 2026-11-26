@@ -687,7 +687,7 @@ impl Team {
     /// The person's decisions about a job, as an episode in the agent's own space. `grade`: a grade
     /// given later. Only when there is a decision: most jobs write nothing.
     pub(crate) async fn write_evidence(&self, rec: &AgentRecord, job: &Job, grade: Option<i8>) {
-        if !rec.grants.memory || crate::pair::enkeon().is_none() || matches!(job.trigger, Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Review | Trigger::Prep { .. }) || crate::bench::is_probe(&rec.id) {
+        if !rec.grants.memory || crate::pair::enkeon().is_none() || matches!(job.trigger, Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Review | Trigger::Prep { .. } | Trigger::Rehearse) || crate::bench::is_probe(&rec.id) {
             return;
         }
         let mut lines = Vec::new();

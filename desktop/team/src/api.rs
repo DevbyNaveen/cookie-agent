@@ -39,6 +39,12 @@ pub(crate) fn apply_settings(s: &mut Settings, p: &Value) {
         if let Some(v) = e.get("max_dollars").and_then(Value::as_f64) { s.evolve.max_dollars = v.clamp(0.0, 100.0); }
         if let Some(v) = e.get("max_exams").and_then(Value::as_u64) { s.evolve.max_exams = v.clamp(1, 50) as usize; }
     }
+    if let Some(t) = p.get("twin") {
+        if let Some(v) = t.get("nightly").and_then(Value::as_bool) { s.twin.nightly = v; }
+        if let Some(v) = t.get("hour").and_then(Value::as_u64) { s.twin.hour = v.min(23) as u32; }
+        if let Some(v) = t.get("max_dollars").and_then(Value::as_f64) { s.twin.max_dollars = v.clamp(0.1, 100.0); }
+        if let Some(v) = t.get("repeat").and_then(Value::as_u64) { s.twin.repeat = v.clamp(1, 5) as usize; }
+    }
     if let Some(v) = p.get("challenge_model") { s.challenge_model = v.as_str().map(str::trim).filter(|m| !m.is_empty()).map(str::to_string); }
     if let Some(v) = p.get("server") {
         if let Some(b) = v.get("enabled").and_then(Value::as_bool) { s.server.enabled = b; }
@@ -139,6 +145,18 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         // Receipts (`receipts`): every action, why it was allowed, what it came to.
         "receipts" => ok(team.receipts(opt::<String>(a, "agent").as_deref(), opt::<usize>(a, "limit").unwrap_or(200).min(5000)).await),
         "receipts_export" => ok(team.export_receipts().await?),
+        // The twin (`twin`): its scenarios, runs and scores; and rehearsals of real jobs.
+        "twin_scenarios" => ok(team.twin_scenarios()),
+        "twin_runs" => ok(team.twin_runs()),
+        "twin_run" => ok(team.twin_run(&arg::<String>(a, "id")?)?),
+        "twin_start" => {
+            let cfg = team.settings().await.twin;
+            let agent = opt::<String>(a, "agent").unwrap_or_else(|| crate::front::COOKIE_ID.to_string());
+            ok(team.start_twin_run(&agent, opt(a, "only"), opt::<usize>(a, "repeat").unwrap_or(cfg.repeat), opt::<f64>(a, "max_dollars").unwrap_or(cfg.max_dollars), "you").await?)
+        }
+        "rehearse" => ok(team.rehearse(&arg::<String>(a, "id")?, arg(a, "text")?).await?),
+        "rehearsals" => ok(team.rehearsals(&arg::<String>(a, "id")?)),
+        "rehearsal_go" => ok(team.rehearsal_go(&arg::<String>(a, "id")?, &arg::<String>(a, "rehearsal")?).await?),
         "send" => {
             let attachments: Vec<Attachment> = opt(a, "attachments").unwrap_or_default();
             // An @ in the message brings that agent in to answer here (`mention`).

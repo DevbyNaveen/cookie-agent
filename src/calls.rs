@@ -143,7 +143,19 @@ impl Agent {
                 }
             }
             specs[index] = Some(spec.clone());
-            match policy.decide(&spec, args, provenance, tool.preview(args)) {
+            let decision = policy.decide(&spec, args, provenance, tool.preview(args));
+            // A rehearsal makes no change: what would run, or be asked, is recorded instead.
+            if approver.rehearses() && spec.effect != Effect::Read && !matches!(decision, Decision::Deny(_)) {
+                let (preview, reason, from_data) = match decision {
+                    Decision::Ask { preview, reason, from_data } => (preview, reason, from_data),
+                    _ => (tool.preview(args), "allowed without asking".to_string(), Vec::new()),
+                };
+                approver.rehearse(&ApprovalRequest { tool: name.clone(), effect: spec.effect, preview, reason, from_data }).await;
+                decided.push((index, "rehearsed"));
+                outcomes[index] = Some((crate::approval::REHEARSED.into(), false));
+                continue;
+            }
+            match decision {
                 Decision::Allow => {
                     decided.push((index, "allowed"));
                     approved.push((index, tool));

@@ -48,12 +48,12 @@ pub struct Receipt {
     pub id: String,
     pub tool: String,
     pub effect: Effect,
-    /// `allowed`, `earned_trust`, `approved`, `declined`, `refused` or `not_run`.
+    /// `allowed`, `earned_trust`, `approved`, `declined`, `refused`, `not_run` or `rehearsed`.
     pub decision: String,
     pub because: Vec<Because>,
     /// Guarded values the person didn't write (`arg = value`).
     pub from_data: Vec<String>,
-    /// `done`, `failed`, `declined`, `refused`, `not_run` or `unknown`.
+    /// `done`, `failed`, `declined`, `refused`, `not_run`, `unknown`, or `rehearsed` (recorded, never made).
     pub outcome: String,
     /// Why it failed or was refused, clipped; or what makes it unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,7 +79,7 @@ impl Receipt {
             "earned_trust" => because.insert(0, Because::EarnedTrust),
             _ => {}
         }
-        if because.is_empty() && matches!(decision, "allowed" | "approved" | "earned_trust") {
+        if because.is_empty() && matches!(decision, "allowed" | "approved" | "earned_trust" | "rehearsed") {
             if let Some(quote) = provenance.request() {
                 because.push(Because::Request { quote });
             }
@@ -132,6 +132,7 @@ fn outcome(decision: &str, result: Option<(&str, bool)>) -> (String, Option<Stri
         if s.chars().count() > 300 { format!("{}…", s.chars().take(300).collect::<String>()) } else { s.to_string() }
     };
     match (decision, result) {
+        ("rehearsed", _) => ("rehearsed".into(), None),
         ("declined", _) => ("declined".into(), None),
         ("refused", r) => ("refused".into(), r.map(|(o, _)| clip(o))),
         ("not_run", _) => ("not_run".into(), None),

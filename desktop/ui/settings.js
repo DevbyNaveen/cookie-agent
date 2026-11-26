@@ -372,6 +372,106 @@ const SETTINGS = {
     return [el("h2", null, "Privacy"), el("h3", "group-title", "Where your data lives"), g, ...(await yourDataPart()), el("h3", "group-title", "Walls"), walls, el("h3", "group-title", "Proof"), ch];
   },
 
+  async scores() {
+    const [runs, s, scenarios, agents] = await Promise.all([call("twin_runs"), call("settings"), call("twin_scenarios"), call("list_agents").catch(() => [])]);
+    const out = [el("h2", null, "Scores"), el("p", "set-note", "Your agents are tried on real errands in a twin of your world: mail, calendar, Slack and billing that keep a record of every change. The checks read that record, never what the agent says it did. Nothing real is touched.")];
+    const pct = (x) => `${Math.round(x * 100)}%`;
+    const latest = runs[0] ? await call("twin_run", { id: runs[0].id }).catch(() => runs[0]) : null;
+    if (latest) {
+      const sm = latest.summary || {};
+      const tiles = el("div", "score-tiles");
+      const tile = (big, label, sub, cls = "") => { const t = el("div", "score-tile " + cls); t.append(el("strong", null, big), el("span", null, label), el("small", null, sub)); return t; };
+      if (latest.state === "running") tiles.append(tile(`${latest.attempts?.length ?? 0}/${latest.total}`, "errands tried so far", latest.agent_name, "live"));
+      if (sm.completed) {
+        tiles.append(
+          tile(pct(sm.rate), "errands finished", `${sm.passed} of ${sm.completed} · 95% range ${pct(sm.low)}–${pct(sm.high)}`),
+          tile(`${sm.incidents}`, sm.incidents === 1 ? "action went beyond what you allowed" : "actions went beyond what you allowed", sm.incidents ? `in ${sm.completed} errands: open them below` : `in ${sm.completed} errands · at most ${pct(sm.incident_high)} at 95%`, sm.incidents ? "bad" : "good"),
+          tile(`${sm.every_time?.[0] ?? 0}/${sm.every_time?.[1] ?? 0}`, "errands passed every time", latest.repeat > 1 ? `${latest.repeat} tries each` : "one try each: run more tries for this"),
+        );
+      }
+      out.push(tiles);
+      const meta = [
+        latest.agent_name,
+        new Date(latest.started_at * 1000).toLocaleString(),
+        latest.microdollars ? `$${(latest.microdollars / 1e6).toFixed(2)}` : null,
+        sm.incomplete ? `${sm.incomplete} couldn't finish (model or grader out of reach) and aren't counted` : null,
+        latest.budget_stopped ? "the run's dollar cap stopped it early" : null,
+        latest.state === "stopped" ? "Cookie closed during this run" : null,
+      ].filter(Boolean);
+      out.push(el("p", "set-note", meta.join(" · ")));
+      const cats = Object.entries(sm.by_category || {});
+      if (cats.length) {
+        const bars = el("div", "score-bars");
+        for (const [c, [p, n]] of cats) {
+          const row = el("div", "score-bar");
+          const fill = el("i");
+          fill.style.width = `${n ? (p / n) * 100 : 0}%`;
+          const track = el("span", "track");
+          track.append(fill);
+          row.append(el("span", "cat", c), track, el("span", "num", `${p}/${n}`));
+          bars.append(row);
+        }
+        out.push(el("h3", "group-title", "By kind of errand"), bars);
+      }
+      if (latest.attempts?.length) {
+        const list = el("div", "group score-list");
+        const order = { fail: 0, incomplete: 1, pass: 2 };
+        const sorted = [...latest.attempts].sort((x, y) => (Number(y.incident) - Number(x.incident)) || (order[x.status] - order[y.status]));
+        for (const a of sorted) {
+          const d = el("details", "score-row " + a.status + (a.incident ? " incident" : ""));
+          const sum = el("summary");
+          sum.append(el("span", "dot"), el("span", "t", a.title), el("span", "s", a.incident ? "went too far" : { pass: "passed", fail: "missed", incomplete: "couldn't finish" }[a.status]));
+          d.append(sum, el("p", "req", `“${a.request}”`));
+          const checks = el("ul", "checks");
+          for (const c of a.checks || []) {
+            const li = el("li", c.pass ? "ok" : c.required ? "no" : "soft");
+            const name = c.id.split("-").join(" ");
+            li.append(el("span", null, name + (c.harm ? " · safety" : "") + (c.judged ? " · judged" : "") + (c.required ? "" : " · optional")));
+            if (!c.pass && c.evidence) li.append(el("small", null, c.evidence));
+            checks.append(li);
+          }
+          d.append(checks);
+          if (a.changes?.length) d.append(el("p", "chg", "What it changed in the twin: " + a.changes.map((c) => c.action.split("::").pop()).join(", ")));
+          else if (a.status !== "incomplete") d.append(el("p", "chg", "It changed nothing in the twin."));
+          if (a.error) d.append(el("p", "chg error-line", a.error));
+          list.append(d);
+        }
+        out.push(el("h3", "group-title", "Each errand"), list);
+      }
+    } else {
+      out.push(el("p", "set-note", "No run yet. Run the twin to get the first scores."));
+    }
+    const run = el("div", "group edit");
+    const pick = el("select", "set-select");
+    for (const a of (agents || []).filter((x) => !x.shadow_of)) { const o = el("option", null, a.name); o.value = a.id; pick.append(o); }
+    const tries = input(String(s.twin?.repeat ?? 1), "tries", { type: "number", min: 1, max: 5 });
+    const cap = input(String(s.twin?.max_dollars ?? 3), "dollars", { type: "number", min: 0.1, step: 0.5 });
+    tries.onchange = () => call("update_settings", { patch: { twin: { repeat: Number(tries.value) } } });
+    cap.onchange = () => call("update_settings", { patch: { twin: { max_dollars: Number(cap.value) } } });
+    const busyRun = runs.some((r) => r.state === "running");
+    const go = button(busyRun ? "Running…" : "Run now", "primary small", async () => {
+      go.disabled = true;
+      try { await call("twin_start", { agent: pick.value || undefined, repeat: Number(tries.value), max_dollars: Number(cap.value) }); toast("Twin run started", "Scores fill in as each errand finishes.", "good"); openSettings("scores"); }
+      catch (err) { go.disabled = false; toast("Couldn't start", String(err), "error"); }
+    });
+    go.disabled = busyRun;
+    run.append(
+      setRow("Run the twin now", `${scenarios.length} errands across mail, calendar, Slack, payments, research and memory. Roughly $0.05–0.50 an errand on a paid model.`, go),
+      setRow("Agent", null, pick),
+      setRow("Tries per errand", "More tries show whether it passes every time, not just once.", tries),
+      setRow("Most a run may spend", "Once reached, the rest don't start. Free and local models have no cap.", cap),
+      setRow("Every night", `Runs on Cookie at ${String(s.twin?.hour ?? 2).padStart(2, "0")}:00 when nothing else is working.`, toggle(!!s.twin?.nightly, (v) => call("update_settings", { patch: { twin: { nightly: v } } }), "Nightly twin run")),
+    );
+    out.push(el("h3", "group-title", "Run"), run);
+    if (runs.length > 1) {
+      const older = el("div", "group");
+      for (const r of runs.slice(1, 11)) older.append(setRow(`${r.agent_name} · ${new Date(r.started_at * 1000).toLocaleDateString()}`, r.summary?.completed ? `${pct(r.summary.rate)} finished · ${r.summary.incidents} beyond what you allowed · ${r.summary.completed} errands` : r.state, null));
+      out.push(el("h3", "group-title", "Earlier runs"), older);
+    }
+    out.push(el("p", "set-note", "The twin's apps are close copies of the real ones, written by hand, and its people are scripted. A score says how an agent does on these errands, not on every errand."));
+    return out;
+  },
+
   async about() {
     const g = el("div", "group");
     g.append(setRow("Version", null, el("span", "muted", await call("version"))), setRow("Made by", null, el("span", "muted", "Enkeon")));

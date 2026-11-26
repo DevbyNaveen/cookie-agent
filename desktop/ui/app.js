@@ -738,6 +738,7 @@ function documentsLine(agentId, paths) {
 function line(l) {
   if (l.from === "talk") return talkPill(l.talk);
   if (l.from === "documents") return documentsLine(current?.id, l.text.split("\n").filter(Boolean));
+  if (l.from === "rehearsal") { try { return rehearsalCard(JSON.parse(l.text)); } catch { return el("span"); } }
   // Older chats kept helpers as their own group: shown as threads, like today's.
   if (l.from === "helpers") {
     const g = { steps: new Map(), closed: true, el: el("div", "steps"), saved: true };
@@ -1465,6 +1466,8 @@ function onTeamEvent(ev) {
       // Another agent asked this one: on its own, outside the chat; it folds into a conversation when done.
       job.inbound = ["handoff", "peer", "contact", "mention"].includes(ev.trigger.kind);
       if (["test", "shadow"].includes(ev.trigger.kind)) return; // private runs: their panels follow them
+      // A rehearsal shows as its own card in the chat (`rehearsal` events), not as a reply.
+      if (ev.trigger.kind === "rehearse") { setStatus(ev.agent, "Rehearsing…"); setMood(ev.agent, "working"); return; }
       live.set(ev.job, job);
       busy.add(ev.agent);
       const row = agentById(ev.agent);
@@ -1596,6 +1599,19 @@ function onTeamEvent(ev) {
       for (const g of job.groups ?? []) if ([...g.steps.values()].some((s) => s.thread)) paintGroup(g);
       break;
     }
+    case "rehearsal": {
+      if (ev.state !== "running") { setStatus(ev.agent, null); setMood(ev.agent, "idle"); }
+      if (current?.id !== ev.agent || view !== "chat") break;
+      call("rehearsals", { id: ev.agent }).then((all) => {
+        const r = (all || []).find((x) => x.id === ev.id);
+        if (!r || current?.id !== ev.agent) return;
+        const card = rehearsalCard(r);
+        const was = $("log").querySelector(`[data-rehearsal="${ev.id}"]`);
+        if (was) was.replaceWith(card); else { $("log").append(card); scrollDown(true); }
+      }).catch(() => {});
+      break;
+    }
+    case "twin": if (settingsTab === "scores" && $("settings").open) openSettings("scores"); break;
     case "board": onBoardChanged(ev.id); break;
     // A council proposal moved on: the desk that shows it redraws.
     case "council": refreshDesk(); break;
@@ -1876,6 +1892,7 @@ function attachMenu() {
   };
   item("clip", "Add files or photos", el("kbd", "am-key", "⌘U"), pickAndAttach);
   item("folder", "Add folder", null, addFolder);
+  item("shield", "Rehearse first", el("span", "am-side", "nothing is done"), rehearseNow);
   const note = el("span", "am-side");
   const chev = icon("up"); chev.classList.add("am-chev");
   const side = el("span", "am-right"); side.append(note, chev);
@@ -1918,6 +1935,55 @@ async function addFolder() {
   } catch (e) { toast("Couldn't add that folder", String(e), "error"); }
 }
 $("attach").onclick = attachMenu;
+
+/** Rehearse what is in the box: the agent tries it for real with nothing done, and shows what it would do. */
+async function rehearseNow() {
+  const agent = current;
+  const text = $("input").value.trim();
+  if (!agent) return;
+  if (!text) { toast("Write the job first", "Type what you want done, then choose Rehearse first.", ""); $("input").focus(); return; }
+  try {
+    await call("rehearse", { id: agent.id, text });
+    $("input").value = "";
+    autosize?.();
+    syncSend();
+  } catch (e) { toast("Couldn't rehearse", String(e), "error"); }
+}
+
+/** A rehearsal in the chat: what was asked, each change it would make and why, and Go. */
+function rehearsalCard(r) {
+  const card = el("div", "rehearsal " + r.state);
+  card.dataset.rehearsal = r.id;
+  const head = el("div", "rh-head");
+  head.append(icon("shield"), el("strong", null, "Rehearsal"), el("span", "rh-note", r.state === "running" ? "trying it with nothing done…" : r.state === "failed" ? "couldn't finish" : "nothing was done"));
+  card.append(head, el("q", "rh-request", r.request));
+  if (r.state === "running") { card.append(el("div", "rh-dots", "•••")); return card; }
+  if (r.state === "failed") { card.append(el("p", "rh-error", r.error || "It stopped before the end.")); return card; }
+  const list = el("ol", "rh-would");
+  if (!r.would?.length) list.append(el("li", "rh-none", "It would change nothing: only look things up and answer."));
+  for (const w of r.would ?? []) {
+    const li = el("li", "rh-item " + (w.effect || ""));
+    li.append(el("span", "rh-did", w.did || w.tool));
+    const kind = { outbound: "sends", destroy: "can't be undone", write: "changes your things" }[w.effect];
+    if (kind) li.append(el("span", "rh-kind " + w.effect, kind));
+    if (w.because) li.append(el("span", "rh-why", w.because.charAt(0).toUpperCase() + w.because.slice(1)));
+    if (w.from_data?.length) { const d = el("span", "rh-data"); d.append("Not from you: ", ...w.from_data.flatMap((v, i) => [i ? ", " : "", el("code", null, v)])); li.append(d); }
+    list.append(li);
+  }
+  card.append(list);
+  if (r.answer) { const said = el("div", "rh-answer md"); said.innerHTML = Md.render(r.answer); card.append(said); }
+  const foot = el("div", "rh-foot");
+  if (r.ran_as) foot.append(el("span", "rh-ran", "Ran for real"));
+  else {
+    foot.append(button("Do it for real", "primary small", async (e) => {
+      e.target.disabled = true;
+      try { await call("rehearsal_go", { id: r.agent, rehearsal: r.id }); }
+      catch (err) { e.target.disabled = false; toast("Couldn't start it", String(err), "error"); }
+    }), el("span", "rh-hint", "Each send or payment still asks you."));
+  }
+  card.append(foot);
+  return card;
+}
 
 /** A card while a file is prepared, replaced by the real one (or dropped on failure). */
 function preparing(name) {

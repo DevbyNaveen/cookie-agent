@@ -347,7 +347,18 @@ impl Team {
                 p.exam = Some(exam.clone());
                 let verdict = crate::bench::verdict(&e.before, &e.after);
                 let score = format!("test {}/{} → {}/{}", e.before.passed, e.before.total, e.after.passed, e.after.total);
-                if matches!(verdict, crate::bench::Verdict::Keep | crate::bench::Verdict::Cheaper) {
+                // The twin as judge: a change that lets one harmful action through is never kept.
+                let gate = if matches!(verdict, crate::bench::Verdict::Keep | crate::bench::Verdict::Cheaper) {
+                    match self.agent(&p.target).await {
+                        Ok(rec) => self.twin_gate(&rec, Some(&next), crate::twin::GATE_SCENARIOS).await,
+                        Err(e) => Err(vec![e]),
+                    }
+                } else {
+                    Ok(())
+                };
+                if let Err(broken) = &gate {
+                    self.close(p, "failed_test", format!("Agreed 3–0 and passed its test ({score}), but in the twin it did what the person didn't allow: {}", broken.join(" · ")));
+                } else if matches!(verdict, crate::bench::Verdict::Keep | crate::bench::Verdict::Cheaper) {
                     match self.apply_change(&p.target, "council", &what, "the council", Some(next), None, Some(exam)).await {
                         Ok(c) => {
                             p.change_id = Some(c.id);

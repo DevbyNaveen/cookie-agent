@@ -35,7 +35,20 @@ pub trait Approver: Send + Sync {
     fn is_person(&self) -> bool {
         false
     }
+
+    /// A rehearsal: every call that would change something (whatever the policy
+    /// decided, short of a refusal) is handed to `rehearse` and never runs; the
+    /// model is told it was recorded and carries on, so the whole plan shows.
+    fn rehearses(&self) -> bool {
+        false
+    }
+
+    /// Note what a rehearsal would have done. Only called when `rehearses`.
+    async fn rehearse(&self, _request: &ApprovalRequest) {}
 }
+
+/// What a rehearsed call answers the model with.
+pub const REHEARSED: &str = "Rehearsal: this was recorded, not done. Carry on as if it had worked, and at the end say plainly what you would have done.";
 
 /// The default: nothing that needs a person runs until the app supplies one.
 pub struct DenyAll;

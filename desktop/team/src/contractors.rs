@@ -119,7 +119,7 @@ pub(crate) fn allowed(rec: &AgentRecord, trigger: &Trigger, probation: bool) -> 
         && !crate::bench::is_probe(&rec.id)
         && !matches!(
             trigger,
-            Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Room { .. } | Trigger::Contact { .. } | Trigger::Peer { .. } | Trigger::Review | Trigger::Prep { .. }
+            Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Room { .. } | Trigger::Contact { .. } | Trigger::Peer { .. } | Trigger::Review | Trigger::Prep { .. } | Trigger::Rehearse
         )
 }
 

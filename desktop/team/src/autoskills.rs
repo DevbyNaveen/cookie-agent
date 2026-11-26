@@ -742,7 +742,7 @@ impl Team {
 
     /// After a job: how its skills did. Three good jobs make an on-call skill core; three bad ones send a core skill back.
     pub(crate) fn record_outcome(&self, rec: &AgentRecord, job: &Job) {
-        if job.skills.is_empty() || matches!(job.trigger, Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Review | Trigger::Prep { .. }) {
+        if job.skills.is_empty() || matches!(job.trigger, Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Review | Trigger::Prep { .. } | Trigger::Rehearse) {
             return;
         }
         let good = job.status == JobStatus::Done && job.grade != Some(-1) && !job.cut_off && !job.approvals.iter().any(|a| a.outcome == "no");

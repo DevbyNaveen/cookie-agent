@@ -103,10 +103,10 @@ mod note_tests {
 
 /// The jobs that learn: the agent's own work, not tests, shadows or reviews.
 fn learns(trigger: &Trigger) -> bool {
-    !matches!(trigger, Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Review | Trigger::Prep { .. })
+    !matches!(trigger, Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Review | Trigger::Prep { .. } | Trigger::Rehearse)
 }
 
-fn instructions(team_names: &[(String, String)], rec: &AgentRecord, trigger: &Trigger, probation: bool) -> String {
+pub(crate) fn instructions(team_names: &[(String, String)], rec: &AgentRecord, trigger: &Trigger, probation: bool) -> String {
     let mut s = if rec.id == crate::front::COOKIE_ID { crate::front::COOKIE_OPENING.to_string() } else { format!(
         "You are {name}, one of the person's focused agents. Your one job: {job}\n\
          Do what serves that job, including looking things up and finding pictures or examples for it. Only when something is \
@@ -475,7 +475,7 @@ impl Team {
             runs.insert(rec.id.clone(), Run { job: job_id.clone(), control: control.clone() });
         }
         // Before anything changes: a copy of its folder to undo to, and a fresh plan.
-        let may_write = rec.grants.files && !matches!(trigger, Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Room { .. } | Trigger::Review)
+        let may_write = rec.grants.files && !matches!(trigger, Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Room { .. } | Trigger::Review | Trigger::Rehearse)
             && !matches!(&trigger, Trigger::Contact { level, .. } if level == "talk");
         if may_write {
             self.checkpoint(&rec.id, &job_id);
@@ -486,6 +486,7 @@ impl Team {
         let mode = match trigger {
             Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Room { .. } | Trigger::Prep { .. } => Mode::Record,
             Trigger::Contact { ref level, .. } if level == "talk" => Mode::Record,
+            Trigger::Rehearse => Mode::Rehearse,
             _ => Mode::Ask,
         };
         let team = self.clone();
@@ -523,7 +524,14 @@ impl Team {
 
         let result: Result<String, String> = async {
             let agent = self.build_agent(&rec, &trigger, mode, &job_id, &text, log.clone(), &mut built).await?;
-            let mut session = if in_session { Session::open(self.paths.session(&rec.id)).await.map_err(|e| e.to_string())? } else { Session::in_memory() };
+            let mut session = if in_session {
+                Session::open(self.paths.session(&rec.id)).await.map_err(|e| e.to_string())?
+            } else if matches!(trigger, Trigger::Rehearse) && self.paths.session(&rec.id).exists() {
+                // A rehearsal knows the conversation it was asked in, and adds nothing to it.
+                Session::load(self.paths.session(&rec.id)).await.map_err(|e| e.to_string())?
+            } else {
+                Session::in_memory()
+            };
             let before = session.messages().len();
             // This job's note first, then the request itself, so the request is the last thing read.
             let mut input: Vec<Message> = built.note.take().map(Message::harness_note).into_iter().collect();
@@ -774,6 +782,10 @@ impl Team {
             .collect();
         documents.sort_by_key(|(at, _)| *at);
         documents.reverse();
+        // Its rehearsals, each where it was asked (`twin::rehearsal`).
+        let mut rehearsals: Vec<(usize, String)> = self.rehearsals(id).into_iter().map(|r| (r.after_message, serde_json::to_string(&r).unwrap_or_default())).collect();
+        rehearsals.sort_by_key(|(at, _)| *at);
+        rehearsals.reverse();
         let slugs: std::collections::BTreeMap<String, String> = self.net_config().agents.into_iter().map(|(id, n)| (id, n.slug)).collect();
         // Every tool answer, by call id, to pair with the call that asked.
         // Each call's own record from the trace: when it started and ended, and what was decided about it.
@@ -802,6 +814,10 @@ impl Team {
             while documents.last().is_some_and(|(at, _)| *at <= i) {
                 let (_, paths) = documents.pop().expect("checked");
                 out.push(Line { from: "documents", text: paths.join("\n"), talk: None, helpers: None, by: None, steps: None });
+            }
+            while rehearsals.last().is_some_and(|(at, _)| *at <= i) {
+                let (_, r) = rehearsals.pop().expect("checked");
+                out.push(Line { from: "rehearsal", text: r, ..Line::default() });
             }
             // What it said comes before the calls it made in the same message.
             let text = m.text();
@@ -907,6 +923,9 @@ impl Team {
         while let Some((_, paths)) = documents.pop() {
             out.push(Line { from: "documents", text: paths.join("\n"), talk: None, helpers: None, by: None, steps: None });
         }
+        while let Some((_, r)) = rehearsals.pop() {
+            out.push(Line { from: "rehearsal", text: r, ..Line::default() });
+        }
         // Its last job in this chat was cut off by Cookie closing: said so at the end, with a way to carry on.
         let chat_jobs: Vec<Job> = util::read_jsonl::<Job>(&self.paths.jobs(id)).into_iter().filter(|j| matches!(j.trigger, Trigger::Chat)).collect();
         if let Some(last) = chat_jobs.last() {
@@ -921,7 +940,7 @@ impl Team {
     }
 
     /// How many messages the agent's own conversation holds now.
-    async fn session_len(&self, id: &str) -> usize {
+    pub(crate) async fn session_len(&self, id: &str) -> usize {
         let path = self.paths.session(id);
         if !path.exists() {
             return 0;

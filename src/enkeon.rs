@@ -271,6 +271,19 @@ impl Enkeon {
     }
 }
 
+/// What one app action does (`gmail::GMAIL_SEND_EMAIL` with its arguments):
+/// its effect, and the arguments that choose who, where or how much. The same
+/// judgement Cookie's `connector_call` is held to, for any tool that runs app
+/// actions behind one name (a rehearsal's twin apps, say).
+pub fn judge_app_action(name: &str, args: &serde_json::Value) -> (crate::tool::Effect, Vec<String>) {
+    apps::judge(name, args)
+}
+
+/// Whether an app action only reads (fetch, list, get, search…).
+pub fn app_action_reads_only(name: &str) -> bool {
+    apps::reads_only(name)
+}
+
 /// The person's connected apps (Gmail, Calendar, Slack…), reached through the
 /// gateway's tool catalog and offered as `connector_actions` (find an action,
 /// see its arguments, run one that only reads) and `connector_call` (run one

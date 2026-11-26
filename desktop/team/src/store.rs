@@ -251,6 +251,9 @@ pub struct Settings {
     pub cloud: CloudCfg,
     /// The nightly exam loop (`evolve`). Off until you turn it on.
     pub evolve: crate::evolve::EvolveCfg,
+    /// The twin's scores (`twin`): a nightly run on Cookie, with its cap.
+    #[serde(default = "crate::twin::TwinCfg::normal")]
+    pub twin: crate::twin::TwinCfg,
     /// Each agent's backup model, when the person chose one (`failover`); else Cookie picks.
     pub backup_models: BTreeMap<String, String>,
     /// A teammate standing in as the front desk while Cookie's results are poor (`council`).
@@ -285,6 +288,7 @@ impl Default for Settings {
             evolve: crate::evolve::EvolveCfg::default(),
             backup_models: BTreeMap::new(),
             stand_in: None,
+            twin: crate::twin::TwinCfg::normal(),
         }
     }
 }
@@ -321,6 +325,9 @@ pub enum Trigger {
     Memory { subject: String },
     /// Getting ready, while idle, for a routine due soon (`prep`): changes recorded, not made.
     Prep { routine: String },
+    /// A rehearsal of a job before it runs for real (`twin::rehearsal`): reads are real,
+    /// every change is recorded and shown, none is made.
+    Rehearse,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

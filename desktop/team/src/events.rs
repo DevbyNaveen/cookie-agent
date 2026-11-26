@@ -57,6 +57,10 @@ pub enum TeamEvent {
     HelperConflict { job: String, agent: String, between: Vec<usize>, about: String, detail: String },
     /// A council proposal moved on (`council`): voted, tested, applied, or waiting on the person.
     Council { id: String, state: String },
+    /// A twin run moved on (`twin`): `running` with how many attempts are done, or `done`.
+    Twin { run: String, state: String, done: usize, total: usize },
+    /// A rehearsal started, finished or ran for real (`twin::rehearsal`).
+    Rehearsal { agent: String, id: String, state: String },
     /// A board changed (`boards`): open views redraw.
     Board { id: String },
     /// Something new was written into this agent's chat from outside a job of its own (an answer from an agent brought in with @).
@@ -116,6 +120,7 @@ impl TeamEvent {
             | TeamEvent::Step { agent, .. }
             | TeamEvent::StepDone { agent, .. }
             | TeamEvent::Receipt { agent, .. }
+            | TeamEvent::Rehearsal { agent, .. }
             | TeamEvent::Helper { agent, .. }
             | TeamEvent::HelperStep { agent, .. }
             | TeamEvent::HelperConflict { agent, .. }

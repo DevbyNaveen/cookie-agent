@@ -11,6 +11,7 @@ mod threads;
 mod failover;
 pub mod council;
 pub mod receipts;
+pub mod twin;
 mod guide;
 mod appsettings;
 pub mod cage;
@@ -281,6 +282,8 @@ impl Team {
         tokio::spawn(async move { me.ensure_cookie().await });
         // Jobs that were running when Cookie last stopped get an honest record.
         let me = self.clone();
+        // A twin run cut off by Cookie closing is settled, never left running.
+        me.settle_twin_runs();
         tokio::spawn(async move { me.recover_interrupted().await });
         // Memories of fired agents that Enkeon couldn't erase at the time.
         let me = self.clone();
