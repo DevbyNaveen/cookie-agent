@@ -240,7 +240,10 @@ impl Team {
             // A recipient, channel or amount found in a thread or a bill is put to the person, marked
             // "not from you", instead of refused: they can recognise it; earned trust never answers it.
             // Reads chosen by data stay refused (`Policy::decide`).
-            .confirm_data();
+            .confirm_data()
+            // A mail or a page can't plant a memory: after reading one, what is kept must quote the
+            // person, or the person decides it, marked "not in your words" (earned trust never does).
+            .grounded("remember", "text");
         for a in self.agents().await.iter().filter(|a| a.id != rec.id && a.shadow_of.is_none() && !crate::bench::is_probe(&a.id)) {
             policy = policy.allow(&format!("@{}", self.slug_of(a)));
         }

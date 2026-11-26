@@ -22,6 +22,7 @@
 
 pub mod rehearsal;
 pub mod scenarios;
+pub mod whisper;
 pub mod world;
 
 use std::collections::BTreeMap;

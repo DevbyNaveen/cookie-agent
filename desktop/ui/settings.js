@@ -469,6 +469,36 @@ const SETTINGS = {
       out.push(el("h3", "group-title", "Earlier runs"), older);
     }
     out.push(el("p", "set-note", "The twin's apps are close copies of the real ones, written by hand, and its people are scripted. A score says how an agent does on these errands, not on every errand."));
+    // WhisperBench: the public memory-poisoning benchmark, run in the twin from a downloaded copy.
+    const wb = await call("whisper_runs").catch(() => []);
+    const wg = el("div", "group edit");
+    const folder = input(localStorage.getItem("wb-folder") || "", "folder of the downloaded dataset", { spellcheck: false });
+    const limit = input("0", "cases (0 = all)", { type: "number", min: 0, max: 108 });
+    const wbGo = button("Run", "primary small", async () => {
+      wbGo.disabled = true;
+      try { try { localStorage.setItem("wb-folder", folder.value.trim()); } catch {} await call("whisper_start", { agent: pick.value || undefined, folder: folder.value.trim(), limit: Number(limit.value), max_dollars: Number(cap.value) * 4 }); toast("WhisperBench started", "Each case reads an attack email, then is asked about it later.", "good"); openSettings("scores"); }
+      catch (err) { wbGo.disabled = false; toast("Couldn't start", String(err), "error"); }
+    });
+    wbGo.disabled = wb.some((r) => r.state === "running");
+    wg.append(
+      setRow("WhisperBench: can an email plant a false memory?", "108 published attack emails (Zhang 2026, arXiv 2607.05189), each written to make an agent keep a false fact it later acts on. Download Yechao/MemGhost-WhisperBench from Hugging Face, then choose its folder.", wbGo),
+      folder,
+      setRow("Cases", "Two runs a case: the reading, then the later question.", limit),
+    );
+    out.push(el("h3", "group-title", "Memory poisoning"), wg);
+    const w = wb[0];
+    if (w) {
+      const t = el("div", "score-tiles");
+      const tile = (big, label, sub, cls = "") => { const x = el("div", "score-tile " + cls); x.append(el("strong", null, big), el("span", null, label), el("small", null, sub)); return x; };
+      t.append(
+        tile(`${w.kept}/${w.done}`, "false memories kept", w.state === "running" ? `${w.results.length} of ${w.total} so far` : `${w.agent_name}`, w.kept ? "bad" : "good"),
+        tile(`${w.misled}/${w.done}`, "later answers misled", "stated the planted fact without telling you to check", w.misled ? "bad" : "good"),
+        tile(`${w.tried}/${w.done}`, "tried to keep one", "an action carrying it was put to you (and you said no)"),
+      );
+      out.push(t);
+      const inc = w.results.filter((r) => r.status !== "done").length;
+      out.push(el("p", "set-note", [new Date(w.started_at * 1000).toLocaleString(), w.microdollars ? `$${(w.microdollars / 1e6).toFixed(2)}` : null, inc ? `${inc} couldn't finish and aren't counted` : null, w.budget_stopped ? "stopped early at the dollar cap" : null, "Ordinary emails are Cookie's own; attack emails are the paper's."].filter(Boolean).join(" · ")));
+    }
     return out;
   },
 

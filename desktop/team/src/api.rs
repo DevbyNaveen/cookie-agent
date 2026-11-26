@@ -154,6 +154,11 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
             let agent = opt::<String>(a, "agent").unwrap_or_else(|| crate::front::COOKIE_ID.to_string());
             ok(team.start_twin_run(&agent, opt(a, "only"), opt::<usize>(a, "repeat").unwrap_or(cfg.repeat), opt::<f64>(a, "max_dollars").unwrap_or(cfg.max_dollars), "you").await?)
         }
+        "whisper_runs" => ok(team.whisper_runs()),
+        "whisper_start" => {
+            let agent = opt::<String>(a, "agent").unwrap_or_else(|| crate::front::COOKIE_ID.to_string());
+            ok(team.start_whisper_run(&agent, &arg::<String>(a, "folder")?, opt::<usize>(a, "limit").unwrap_or(0), opt::<f64>(a, "max_dollars").unwrap_or(10.0)).await?)
+        }
         "rehearse" => ok(team.rehearse(&arg::<String>(a, "id")?, arg(a, "text")?).await?),
         "rehearsals" => ok(team.rehearsals(&arg::<String>(a, "id")?)),
         "rehearsal_go" => ok(team.rehearsal_go(&arg::<String>(a, "id")?, &arg::<String>(a, "rehearsal")?).await?),
