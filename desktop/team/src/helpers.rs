@@ -114,7 +114,7 @@ fn wrap(agent: Agent, team: Weak<Team>, agent_id: &str, job: &str, ask_big: bool
     if let Some(props) = spec.schema.get_mut("properties").and_then(Value::as_object_mut) {
         props.insert(
             "title".into(),
-            serde_json::json!({"type": "string", "description": "3 to 6 words naming this helper's task for the person, e.g. 'Grok and xAI pricing'"}),
+            serde_json::json!({"type": "string", "description": "3 to 6 words naming this helper's task for the person, e.g. 'Competitor pricing pages'"}),
         );
     }
     Some(Arc::new(Helpers {

@@ -1,6 +1,6 @@
 //! Tool search: an agent with many tools keeps the everyday ones in view and
 //! finds the rest when it needs them, so their descriptions don't ride in
-//! every turn. Adapted from Hermes Agent's progressive tool disclosure (MIT).
+//! every turn.
 //!
 //! Hidden tools are reached through `tool_search` (find one, see its
 //! arguments) and a bridge per kind of effect: `use_tool` (reads),

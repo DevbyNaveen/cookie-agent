@@ -470,8 +470,8 @@ cleared environment (keys never reach it), a timeout (60 s, `.timeout(..)`),
 and stdout/stderr cut at 32 KB each, saying so.
 
 `detect()` picks macOS `sandbox-exec` or Linux `bwrap`, after trying it once.
-On macOS the profile is closed by default — OpenAI Codex's base policy
-(Apache-2.0, see THIRD_PARTY_NOTICES.md) plus the rules above — and is tested
+On macOS the profile is closed by default — a standard deny-by-default base
+policy (Apache-2.0, see THIRD_PARTY_NOTICES.md) plus the rules above — and is tested
 here against Apple Events, `open`, credential reads, the network and writes
 outside the directory. bubblewrap needs unprivileged user namespaces. With neither, `detect()` returns `None`;
 `NoSandbox` confines nothing, so every command then asks a person.

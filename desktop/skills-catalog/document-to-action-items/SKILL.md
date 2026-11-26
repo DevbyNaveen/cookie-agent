@@ -6,7 +6,7 @@ author: Ben Barclay (benbarclay), Cookie
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  cookie:
     tags: [Documents, OCR, Action-Items, Deadlines, Extraction]
     related_skills: [pdf, microsoft-office]
 ---

@@ -14,8 +14,8 @@
 // Eye rules are the Cookie Motion System spec (Enkeon space cookie-tauri-app):
 // blinks 0.2–0.3 s at a per-agent 8–20 a minute and likelier on a gaze shift,
 // saccades ≈ 2.2 ms per degree + 25 ms, a look up and away while thinking,
-// eyes on the work while working. At rest the face is still (Grok Bot's lesson:
-// motion means work); only a slow blink every 6–10 s says it is alive.
+// eyes on the work while working. At rest the face is still (motion
+// means work); only a slow blink every 6–10 s says it is alive.
 
 const Faces = (() => {
   // Every shape but "biscuit" (Cookie's own) is dealt to agents by id. The shader numbers

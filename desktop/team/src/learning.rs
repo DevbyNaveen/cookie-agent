@@ -18,10 +18,6 @@
 //!   thirty days move to its archive (never deleted; one click restores them).
 //! - **Searching the past.** `search_history` finds earlier conversations,
 //!   jobs and messages by their words.
-//!
-//! The review prompts and the shape of a good skill are adapted from Hermes
-//! Agent (MIT, Nous Research); the skill safety scan from OpenClaw's skill
-//! workshop (MIT).
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
@@ -144,7 +140,7 @@ pub fn front_matter(text: &str) -> (Option<String>, Option<String>) {
 /// Content that turns a skill into an attack or a leak: instructions aimed
 /// at the agent itself, piping downloads into a shell, sending the
 /// environment out, wiping folders, and secrets pasted in.
-/// Patterns from OpenClaw's skill workshop scanner (MIT), plus key shapes.
+/// Patterns of unsafe skill text, plus key shapes.
 pub fn scan(content: &str) -> Vec<&'static str> {
     let lower = content.to_lowercase();
     let mut out = Vec::new();
@@ -155,7 +151,7 @@ pub fn scan(content: &str) -> Vec<&'static str> {
     if has(&["system prompt", "developer message", "hidden instructions"]) {
         out.push("it talks about the agent's hidden instructions");
     }
-    // On one line: run/execute/invoke/call … tool … without … permission/approval (OpenClaw's rule).
+    // On one line: run/execute/invoke/call … tool … without … permission/approval.
     let acts_alone = lower.lines().any(|l| {
         let verb = ["run ", "execute ", "invoke ", "call "].iter().filter_map(|v| l.find(v)).min();
         let tool = verb.and_then(|v| l[v..].find("tool").map(|t| v + t));
@@ -998,7 +994,7 @@ pub(crate) fn search_tool(team: &Arc<Team>, id: &str) -> Arc<dyn Tool> {
     ))
 }
 
-/* ---------- the review prompts (adapted from Hermes Agent, MIT, Nous Research) ---------- */
+/* ---------- the review prompts ---------- */
 
 const MEMORY_ROUTING: &str = "Two places for what you learn:\n\
   • note_about_person: who the person is — their role, preferences, how they like things written, standing rules they stated.\n\

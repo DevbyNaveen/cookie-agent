@@ -93,7 +93,7 @@ fn secret_paths(home: &Path) -> Vec<PathBuf> {
     paths
 }
 
-/// Codex's deny-by-default policy (processes, sysctls and a few services a
+/// A standard deny-by-default policy (processes, sysctls and a few services a
 /// shell needs), unmodified — see THIRD_PARTY_NOTICES.md.
 const SEATBELT_BASE: &str = include_str!("seatbelt_base_policy.sbpl");
 

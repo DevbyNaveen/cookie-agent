@@ -21,8 +21,8 @@ async fn main() {
     for (o, v) in &by { println!("  {o}: {} e.g. {}", v.len(), v.iter().take(6).cloned().collect::<Vec<_>>().join(", ")); }
     println!("plans: {:?}", team.refresh_plans().await);
     println!("lead follows {} spaces", team.followed(&leads.id).len());
-    for n in ["rigacakestudio", "kaivon", "khpgym", "thinkingroot", "cookie", "devbynaveen-thinkingroot"] { if let Some(x) = spaces.get(n) { println!("  {n}: owner={:?} wakes={} why={}", x.owner, x.wakes, x.why); } }
-    let p = team.prime(&leads, "job-x", "Draft a short first reply to rigacakestudio about our pricing").await;
+    for n in ["studio", "gym", "cookie"] { if let Some(x) = spaces.get(n) { println!("  {n}: owner={:?} wakes={} why={}", x.owner, x.wakes, x.why); } }
+    let p = team.prime(&leads, "job-x", "Draft a short first reply to bakery about our pricing").await;
     println!("\nPRIME:\n{}\n", p.unwrap_or("(nothing)".into()));
     if std::env::var("SKIP_ERASE").is_ok() { let _ = std::fs::remove_dir_all(&dir); return; }
     // Erasure: a memory in a scratch agent space, then the space forgotten.

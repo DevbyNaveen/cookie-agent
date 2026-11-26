@@ -348,7 +348,7 @@ mod live {
             {"layout": "title", "title": "Cookie, Q4", "text": "A team of agents on your Mac"},
             {"layout": "bullets", "title": "What shipped", "bullets": ["Automatic skills", "Contractors", "The brain as the team's OS"], "notes": "Keep it short."},
             {"layout": "two_columns", "title": "Before / after", "left": ["One agent", "Manual skills"], "right": ["A team", "Skills that test themselves"]},
-            {"layout": "quote", "text": "Motion means work.", "title": "Grok Bot's lesson"},
+            {"layout": "quote", "text": "Motion means work.", "title": "A lesson"},
             {"layout": "closing", "title": "Thank you"}
         ]});
         let r = Slides.call(&ctx, "make", &json!({"deck": deck, "to": "deck/cookie.pptx"})).await.unwrap();
@@ -363,7 +363,5 @@ mod live {
         for f in ["deck/cookie.pptx", "deck/cookie.pdf", "deck/cookie.html", "deck/cookie-print.pdf"] {
             println!("  {f}: {} bytes", std::fs::metadata(dir.join(f)).map(|m| m.len()).unwrap_or(0));
         }
-        std::fs::create_dir_all("/private/tmp/claude-501/-Users-naveen-Desktop-thinkingroot/e5dc43a2-1f8a-49ad-8256-c4073a907f3b/scratchpad/deck").ok();
-        let _ = std::process::Command::new("cp").args(["-R", &dir.join("deck").to_string_lossy(), "/private/tmp/claude-501/-Users-naveen-Desktop-thinkingroot/e5dc43a2-1f8a-49ad-8256-c4073a907f3b/scratchpad/"]).status();
     }
 }

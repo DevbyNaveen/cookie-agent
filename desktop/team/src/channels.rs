@@ -10,7 +10,6 @@
 //! question.
 //!
 //! - Slack: a bot token; Cookie polls the channels you list (no public URL).
-//!   Ported from HelloRoot's Slack adapter.
 //! - Discord: a bot token; Cookie keeps the gateway connection itself.
 //! - iMessage: reads this Mac's Messages database (macOS asks for Full Disk
 //!   Access) and sends through Messages. Best with its own Apple ID on the Mac.

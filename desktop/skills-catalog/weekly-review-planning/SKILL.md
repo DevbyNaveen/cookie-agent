@@ -6,7 +6,7 @@ author: Ben Barclay (benbarclay), Cookie
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  cookie:
     tags: [Weekly-Review, Planning, Tasks, Calendar, Productivity]
     related_skills: [obsidian, google-workspace, email-inbox-triage]
 ---

@@ -5,9 +5,6 @@
 //! - `todo_list`: the agent's plan for a long job, shown live as a checklist.
 //! - Checkpoints: before a job that may change files, the agent's folder is
 //!   copied aside; the person can put it back the way it was ("Undo").
-//!
-//! Adapted from Hermes Agent's clarify and todo tools and its checkpoints
-//! (MIT, Nous Research), and pi's per-turn git checkpoint (MIT).
 
 use std::path::Path;
 use std::sync::{Arc, Weak};

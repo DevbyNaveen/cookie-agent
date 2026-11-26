@@ -10,8 +10,8 @@
 //! with an OpenAI key, Cookie uses OpenAI's transcription instead (and says
 //! so). Reading replies aloud happens in the window itself (the system voice).
 //!
-//! Telegram voice notes go through the same path. Adapted from Hermes Agent's
-//! transcription design (local faster-whisper first, cloud as fallback; MIT).
+//! Telegram voice notes go through the same path: local faster-whisper first,
+//! the cloud as a fallback.
 
 use std::path::PathBuf;
 use std::process::Stdio;

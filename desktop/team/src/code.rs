@@ -1,8 +1,7 @@
 //! Code that calls tools: the agent writes one Python script that calls its
 //! read-only tools as functions, loops and filters, and prints only what
 //! matters. Many steps become one turn, and the in-between results never
-//! enter the conversation. Adapted from Hermes Agent's programmatic tool
-//! calling (MIT).
+//! enter the conversation.
 //!
 //! The script runs in the same sandbox as `run_command` (its folder only, no
 //! network). It can't open a socket, so it asks for a tool by writing a

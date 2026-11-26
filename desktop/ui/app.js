@@ -1007,7 +1007,7 @@ function addStep(job, ev) {
 const clipText = (t, n) => (t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t);
 const FOLDS = ["search", "page", "memory", "file"];
 
-/** Steps folded the way a reader takes them in (Perplexity-style): "Searched 2 queries · read 3 sites". */
+/** Steps folded the way a reader takes them in : "Searched 2 queries · read 3 sites". */
 function foldSteps(steps) {
   const by = { search: [], page: [], memory: [], file: [] };
   const order = [];

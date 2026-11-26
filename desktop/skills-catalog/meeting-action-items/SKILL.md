@@ -6,7 +6,7 @@ author: Ben Barclay (benbarclay), Cookie
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  cookie:
     tags: [Meetings, Action-Items, Follow-Up, Productivity]
     related_skills: [teams-meeting-pipeline, google-workspace]
 ---

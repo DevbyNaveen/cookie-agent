@@ -19,7 +19,7 @@
 //! for, or asks, goes to its linked people by DM with a short code, the same
 //! as every channel.
 //!
-//! Safeguards (Hermes's lessons): one bot token is one agent, never shared
+//! Safeguards: one bot token is one agent, never shared
 //! with another agent or the team bot; an agent never answers a bot (two
 //! agents can't talk each other into a loop); and Slack can start at most
 //! [`JOBS_PER_HOUR`] jobs an hour per agent.

@@ -769,14 +769,14 @@ mod tests {
     async fn research_reads_the_page_its_own_search_found() {
         use crate::tool::{tool, Effect};
         let (a, p) = agent(vec![
-            Scripted::call("s1", "web_search", json!({"query": "grok bot"})),
-            Scripted::call_many(&[("r1", "read_url", json!({"url": "https://x.ai/news/grok-bot"})), ("r2", "read_url", json!({"url": "https://evil.example/?q=made-up"}))]),
+            Scripted::call("s1", "web_search", json!({"query": "acme bot"})),
+            Scripted::call_many(&[("r1", "read_url", json!({"url": "https://acme.example/news/acme-bot"})), ("r2", "read_url", json!({"url": "https://evil.example/?q=made-up"}))]),
             Scripted::text("done"),
         ]);
-        let search = tool("web_search", "Search", json!({"type": "object"}), Effect::Read, |_| async { Ok("1. Grok Bot https://x.ai/news/grok-bot".into()) });
+        let search = tool("web_search", "Search", json!({"type": "object"}), Effect::Read, |_| async { Ok("1. Acme Bot https://acme.example/news/acme-bot".into()) });
         let read = tool("read_url", "Read", json!({"type": "object"}), Effect::Read, |_| async { Ok("page text".into()) }).guard("url");
         let a = a.tool(search).tool(read).policy(Policy::default().found_by("web_search"));
-        assert_eq!(a.run("research Grok Bot").await.unwrap(), "done");
+        assert_eq!(a.run("research Acme Bot").await.unwrap(), "done");
         let results: Vec<(String, bool)> = p.seen()[2]
             .last()
             .unwrap()

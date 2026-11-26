@@ -188,8 +188,8 @@ mod tests {
         assert_eq!(words(&team, "message", &json!({"to": "@nobody"})).0, "Messaging nobody");
         assert_eq!(words(&team, "mystery_tool", &json!({})).1, "Used mystery tool", "never a bare 'did a step'");
         assert_eq!(words(&team, "read_artifact", &json!({})).1, "Read a helper's full report");
-        assert_eq!(helper_title(&json!({"title": "Grok and xAI"})), "Grok and xAI");
-        assert_eq!(brief("web_search", &json!({"query": "grok bot pricing"})), ("search", Some("grok bot pricing".into())));
+        assert_eq!(helper_title(&json!({"title": "Competitor pricing"})), "Competitor pricing");
+        assert_eq!(brief("web_search", &json!({"query": "acme bot pricing"})), ("search", Some("acme bot pricing".into())));
         assert_eq!(brief("read_url", &json!({"url": "https://www.TechCrunch.com/2026/x"})), ("page", Some("techcrunch.com".into())));
         assert_eq!(brief("message", &json!({"to": "@a"})), ("other", None));
         assert_eq!(helper_title(&json!({"task": "Research the current AI agent market in 2025-2026. I need pricing."})), "Research the current AI agent market in");

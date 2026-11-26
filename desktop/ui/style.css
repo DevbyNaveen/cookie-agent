@@ -455,7 +455,7 @@ dialog.sheet::backdrop { background: rgb(0 0 0 / .5); backdrop-filter: blur(2px)
 .rail-resize:hover::after, .resizing .rail-resize::after, .rail-resize:focus-visible::after { opacity: .55; }
 .resizing, .resizing * { cursor: col-resize !important; user-select: none; }
 body:not(.resizing) { transition: grid-template-columns .22s var(--ease); }
-/* Collapsed: faces only, like Grok. Nothing at the top but room for the traffic lights;
+/* Collapsed: faces only. Nothing at the top but room for the traffic lights;
    hire, apps and you sit at the bottom as plain icons. */
 .mini, .when-collapsed { display: none !important; }
 .rail-collapsed .when-collapsed { display: flex !important; }
@@ -1530,7 +1530,7 @@ footer.me { gap: 6px; }
 .use-acts { display: flex; align-items: center; gap: 8px; }
 @media (max-width: 700px) { .use-tiles { grid-template-columns: 1fr; } }
 
-/* The + menu, like Claude's: borderless, three rows */
+/* The + menu: borderless, three rows */
 .attach-menu { position: absolute; left: 0; bottom: calc(100% - 8px); z-index: 40; min-width: 300px; padding: 6px; border: 0; border-radius: 18px; display: flex; flex-direction: column; gap: 1px; animation: pop .16s var(--ease); }
 .attach-menu button { display: flex; align-items: center; gap: 13px; padding: 10px 12px; border-radius: 12px; font-size: 15px; color: var(--text); text-align: left; }
 .attach-menu button:hover, .attach-menu button:focus-visible { background: var(--raise-2); outline: none; }

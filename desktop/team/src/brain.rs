@@ -876,38 +876,38 @@ mod tests {
         assert!(!from_outside("mcp://agent/ead7/branch/x/01M"));
         assert_eq!(outside_label("/workspace/sources/synced/gmail/x.md"), "from gmail");
         assert_eq!(json_in("── brief ──\n{\"hits\": [1]}\n── Working now ──").unwrap()["hits"][0], 1);
-        assert!(is_agent_space("cookie-agent-x") && is_agent_space("main") && !is_agent_space("khpgym"));
+        assert!(is_agent_space("cookie-agent-x") && is_agent_space("main") && !is_agent_space("gym"));
     }
 
     #[test]
     fn a_write_wakes_its_owner_and_cookies_own_keeping_wakes_nobody() {
         let (team, dir) = team();
         let mut all = BTreeMap::new();
-        all.insert("khpgym".to_string(), Space { name: "khpgym".into(), owner: Some("leads".into()), wakes: true, by: "cookie".into(), ..Default::default() });
-        all.insert("kaivon".to_string(), Space { name: "kaivon".into(), owner: Some("cookie".into()), wakes: false, by: "cookie".into(), ..Default::default() });
+        all.insert("gym".to_string(), Space { name: "gym".into(), owner: Some("leads".into()), wakes: true, by: "cookie".into(), ..Default::default() });
+        all.insert("studio".to_string(), Space { name: "studio".into(), owner: Some("cookie".into()), wakes: false, by: "cookie".into(), ..Default::default() });
         team.save_spaces(&all).unwrap();
         let agents = vec![("cookie".to_string(), true), ("leads".to_string(), true), ("quiet".to_string(), false)];
-        assert_eq!(team.space_waker("khpgym", &agents).as_deref(), Some("leads"));
-        assert_eq!(team.space_waker("kaivon", &agents), None, "Cookie keeps it to read, not to be woken by");
+        assert_eq!(team.space_waker("gym", &agents).as_deref(), Some("leads"));
+        assert_eq!(team.space_waker("studio", &agents), None, "Cookie keeps it to read, not to be woken by");
         assert_eq!(team.space_waker("main", &agents).as_deref(), Some("cookie"));
         assert_eq!(team.space_waker(&space_of("leads"), &agents).as_deref(), Some("leads"));
         assert_eq!(team.space_waker(&space_of("quiet"), &agents), None, "no memory grant, no wake");
         assert_eq!(team.space_waker("unknown", &agents), None);
         // It reads what it owns, plus what it was given; the person's choice sticks.
-        assert_eq!(team.followed("leads"), vec!["khpgym".to_string()]);
-        team.set_follow("leads", "rigacakestudio", true, "you", "asked").unwrap();
-        assert_eq!(team.followed("leads"), vec!["khpgym".to_string(), "rigacakestudio".to_string()]);
+        assert_eq!(team.followed("leads"), vec!["gym".to_string()]);
+        team.set_follow("leads", "bakery", true, "you", "asked").unwrap();
+        assert_eq!(team.followed("leads"), vec!["gym".to_string(), "bakery".to_string()]);
         assert!(team.set_follow("leads", "main", true, "you", "").is_err());
-        let s = team.set_space_owner("kaivon", Some("leads".into()), None).unwrap();
+        let s = team.set_space_owner("studio", Some("leads".into()), None).unwrap();
         assert!(s.wakes && s.by == "you");
         // Succession: the new agent follows the old space and takes its spaces.
         team.succeed("leads", "leads2", "Lead Desk");
         assert!(team.followed("leads2").contains(&space_of("leads")));
-        assert_eq!(team.spaces()["khpgym"].owner.as_deref(), Some("leads2"));
+        assert_eq!(team.spaces()["gym"].owner.as_deref(), Some("leads2"));
         // An agent that goes gives its spaces back to Cookie, quiet.
         team.release_spaces("leads2");
-        assert_eq!(team.spaces()["khpgym"].owner.as_deref(), Some("cookie"));
-        assert!(!team.spaces()["khpgym"].wakes);
+        assert_eq!(team.spaces()["gym"].owner.as_deref(), Some("cookie"));
+        assert!(!team.spaces()["gym"].wakes);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

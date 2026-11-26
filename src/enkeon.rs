@@ -800,14 +800,14 @@ mod tests {
                 async move { Ok("{}".to_string()) }
             },
         ));
-        let scoped = Scoped::new(recall, Some("cookie-agent-leads".into()), vec!["rigacakestudio".into(), "khpgym".into()], None);
+        let scoped = Scoped::new(recall, Some("cookie-agent-leads".into()), vec!["bakery".into(), "gym".into()], None);
         let enum_ = scoped.spec().schema["properties"]["space"]["enum"].clone();
-        assert_eq!(enum_, json!(["rigacakestudio", "khpgym", null]), "the followed spaces, and nothing else, by name");
-        scoped.call(json!({"query": "pricing", "space": "khpgym"})).await.unwrap();
-        scoped.call(json!({"query": "pricing", "space": "kaivon", "branch": "kaivon"})).await.unwrap();
+        assert_eq!(enum_, json!(["bakery", "gym", null]), "the followed spaces, and nothing else, by name");
+        scoped.call(json!({"query": "pricing", "space": "gym"})).await.unwrap();
+        scoped.call(json!({"query": "pricing", "space": "studio", "branch": "studio"})).await.unwrap();
         scoped.call(json!({"query": "pricing"})).await.unwrap();
         let sent = seen.lock().unwrap().clone();
-        assert_eq!(sent[0]["branch"], "khpgym");
+        assert_eq!(sent[0]["branch"], "gym");
         assert_eq!(sent[1]["branch"], "cookie-agent-leads", "a space it doesn't follow reads its own instead");
         assert_eq!(sent[2]["branch"], "cookie-agent-leads");
         assert!(sent.iter().all(|a| a.get("space").is_none()));

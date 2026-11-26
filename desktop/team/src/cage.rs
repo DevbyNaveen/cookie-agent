@@ -2,7 +2,7 @@
 //!
 //! Every command an agent runs (`run_command`, and the scripts of `run_code`)
 //! runs inside its cage. On a Mac the cage is a Seatbelt profile written for
-//! that one agent, deny-by-default (Codex's base policy, unmodified):
+//! that one agent, deny-by-default (a standard base policy, unmodified; see THIRD_PARTY_NOTICES.md):
 //!
 //! - **Reads** the system (`/usr`, `/bin`, `/System`, `/Library`, `/opt`, …)
 //!   and its own folder. Not your home folder, not Cookie's data, not another

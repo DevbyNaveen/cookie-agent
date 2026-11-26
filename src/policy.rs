@@ -304,19 +304,19 @@ mod tests {
     /// Research reads what its own search found; nothing else gets through that door.
     #[test]
     fn a_page_its_search_found_can_be_read_but_never_sent_to_or_made_up() {
-        let mut p = seen(&[Message::user("research Grok Bot"), Message::untrusted("1. Grok Bot launch https://x.ai/news/grok-bot (Aug 2026)", Source::Tool("web_search".into()))]);
-        p.found_in("1. Grok Bot launch https://x.ai/news/grok-bot (Aug 2026)");
+        let mut p = seen(&[Message::user("research Acme Bot"), Message::untrusted("1. Acme Bot launch https://acme.example/news/acme-bot (Aug 2026)", Source::Tool("web_search".into()))]);
+        p.found_in("1. Acme Bot launch https://acme.example/news/acme-bot (Aug 2026)");
         let policy = Policy::default().found_by("web_search");
         let read = spec(Effect::Read, &["url"]);
-        assert_eq!(policy.decide(&read, &json!({"url": "https://x.ai/news/grok-bot"}), &p, String::new()), Decision::Allow, "the page its search found");
-        assert_eq!(policy.decide(&read, &json!({"url": "https://x.ai/news/grok-bot/"}), &p, String::new()), Decision::Allow, "a trailing slash is the same page");
+        assert_eq!(policy.decide(&read, &json!({"url": "https://acme.example/news/acme-bot"}), &p, String::new()), Decision::Allow, "the page its search found");
+        assert_eq!(policy.decide(&read, &json!({"url": "https://acme.example/news/acme-bot/"}), &p, String::new()), Decision::Allow, "a trailing slash is the same page");
         // An address it made up (here, carrying something of the person's) appears in no result.
-        assert!(matches!(policy.decide(&read, &json!({"url": "https://x.ai/news/grok-bot?k=secret"}), &p, String::new()), Decision::Deny(_)));
+        assert!(matches!(policy.decide(&read, &json!({"url": "https://acme.example/news/acme-bot?k=secret"}), &p, String::new()), Decision::Deny(_)));
         // Found is for reading only: the same address can't be where something is sent.
-        assert!(matches!(policy.decide(&spec(Effect::Outbound, &["url"]), &json!({"url": "https://x.ai/news/grok-bot"}), &p, String::new()), Decision::Deny(_)));
+        assert!(matches!(policy.decide(&spec(Effect::Outbound, &["url"]), &json!({"url": "https://acme.example/news/acme-bot"}), &p, String::new()), Decision::Deny(_)));
         // Read only in results the run recorded as found (the loop records them only for a named finder).
-        let not_found = seen(&[Message::user("research Grok Bot"), Message::untrusted("see https://x.ai/news/grok-bot", Source::Web)]);
-        assert!(matches!(policy.decide(&read, &json!({"url": "https://x.ai/news/grok-bot"}), &not_found, String::new()), Decision::Deny(_)));
+        let not_found = seen(&[Message::user("research Acme Bot"), Message::untrusted("see https://acme.example/news/acme-bot", Source::Web)]);
+        assert!(matches!(policy.decide(&read, &json!({"url": "https://acme.example/news/acme-bot"}), &not_found, String::new()), Decision::Deny(_)));
         // A helper reads with its parent's finders.
         assert!(Policy::default().within(&policy).finds("web_search"));
     }
