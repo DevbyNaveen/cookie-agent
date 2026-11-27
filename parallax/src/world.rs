@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::util;
 
@@ -262,6 +262,52 @@ impl Worlds {
         Ok(w)
     }
 
+    /// Bring the work of `forks` back into `base`, file by file. `before` is
+    /// how `base` was when they were forked from it (`digests`). A file only
+    /// one fork changed is taken from it; a file two forks changed differently,
+    /// or that changed in `base` meanwhile, is a conflict: left as `base` has
+    /// it and named, never guessed. `base` is checkpointed first, so the whole
+    /// merge can be rewound.
+    pub fn merge(&self, base: &str, before: &BTreeMap<String, String>, forks: &[String]) -> Result<Value, String> {
+        let base_files = self.files(base)?;
+        let now_base = digests(&base_files);
+        // path → (fork, its digest after, or None when it removed the file)
+        let mut wants: BTreeMap<String, Vec<(String, Option<String>)>> = BTreeMap::new();
+        for f in forks {
+            let after = digests(&self.files(f)?);
+            for (path, how) in changed(before, &after) {
+                wants.entry(path.clone()).or_default().push((f.clone(), if how == "removed" { None } else { after.get(&path).cloned() }));
+            }
+        }
+        let checkpoint = self.checkpoint(base, "Before merging the workers' copies")?;
+        let (mut applied, mut conflicts) = (Vec::new(), Vec::new());
+        for (path, by) in &wants {
+            let distinct: std::collections::BTreeSet<&Option<String>> = by.iter().map(|(_, d)| d).collect();
+            let moved_in_base = now_base.get(path) != before.get(path);
+            if distinct.len() > 1 || moved_in_base {
+                conflicts.push(json!({"path": path, "forks": by.iter().map(|(f, _)| f).collect::<Vec<_>>(), "why": if moved_in_base { "it changed in the original too" } else { "copies changed it differently" }}));
+                continue;
+            }
+            let (fork, digest) = &by[0];
+            let target = base_files.join(path);
+            match digest {
+                Some(_) => {
+                    if let Some(dir) = target.parent() {
+                        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                    }
+                    std::fs::copy(self.files(fork)?.join(path), &target).map_err(|e| format!("{path}: {e}"))?;
+                }
+                None => {
+                    let _ = std::fs::remove_file(&target);
+                }
+            }
+            applied.push(json!({"path": path, "from": fork, "how": if digest.is_some() { "written" } else { "removed" }}));
+        }
+        let after = digests(&base_files);
+        self.log(base, &Event { at: util::now(), kind: "merge".into(), checkpoint: Some(checkpoint), what: format!("Merged {} copies: {} files, {} conflicts", forks.len(), applied.len(), conflicts.len()), files: changed(&now_base, &after), ..Event::default() })?;
+        Ok(json!({"applied": applied, "conflicts": conflicts, "undo_checkpoint": checkpoint}))
+    }
+
     /// Keep the files as they are now. Returns the checkpoint's number.
     pub fn checkpoint(&self, id: &str, what: &str) -> Result<u64, String> {
         let mut w = self.get(id)?;
@@ -437,6 +483,34 @@ pub fn diff_dirs(a: &Path, b: &Path) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workers_copies_merge_back_and_a_clash_is_named_not_guessed() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = Worlds::new(dir.path());
+        let base = ws.create("base", None, "a").unwrap().id;
+        let files = ws.files(&base).unwrap();
+        std::fs::write(files.join("shared.md"), "v0").unwrap();
+        std::fs::write(files.join("old.md"), "bye").unwrap();
+        let before = digests(&files);
+        let (one, two) = (ws.fork(&base, None).unwrap().id, ws.fork(&base, None).unwrap().id);
+        std::fs::write(ws.files(&one).unwrap().join("a.md"), "from one").unwrap();
+        std::fs::create_dir_all(ws.files(&two).unwrap().join("sub")).unwrap();
+        std::fs::write(ws.files(&two).unwrap().join("sub/b.md"), "from two").unwrap();
+        std::fs::remove_file(ws.files(&two).unwrap().join("old.md")).unwrap();
+        std::fs::write(ws.files(&one).unwrap().join("shared.md"), "one's").unwrap();
+        std::fs::write(ws.files(&two).unwrap().join("shared.md"), "two's").unwrap();
+        let r = ws.merge(&base, &before, &[one, two]).unwrap();
+        assert_eq!(std::fs::read_to_string(files.join("a.md")).unwrap(), "from one");
+        assert_eq!(std::fs::read_to_string(files.join("sub/b.md")).unwrap(), "from two");
+        assert!(!files.join("old.md").exists(), "a removal lands too");
+        assert_eq!(std::fs::read_to_string(files.join("shared.md")).unwrap(), "v0", "a clash is left as it was");
+        assert_eq!(r["conflicts"].as_array().unwrap().len(), 1);
+        assert_eq!(r["conflicts"][0]["path"], "shared.md");
+        let n = r["undo_checkpoint"].as_u64().unwrap();
+        ws.rewind(&base, n).unwrap();
+        assert!(files.join("old.md").exists() && !files.join("a.md").exists(), "the whole merge rewinds");
+    }
 
     #[test]
     fn fork_checkpoint_rewind_and_keep() {

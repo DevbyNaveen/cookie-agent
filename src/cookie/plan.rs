@@ -6,7 +6,7 @@
 
 use serde_json::{json, Value};
 
-pub const MAX_PARTS: usize = 5;
+pub const MAX_PARTS: usize = 12;
 
 /// What Cookie is told about splitting a job.
 pub const PLANNING: &str = "- If the job has clearly separate parts that each need their own research (several companies, \
@@ -176,10 +176,10 @@ mod tests {
     }
 
     #[test]
-    fn a_plan_is_two_to_five_whole_parts_with_a_join() {
+    fn a_plan_is_two_to_max_parts_whole_parts_with_a_join() {
         assert_eq!(check(&plan()).unwrap().parts.len(), 2);
         assert!(check(&json!({"parts": [{"title": "A", "task": "only one part here"}], "join": "x"})).is_err());
-        let six: Vec<Value> = (0..6).map(|i| json!({"title": format!("P{i}"), "task": "a task long enough"})).collect();
+        let six: Vec<Value> = (0..=MAX_PARTS).map(|i| json!({"title": format!("P{i}"), "task": "a task long enough"})).collect();
         assert!(check(&json!({"parts": six, "join": "x"})).is_err());
         assert!(check(&json!({"parts": [{"title": "A", "task": "short"}, {"title": "B", "task": "long enough task"}], "join": "x"})).is_err());
         assert!(check(&json!({"parts": plan()["parts"], "join": ""})).is_err());

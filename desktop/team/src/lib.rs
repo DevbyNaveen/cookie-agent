@@ -28,6 +28,9 @@ pub mod attach;
 pub mod bench;
 pub mod boards;
 pub mod browser;
+pub mod browser_fetch;
+pub mod browser_runs;
+pub mod power;
 pub mod challenge;
 pub mod channels;
 pub mod chatfiles;
@@ -38,6 +41,9 @@ pub mod code;
 pub mod computer;
 pub mod control;
 pub mod hands;
+pub mod hand;
+pub mod jobqueue;
+pub mod remote;
 pub mod evals;
 pub mod events;
 pub mod evolve;
@@ -95,6 +101,15 @@ pub mod voice;
 pub mod wake;
 pub mod webhooks;
 pub mod workbench;
+pub mod workers;
+pub mod forge;
+pub mod goals;
+pub mod watchers;
+pub mod mandates;
+pub mod morning;
+pub mod trials;
+pub mod services;
+pub mod specialists;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -265,6 +280,22 @@ impl Team {
         // Enkeon's key, if this computer was paired (before anything reads memory).
         self.load_pairing();
         routines::spawn_scheduler(self.clone());
+        // Goals that wake themselves, and promises that come due (`goals`).
+        goals::spawn(self.clone());
+        // Watchers agents wrote: programs that wait for the world, no model until they hit (`watchers`).
+        watchers::spawn(self.clone());
+        // Changes agents kept to themselves, read against their record; clear drops put back (`trials`).
+        trials::spawn(self.clone());
+        // Cookie brings the rest of the team's news as one digest, every half hour at most.
+        let me = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(approvals::DIGEST_EVERY);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                me.flush_digest();
+            }
+        });
         telegram::spawn(self.clone());
         server::spawn_if_enabled(self.clone());
         self.spawn_net();
@@ -275,6 +306,9 @@ impl Team {
         // Agents wake when their memory changes (with Enkeon connected).
         wake::spawn(self.clone());
         // Agents' browsers close when idle.
+        browser::init(&self.paths.root);
+        // With “Keep awake” on, this Mac stays up while it is plugged in.
+        power::spawn(self.clone());
         browser::spawn_reaper();
         // With this Mac paired: the cloud runs its agents while it's off, and one store.
         cloud::spawn(self.clone());
@@ -344,7 +378,7 @@ impl Team {
     /// Sidebar rows, most recent first.
     pub async fn rows(&self) -> Vec<Row> {
         let agents = self.agents().await;
-        let busy: Vec<String> = self.runs.lock().unwrap().keys().cloned().collect();
+        let busy: Vec<String> = self.runs.lock().unwrap().keys().map(|k| crate::runtime::side_of(k).unwrap_or(k).to_string()).collect();
         let waiting = self.pending_approvals();
         let read: std::collections::BTreeMap<String, u64> = util::read_json(&self.paths.root.join("read.json"));
         let side = self.sidebar();
@@ -354,7 +388,7 @@ impl Team {
             .filter(|a| a.shadow_of.is_none() && !crate::bench::is_probe(&a.id))
             .map(|agent| {
                 let jobs: Vec<Job> = util::read_jsonl(&self.paths.jobs(&agent.id));
-                let visible = |j: &&Job| matches!(j.trigger, Trigger::Chat | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Peer { .. } | Trigger::Handoff { .. } | Trigger::Inbox | Trigger::Memory { .. });
+                let visible = |j: &&Job| matches!(j.trigger, Trigger::Chat | Trigger::Welcome | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Peer { .. } | Trigger::Handoff { .. } | Trigger::Inbox | Trigger::Memory { .. } | Trigger::Goal { .. } | Trigger::Promise { .. } | Trigger::Watch { .. });
                 let last_job = jobs.iter().rev().find(visible);
                 let mut last = last_job.map(|j| if j.answer.is_empty() { j.error.clone().unwrap_or_default() } else { j.answer.clone() });
                 let mut last_at = last_job.map(|j| j.finished_at.unwrap_or(j.started_at));

@@ -101,6 +101,43 @@ mod note_tests {
     }
 }
 
+/// Jobs one agent may run beside its main one.
+pub const SIDE_JOBS: usize = 4;
+
+/// Work an agent does on its own, which may run beside its main job.
+pub(crate) fn runs_beside(trigger: &Trigger) -> bool {
+    matches!(trigger, Trigger::Goal { .. } | Trigger::Promise { .. } | Trigger::Watch { .. } | Trigger::Handoff { .. } | Trigger::Inbox | Trigger::Memory { .. })
+}
+
+/// The run key of a job beside an agent's main one.
+fn side_key(agent: &str, job: &str) -> String {
+    format!("{agent}#{job}")
+}
+
+/// The agent a side job's run key belongs to.
+pub(crate) fn side_of(key: &str) -> Option<&str> {
+    key.split_once('#').map(|(a, _)| a)
+}
+
+/// Tools whose changes stay inside a rewindable world of the agent's own (`Policy::contained`).
+const CONTAINED: [&str; 19] = [
+    "workers", "race",
+    "parallax_open", "parallax_fork", "parallax_do", "parallax_undo", "parallax_branch", "parallax_script", "parallax_race",
+    "parallax_rewind", "parallax_discard", "parallax_vault_run", "parallax_vault_launch", "parallax_vault_act", "parallax_vault_sleep",
+    "parallax_vault_discard", "parallax_vaults_sleep_all", "workspace_change", "workspace_undo",
+];
+
+/// A message that is only a greeting, a thanks or an acknowledgement: no task in it.
+pub(crate) fn small_talk(text: &str) -> bool {
+    const WORDS: [&str; 34] = [
+        "hi", "hey", "hello", "yo", "hiya", "heya", "sup", "morning", "evening", "afternoon", "good", "night", "gm", "gn", "thanks", "thank",
+        "you", "thx", "ty", "cheers", "ok", "okay", "okey", "k", "cool", "nice", "great", "perfect", "awesome", "there", "cookie", "again", "much", "so",
+    ];
+    let words: Vec<String> = text.split_whitespace().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()).filter(|w| !w.is_empty()).collect();
+    let only_emoji = !text.trim().is_empty() && text.chars().all(|c| !c.is_alphanumeric());
+    only_emoji || (!words.is_empty() && words.len() <= 5 && words.iter().all(|w| WORDS.contains(&w.as_str())))
+}
+
 /// The jobs that learn: the agent's own work, not tests, shadows or reviews.
 fn learns(trigger: &Trigger) -> bool {
     !matches!(trigger, Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Review | Trigger::Prep { .. } | Trigger::Rehearse | Trigger::Workflow { .. })
@@ -139,6 +176,7 @@ pub(crate) fn instructions(team_names: &[(String, String)], rec: &AgentRecord, t
         }
     }
     match trigger {
+        Trigger::Welcome => s.push_str(crate::front::WELCOME_BRIEF),
         Trigger::Routine { .. } => s.push_str("\nThis is one of your routines, running on its own: do it, and finish with what the person should know (or 'Nothing new.')."),
         Trigger::Handoff { from, .. } => s.push_str(&format!("\nAnother agent ({from}) asked you this. Answer it directly; it will pass your answer on.")),
         Trigger::Mcp { client } => s.push_str(&format!(
@@ -244,8 +282,30 @@ impl Team {
             // A mail or a page can't plant a memory: after reading one, what is kept must quote the
             // person, or the person decides it, marked "not in your words" (earned trust never does).
             .grounded("remember", "text")
+            // The team's shared page about the person is read by every agent: the same rule, so one
+            // poisoned page can't teach the whole team something false about them.
+            .grounded("note_about_person", "line")
             // A workflow is kept only with the person's yes: its prompts then carry their authority.
-            .always_ask(crate::workflows::SAVE_TOOL);
+            .always_ask(crate::workflows::SAVE_TOOL)
+            // A tool it made for itself is kept only once the person has seen its code (`forge`).
+            .always_ask(crate::forge::SAVE_TOOL)
+            // A goal is plan-level consent: the person agrees to its plan and budget once.
+            .always_ask(crate::goals::SET_TOOL)
+            // A mandate is the person's to give, its whole scope in front of them (`mandates`).
+            .always_ask(crate::mandates::PROPOSE_TOOL)
+            // Money, machines and calls: the person's yes every time, whatever trust was earned (`services`).
+            .always_ask(crate::services::ACT_TOOL)
+            .always_ask(crate::services::CALL_TOOL)
+            // A browser run kept for replay without the model is the person's to keep (`browser_runs`).
+            .always_ask(crate::browser_runs::SAVE_TOOL);
+        // Inside its own worlds and machines an agent is free: every change there can be undone or
+        // rewound and reaches nobody, and whatever would leave stops at the world's own wall
+        // (`parallax_do` waits there for the person). Not contained: `parallax_keep` (it writes back
+        // into the person's own folder) and `parallax_vault_open` (a new machine may be given the
+        // internet, a way out, so it is the one step put to the person after reading outside content).
+        for t in CONTAINED {
+            policy = policy.contained(t);
+        }
         for a in self.agents().await.iter().filter(|a| a.id != rec.id && a.shadow_of.is_none() && !crate::bench::is_probe(&a.id)) {
             policy = policy.allow(&format!("@{}", self.slug_of(a)));
         }
@@ -308,7 +368,11 @@ impl Team {
         let contractors_may = crate::contractors::allowed(rec, trigger, probation) && mode == Mode::Ask;
         let for_contractors = if contractors_may { all_tools.clone() } else { Vec::new() };
         built.tools = all_tools.iter().map(|t| t.spec().name.clone()).collect();
-        if learns(trigger) {
+        // A greeting or a thank-you carries no task: no lessons, record, rank or recall ride with it,
+        // so the model answers it as what it is, without wading through notes for work it isn't doing.
+        if learns(trigger) && small_talk(text) {
+            built.note = None;
+        } else if learns(trigger) {
             let mut notes: Vec<String> = Vec::new();
             let (picked, block) = self.pick_lessons(&rec.id, text);
             built.lessons = picked;
@@ -360,7 +424,13 @@ impl Team {
             .policy(policy)
             .shared_approver(broker);
         let price = settings.price_of(&rec.model).map(|p| Price { input: p.input, output: p.output, cache_read: p.cache_read, cache_write: p.cache_write });
-        let budget = Budget { max_steps: rec.limits.steps.max(1), max_tokens: rec.limits.tokens.max(1_000), max_dollars: price.and(rec.limits.job_dollars) };
+        let limits = rec.limits.effective();
+        let budget = Budget {
+            max_steps: limits.steps.max(1),
+            max_tokens: limits.tokens.max(1_000),
+            max_dollars: price.and(limits.job_dollars),
+            max_seconds: limits.job_minutes.map(|m| m.max(1) * 60),
+        };
         agent = agent.budget(budget);
         if let Some(e) = tuning.effort() {
             agent = agent.reasoning(e);
@@ -375,6 +445,22 @@ impl Team {
             .collect();
         if !backups.is_empty() {
             agent = agent.fallback_models(&backups).map_err(|e| e.to_string())?;
+        }
+        // The person's mail and apps through Enkeon: always with a quarantined twin, and for work
+        // begun by outside content only the twin (`tools::started_by_outside`).
+        agent = agent.quarantine_reads(&["connector_actions"], crate::tools::started_by_outside(self, trigger));
+        // Routine steps (reading after reading) on a cheaper model; it plans, changes and answers on its own.
+        let routine = match settings.routine_models.get(&rec.id).map(String::as_str) {
+            Some("off") => None,
+            Some(m) => Some(m.to_string()),
+            None => crate::failover::cheaper(&rec.model),
+        };
+        if let Some(m) = routine.filter(|m| *m != rec.model && Agent::new(m).is_ok()) {
+            agent = agent.routine_model(&m).map_err(|e| e.to_string())?;
+        }
+        // Where its steps keep failing, a stronger model takes the rest of the job (`failover::stronger`).
+        if let Some(up) = crate::failover::stronger(&rec.model).filter(|m| Agent::new(m).is_ok()) {
+            agent = agent.escalate_to(&up).map_err(|e| e.to_string())?;
         }
         if mode == Mode::Ask && !probation {
             if let Ok(trust) = cookie_harness::trust::EarnedTrust::open(self.paths.trust(&rec.id), 5) {
@@ -470,22 +556,35 @@ impl Team {
                 return Err(format!("{} reached its monthly limit of ${cap:.2}. Raise it in its profile to continue.", rec.name));
             }
         }
+        // The person's next words correcting the last answer are the clearest verdict on it.
+        if matches!(trigger, Trigger::Chat | Trigger::Telegram { .. } | Trigger::Channel { .. }) && crate::outcome::is_correction(&text) {
+            self.mark_corrected(&rec.id, &text);
+        }
         let job_id = util::new_id("job");
         let control = RunControl::default();
         {
             let mut runs = self.runs.lock().unwrap();
             if runs.contains_key(&rec.id) {
-                return Err(format!("{} is already working. Add to its job, or stop it first.", rec.name));
+                // Work the agent does on its own (a goal's sitting, a promise, a watcher's hit, a
+                // teammate's handoff) runs beside its main job, up to `SIDE_JOBS` at once.
+                let side_now = runs.keys().filter(|k| side_of(k) == Some(rec.id.as_str())).count();
+                if !runs_beside(&trigger) || side_now >= SIDE_JOBS {
+                    return Err(format!("{} is already working. Add to its job, or stop it first.", rec.name));
+                }
+                runs.insert(side_key(&rec.id, &job_id), Run { job: job_id.clone(), control: control.clone() });
+            } else {
+                runs.insert(rec.id.clone(), Run { job: job_id.clone(), control: control.clone() });
             }
-            runs.insert(rec.id.clone(), Run { job: job_id.clone(), control: control.clone() });
         }
+        let side = self.runs.lock().unwrap().contains_key(&side_key(&rec.id, &job_id));
         // Before anything changes: a copy of its folder to undo to, and a fresh plan.
         let may_write = rec.grants.files && !matches!(trigger, Trigger::Test { .. } | Trigger::Shadow { .. } | Trigger::Room { .. } | Trigger::Review | Trigger::Rehearse)
             && !matches!(&trigger, Trigger::Contact { level, .. } if level == "talk");
-        if may_write {
+        // The folder's undo point and the plan on screen belong to the main job.
+        if may_write && !side {
             self.checkpoint(&rec.id, &job_id);
         }
-        if self.todo_lists.lock().unwrap().remove(&rec.id).is_some() {
+        if !side && self.todo_lists.lock().unwrap().remove(&rec.id).is_some() {
             self.emit(TeamEvent::Todos { agent: rec.id.clone(), items: Vec::new() });
         }
         let mode = match trigger {
@@ -510,7 +609,8 @@ impl Team {
     async fn run_job(self: Arc<Self>, rec: AgentRecord, job_id: String, text: String, attachments: Vec<Attachment>, trigger: Trigger, mode: Mode, control: RunControl) -> Job {
         let started_at = util::now();
         // The same job picked up again after Cookie closed: its receipts, its place, its words.
-        let resume = self.resumes.lock().unwrap().remove(&rec.id);
+        let side = self.runs.lock().unwrap().contains_key(&side_key(&rec.id, &job_id));
+        let resume = if side { None } else { self.resumes.lock().unwrap().remove(&rec.id) };
         self.emit(TeamEvent::JobStarted { job: job_id.clone(), agent: rec.id.clone(), trigger: trigger.clone(), input: util::clip(&text, 2000), resumed: resume.is_some() });
         let log = Arc::new(Mutex::new(Vec::new()));
         let tools_used = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -523,9 +623,14 @@ impl Team {
         let switched: Arc<Mutex<Vec<String>>> = Default::default();
         let receipts: Arc<Mutex<crate::receipts::Collector>> = Default::default();
         let mut added: Vec<Message> = Vec::new();
-        self.mark_running(&rec.id, &job_id, &text, &trigger, started_at, built.ledger_scope.as_deref());
+        // A job beside the main one isn't marked for pick-up after a restart: what woke it (its
+        // goal, its watcher, the queue) wakes it again.
+        if !side {
+            self.mark_running(&rec.id, &job_id, &text, &trigger, started_at, built.ledger_scope.as_deref());
+        }
         // Tests and shadows don't touch the agent's real conversation.
-        let in_session = in_session(&trigger);
+        // Beside the main job it works in a conversation of its own, so the two never interleave.
+        let in_session = in_session(&trigger) && !side;
 
         let result: Result<String, String> = async {
             let agent = self.build_agent(&rec, &trigger, mode, &job_id, &text, log.clone(), &mut built).await?;
@@ -620,7 +725,9 @@ impl Team {
         .await;
         let calls = crate::outcome::calls_in(&added);
 
-        self.runs.lock().unwrap().remove(&rec.id);
+        self.runs.lock().unwrap().remove(&if side { side_key(&rec.id, &job_id) } else { rec.id.clone() });
+        // Work that waited for this one starts now (`jobqueue`).
+        self.start_next_queued(&rec.id);
         self.save_trace_head(&rec.id);
         let (status, answer, error) = match result {
             Ok(a) => (JobStatus::Done, a, None),
@@ -633,7 +740,7 @@ impl Team {
         let promises = if status == JobStatus::Done && mode == Mode::Ask {
             cookie_harness::cookie::promise::promises_in(&answer, util::now() as i64)
                 .into_iter()
-                .map(|p| PromiseRecord { text: p.text, due: p.due, state: "open".into() })
+                .map(|p| PromiseRecord { text: p.text, due: p.due, state: "open".into(), fired: false })
                 .collect()
         } else {
             Vec::new()
@@ -681,9 +788,14 @@ impl Team {
             resumed_from: resume.map(|r| r.of_job),
             resumed_as: None,
             receipts: receipts.lock().unwrap().take(),
+            // A goal finished in this job with its evidence shown (`goals`): verified from outside the agent's own say.
+            verified_by: crate::goals::take_verified(&job_id),
+            corrected_by: None,
         };
         let _ = util::append_jsonl(&self.paths.jobs(&rec.id), &job);
-        self.clear_running(&rec.id);
+        if !side {
+            self.clear_running(&rec.id);
+        }
         // What the job teaches: a lesson, a routine's recipe, its rank, a routine to offer.
         if learns(&job.trigger) {
             self.learn_from(&rec.id, &job);
@@ -698,12 +810,20 @@ impl Team {
 
     /// What follows a job: news for the person, and a copy for any shadow fork.
     async fn after_job(self: &Arc<Self>, rec: &AgentRecord, job: &Job) {
+        if let Trigger::Goal { goal } = &job.trigger {
+            self.after_goal_sitting(goal, job);
+        }
         self.maybe_review(rec, job);
         // How the skills it loaded did (`autoskills`), and the contractors it brought in (`contractors`).
         self.record_outcome(rec, job);
         self.settle_contracts(rec, job);
         // The answer read against what stands, and the person's decisions written as evidence (`brain`).
         self.after_job_brain(rec, job);
+        if let Trigger::Routine { routine } = &job.trigger {
+            if matches!(job.status, JobStatus::Done | JobStatus::Failed) {
+                self.routine_ended(routine, job.status == JobStatus::Failed).await;
+            }
+        }
         match (&job.trigger, job.status) {
             (Trigger::Routine { .. } | Trigger::Peer { .. }, JobStatus::Done) => {
                 let quiet = job.answer.trim().trim_end_matches('.').eq_ignore_ascii_case("nothing new");
@@ -733,7 +853,12 @@ impl Team {
 
     /// Stop an agent's job now. False when nothing was running.
     pub fn stop(&self, agent: &str) -> bool {
-        self.runs.lock().unwrap().get(agent).map(|r| r.control.cancel.cancel()).is_some()
+        let runs = self.runs.lock().unwrap();
+        let mine: Vec<&Run> = runs.iter().filter(|(k, _)| k.as_str() == agent || side_of(k) == Some(agent)).map(|(_, r)| r).collect();
+        for r in &mine {
+            r.control.cancel.cancel();
+        }
+        !mine.is_empty()
     }
 
     /// Stop every agent's job now (the Stop key). How many were running.
@@ -757,7 +882,7 @@ impl Team {
 
     /// The job each busy agent is on.
     pub fn busy(&self) -> Vec<(String, String)> {
-        self.runs.lock().unwrap().iter().map(|(a, r)| (a.clone(), r.job.clone())).collect()
+        self.runs.lock().unwrap().iter().map(|(k, r)| (side_of(k).unwrap_or(k).to_string(), r.job.clone())).collect()
     }
 
     /// The agent's conversation, as the chat shows it.
@@ -941,6 +1066,8 @@ impl Team {
                 out.push(Line { from: "interrupted", text: "Cookie closed while this was running, so it stopped partway. What it finished is above.".into(), ..Line::default() });
             }
         }
+        // Cookie's first words answer no message of the person's: the note that started them is not shown as theirs.
+        out.retain(|l| !(l.from == "you" && l.text.trim() == crate::front::WELCOME_INPUT));
         Ok(out)
     }
 
@@ -973,6 +1100,22 @@ impl Team {
         }
         Ok(())
     }
+
+    /// The agent's last answer to the person, within the hour, is marked corrected by `words`;
+    /// the lessons it carried lose the win they had, as on a "not good".
+    pub(crate) fn mark_corrected(&self, agent: &str, words: &str) {
+        let now = util::now();
+        let last = util::read_jsonl::<Job>(&self.paths.jobs(agent))
+            .into_iter()
+            .filter(|j| matches!(j.trigger, Trigger::Chat | Trigger::Telegram { .. } | Trigger::Channel { .. }) && j.status == JobStatus::Done)
+            .max_by_key(|j| j.finished_at.unwrap_or(0));
+        let Some(j) = last.filter(|j| j.corrected_by.is_none() && now.saturating_sub(j.finished_at.unwrap_or(0)) <= 3600) else { return };
+        let was_win = crate::outcome::end_state(&j).learned() == Some(true);
+        if self.edit_job(agent, &j.id, |x| x.corrected_by = Some(util::clip(words, 200))).is_ok() && was_win {
+            self.rescore_lessons(agent, &j);
+        }
+    }
+
 
     pub fn mark_promise(&self, agent: &str, job: &str, index: usize, state: &str) -> Result<(), String> {
         if !matches!(state, "open" | "kept" | "missed") {
@@ -1081,7 +1224,7 @@ impl Team {
         started
     }
 
-    fn edit_job(&self, agent: &str, job: &str, f: impl FnOnce(&mut Job)) -> Result<(), String> {
+    pub(crate) fn edit_job(&self, agent: &str, job: &str, f: impl FnOnce(&mut Job)) -> Result<(), String> {
         let path = self.paths.jobs(agent);
         let mut jobs: Vec<Job> = util::read_jsonl(&path);
         let j = jobs.iter_mut().find(|j| j.id == job).ok_or("No such job.")?;
@@ -1246,7 +1389,7 @@ pub struct TalkMsg {
 
 /// Jobs that run in the agent's own conversation (the rest run on their own and leave it alone).
 fn in_session(trigger: &Trigger) -> bool {
-    matches!(trigger, Trigger::Chat | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Inbox | Trigger::Memory { .. })
+    matches!(trigger, Trigger::Chat | Trigger::Welcome | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Inbox | Trigger::Memory { .. } | Trigger::Goal { .. } | Trigger::Promise { .. } | Trigger::Watch { .. })
 }
 
 /// Jobs another agent started: one of yours asking, another person's agent through an invite or a contact.
@@ -1388,6 +1531,39 @@ fn talk_of(name: &str, args: &serde_json::Value, team: &[AgentRecord], contacts:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn the_agents_own_work_runs_beside_its_main_job_and_a_chat_waits() {
+        let dir = tempfile::tempdir().unwrap();
+        let team = Team::open(dir.path()).unwrap();
+        team.add_agent(AgentRecord {
+            id: "a".into(), name: "A".into(), model: "anthropic:x".into(), job: "j".into(), created_at: 0,
+            grants: crate::store::Grants::none(), limits: Default::default(), probation_until: None, parent: None, shadow_of: None, handover: None, origin: None, version: 1,
+        })
+        .await
+        .unwrap();
+        // Its main job, in flight.
+        team.runs.lock().unwrap().insert("a".into(), Run { job: "main".into(), control: RunControl::default() });
+        assert!(team.start_job("a", "a chat".into(), Vec::new(), Trigger::Chat).await.is_err(), "the person's words steer the main job instead");
+        let beside = team.start_job("a", "a goal's sitting".into(), Vec::new(), Trigger::Goal { goal: "g".into() }).await;
+        assert!(beside.is_ok(), "{beside:?}");
+        assert!(team.busy().iter().all(|(agent, _)| agent == "a"), "a side run still reads as the agent being busy");
+        for i in 0..SIDE_JOBS {
+            team.runs.lock().unwrap().insert(side_key("a", &format!("x{i}")), Run { job: format!("x{i}"), control: RunControl::default() });
+        }
+        assert!(team.start_job("a", "one more".into(), Vec::new(), Trigger::Watch { watcher: "w".into() }).await.is_err(), "no room beside: it queues instead");
+        assert!(team.stop("a"), "stop ends every job of the agent");
+    }
+
+    #[test]
+    fn only_a_message_with_no_task_in_it_is_small_talk() {
+        for t in ["hey", "Hi Cookie!", "thanks so much", "ok", "good morning", "👍", "thank you"] {
+            assert!(small_talk(t), "{t}");
+        }
+        for t in ["hey can you check my invoices", "ok send it", "thanks, now draft the reply", "what's due today?"] {
+            assert!(!small_talk(t), "{t}");
+        }
+    }
 
     #[test]
     fn peer_instructions_forbid_commitments() {

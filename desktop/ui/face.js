@@ -504,7 +504,7 @@ void main(){
   float lift = max(u_body.x, 0.0);
   vec2 sq = vec2(uv.x / ((u_shape == 4 ? 0.55 : 0.8) * u_body.y * (1.0 + lift * 0.5)), (uv.y - base() * 0.99 + 0.02) / (0.12 * (1.0 + lift * 0.6)));
   float shadow = exp(-dot(sq, sq) * 2.0) * 0.5 * (1.0 - min(lift * 1.8, 0.75)) * (u_shape == 11 ? 0.6 : 1.0);
-  float glowK = u_shape == 7 ? 1.0 : u_shape == 11 ? 0.55 : u_shape == 5 ? 0.3 : 0.0;
+  float glowK = 0.0; // no body has a halo round it: every face sits clean on any ground
   // how near the ray passes the body: exact inside the bound, estimated past it
   float dglow = length(ro - vec3(0.0, u_body.x, 0.0) + rd * -dot(ro - vec3(0.0, u_body.x, 0.0), rd)) - 0.85;
   vec4 o = vec4(0.0);

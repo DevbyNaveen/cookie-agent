@@ -2,7 +2,13 @@
 //!
 //! On a Mac they live in the login Keychain (through `security`, so no
 //! secret ever touches Cookie's folder). Elsewhere they live in one file,
-//! readable by this user only (0600). Providers read keys from the
+//! readable by this user only (0600). On a server, where the team runs in the
+//! cloud beside its worlds and keeps working with the person's Mac closed,
+//! that file is sealed: with `COOKIE_SECRETS_KEY` set (32 bytes, base64, from
+//! the host's key service, never on the same disk) every value is encrypted
+//! with AES-256-GCM, so a copy of the disk or a backup holds no usable key.
+//! Tests always use the file, inside their own folder: they never touch the
+//! person's real Keychain. Providers read keys from the
 //! environment, as everywhere in the harness: at start, each saved model key
 //! is put into this process's environment and nowhere else.
 
@@ -15,6 +21,8 @@ pub const PROVIDERS: &[(&str, &str, &str)] = &[
     ("anthropic", "Anthropic", "ANTHROPIC_API_KEY"),
     ("openai", "OpenAI", "OPENAI_API_KEY"),
     ("gemini", "Gemini", "GEMINI_API_KEY"),
+    // Models from every lab behind one key (`openrouter:anthropic/claude-sonnet-4.5`).
+    ("openrouter", "OpenRouter", "OPENROUTER_API_KEY"),
     // Amazon Bedrock with your own AWS account (models like `bedrock:eu.anthropic.claude-sonnet-4-6`).
     ("bedrock", "AWS Bedrock: access key ID", "AWS_ACCESS_KEY_ID"),
     ("bedrock_secret", "AWS Bedrock: secret access key", "AWS_SECRET_ACCESS_KEY"),
@@ -29,7 +37,7 @@ pub const PROVIDERS: &[(&str, &str, &str)] = &[
 
 pub struct Keys {
     /// The fallback file when there is no Keychain.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
     file: PathBuf,
 }
 
@@ -39,7 +47,7 @@ impl Keys {
     }
 
     pub fn get(&self, name: &str) -> Option<String> {
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", not(test)))]
         {
             let out = std::process::Command::new("security")
                 .args(["find-generic-password", "-s", SERVICE, "-a", name, "-w"])
@@ -51,10 +59,10 @@ impl Keys {
             }
             None
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(any(not(target_os = "macos"), test))]
         {
             let map: std::collections::BTreeMap<String, String> = crate::util::read_json(&self.file);
-            map.get(name).cloned()
+            map.get(name).and_then(|v| sealed::open(v))
         }
     }
 
@@ -63,7 +71,7 @@ impl Keys {
         if value.is_empty() {
             return self.remove(name);
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", not(test)))]
         {
             // -U updates an existing item; the value goes in as an argument to a
             // child process, never through a shell.
@@ -76,10 +84,10 @@ impl Keys {
             }
             Ok(())
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(any(not(target_os = "macos"), test))]
         {
             let mut map: std::collections::BTreeMap<String, String> = crate::util::read_json(&self.file);
-            map.insert(name.to_string(), value.to_string());
+            map.insert(name.to_string(), sealed::seal(value)?);
             crate::util::write_json(&self.file, &map)?;
             #[cfg(unix)]
             {
@@ -91,12 +99,12 @@ impl Keys {
     }
 
     pub fn remove(&self, name: &str) -> Result<(), String> {
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", not(test)))]
         {
             let _ = std::process::Command::new("security").args(["delete-generic-password", "-s", SERVICE, "-a", name]).output();
             Ok(())
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(any(not(target_os = "macos"), test))]
         {
             let mut map: std::collections::BTreeMap<String, String> = crate::util::read_json(&self.file);
             map.remove(name);
@@ -134,5 +142,82 @@ impl Keys {
             std::env::set_var(var, value.trim())
         }
         Ok(())
+    }
+}
+
+/// Sealing values in the key file, when the host gives a key to seal with.
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
+pub(crate) mod sealed {
+    use base64::Engine;
+    use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
+    use ring::rand::{SecureRandom, SystemRandom};
+
+    /// What marks a sealed value: `v1:` then base64 of nonce and ciphertext.
+    const PREFIX: &str = "sealed:v1:";
+
+    fn key() -> Option<LessSafeKey> {
+        let raw = std::env::var("COOKIE_SECRETS_KEY").ok()?;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(raw.trim()).ok().filter(|b| b.len() == 32)?;
+        Some(LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &bytes).ok()?))
+    }
+
+    /// The value as stored: sealed when there is a key, as it is otherwise.
+    pub fn seal(value: &str) -> Result<String, String> {
+        seal_with(key().as_ref(), value)
+    }
+
+    pub(super) fn seal_with(key: Option<&LessSafeKey>, value: &str) -> Result<String, String> {
+        let Some(key) = key else { return Ok(value.to_string()) };
+        let mut nonce = [0u8; NONCE_LEN];
+        SystemRandom::new().fill(&mut nonce).map_err(|_| "no randomness to seal with")?;
+        let mut data = value.as_bytes().to_vec();
+        key.seal_in_place_append_tag(Nonce::assume_unique_for_key(nonce), Aad::from(PREFIX), &mut data).map_err(|_| "sealing failed")?;
+        let mut out = nonce.to_vec();
+        out.extend(data);
+        Ok(format!("{PREFIX}{}", base64::engine::general_purpose::STANDARD.encode(out)))
+    }
+
+    /// The value as it was given; `None` for a sealed value without the key
+    /// that sealed it (never the sealed text passed off as a key).
+    pub fn open(stored: &str) -> Option<String> {
+        open_with(key().as_ref(), stored)
+    }
+
+    pub(super) fn open_with(key: Option<&LessSafeKey>, stored: &str) -> Option<String> {
+        let Some(b64) = stored.strip_prefix(PREFIX) else { return Some(stored.to_string()) };
+        let key = key?;
+        let mut bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+        if bytes.len() <= NONCE_LEN {
+            return None;
+        }
+        let mut data = bytes.split_off(NONCE_LEN);
+        let nonce = Nonce::try_assume_unique_for_key(&bytes).ok()?;
+        let plain = key.open_in_place(nonce, Aad::from(PREFIX), &mut data).ok()?;
+        String::from_utf8(plain.to_vec()).ok()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn k(byte: u8) -> LessSafeKey {
+            LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &[byte; 32]).unwrap())
+        }
+
+        #[test]
+        fn a_sealed_key_opens_only_with_the_key_that_sealed_it() {
+            let stored = seal_with(Some(&k(7)), "sk-ant-secret").unwrap();
+            assert!(stored.starts_with(PREFIX) && !stored.contains("sk-ant"), "nothing readable on disk");
+            assert_eq!(open_with(Some(&k(7)), &stored).as_deref(), Some("sk-ant-secret"));
+            assert_eq!(open_with(Some(&k(8)), &stored), None, "another key opens nothing");
+            assert_eq!(open_with(None, &stored), None, "no key: no value, not the sealed text");
+            assert_ne!(seal_with(Some(&k(7)), "x").unwrap(), seal_with(Some(&k(7)), "x").unwrap(), "a fresh nonce each time");
+        }
+
+        #[test]
+        fn without_a_host_key_values_are_kept_as_before() {
+            assert_eq!(seal_with(None, "plain").unwrap(), "plain");
+            assert_eq!(open_with(None, "plain").as_deref(), Some("plain"), "an older file still reads");
+        }
     }
 }

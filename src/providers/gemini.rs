@@ -9,7 +9,6 @@ use serde_json::{json, Value};
 
 use super::{
     fence::{fence, fence_tag, image_notice},
-    http_error,
     sse::SseDecoder,
 };
 use crate::{
@@ -52,20 +51,8 @@ impl GeminiProvider {
     }
 
     async fn post(&self, url: String, request: &ModelRequest<'_>) -> Result<reqwest::Response> {
-        let response = self
-            .client
-            .post(url)
-            .header("x-goog-api-key", &self.api_key)
-            .json(&request_body(request, self.max_tokens)?)
-            .send()
-            .await
-            .map_err(super::send_error)?;
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(http_error(status.as_u16(), &text));
-        }
-        Ok(response)
+        let body = request_body(request, self.max_tokens)?;
+        super::send_retrying(|| self.client.post(&url).header("x-goog-api-key", &self.api_key).json(&body)).await
     }
 }
 

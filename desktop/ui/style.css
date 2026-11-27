@@ -787,13 +787,39 @@ footer.me { gap: 6px; }
 .net-preview-card .person-dot { background: var(--bg); }
 
 /* Questions an agent asks you */
-.ask-card { box-shadow: inset 0 0 0 1px rgb(120 170 255 / .35); }
-.ask-q { background: none !important; padding: 6px 0 2px !important; max-width: none; }
-.ask-choices { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
-.ask-choice { background: var(--raise-2); color: var(--text) !important; }
-.ask-choice:hover { background: var(--line-2) !important; }
-.ask-own { display: flex; gap: 8px; margin-top: 8px; }
-.ask-own .text-in { flex: 1; }
+/* A question from an agent: sits where its replies sit, choices as one lettered list. */
+.ask-row { margin-top: 14px; }
+.ask-card { width: min(620px, 92%); background: var(--raise); border-radius: var(--r-bubble, 18px); padding: 14px 14px 10px; animation: ask-in .22s ease-out both; }
+.ask-q { padding: 0 4px 12px; font-size: 15.5px; line-height: 1.5; }
+.ask-q > :first-child { margin-top: 0; }
+.ask-q > :last-child { margin-bottom: 0; }
+.ask-q p { margin: 0 0 .6em; }
+.ask-list { border: 1px solid var(--line-2); border-radius: 12px; overflow: hidden; background: var(--bg); }
+.ask-opt { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 12px; width: 100%; min-height: 46px; padding: 9px 14px; font-size: 15px; line-height: 1.4; color: var(--text); cursor: pointer; transition: background .12s ease; }
+.ask-opt + .ask-opt { border-top: 1px solid var(--line); }
+.ask-opt:hover, .ask-opt:focus-visible { background: var(--raise-2); }
+.ask-opt:focus-visible { box-shadow: inset 0 0 0 2px var(--focus, var(--accent-soft)); }
+.ask-key { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; background: var(--raise-2); color: var(--text-2); font: 600 12px/1 ui-monospace, "SF Mono", Menlo, monospace; transition: background .12s ease, color .12s ease; }
+.ask-opt:hover .ask-key { background: var(--line-2); color: var(--text); }
+.ask-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ask-pen { background: none !important; }
+.ask-pen svg, .ask-go svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ask-own { cursor: text; }
+.ask-own-in { all: unset; flex: 1; min-width: 0; font-size: 15px; color: var(--text); }
+.ask-own-in::placeholder { color: var(--text-3); }
+.ask-go { all: unset; flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: var(--accent-ink, #fff); cursor: pointer; opacity: 0; transform: scale(.8); transition: opacity .12s ease, transform .12s ease; }
+.ask-own.typed .ask-go { opacity: 1; transform: none; }
+.ask-opt.chosen { background: var(--accent-soft); }
+.ask-opt.chosen .ask-key { background: var(--accent); color: var(--accent-ink, #fff); }
+.ask-card.sending .ask-opt:not(.chosen) { opacity: .45; cursor: default; }
+.ask-card.sending .ask-opt:not(.chosen):hover { background: none; }
+.ask-foot { display: flex; justify-content: space-between; gap: 12px; padding: 9px 4px 0; font-size: 12.5px; color: var(--text-3); }
+.ask-hint { text-align: right; }
+.ask-card.answered { animation: none; }
+.ask-card.answered .ask-opt { cursor: default; }
+@keyframes ask-in { from { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) { .ask-card, .ask-opt, .ask-go, .ask-key { animation: none; transition: none; } }
+@media (max-width: 560px) { .ask-hint { display: none; } }
 
 /* The live plan */
 .todo-box { width: 100%; max-width: 760px; margin: 8px auto 4px; padding: 10px 14px; border-radius: 14px; background: var(--raise); }
@@ -1433,12 +1459,19 @@ footer.me { gap: 6px; }
 .wl-slot.big { width: 118px; height: 150px; }
 @keyframes wl-drop { from { opacity: 0; transform: translateY(-60px) scale(.6); } }
 .wl-hero { display: grid; place-items: center; height: 150px; }
-.wl-title { margin: 0; font-size: 52px; font-weight: 750; letter-spacing: -.04em; line-height: 1.02;
+.wl-crew.trio { gap: 18px; height: 150px; margin-bottom: 10px; }
+/* The gradient is painted only inside the text's box: the padding gives descenders (the y) room, the margin takes it back. */
+.wl-title { margin: 0 0 -.16em; padding-bottom: .16em; font-size: 52px; font-weight: 750; letter-spacing: -.028em; line-height: 1.02;
   background: linear-gradient(180deg, var(--text), color-mix(in srgb, var(--text) 62%, transparent)); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .wl-title.sm { font-size: 34px; letter-spacing: -.03em; }
 .wl-tag { margin: 6px 0 0; font-size: 26px; font-weight: 650; letter-spacing: -.02em;
   background: linear-gradient(90deg, #f59e0b, #ec4899 45%, #8b5cf6); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .wl-sub { max-width: 520px; margin: 16px 0 0; font-size: 15.5px; line-height: 1.55; color: var(--text-2); }
+.wl-scroll { align-self: stretch; max-height: max(230px, calc(100vh - 410px)); margin-top: 22px; padding: 4px 6px 44px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 64px), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 64px), transparent); }
+.wl-scroll::-webkit-scrollbar { display: none; }
+.wl-scroll .apps-grid { margin-top: 0; }
+.wl-scroll + .wl-actions { margin-top: 6px; }
 .wl-actions { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 30px; }
 .wl-go { min-width: 260px; height: 48px; font-size: 15.5px; border-radius: 999px; box-shadow: 0 10px 40px -10px color-mix(in srgb, var(--accent) 70%, transparent); }
 .wl-skip { font-size: 13.5px; color: var(--text-3); }
@@ -1454,10 +1487,17 @@ footer.me { gap: 6px; }
 .wl-hint { margin: 0; font-size: 14px; color: var(--text-2); }
 .wl-ok { display: flex; align-items: center; gap: 10px; font-size: 15px; color: var(--text); padding: 12px 18px; border-radius: 999px; background: var(--raise); animation: pop .3s var(--ease); }
 .wl-ok svg { width: 18px; height: 18px; color: #22c55e; }
-.wl-brains { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; width: 100%; max-width: 520px; }
-.wl-brain { display: flex; align-items: center; gap: 12px; padding: 16px 18px; border-radius: 18px; background: var(--raise); font-size: 15px; font-weight: 600; color: var(--text); text-align: left; transition: transform .15s var(--ease), box-shadow .15s; }
-.wl-brain:hover { transform: translateY(-2px); background: var(--raise-2); }
-.wl-brain-dot { width: 12px; height: 12px; border-radius: 99px; background: conic-gradient(#f59e0b, #ec4899, #8b5cf6, #10b981, #f59e0b); box-shadow: 0 0 12px #ec489988; }
+.wl-more { margin: 0; font-size: 12.5px; color: var(--text-3); }
+/* The brains to choose from: separate floating cards, all one size, on one grid; a short last row sits centred. */
+.wl-brains { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; width: min(642px, 100%); max-height: 328px; overflow-y: auto; overscroll-behavior: contain; padding: 6px 6px 14px; scrollbar-width: thin; }
+.wl-brain { flex: none; display: grid; grid-template-columns: 24px 1fr; align-items: center; gap: 12px; width: 202px; height: 58px; padding: 0 16px; border: 0; border-radius: 16px;
+  background: color-mix(in srgb, var(--text) 7%, transparent); -webkit-backdrop-filter: blur(18px) saturate(1.5); backdrop-filter: blur(18px) saturate(1.5);
+  font-size: 15px; font-weight: 600; color: var(--text); text-align: left; transition: background .15s, transform .15s var(--ease); }
+.wl-brain:hover, .wl-brain:focus-visible { background: color-mix(in srgb, var(--text) 13%, transparent); transform: translateY(-1px); outline: none; }
+.wl-brain:disabled { opacity: .55; transform: none; }
+.wl-brain-mark.app-tile { width: 24px; height: 24px; border-radius: 0; box-shadow: none; overflow: visible; flex: none; }
+.wl-brain-mark.app-tile img { width: 24px; height: 24px; filter: none; }
+.wl-brain-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* The apps grid: welcome and Settings → Enkeon. */
 .apps-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; width: 100%; margin-top: 26px; text-align: left; }
@@ -2070,3 +2110,29 @@ li.agent.active .main-star { box-shadow: 0 0 0 2px var(--raise-2, var(--rail)); 
 .wf-model { max-width: 260px; font-size: 12px !important; padding: 5px 9px !important; }
 .wf-out summary, .wf-answer summary { font-size: 12px; color: var(--text-3); cursor: pointer; }
 .wf-out pre { margin: 4px 0 0; padding: 8px 10px; border-radius: 9px; background: var(--raise-2); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; max-height: 220px; overflow: auto; }
+
+/* The Enkeon account sheet: inside the Connect dialog, with a way back. */
+.enk-sheet { display: flex; flex-direction: column; gap: 14px; padding: 22px 28px 28px; max-width: 640px; margin: 0 auto; width: 100%; }
+.enk-head { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; margin-bottom: 6px; }
+.enk-head > :first-child { justify-self: start; } .enk-head > :last-child { justify-self: end; }
+.enk-back::before { content: "‹ "; }
+.enk-title { display: flex; align-items: center; gap: 10px; }
+.enk-title h2 { margin: 0; font-size: 18px; }
+.enk-title .app-tile { width: 28px; height: 28px; } .enk-title .app-tile img { width: 28px; height: 28px; filter: none; }
+.enk-sheet > .btn.primary { align-self: center; min-width: 220px; }
+
+/* Connect dialog: every row a quiet card on one grid, every action a real button. */
+#connect .app-grid { gap: 8px 12px; }
+#connect .app { padding: 10px 12px; background: color-mix(in srgb, var(--text) 4%, transparent); }
+#connect .app:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+#connect .app .btn.small { min-width: 92px; height: 30px; padding: 0 14px; border-radius: 999px; font-size: 13px; font-weight: 600; background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text); }
+#connect .app .btn.small:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 16%, transparent); }
+#connect .app .btn.small.primary { background: var(--accent); color: var(--accent-ink); }
+#connect .app .btn.small.danger { background: rgb(236 70 70 / .16); color: #f08a8a; }
+#connect .app .btn.small:disabled { opacity: .5; }
+#connect .app-tile.bare img[src^="https:"] { width: 34px; height: 34px; border-radius: 8px; object-fit: contain; filter: none; }
+
+/* A logo that is its own tile (Enkeon's glass square): fills it, with a lit edge and a soft drop. */
+.app-tile.full { background: none; overflow: hidden; border-radius: 26%; box-shadow: inset 0 1px 0 rgb(255 255 255 / .35), inset 0 0 0 1px rgb(255 255 255 / .1), 0 3px 10px -2px rgb(0 0 0 / .45); }
+.app-tile.full img, #connect .app-tile.full img, .enk-title .app-tile.full img, .wl-brain-mark.app-tile.full img { width: 100%; height: 100%; object-fit: cover; filter: none; border-radius: 0; }
+.wl-brain-mark.app-tile.full { border-radius: 26%; overflow: hidden; box-shadow: inset 0 1px 0 rgb(255 255 255 / .35), 0 2px 6px -1px rgb(0 0 0 / .4); }

@@ -41,6 +41,8 @@ pub(crate) struct Key {
 pub(crate) const KEYS: &[Key] = &[
     // Team-wide
     Key { id: "daily_notices", title: "Interruptions a day", where_: "Settings → General", kind: Kind::Int(0, 50), agent: false, help: "How many notices all agents together may send the person a day. Approvals always get through." },
+    Key { id: "approval_wait_minutes", title: "Minutes a request waits for a yes", where_: "Settings → General", kind: Kind::Int(0, 1440), agent: false, help: "After this long with no answer, a request for the person's yes counts as a no, the agent is told nobody answered, and its job moves on. 0 waits as long as it takes." },
+    Key { id: "keep_awake", title: "Keep this Mac awake when plugged in", where_: "Settings → General", kind: Kind::Bool, agent: false, help: "While Cookie runs on mains power the Mac does not sleep on its own, so routines run overnight. The screen may still turn off; closing a laptop's lid still sleeps it." },
     Key { id: "wake", title: "Wake agents when their memory changes", where_: "Settings → General", kind: Kind::Bool, agent: false, help: "With Enkeon: when something worth an agent's attention lands in its memory, it starts a job on it, a few times a day at most." },
     Key { id: "checker_model", title: "Checker model", where_: "Settings → Models", kind: Kind::Model(true), agent: false, help: "A second model, from another provider, that reads every send before the person sees it. `off` for none." },
     Key { id: "evolve.nightly", title: "Tune agents at night", where_: "Settings → Evolution", kind: Kind::Bool, agent: false, help: "Each night one change per agent is tried on a copy against the person's own jobs and kept only if it does as well or better. Uses real model calls." },
@@ -59,6 +61,7 @@ pub(crate) const KEYS: &[Key] = &[
     Key { id: "agent.name", title: "Name", where_: "Its profile", kind: Kind::Text, agent: true, help: "The agent's name." },
     Key { id: "agent.job", title: "Job", where_: "Its profile", kind: Kind::Text, agent: true, help: "Its one job, in the person's words." },
     Key { id: "agent.model", title: "Model", where_: "The model chip under the composer, or its profile", kind: Kind::Model(false), agent: true, help: "provider:model, e.g. anthropic:claude-sonnet-5-5. A new model re-tests its skills." },
+    Key { id: "agent.routine_model", title: "Model for routine steps", where_: "Its profile → model", kind: Kind::Model(true), agent: true, help: "Gathering steps (reading after reading) go to it; its own model plans, changes things and answers. `off` for none; unset uses the tier below its own." },
     Key { id: "agent.backup_model", title: "Backup model", where_: "The model chip under the composer, or its profile", kind: Kind::Model(true), agent: true, help: "Answers when its model is out of reach (an outage, overload). `off` lets Cookie pick from the routes this Mac has: the same model another way first." },
     Key { id: "agent.look.shape", title: "Face shape", where_: "Its profile → look", kind: Kind::Choice(&crate::made::SHAPES), agent: true, help: "Its face's shape." },
     Key { id: "agent.look.color", title: "Face colour", where_: "Its profile → look", kind: Kind::Choice(&crate::made::COLORS), agent: true, help: "Its face's colour; its chat bubbles and send button follow it." },
@@ -74,8 +77,9 @@ pub(crate) const KEYS: &[Key] = &[
     Key { id: "agent.grants.apps", title: "Connected apps", where_: "The permission chip under the composer", kind: Kind::Bool, agent: true, help: "Apps connected through Enkeon (Gmail, Calendar, Slack…), billed per call." },
     Key { id: "agent.grants.helpers", title: "Helpers", where_: "The permission chip under the composer", kind: Kind::Bool, agent: true, help: "Send short-lived read-only helpers to research side by side." },
     Key { id: "agent.grants.contractors", title: "Contractors", where_: "The permission chip under the composer", kind: Kind::Bool, agent: true, help: "Bring in a temporary specialist for one piece of a job." },
-    Key { id: "agent.limits.steps", title: "Model calls per job", where_: "Its profile → limits", kind: Kind::Int(1, 500), agent: true, help: "The most model calls one job may make." },
-    Key { id: "agent.limits.tokens", title: "Tokens per job", where_: "Its profile → limits", kind: Kind::Int(1_000, 10_000_000), agent: true, help: "The most tokens one job may use." },
+    Key { id: "agent.limits.steps", title: "Model calls per job", where_: "Its profile → limits", kind: Kind::Int(1, 100_000), agent: true, help: "A guard against a job going round in circles; work itself is limited by dollars and minutes." },
+    Key { id: "agent.limits.tokens", title: "Tokens per job", where_: "Its profile → limits", kind: Kind::Int(1_000, 1_000_000_000), agent: true, help: "The most tokens one job may use." },
+    Key { id: "agent.limits.job_minutes", title: "Minutes per job", where_: "Its profile → limits", kind: Kind::Int(1, 10_080), agent: true, help: "The longest one job may work, wall clock. A goal that runs for days is many jobs." },
     Key { id: "agent.limits.job_dollars", title: "Dollars per job", where_: "Its profile → limits", kind: Kind::Num(0.0, 1_000.0, true), agent: true, help: "The most one job may spend (needs prices for its model). `off` for no limit." },
     Key { id: "agent.limits.month_dollars", title: "Dollars a month", where_: "Its profile → limits", kind: Kind::Num(0.0, 10_000.0, true), agent: true, help: "Past it, its jobs wait until the person raises it. `off` for no limit." },
 ];
@@ -175,6 +179,7 @@ impl Team {
                 "agent.job" => json!(a.job),
                 "agent.model" => json!(a.model),
                 "agent.backup_model" => s.backup_models.get(&a.id).map(|m| json!(m)).unwrap_or(json!("off")),
+                "agent.routine_model" => s.routine_models.get(&a.id).map(|m| json!(m)).unwrap_or(json!("auto")),
                 "agent.look.shape" => look["shape"].clone(),
                 "agent.look.color" => look["color"].clone(),
                 id => match id.strip_prefix("agent.grants.") {
@@ -186,6 +191,8 @@ impl Team {
         }
         match k.id {
             "daily_notices" => json!(s.daily_notices),
+            "approval_wait_minutes" => json!(s.approval_wait_minutes),
+            "keep_awake" => json!(s.keep_awake),
             "wake" => json!(s.wake),
             "checker_model" => json!(s.checker_model),
             "evolve.nightly" => json!(s.evolve.nightly),
@@ -212,6 +219,20 @@ impl Team {
                 "agent.name" => p.name = v.as_str().map(str::to_string),
                 "agent.job" => p.job = v.as_str().map(str::to_string),
                 "agent.model" => p.model = v.as_str().map(str::to_string),
+                "agent.routine_model" => {
+                    let m = v.as_str().map(str::trim).filter(|m| !m.is_empty() && *m != "auto").map(str::to_string);
+                    let id = a.id.clone();
+                    self.update_settings(move |s| match m {
+                        Some(m) => {
+                            s.routine_models.insert(id, m);
+                        }
+                        None => {
+                            s.routine_models.remove(&id);
+                        }
+                    })
+                    .await?;
+                    return Ok(());
+                }
                 "agent.backup_model" => {
                     let m = v.as_str().map(str::trim).filter(|m| !m.is_empty() && *m != "off").map(str::to_string);
                     let id = a.id.clone();

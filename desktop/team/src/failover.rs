@@ -91,6 +91,74 @@ fn sibling(base: &str) -> Option<String> {
     })
 }
 
+/// The model a run hands over to when it gets stuck (`Agent::escalate_to`): the
+/// strongest Claude on the same route, when this one isn't it already. Haiku
+/// and Sonnet go to Opus; Opus goes to Fable; Fable has nowhere further.
+pub(crate) fn stronger(model: &str) -> Option<String> {
+    let (provider, name) = model.split_once(':')?;
+    let (region, base) = claude(provider, name)?;
+    let mut parts = base.splitn(3, '-');
+    let (_, tier, version) = (parts.next()?, parts.next()?, parts.next().filter(|v| !v.is_empty())?);
+    let up = match tier {
+        "haiku" | "sonnet" => format!("claude-opus-{version}"),
+        "opus" => "claude-fable-5-2".to_string(),
+        _ => return None,
+    };
+    Some(match provider {
+        "anthropic" => format!("anthropic:{up}"),
+        route => format!("{route}:{}.anthropic.{up}", region_for(&up, &region)),
+    })
+}
+
+/// The tier below `model` on the same route, for routine steps: Fable to Opus, Opus to Sonnet,
+/// Sonnet to Haiku. Haiku has nothing below it.
+pub(crate) fn cheaper(model: &str) -> Option<String> {
+    let (provider, name) = model.split_once(':')?;
+    let (region, base) = claude(provider, name)?;
+    let mut parts = base.splitn(3, '-');
+    let (_, tier, version) = (parts.next()?, parts.next()?, parts.next().filter(|v| !v.is_empty())?);
+    let down = match tier {
+        "fable" => "claude-opus-5-5".to_string(),
+        "opus" => format!("claude-sonnet-{version}"),
+        "sonnet" => format!("claude-haiku-{version}"),
+        _ => return None,
+    };
+    Some(match provider {
+        "anthropic" => format!("anthropic:{down}"),
+        route => format!("{route}:{}.anthropic.{down}", region_for(&down, &region)),
+    })
+}
+
+/// The family a model comes from: Claude on any route is one family; OpenAI, Gemini and a
+/// local model each another. A judge from another family doesn't share its blind spots.
+pub(crate) fn family(model: &str) -> &'static str {
+    let (provider, name) = model.split_once(':').unwrap_or(("", model));
+    match provider {
+        "anthropic" => "claude",
+        "bedrock" | "enkeon" if name.contains("anthropic.") || name.contains("claude") => "claude",
+        "bedrock" | "enkeon" => "other-cloud",
+        "openai" => "openai",
+        "gemini" => "gemini",
+        "ollama" => "local",
+        // Through OpenRouter, a model is its lab's.
+        "openrouter" => match name.split('/').next().unwrap_or("") {
+            "anthropic" => "claude",
+            "openai" => "openai",
+            "google" => "gemini",
+            "" => "unknown",
+            _ => "other-lab",
+        },
+        _ => "unknown",
+    }
+}
+
+/// A judge for `model` from another family, among the models this person already set up
+/// (their agents, backups and checker), never one guessed by name.
+pub(crate) fn other_family<'a>(model: &str, set_up: impl IntoIterator<Item = &'a String>) -> Option<String> {
+    let mine = family(model);
+    set_up.into_iter().find(|m| family(m) != mine && family(m) != "unknown").cloned()
+}
+
 /// "Sonnet 5.5" from any route's id, for the words on screen.
 pub(crate) fn short(model: &str) -> String {
     let name = model.split_once(':').map(|(_, n)| n).unwrap_or(model);
@@ -110,6 +178,32 @@ pub(crate) fn short(model: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routine_steps_go_one_tier_down() {
+        assert_eq!(cheaper("anthropic:claude-sonnet-5-5").as_deref(), Some("anthropic:claude-haiku-5-5"));
+        assert_eq!(cheaper("anthropic:claude-fable-5-2").as_deref(), Some("anthropic:claude-opus-5-5"));
+        assert_eq!(cheaper("anthropic:claude-haiku-5-5"), None);
+    }
+
+    #[test]
+    fn a_judge_comes_from_another_family_the_person_already_uses() {
+        let set_up = vec!["anthropic:claude-opus-5-5".to_string(), "bedrock:eu.anthropic.claude-sonnet-4-6".to_string(), "openai:gpt-6".to_string()];
+        assert_eq!(other_family("anthropic:claude-sonnet-5-5", &set_up).as_deref(), Some("openai:gpt-6"));
+        assert_eq!(other_family("openai:gpt-6", &set_up).as_deref(), Some("anthropic:claude-opus-5-5"));
+        assert_eq!(other_family("anthropic:claude-sonnet-5-5", &set_up[..2]), None, "all Claude: no other family to use");
+        assert_eq!(family("openrouter:anthropic/claude-sonnet-4.5"), "claude", "through OpenRouter, still Claude");
+        assert_eq!(family("openrouter:google/gemini-2.5-pro"), "gemini");
+    }
+
+    #[test]
+    fn a_stuck_run_goes_up_one_tier_on_the_same_route() {
+        assert_eq!(stronger("anthropic:claude-sonnet-5-5").as_deref(), Some("anthropic:claude-opus-5-5"));
+        assert_eq!(stronger("anthropic:claude-opus-5-5").as_deref(), Some("anthropic:claude-fable-5-2"));
+        assert_eq!(stronger("bedrock:eu.anthropic.claude-haiku-5-5").as_deref(), Some("bedrock:eu.anthropic.claude-opus-5-5"));
+        assert_eq!(stronger("anthropic:claude-fable-5-2"), None, "nowhere further");
+        assert_eq!(stronger("openai:gpt-6"), None, "nothing outside Claude is guessed");
+    }
 
     const ALL: Routes = Routes { anthropic: true, bedrock: true, enkeon: true };
 

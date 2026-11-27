@@ -27,11 +27,11 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 /// Most steps a workflow may have.
-pub const MAX_STEPS: usize = 40;
+pub const MAX_STEPS: usize = 200;
 /// Most times one step may run in a run (through `Check` branches or `Repeat`).
-pub const MAX_VISITS: u32 = 10;
+pub const MAX_VISITS: u32 = 50;
 /// Most step runs in one run, all steps together.
-pub const MAX_TOTAL: u32 = 120;
+pub const MAX_TOTAL: u32 = 2_000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Flow {

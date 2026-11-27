@@ -187,6 +187,104 @@ pub fn clean(job: &Job) -> bool {
     job.status == crate::store::JobStatus::Done && !job.answer.trim().is_empty() && !ended_failed(&job.steps) && job.grade != Some(-1)
 }
 
+/* ---------- how a job ended, as the world says ---------- */
+
+/// How a job ended, judged only from outside the agent. "It finished" is not
+/// a success: only a check, the person, or the world can say it was right.
+/// Learning reads this, and `Unknown` teaches nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndState {
+    /// Something outside the agent showed it right: a goal's check passed,
+    /// the person graded it good, or they said yes to what it did and it landed.
+    Verified,
+    /// The person showed it wrong: graded it not good, said no to what it
+    /// would do, or their next words corrected it.
+    Corrected,
+    /// It didn't finish, or its work was still failing when it ended.
+    Failed,
+    /// It finished and nothing has said whether it was right.
+    Unknown,
+}
+
+impl EndState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EndState::Verified => "verified",
+            EndState::Corrected => "corrected",
+            EndState::Failed => "failed",
+            EndState::Unknown => "unknown",
+        }
+    }
+
+    /// A win or a loss to learn from; `None` for unknown.
+    pub fn learned(self) -> Option<bool> {
+        match self {
+            EndState::Verified => Some(true),
+            EndState::Corrected | EndState::Failed => Some(false),
+            EndState::Unknown => None,
+        }
+    }
+}
+
+pub fn end_state(job: &Job) -> EndState {
+    use crate::store::JobStatus;
+    // The person's word comes first: it is the strongest signal there is.
+    if job.grade == Some(-1) || job.corrected_by.is_some() || job.approvals.iter().any(|a| a.outcome == "no") {
+        return EndState::Corrected;
+    }
+    if job.grade == Some(1) || job.verified_by.is_some() {
+        return EndState::Verified;
+    }
+    if job.status == JobStatus::Failed || ended_failed(&job.steps) || (job.status == JobStatus::Done && job.answer.trim().is_empty()) {
+        return EndState::Failed;
+    }
+    // The person saw what it would do and said yes, and it landed: they checked it.
+    let checked = job.receipts.iter().any(|r| {
+        r.receipt.decision == "approved" && r.receipt.outcome == "done" && matches!(r.receipt.effect, cookie_harness::tool::Effect::Outbound | cookie_harness::tool::Effect::Destroy)
+    });
+    // A yes given live, in this job: one that went out under a standing mandate was not looked at.
+    let looked = job.approvals.iter().any(|a| a.outcome == "yes" && !a.preview.starts_with("Under mandate"));
+    if job.status == JobStatus::Done && checked && looked {
+        return EndState::Verified;
+    }
+    EndState::Unknown
+}
+
+/// The person's next words, when they correct the answer before them: "no",
+/// "that's wrong", "not what I asked". Only the opening counts, so a message
+/// that merely contains "no" somewhere isn't taken as one.
+pub fn is_correction(text: &str) -> bool {
+    let t = text.trim().to_lowercase();
+    let t = t.trim_start_matches(|c: char| !c.is_alphanumeric());
+    const OPENINGS: [&str; 22] = [
+        "no,", "no.", "no!", "no ", "nope", "wrong", "that's wrong", "thats wrong", "that is wrong", "that's not", "thats not",
+        "that is not", "not what i", "not quite", "incorrect", "you missed", "you forgot", "try again", "redo", "do it again", "actually,", "that's incorrect",
+    ];
+    t == "no" || OPENINGS.iter().any(|o| t.starts_with(o))
+}
+
+/// An agent's record over its last `days`, as the world judged it: what its freedom is earned from.
+pub fn track_record(jobs: &[Job], days: u64, now: u64) -> serde_json::Value {
+    let since = now.saturating_sub(days * 86_400);
+    let mine: Vec<&Job> = jobs.iter().filter(|j| j.started_at >= since && !matches!(j.trigger, crate::store::Trigger::Test { .. } | crate::store::Trigger::Shadow { .. } | crate::store::Trigger::Review | crate::store::Trigger::Rehearse)).collect();
+    let count = |s: EndState| mine.iter().filter(|j| end_state(j) == s).count();
+    let (verified, corrected, failed, unknown) = (count(EndState::Verified), count(EndState::Corrected), count(EndState::Failed), count(EndState::Unknown));
+    let judged = (verified + corrected + failed) as i64;
+    serde_json::json!({
+        "days": days,
+        "jobs": mine.len(),
+        "verified": verified,
+        "corrected": corrected,
+        "failed": failed,
+        "unknown": unknown,
+        // Wilson lower bound of verified among judged: a rate that small numbers can't inflate.
+        "proven_rate": wilson_lower(verified as i64, judged),
+        "dollars": mine.iter().map(|j| j.microdollars).sum::<u64>() as f64 / 1e6,
+        "on_its_own": mine.iter().filter(|j| matches!(j.trigger, crate::store::Trigger::Goal { .. } | crate::store::Trigger::Watch { .. } | crate::store::Trigger::Promise { .. } | crate::store::Trigger::Memory { .. } | crate::store::Trigger::Routine { .. })).count(),
+    })
+}
+
 /* ---------- which tools have been working ---------- */
 
 /// Wilson score interval (z = 1.96) of `wins / n`. (0, 1) with no data.
@@ -302,6 +400,31 @@ mod tests {
         assert_eq!(failing(&broken), Some((FailureKind::BadArguments, "mac_files_write".into())));
         let said_no = [step("send_email", true, "declined")];
         assert!(!ended_failed(&said_no), "the person's no is not the agent's failure");
+    }
+
+    #[test]
+    fn finishing_is_not_success_only_the_world_or_the_person_says_so() {
+        use crate::store::{Job, JobStatus};
+        let done = Job { status: JobStatus::Done, answer: "Here it is.".into(), ..Default::default() };
+        assert_eq!(end_state(&done), EndState::Unknown, "it finished; nothing said it was right");
+        assert_eq!(EndState::Unknown.learned(), None, "and unknown teaches nothing");
+        assert_eq!(end_state(&Job { grade: Some(1), ..done.clone() }), EndState::Verified);
+        assert_eq!(end_state(&Job { verified_by: Some("goal check: invoice paid".into()), ..done.clone() }), EndState::Verified);
+        assert_eq!(end_state(&Job { grade: Some(-1), verified_by: Some("x".into()), ..done.clone() }), EndState::Corrected, "the person outranks a check");
+        assert_eq!(end_state(&Job { corrected_by: Some("no, the other file".into()), ..done.clone() }), EndState::Corrected);
+        assert_eq!(end_state(&Job { status: JobStatus::Failed, ..done.clone() }), EndState::Failed);
+        assert_eq!(end_state(&Job { answer: " ".into(), ..done.clone() }), EndState::Failed, "done with nothing to show");
+        assert_eq!(end_state(&Job { steps: vec![step("send", true, "upstream")], ..done }), EndState::Failed);
+    }
+
+    #[test]
+    fn only_an_opening_correction_counts_as_one() {
+        for t in ["No, the other file", "no", "Wrong date", "that's not what I asked", "Not quite — shorter", "actually, make it Friday", "you missed the CC"] {
+            assert!(is_correction(t), "{t}");
+        }
+        for t in ["Now do the next one", "Nobody replied yet", "thanks", "is there no other way?", "Note this down"] {
+            assert!(!is_correction(t), "{t}");
+        }
     }
 
     #[test]

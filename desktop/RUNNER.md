@@ -33,6 +33,24 @@ docker exec <container> cookie-team token --dir /data
 Put HTTPS in front (a load balancer, Caddy, a tunnel) before using it over the
 internet. Paid, managed hosting is not part of this repository.
 
+### The team in the cloud, the Mac as its hand
+
+1. **Keys sealed.** Start the container with `COOKIE_SECRETS_KEY` (32 random
+   bytes, base64, from your secret store). Every key saved on `/data` is then
+   AES-256-GCM sealed; a copy of the volume holds no usable key.
+2. **Each agent's own Linux machine (vaults).** On a host with KVM (an EC2
+   `.metal` instance, or any Linux box with `/dev/kvm`), run
+   `parallax/host/setup.sh` once for Firecracker and the vault kernel, then add
+   `--device /dev/kvm -v /var/lib/parallax:/data/parallax` to `docker run`.
+   Without KVM, agents still have worlds, scripts and the web.
+3. **Open it from the Mac.** In the app: Settings → Sharing → Where your team
+   lives: its `https://` address and `cookie-team token --dir /data`. Turn on
+   "Let it use this Mac" for your files and Mac apps; while the Mac is away, that
+   work waits (Cookie's desk lists it) and runs when you open Cookie.
+4. **Everything else runs there**: chats from any surface, goals, watchers,
+   promises, attention, routines, Telegram and WhatsApp. Nothing needs syncing:
+   there is one team.
+
 ## HTTP API
 
 | Path | What |

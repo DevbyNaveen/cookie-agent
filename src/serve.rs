@@ -236,7 +236,7 @@ pub struct HelperDecl {
 }
 
 /// Helpers one run may declare.
-const MAX_HELPERS: usize = 4;
+const MAX_HELPERS: usize = 16;
 
 /// One earlier turn: `user` is the person's own words, `assistant` the
 /// model's reply. `untrusted` marks a turn built from something the person
@@ -723,8 +723,7 @@ fn build(
         agent = agent.budget(Budget {
             max_steps: limits.max_steps.unwrap_or(default.max_steps),
             max_tokens: limits.max_tokens.unwrap_or(default.max_tokens),
-            max_dollars: limits.max_dollars,
-        });
+            max_dollars: limits.max_dollars, max_seconds: None });
     }
     if let Some(price) = request.prices {
         agent = agent.prices(price);

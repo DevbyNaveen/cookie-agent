@@ -59,8 +59,24 @@ const SETTINGS = {
     cap.classList.add("num-in");
     cap.onchange = () => call("update_settings", { patch: { daily_notices: +cap.value } });
     attention.append(setRow("News per day", "Interruptions from routines and other agents, across your team. A request for your yes always gets through.", cap));
+    const wait = input(String(s.approval_wait_minutes ?? 60), "60", { type: "number", min: 0, max: 1440 });
+    wait.classList.add("num-in");
+    wait.onchange = () => call("update_settings", { patch: { approval_wait_minutes: +wait.value } });
+    attention.append(setRow("Minutes a request waits for your yes", "After this long with no answer, the request counts as a no and the agent's job moves on, so one unanswered card can't hold up its routines. 0 waits as long as it takes.", wait));
     attention.append(setRow("Wake agents when their memory changes", "With Enkeon: when something worth their attention lands in an agent's memory, it starts a job on it. Each agent wakes a few times a day at most.", toggle(s.wake !== false, (v) => call("update_settings", { patch: { wake: v } }), "Wake agents")));
-    return [el("h2", null, "General"), el("h3", "group-title", "Account"), acct, el("h3", "group-title", "Appearance"), look, el("h3", "group-title", "Attention"), attention];
+    // Working while you are away.
+    const pw = await call("power").catch(() => ({ supported: false }));
+    const always = el("div", "group");
+    if (!pw.supported) always.append(el("p", "set-note", "Keeping the computer awake and starting at login are set up for the Mac only, so far."));
+    else {
+      always.append(setRow("Keep this Mac awake when plugged in", "While Cookie runs on mains power the Mac doesn't sleep on its own, so routines run overnight. The screen may still turn off. Closing a laptop's lid still puts it to sleep.",
+        toggle(!!pw.keep_awake, (v) => call("update_settings", { patch: { keep_awake: v } }), "Keep this Mac awake")));
+      always.append(setRow("Start at login", pw.start_at_login ? (pw.kept ? "Cookie starts when you log in and comes back by itself if it crashes." : "Cookie starts when you log in. It comes back after a crash once it has been started that way.") : "Cookie starts when you log in, and starts again by itself if it crashes. Quitting it yourself keeps it closed.",
+        toggle(!!pw.start_at_login, async (v) => { try { await call("start_at_login", { on: v }); } catch (e) { toast("Couldn't change the login item", String(e), "error"); } openSettings("general"); }, "Start at login")));
+      if (pw.start_at_login && !pw.kept) always.append(setRow("Protect this session too", "Closes Cookie and lets the login item reopen it, so a crash from now on brings it back. Jobs under way are picked up again.",
+        button("Reopen protected", "quiet small", async () => { await call("restart_kept"); })));
+    }
+    return [el("h2", null, "General"), el("h3", "group-title", "Account"), acct, el("h3", "group-title", "Appearance"), look, el("h3", "group-title", "Attention"), attention, el("h3", "group-title", "Always on"), always];
   },
 
   async models() {
@@ -226,6 +242,7 @@ const SETTINGS = {
     const runner = el("div", "group");
     runner.append(setRow("Always on, with this computer asleep", "Run the same team on an old Mac or a small server: `cookie-team serve --bind 0.0.0.0 --public-url https://…` (see desktop/RUNNER.md). Open its link from anywhere.", null));
     out.push(el("h3", "group-title", "Home or cloud runner"), runner);
+    if (!Api.web) out.push(...(await teamHomePart()));
     return out;
   },
 
@@ -541,21 +558,27 @@ async function openEnkeon() {
   const body = $("connect-body");
   let st;
   try { st = await call("enkeon"); } catch (e) { body.replaceChildren(el("p", "error-line", String(e))); if (!d.open) d.showModal(); return; }
-  const out = [el("h2", null, "Enkeon")];
+  // Your Enkeon account, and nothing else: the apps live in one place, the Connect dialog.
+  const head = el("div", "enk-head");
+  const title = el("div", "enk-title"); title.append(logoTile("enkeon", "Enkeon"), el("h2", null, "Enkeon"));
+  head.append(button("Connections", "quiet small enk-back", () => { clearTimeout(pairTimer); openConnect(); }), title, button("Done", "quiet small", () => d.close()));
+  const out = [head];
   const p = st.pairing;
   if (st.paired) {
-    out.push(el("p", "set-note", `Paired with “${st.paired.project_name}”${st.paired.by ? ` as ${st.paired.by}` : ""}. Every agent keeps its own space there, and reads your shared material.`));
+    const acct = el("div", "group");
+    acct.append(setRow("Brain", `${(st.paired.project_name || "").trim()}. Every agent keeps its own space there and reads what you share.`, null));
+    if (st.paired.by) acct.append(setRow("Signed in as", st.paired.by, null));
+    out.push(acct);
     const [cl, s] = await Promise.all([call("cloud").catch(() => null), call("settings")]);
     const g = el("div", "group");
     g.append(setRow("Keep approvals, notices and answers in Enkeon", "So your phone and the Console see them, and you can say yes or no from there. Only the words: never your files.", toggle(!!s.cloud?.store, (v) => call("update_settings", { patch: { cloud_store: v } }), "Cloud store")));
-    if (cl) g.append(setRow("Last contact", cl.last_error ? `Not reached: ${cl.last_error}` : cl.last_ok ? new Date(cl.last_ok * 1000).toLocaleString() : "Not yet", null));
+    // Only when something is wrong: nobody needs the time of the last hello.
+    if (cl?.last_error) g.append(setRow("Enkeon couldn't be reached", cl.last_error, null));
+    g.append(setRow("Apps and databases", "Connect, search and disconnect them in one place.", button("Open", "quiet small", () => openConnect("Apps"))));
+    g.append(setRow("Sign out of this computer", "Cookie forgets its key here. Your brain and its memories stay in Enkeon.", button("Sign out", "quiet small danger", async () => {
+      try { const r = await call("unpair"); toast("Signed out", r.note); openEnkeon(); } catch (e) { toast("Couldn't sign out", String(e), "err"); }
+    })));
     out.push(g);
-    const grid = el("div", "apps-grid compact");
-    out.push(el("h3", "group-title", "Apps your agents use"), grid);
-    setTimeout(() => renderApps(grid), 0);
-    out.push(button("Unpair this computer", "quiet small danger", async () => {
-      try { const r = await call("unpair"); toast("Unpaired", r.note); openEnkeon(); } catch (e) { toast("Couldn't unpair", String(e), "err"); }
-    }));
   } else if (st.source === "cli" || st.source === "env") {
     out.push(el("p", "set-note", st.source === "cli" ? "Connected through the Enkeon CLI's sign-in on this computer. Pairing here gives Cookie its own key instead." : "Connected through ENKEON_API_KEY. Pairing here gives Cookie its own key instead."));
   } else {
@@ -585,7 +608,8 @@ async function openEnkeon() {
       catch (e) { toast("Couldn't start pairing", String(e), "err"); }
     }));
   }
-  body.replaceChildren(...out);
+  const sheet = el("div", "enk-sheet"); sheet.append(...out);
+  body.replaceChildren(sheet);
   if (!d.open) d.showModal();
 }
 
@@ -603,16 +627,18 @@ const APPS = [
   ["Messages", "Send iMessages (asks you each time)", "This Mac", "messages", "mac"],
   ["Mail", "Read and draft replies in Apple Mail", "This Mac", "mail"],
 ];
-const CONNECT_GROUPS = ["All", "Connected", "Apps", "Channels", "This Mac", "Passwords", "Developer"];
+const CONNECT_GROUPS = ["All", "Connected", "Apps", "Databases", "Channels", "This Mac", "Passwords", "Services", "Developer"];
 let connectState = { filter: "All", q: "", data: null, timer: null };
 
 /** A logo: the app's own icon, a brand mark on its colour, or a letter. */
 function logoTile(key, name) {
   const t = el("span", "app-tile");
-  const src = (typeof LOGOS !== "undefined" && LOGOS[key]) || (typeof APP_LOGOS !== "undefined" && APP_LOGOS[key]);
+  // Enkeon wears its own square glass mark, edge to edge.
+  const src = key === "enkeon" ? "enkeon-logo.png" : (typeof LOGOS !== "undefined" && LOGOS[key]) || (typeof APP_LOGOS !== "undefined" && APP_LOGOS[key]);
   if (src) {
     const img = el("img"); img.src = src; img.alt = "";
-    if (LOGO_BG[key]) { t.classList.add("glyph"); t.style.background = LOGO_BG[key]; }
+    if (key === "enkeon") t.classList.add("full");
+    else if (LOGO_BG[key]) { t.classList.add("glyph"); t.style.background = LOGO_BG[key]; }
     else if (LOGOS[key]) t.classList.add("bare");
     else t.classList.add("mark");
     t.append(img);
@@ -623,12 +649,14 @@ function logoTile(key, name) {
 }
 
 async function loadConnect() {
-  const [enkeon, tg, apps, mcps, op] = await Promise.all([
+  const [enkeon, tg, apps, mcps, op, dbs, services] = await Promise.all([
     call("enkeon_status").catch(() => false), call("telegram_status").catch(() => ({})),
     call("apps").catch(() => null), call("mcps").catch(() => ({ servers: [] })),
     call("onepassword_status").catch(() => ({ installed: false, allowed: [] })),
+    call("dbs").catch(() => ({ signed_in: false, list: [] })),
+    call("services").catch(() => []),
   ]);
-  connectState.data = { enkeon: !!enkeon, telegram: !!tg.has_token, apps, mcps: mcps.servers || [], op };
+  connectState.data = { enkeon: !!enkeon, telegram: !!tg.has_token, apps, mcps: mcps.servers || [], op, dbs, services };
 }
 
 async function openConnect(filter = "All", q = "") {
@@ -661,6 +689,16 @@ async function openConnect(filter = "All", q = "") {
   if (q) inp.setSelectionRange(q.length, q.length);
 }
 
+/** Sign in to Enkeon again (the account sign-in that manages apps), from the Connect dialog. */
+async function enkeonSignIn() {
+  try {
+    const r = await call("apps_signin");
+    if (r.url) await Api.openUrl(r.url).catch(() => {});
+    toast("Finish in your browser", `Confirm the code ${r.user_code || ""} there. Cookie stays signed in after this.`);
+  } catch (e) { toast("Couldn't start the sign-in", String(e), "error"); }
+  refreshConnect();
+}
+
 /** Refresh in place (a connect finished, a server was added). */
 async function refreshConnect() {
   const d = $("connect");
@@ -680,7 +718,8 @@ function renderConnectList(list, pill) {
   const st = data.apps;
   const linked = (st?.apps || []).filter((a) => a.state === "connected");
   const opOn = data.op?.installed && (data.op.allowed || []).length > 0;
-  const count = (data.enkeon ? 1 : 0) + (data.telegram ? 1 : 0) + (opOn ? 1 : 0) + linked.length + data.mcps.filter((m) => m.on).length;
+  const dbList = data.dbs?.list || [];
+  const count = (data.enkeon ? 1 : 0) + (data.telegram ? 1 : 0) + (opOn ? 1 : 0) + linked.length + dbList.length + data.mcps.filter((m) => m.on).length;
   pill.className = "status-pill" + (count ? " ok" : "");
   pill.textContent = `${count} connected`;
 
@@ -689,6 +728,39 @@ function renderConnectList(list, pill) {
     const t = el("div", "row-text"); t.append(el("span", null, name), el("small", null, what));
     card.append(logo, t, action || el("span"));
     return card;
+  };
+  // An app's own picture from Enkeon when Cookie has none of its own.
+  const appTile = (a) => {
+    const has = (typeof LOGOS !== "undefined" && LOGOS[a.slug]) || (typeof APP_LOGOS !== "undefined" && APP_LOGOS[a.slug]);
+    if (has || !/^https:\/\//.test(a.logo || "")) return logoTile(a.slug, a.name);
+    const t = el("span", "app-tile bare"); const img = el("img"); img.src = a.logo; img.alt = ""; img.referrerPolicy = "no-referrer";
+    img.onerror = () => t.replaceWith(logoTile(a.slug, a.name));
+    t.append(img); return t;
+  };
+  const connectBtn = (a) => {
+    const label = { connecting: "Connecting…", reconnect: "Reconnect", failed: "Try again" }[a.state] || "Connect";
+    const b = button(label, "quiet small", async () => {
+      if (!st.signed_in) return enkeonSignIn();
+      b.disabled = true; b.textContent = "Opening…";
+      try {
+        const r = await call("app_connect", { slug: a.slug });
+        if (r.authorize_url) await Api.openUrl(r.authorize_url).catch(() => {});
+        else if (r.state !== "connected") toast(`Couldn't connect ${a.name}`, r.reason || "Enkeon couldn't start it.", "error");
+      } catch (e) { toast(`Couldn't connect ${a.name}`, String(e) === "signin" ? "Sign in to Enkeon again to manage apps." : String(e), "error"); }
+      refreshConnect();
+    });
+    b.disabled = !data.enkeon || a.state === "connecting";
+    return b;
+  };
+  const disconnectBtn = (a) => {
+    const b = button("Disconnect", "quiet small", async () => {
+      if (b.dataset.sure !== "1") { b.dataset.sure = "1"; b.textContent = "Really disconnect?"; b.classList.add("danger"); setTimeout(() => { if (b.isConnected) { b.dataset.sure = ""; b.textContent = "Disconnect"; b.classList.remove("danger"); } }, 4000); return; }
+      b.disabled = true; b.textContent = "Disconnecting…";
+      try { await call("app_disconnect", { slug: a.slug }); toast(`${a.name} is disconnected`, "Agents can't use it, and what it synced is forgotten.", "good"); }
+      catch (e) { toast(`Couldn't disconnect ${a.name}`, String(e) === "signin" ? "Sign in to Enkeon again to manage apps." : String(e), "error"); }
+      refreshConnect();
+    });
+    return b;
   };
   const sections = [];
   const section = (title, items, note) => {
@@ -705,10 +777,18 @@ function renderConnectList(list, pill) {
   // Connected: only what really is.
   if (want("Connected")) {
     const items = [];
-    if (data.enkeon && match("Enkeon")) items.push(row(logoTile("enkeon", "Enkeon"), "Enkeon", "Your brain: memory with proof", button("Manage", "quiet small", () => { d.close(); openEnkeon(); })));
+    if (data.enkeon && match("Enkeon")) {
+      // Memory runs on this computer's key; managing apps takes your account sign-in. One row says which is true.
+      const ended = st && st.paired && !st.signed_in;
+      const s = st?.signin;
+      if (ended && s?.state === "waiting") items.push(row(logoTile("enkeon", "Enkeon"), "Enkeon", "Confirm the code in your browser to finish signing in", el("span", "conn-dot wait", `Code ${s.user_code}`)));
+      else if (ended) items.push(row(logoTile("enkeon", "Enkeon"), "Enkeon", "Memory is on. Sign in again to connect or change apps.", button("Sign in", "primary small", () => enkeonSignIn())));
+      else items.push(row(logoTile("enkeon", "Enkeon"), "Enkeon", "Your brain: memory with proof", button("Manage", "quiet small", () => openEnkeon())));
+    }
     if (data.telegram && match("Telegram")) items.push(row(logoTile("telegram", "Telegram"), "Telegram", "Your bot is on", button("Manage", "quiet small", () => { d.close(); openSettings("channels"); })));
     if (opOn && match("1Password", "passwords")) items.push(row(logoTile("1password", "1Password"), "1Password", `${data.op.allowed.length} vault${data.op.allowed.length === 1 ? "" : "s"} for agents · they never see a password`, button("Manage", "quiet small", () => openOnePassword())));
-    for (const a of linked) if (match(a.name, a.what)) items.push(row(logoTile(a.slug, a.name), a.name, a.synced ? `${Number(a.synced).toLocaleString()} synced · through Enkeon` : "Connected through Enkeon", el("span", "conn-dot", "On")));
+    for (const a of linked) if (match(a.name, a.what)) items.push(row(appTile(a), a.name, a.synced ? `${Number(a.synced).toLocaleString()} synced · through Enkeon` : "Connected through Enkeon", disconnectBtn(a)));
+    for (const c of dbList) if (match(c.label || "Database", "database")) items.push(row(logoTile("postgres", "PostgreSQL"), c.label || "Database", "Database · agents read it, never write", button("Remove", "quiet small", async () => { try { await call("db_remove", { id: c.id }); } catch (e) { toast("Couldn't remove it", String(e), "error"); } refreshConnect(); })));
     for (const m of data.mcps.filter((m) => m.on)) if (match(m.name)) items.push(row(logoTile("mcp", m.name), m.name, `MCP · ${m.tools.length} tool${m.tools.length === 1 ? "" : "s"}`, el("span", "conn-dot", "On")));
     if (!items.length && filter === "Connected") sections.push(el("p", "set-note", q ? "Nothing connected matches." : "Nothing connected yet."));
     section("Connected", items);
@@ -717,32 +797,33 @@ function renderConnectList(list, pill) {
   // Apps through Enkeon (Gmail, Drive, Slack…).
   if (want("Apps")) {
     const items = [];
-    if (!data.enkeon && !q) items.push(row(logoTile("enkeon", "Enkeon"), "Sign in with Enkeon", "Your apps connect through your Enkeon account", button("Sign in", "primary small", () => { d.close(); openEnkeon(); })));
-    else if (st && !st.signed_in && st.paired && !q) {
-      const s = st.signin;
-      const act = s?.state === "waiting" ? el("span", "conn-dot wait", `Code ${s.user_code}`) : button("Sign in", "quiet small", async () => {
-        try { const r = await call("apps_signin"); if (r.url) await Api.openUrl(r.url).catch(() => {}); } catch (e) { toast("Couldn't start sign-in", String(e), "error"); }
-        refreshConnect();
-      });
-      items.push(row(logoTile("enkeon", "Enkeon"), "Sign in to manage apps", s?.state === "waiting" ? "Confirm the code in your browser" : "Connecting an app takes your Enkeon sign-in", act));
-    }
+    if (!data.enkeon && !q) items.push(row(logoTile("enkeon", "Enkeon"), "Sign in with Enkeon", "Your apps connect through your Enkeon account", button("Sign in", "primary small", () => openEnkeon())));
     for (const a of (st?.apps || []).filter((a) => a.state !== "connected")) {
       if (!match(a.name, a.what)) continue;
-      const label = { connecting: "Connecting…", reconnect: "Reconnect", failed: "Try again" }[a.state] || "Connect";
-      const b = button(label, "quiet small", async () => {
-        if (!st.signed_in) return toast("Sign in first", "Connecting an app takes your Enkeon sign-in.", "");
-        b.disabled = true; b.textContent = "Opening…";
-        try {
-          const r = await call("app_connect", { slug: a.slug });
-          if (r.authorize_url) await Api.openUrl(r.authorize_url).catch(() => {});
-          else if (r.state !== "connected") toast(`Couldn't connect ${a.name}`, r.reason || "Enkeon couldn't start it.", "error");
-        } catch (e) { toast(`Couldn't connect ${a.name}`, String(e), "error"); }
-        refreshConnect();
-      });
-      b.disabled = !data.enkeon || a.state === "connecting";
-      items.push(row(logoTile(a.slug, a.name), a.name, a.what, b));
+      items.push(row(appTile(a), a.name, a.what, connectBtn(a)));
     }
-    section("Apps", items);
+    // Every other app Enkeon can connect: found by search.
+    const more = st?.more || [];
+    let note = null;
+    if (q) {
+      const hits = more.filter((a) => match(a.name, `${a.what} ${a.category}`));
+      for (const a of hits.slice(0, 60)) items.push(row(appTile(a), a.name, (a.needs_key ? "Needs its API key · " : "") + (a.what || a.category || "Through Enkeon"), connectBtn(a)));
+      if (hits.length > 60) note = el("p", "set-note", `${hits.length - 60} more match. Type more of the name.`);
+    } else if (more.length) {
+      // The ones people ask for first are shown; the rest are a search away.
+      const FIRST = ["shopify", "stripe", "airtable", "salesforce", "asana", "trello", "figma", "supabase", "discord", "dropbox"];
+      for (const slug of FIRST) { const a = more.find((m) => m.slug === slug); if (a) items.push(row(appTile(a), a.name, (a.needs_key ? "Needs its API key · " : "") + (a.what || a.category || "Through Enkeon"), connectBtn(a))); }
+      note = el("p", "set-note", `${more.length.toLocaleString()} more apps connect through Enkeon. Search for one by name.`);
+    }
+    section("Apps", items, note);
+  }
+
+  // Databases agents may read.
+  if (want("Databases") && match("PostgreSQL", "database postgres sql")) {
+    const signedIn = !!data.dbs?.signed_in;
+    section("Databases", [row(logoTile("postgres", "PostgreSQL"), "PostgreSQL", signedIn ? "Agents ask it questions. Read-only, and tested before it is saved." : "Sign in with Enkeon to connect a database",
+      button("Add", "quiet small", () => addDatabase()))],
+      el("p", "set-note", "Enkeon keeps the address encrypted and runs every query read-only with a time and size limit. Private-network addresses are refused."));
   }
 
   if (want("Channels")) section("Channels", APPS.filter((a) => a[2] === "Channels" && match(a[0], a[1])).map(([name, what, , key, kind]) =>
@@ -784,6 +865,17 @@ function renderConnectList(list, pill) {
     });
     if (match("MCP server", "custom add")) items.push(row(logoTile("mcp", "MCP"), "Add an MCP server", "Any tool that speaks MCP: a URL, or a command on this Mac", button("Add", "primary small", () => addMcp())));
     section("Developer", items, el("p", "set-note", "Agents with Apps on get its tools. Cookie asks before every call unless the server marks a tool read-only, and refuses the server if its tools change until you look again."));
+  }
+
+  // Services you connect by hand: a broker, a machine on your network, a phone line.
+  if (want("Services")) {
+    const items = (data.services || []).filter((x) => match(x.name, x.base_url)).map((x) => {
+      const rm = el("button", "round soft"); rm.title = "Remove"; rm.append(icon("trash"));
+      rm.onclick = async () => { if (!confirm(`Remove ${x.name}? Its key is deleted too.`)) return; await call("service_remove", { name: x.name }); refreshConnect(); };
+      return row(logoTile("mcp", x.name), x.name, `${{ broker: "Broker", machine: "Machine", phone: "Phone line", api: "API" }[x.kind] || x.kind} · ${x.base_url}`, rm);
+    });
+    if (match("Service", "broker machine phone api")) items.push(row(logoTile("mcp", "API"), "Connect a service", "A broker's API, a printer or Home Assistant on your network, a Twilio line for calls", button("Add", "primary small", () => addService())));
+    section("Services", items, el("p", "set-note", "Agents read from it at its own address only. Every order, machine action and call asks you, every time, and no standing yes ever covers one. Calls say they are an AI calling for you. A machine that moves needs a stop of its own outside Cookie."));
   }
 
   list.replaceChildren(...(sections.length ? sections : [el("p", "set-note", "No app matches.")]));
@@ -845,6 +937,56 @@ async function openOnePassword() {
     actions();
   };
   paint(false);
+}
+
+/** Connect a database: Enkeon tests it, then keeps its address encrypted. */
+function addDatabase() {
+  const d = el("dialog", "sheet secret-sheet mcp-sheet");
+  const label = input("", "Name, like Orders or Analytics");
+  const dsn = input("", "postgres://user:password@host:5432/database"); dsn.type = "password";
+  const err = el("p", "error-line"); err.hidden = true;
+  const end = el("div", "form-end");
+  const go = button("Connect", "primary small", async () => {
+    err.hidden = true; go.disabled = true; go.textContent = "Testing…";
+    try {
+      await call("db_add", { label: label.value, dsn: dsn.value });
+      d.close();
+      toast(`${label.value.trim()} is connected`, "Agents with Apps on can read it. They can't change it.", "good");
+      connectState.filter = "Connected"; refreshConnect();
+    } catch (e) {
+      err.textContent = String(e) === "signin" ? "Sign in to Enkeon again, then add it." : String(e); err.hidden = false;
+      go.disabled = false; go.textContent = "Connect";
+    }
+  });
+  end.append(button("Cancel", "quiet small", () => d.close()), go);
+  d.append(el("h2", null, "Connect a database"), el("p", "set-note", "A read-only user is best. The address goes straight to Enkeon over TLS and is never kept on this computer."), label, dsn, err, end);
+  d.addEventListener("close", () => d.remove());
+  document.body.append(d); d.showModal(); label.focus();
+}
+
+/** Connect a service by hand: its name, kind, address and key (the key goes to the Keychain). */
+function addService() {
+  const d = el("dialog", "sheet secret-sheet mcp-sheet");
+  const name = input("", "Name, like zerodha, printer or phone");
+  const kind = el("select", "text-in");
+  for (const [v, t] of [["broker", "Broker"], ["machine", "Machine on my network"], ["phone", "Phone line (Twilio)"], ["api", "Other API"]]) { const o = el("option", null, t); o.value = v; kind.append(o); }
+  const url = input("", "https://api.example.com   or   http://192.168.1.40");
+  const auth = input("bearer", "bearer, basic, or a header name like X-Api-Key");
+  const secret = input("", "Its key (for basic or Twilio: user:password, AccountSID:AuthToken)"); secret.type = "password";
+  kind.onchange = () => { if (kind.value === "phone") { url.value = "https://api.twilio.com"; auth.value = "basic"; } };
+  const err = el("p", "error-line"); err.hidden = true;
+  const end = el("div", "form-end");
+  const go = button("Connect", "primary small", async () => {
+    err.hidden = true;
+    try {
+      await call("service_add", { name: name.value, kind: kind.value, base_url: url.value, auth: auth.value, secret: secret.value });
+      d.close(); toast(`${name.value} is connected`, "Agents can read from it; anything it does asks you.", "good"); refreshConnect();
+    } catch (e) { err.textContent = String(e); err.hidden = false; }
+  });
+  end.append(button("Cancel", "quiet small", () => d.close()), go);
+  d.append(el("h2", null, "Connect a service"), el("p", "muted", "Agents reach it only at this address. Reading is free; every order, machine action and call asks you."), name, kind, url, auth, secret, err, end);
+  d.addEventListener("close", () => d.remove());
+  document.body.append(d); d.showModal(); name.focus();
 }
 
 /** Add your own MCP server: checked once, its tools pinned. */
@@ -1008,4 +1150,30 @@ async function addressPart() {
   }
   out.push(r);
   return out;
+}
+
+/** Where the team lives: on this Mac, or in the cloud beside its worlds with this Mac as its hand. */
+async function teamHomePart() {
+  const st = await call("remote_status").catch(() => ({ remote: null }));
+  const g = el("div", "group edit");
+  const restart = (title) => toast(title, "Quit Cookie from the tray and open it again to switch.", "good");
+  if (st.remote) {
+    g.append(setRow("Your team lives in the cloud", `This window shows the team at ${st.remote.url}. It keeps working with this Mac closed; your phone, Telegram and WhatsApp see the same team.`, null));
+    g.append(setRow("This Mac is its hand", st.remote.hand ? "Your files and Mac apps are used from the cloud only while Cookie is open here, and each use asks you as it always did. What needs the Mac while it is away waits, and runs when you open Cookie." : "Off: the cloud team can't use this Mac.", null));
+    const end = el("div", "form-end");
+    end.append(button("Use the team on this Mac", "quiet small danger", async () => { try { await call("remote_detach"); restart("Back to this Mac"); } catch (e) { toast("Couldn't switch", String(e), "error"); } }));
+    return [el("h3", "group-title", "Where your team lives"), g, end];
+  }
+  const url = input("", "https://your-team.cookie.enkeon.com");
+  const token = input("", "the team's access token", { type: "password" });
+  let hand = true;
+  g.append(setRow("Address", "Your team in the cloud, or on a home runner.", url));
+  g.append(setRow("Token", "`cookie-team token` on that machine prints it.", token));
+  g.append(setRow("Let it use this Mac", "Your files and Mac apps, only while Cookie is open here; every use asks you as before.", toggle(true, (v) => { hand = v; }, "Let it use this Mac")));
+  const end = el("div", "form-end");
+  end.append(button("Open that team here", "primary small", async () => {
+    try { const r = await call("remote_attach", { url: url.value, token: token.value, hand }); restart(`Signed in: ${r.attached.agents} agents`); }
+    catch (e) { toast("Couldn't reach that team", String(e), "error"); }
+  }));
+  return [el("h3", "group-title", "Where your team lives"), g, end];
 }

@@ -19,6 +19,9 @@ pub struct Budget {
     /// Dollars per run, priced with `Agent::prices`. A cap with no prices is
     /// refused rather than ignored.
     pub max_dollars: Option<f64>,
+    /// Wall-clock seconds per run, from its first model call. Checked before
+    /// each model call, so a call already running finishes.
+    pub max_seconds: Option<u64>,
 }
 
 impl Budget {
@@ -31,6 +34,10 @@ impl Budget {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             },
+            max_seconds: match (self.max_seconds, other.max_seconds) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            },
         }
     }
 }
@@ -40,7 +47,7 @@ pub(crate) type Pool = (std::sync::Arc<std::sync::Mutex<crate::tool::Spend>>, Bu
 
 impl Default for Budget {
     fn default() -> Self {
-        Self { max_steps: 25, max_tokens: 200_000, max_dollars: None }
+        Self { max_steps: 25, max_tokens: 200_000, max_dollars: None, max_seconds: None }
     }
 }
 
@@ -91,6 +98,8 @@ pub(crate) struct Meter {
     /// against all of them, so siblings — and their children — share what is
     /// left at every level instead of each taking all of it.
     pools: Vec<Pool>,
+    /// When its first model call began, for `Budget::max_seconds`.
+    started: Option<std::time::Instant>,
 }
 
 impl Meter {
@@ -106,9 +115,10 @@ impl Meter {
     /// Check every limit and take one model call from this meter and every
     /// pool above it in one step, so two siblings can't both take the last
     /// call. Call it right before the model call it pays for.
-    /// ponytail: tokens and dollars are only known after the call, so calls
-    /// already in flight can overshoot those two caps; steps never overshoot.
+    /// Tokens and dollars are only known after the call, so calls already in
+    /// flight can overshoot those two caps by what they spend; steps never do.
     pub(crate) fn begin_call(&mut self, budget: &Budget) -> Result<()> {
+        self.started.get_or_insert_with(std::time::Instant::now);
         self.check(budget)?;
         // Locked top-down, the same order everywhere, so no two meters deadlock.
         let mut pools: Vec<_> = self.pools.iter().map(|(pool, cap)| (pool.lock().expect("pool lock"), cap)).collect();
@@ -158,7 +168,13 @@ impl Meter {
             max_steps: budget.max_steps.saturating_sub(self.steps),
             max_tokens: budget.max_tokens.saturating_sub(self.tokens),
             max_dollars: budget.max_dollars.map(|d| (d - self.microdollars as f64 / 1_000_000.0).max(0.0)),
+            max_seconds: budget.max_seconds.map(|s| s.saturating_sub(self.elapsed())),
         }
+    }
+
+    /// Seconds since its first model call.
+    fn elapsed(&self) -> u64 {
+        self.started.map_or(0, |t| t.elapsed().as_secs())
     }
 
     /// Count what a sub-agent spent on this run's behalf. It already reached
@@ -184,6 +200,11 @@ impl Meter {
         }
         if self.tokens >= budget.max_tokens {
             return Err(Error::Budget(format!("{} tokens (limit {})", self.tokens, budget.max_tokens)));
+        }
+        if let Some(seconds) = budget.max_seconds {
+            if self.started.is_some() && self.elapsed() >= seconds {
+                return Err(Error::Budget(format!("{} minutes of work (limit {})", self.elapsed() / 60, seconds / 60)));
+            }
         }
         if let Some(dollars) = budget.max_dollars {
             if self.microdollars >= cap_microdollars(dollars) {
@@ -315,8 +336,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_run_past_its_time_stops_before_its_next_model_call() {
+        let mut m = Meter::default();
+        let open = Budget { max_seconds: Some(3600), ..Budget::default() };
+        assert!(m.begin_call(&open).is_ok());
+        assert!(m.remaining(&open).max_seconds.unwrap() <= 3600);
+        let spent = Budget { max_seconds: Some(0), ..Budget::default() };
+        let e = m.begin_call(&spent).unwrap_err().to_string();
+        assert!(e.contains("minutes of work"), "{e}");
+        assert_eq!(open.min(&spent).max_seconds, Some(0), "the stricter time wins");
+        assert_eq!(open.min(&Budget::default()).max_seconds, Some(3600), "no limit takes the other's");
+    }
+
+    #[test]
     fn cache_writes_count_against_the_budget_and_reads_do_not() {
-        let cap = Budget { max_steps: 10, max_tokens: 1_000, max_dollars: None };
+        let cap = Budget { max_steps: 10, max_tokens: 1_000, max_dollars: None, max_seconds: None };
         let mut meter = Meter::default();
         meter.charge(&Usage { input_tokens: 1, output_tokens: 1, cache_read_tokens: 50_000, cache_write_tokens: 0 }, None);
         assert!(meter.check(&cap).is_ok(), "re-reading a cached history is not new tokens");

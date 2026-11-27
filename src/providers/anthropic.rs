@@ -6,7 +6,6 @@ use serde_json::{json, Value};
 
 use super::{
     fence::{fence, fence_tag, image_notice},
-    http_error,
     sse::SseDecoder,
 };
 use crate::{
@@ -134,21 +133,18 @@ impl AnthropicProvider {
     }
 
     async fn post(&self, body: &Value) -> Result<reqwest::Response> {
-        let mut call = self
-            .client
-            .post(format!("{}/v1/messages", self.base_url))
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01");
-        if self.context_editing.is_some() {
-            call = call.header("anthropic-beta", "context-management-2025-06-27");
-        }
-        let response = call.json(body).send().await.map_err(super::send_error)?;
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(http_error(status.as_u16(), &text));
-        }
-        Ok(response)
+        super::send_retrying(|| {
+            let mut call = self
+                .client
+                .post(format!("{}/v1/messages", self.base_url))
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", "2023-06-01");
+            if self.context_editing.is_some() {
+                call = call.header("anthropic-beta", "context-management-2025-06-27");
+            }
+            call.json(body)
+        })
+        .await
     }
 
     pub fn from_env() -> Result<Self> {
@@ -628,7 +624,7 @@ mod tests {
 
     #[test]
     fn an_error_page_that_is_not_json_keeps_its_status() {
-        let e = http_error(502, "<html>Bad Gateway</html>");
+        let e = super::super::http_error(502, "<html>Bad Gateway</html>");
         assert!(matches!(&e, Error::Unavailable(m) if m.contains("502") && m.contains("Bad Gateway")), "{e}");
     }
 

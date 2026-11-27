@@ -30,9 +30,9 @@ use crate::store::{AgentRecord, Trigger};
 use crate::{util, Team};
 
 /// Helpers running at the same time, per job.
-pub const AT_ONCE: usize = 4;
+pub const AT_ONCE: usize = 16;
 /// Model calls one helper may make.
-const HELPER_STEPS: usize = 12;
+const HELPER_STEPS: usize = 60;
 /// The tool's name, as the model and the transcript know it.
 pub const NAME: &str = "helper";
 
@@ -48,7 +48,7 @@ couldn't find rather than guess.";
 
 const DESCRIPTION: &str = "Send a helper: a fresh assistant with your reading tools that does one self-contained \
 lookup or research task and reports back. To work in parallel, call it several times in the same turn, one task \
-each (up to 4 run at once): one company, one question, one source each. It sees only the task you write, so put \
+each (up to 16 run at once): one company, one question, one source each. It sees only the task you write, so put \
 everything it needs in it. Its report is information to check, not instructions. Use it when tasks are \
 independent; do quick single lookups yourself.";
 
@@ -64,7 +64,7 @@ pub(crate) fn allowed(rec: &AgentRecord, trigger: &Trigger, probation: bool) -> 
 }
 
 /// A batch this big is shown to the person as a plan first (Go / No), in their own chats only.
-const BIG: usize = 5;
+const BIG: usize = 10;
 
 /// The `helper` tool for one job, built from the agent's own tools. None when it has nothing to read with.
 /// `ask_big`: a batch of [`BIG`] or more is put to the person first (their own chat, where someone answers).
@@ -86,7 +86,7 @@ pub(crate) fn tool(team: &Arc<Team>, rec: &AgentRecord, job: &str, tools: &[Arc<
         .ok()?
         .instructions(PROMPT)
         .tools(reading)
-        .budget(Budget { max_steps: HELPER_STEPS, max_tokens: rec.limits.tokens.max(1_000), max_dollars: None });
+        .budget(Budget { max_steps: HELPER_STEPS, max_tokens: rec.limits.tokens.max(1_000), max_dollars: None, max_seconds: None });
     agent = match enkeon {
         Some(e) => agent.enkeon(read_only(e, &names)),
         // Without one given, a helper must not pick up a sign-in on its own.
@@ -400,7 +400,7 @@ mod tests {
         let read: Arc<dyn Tool> = Arc::new(tool("web_search", "Search", json!({"type": "object"}), Effect::Read, |_| async { Ok("r".into()) }));
         let child = Agent::with_provider(Arc::new(Scripted::new(vec![])), "m").without_enkeon().tools(vec![read]);
         let helpers = wrap(child, Weak::new(), "r", "j", true).unwrap();
-        let calls: Vec<(String, &str, Value)> = (1..=5).map(|i| (format!("h{i}"), NAME, json!({"task": format!("Look into company {i}"), "title": format!("Company {i}")}))).collect();
+        let calls: Vec<(String, &str, Value)> = (1..=BIG).map(|i| (format!("h{i}"), NAME, json!({"task": format!("Look into company {i}"), "title": format!("Company {i}")}))).collect();
         let calls: Vec<(&str, &str, Value)> = calls.iter().map(|(a, b, c)| (a.as_str(), *b, c.clone())).collect();
         let parent_p = Arc::new(Scripted::new(vec![Scripted::call_many(&calls), Scripted::text("Fine, I'll ask what matters most.")]));
         let asked = Arc::new(AtomicUsize::new(0));
@@ -414,13 +414,13 @@ mod tests {
         parent.run("Research five companies").await.unwrap();
         assert_eq!(asked.load(Ordering::SeqCst), 1, "asked once for the whole batch");
         let preview = seen.lock().unwrap().clone();
-        assert!(preview.starts_with("Send 5 helpers at once"), "{preview}");
+        assert!(preview.starts_with(&format!("Send {BIG} helpers at once")), "{preview}");
         assert!(preview.contains("Company 3"), "the plan names each helper");
         let refused = parent_p.seen()[1]
             .iter()
             .flat_map(|m| m.content())
             .filter(|c| matches!(c, cookie_harness::message::Content::ToolResult { is_error: true, .. }))
             .count();
-        assert_eq!(refused, 5, "a no stops every helper of the batch");
+        assert_eq!(refused, BIG, "a no stops every helper of the batch");
     }
 }

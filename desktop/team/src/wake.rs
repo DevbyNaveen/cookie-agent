@@ -56,6 +56,9 @@ pub struct Wake {
     pub label: Option<String>,
     /// Held: the agent was asleep or busy; it runs when it can.
     pub held: bool,
+    /// Silent work (a watcher it wrote fired): it worked, and the person wasn't told.
+    #[serde(default)]
+    pub silent: bool,
 }
 
 fn now_f() -> f64 {
@@ -120,7 +123,8 @@ impl Team {
             labelled: labelled.len() as i64,
             useful: labelled.iter().filter(|w| w.label.as_deref() == Some("useful")).count() as i64,
             open: mine.iter().filter(|w| w.label.is_none() && now.saturating_sub(w.at) < 7 * 86_400).count(),
-            noticed_today: mine.iter().filter(|w| now.saturating_sub(w.at) < 86_400).count() as i64,
+            noticed_today: mine.iter().filter(|w| !w.silent && now.saturating_sub(w.at) < 86_400).count() as i64,
+            worked_today: mine.iter().filter(|w| w.silent && now.saturating_sub(w.at) < 86_400).count() as i64,
         }
     }
 
@@ -206,14 +210,11 @@ impl Team {
 
     /// Score every waiting subject of every agent; wake the ones noticed.
     async fn consider_wakes(self: &Arc<Self>) {
-        if !self.settings().await.wake {
-            return;
-        }
+        // Memory wakes follow the person's switch; watchers an agent set always pass through the gate.
+        let memory_wakes = self.settings().await.wake;
         let busy: Vec<String> = self.busy().into_iter().map(|(a, _)| a).collect();
         for (agent, memory) in self.wake_agents().await {
-            if !memory {
-                continue;
-            }
+            let memory = memory && memory_wakes;
             let asleep = self.is_asleep(&agent);
             // Held wakes first: an agent that was asleep or busy gets them once it can work.
             if !asleep && !busy.contains(&agent) {
@@ -227,7 +228,7 @@ impl Team {
             let now = now_f();
             let mut changed = false;
             for s in subs.values_mut() {
-                if s.pending_since.is_none() {
+                if s.pending_since.is_none() || (!memory && !attention::silent(s)) {
                     continue;
                 }
                 changed = true;
@@ -243,6 +244,9 @@ impl Team {
     }
 
     async fn wake(self: &Arc<Self>, agent: &str, n: attention::Notice, held: bool) {
+        if !n.cues.is_empty() && n.cues.iter().all(|c| attention::SILENT_KINDS.contains(&c.kind.as_str())) {
+            return self.silent_wake(agent, n).await;
+        }
         let mut w = Wake {
             id: util::random_hex(8),
             agent: agent.into(),
@@ -255,6 +259,7 @@ impl Team {
             at: util::now(),
             label: None,
             held,
+            silent: false,
         };
         let text = wake_text(&n);
         if !held {
@@ -272,6 +277,42 @@ impl Team {
         let _ = util::append_jsonl(&self.wakes_path(), &w);
         // Within the person's daily cap on interruptions, like any other news.
         self.notice(agent, &format!("Woke: {}", n.title), &w.why, w.job.as_deref(), false);
+    }
+
+    /// A watcher's hit the gate let through: the agent (or the goal the watcher belongs to) works
+    /// on it, queued behind any job it is in, and the person isn't interrupted. It is recorded as a
+    /// wake, so the person's label on it tunes that watcher's next hits.
+    async fn silent_wake(self: &Arc<Self>, agent: &str, n: attention::Notice) {
+        let watcher_id = n.cues[0].id.split('#').next().unwrap_or_default().to_string();
+        let saw: Vec<String> = n.cues.iter().map(|c| c.why.clone()).collect();
+        let watcher = self.watchers().into_iter().find(|x| x.id == watcher_id);
+        let what = watcher.as_ref().map(|x| x.what.clone()).unwrap_or_else(|| n.title.clone());
+        let mut w = Wake {
+            id: util::random_hex(8),
+            agent: agent.into(),
+            subject: n.subject.clone(),
+            title: format!("Watcher: {what}"),
+            why: saw.join("; "),
+            question: None,
+            cue_kinds: n.cues.iter().map(|c| c.kind.clone()).collect(),
+            job: None,
+            at: util::now(),
+            label: None,
+            held: false,
+            silent: true,
+        };
+        match watcher.as_ref().and_then(|x| x.goal.clone()) {
+            Some(goal) => self.wake_goal_now(&goal, &format!("your watcher “{what}” saw: {}", saw.join("; "))),
+            None => {
+                let text = format!("Your watcher “{what}” saw what it watches for: {}\n\nAct on it.", saw.join("; "));
+                match self.give_work(agent, text, Trigger::Watch { watcher: watcher_id }).await {
+                    Ok(job) if job != "queued" => w.job = Some(job),
+                    Ok(_) => w.held = true,
+                    Err(e) => tracing::info!(agent, error = %e, "a watcher's hit couldn't start work"),
+                }
+            }
+        }
+        let _ = util::append_jsonl(&self.wakes_path(), &w);
     }
 
     /// A wake that was held while the agent slept or worked.
@@ -414,6 +455,31 @@ async fn watch_once(team: &Arc<Team>, gateway: &str, key: &str) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_watchers_hit_goes_through_the_gate_and_wakes_its_goal_without_telling_the_person() {
+        let dir = tempfile::tempdir().unwrap();
+        let team = Team::open(dir.path()).unwrap();
+        let mut grants = crate::store::Grants::default();
+        grants.memory = false; // watchers don't need memory wakes on
+        team.add_agent(crate::AgentRecord {
+            id: "a".into(), name: "A".into(), model: "anthropic:x".into(), job: "j".into(), created_at: 0,
+            grants, limits: Default::default(), probation_until: None, parent: None, shadow_of: None, handover: None, origin: None, version: 1,
+        })
+        .await
+        .unwrap();
+        let goal = team.add_goal("a", "buy the lens under 500", "bought at under 500", "watch the shop", None, Some(util::now() + 86_400)).unwrap();
+        let w = crate::watchers::Watcher { id: "watch-1".into(), agent: "a".into(), goal: Some(goal.id.clone()), what: "lens price under 500".into(), active: true, runs: 3, ..Default::default() };
+        util::write_json(&team.paths.root.join("watchers.json"), &vec![w.clone()]).unwrap();
+        team.watcher_cue(&w, "price 480");
+        team.consider_wakes().await;
+        let g = team.goals().into_iter().find(|x| x.id == goal.id).unwrap();
+        assert!(g.next_at.unwrap() <= util::now(), "the goal looks now");
+        assert!(g.next_why.contains("price 480"), "{}", g.next_why);
+        let wakes = team.wakes();
+        assert_eq!(wakes.len(), 1);
+        assert!(wakes[0].silent, "silent work: recorded, and labelled like any wake");
+    }
 
     #[test]
     fn a_write_wakes_the_agent_whose_space_it_is_in() {

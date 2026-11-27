@@ -48,7 +48,10 @@ impl crate::agent::Agent {
             _ = cancel.cancelled() => return Err(crate::Error::Cancelled),
         };
         match connected {
-            Ok(Ok(tools)) => Ok(tools.into_iter().filter(|t| !delegated || t.spec().effect == Effect::Read).collect()),
+            Ok(Ok(tools)) => {
+                let tools: Vec<Arc<dyn Tool>> = tools.into_iter().filter(|t| !delegated || t.spec().effect == Effect::Read).collect();
+                Ok(self.with_quarantine(tools))
+            }
             Ok(Err(error)) => {
                 on_event(Event::EnkeonUnavailable { reason: error.to_string() });
                 Ok(Vec::new())
@@ -58,6 +61,36 @@ impl crate::agent::Agent {
                 Ok(Vec::new())
             }
         }
+    }
+}
+
+impl crate::agent::Agent {
+    /// `tools` with the quarantined twins this agent asked for (`quarantine_reads`).
+    pub(crate) fn with_quarantine(&self, tools: Vec<Arc<dyn Tool>>) -> Vec<Arc<dyn Tool>> {
+        if self.quarantine.is_empty() {
+            return tools;
+        }
+        let mut out = Vec::new();
+        for t in tools {
+            let ask = self.quarantine.iter().find(|(n, _)| *n == t.spec().name).filter(|_| t.spec().effect == Effect::Read);
+            let Some((name, replace)) = ask else {
+                out.push(t);
+                continue;
+            };
+            let (provider, model) = (self.provider.clone(), self.model.clone());
+            match crate::quarantine::extract(&format!("{name}_fields"), t.clone(), move || crate::agent::Agent::with_provider(provider.clone(), model.clone())) {
+                Ok(twin) => {
+                    out.push(Arc::new(twin));
+                    if !replace {
+                        out.push(t);
+                    }
+                }
+                // A twin that can't be made never leaves the raw tool in its place when it should replace it.
+                Err(_) if *replace => {}
+                Err(_) => out.push(t),
+            }
+        }
+        out
     }
 }
 
@@ -676,6 +709,19 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn mail_read_through_a_connector_can_come_back_as_fields_only() {
+        use crate::{providers::scripted::Scripted, tool::tool};
+        let read: Arc<dyn Tool> = Arc::new(tool("connector_actions", "apps", serde_json::json!({"type": "object", "properties": {}}), Effect::Read, |_| async { Ok("mail".to_string()) }));
+        let send: Arc<dyn Tool> = Arc::new(tool("connector_call", "apps", serde_json::json!({"type": "object", "properties": {}}), Effect::Write, |_| async { Ok("sent".to_string()) }));
+        let names = |a: &crate::agent::Agent| a.with_quarantine(vec![read.clone(), send.clone()]).iter().map(|t| t.spec().name.clone()).collect::<Vec<_>>();
+        let a = crate::agent::Agent::with_provider(Arc::new(Scripted::new(vec![])), "m");
+        assert_eq!(names(&a), ["connector_actions", "connector_call"], "nothing asked: as before");
+        assert_eq!(names(&a.quarantine_reads(&["connector_actions"], false)), ["connector_actions_fields", "connector_actions", "connector_call"]);
+        let only = crate::agent::Agent::with_provider(Arc::new(Scripted::new(vec![])), "m").quarantine_reads(&["connector_actions", "connector_call"], true);
+        assert_eq!(names(&only), ["connector_actions_fields", "connector_call"], "replaced; a tool that changes things is never twinned");
+    }
     use crate::{
         agent::{Agent, Event},
         approval::{ApprovalRequest, FnApprover},

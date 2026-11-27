@@ -108,7 +108,7 @@ mod tests {
             id: util::new_id("j"), agent: "a".into(), trigger: Trigger::Chat, input: "x".into(), started_at: 1, finished_at: Some(2),
             status, answer: String::new(), error: None, tools: vec![],
             approvals: approvals.iter().map(|o| ApprovalRecord { tool: "t".into(), effect: "outbound".into(), preview: String::new(), outcome: o.to_string(), checker: None }).collect(),
-            promises: promise.map(|(due, state)| vec![PromiseRecord { text: "p".into(), due: due.into(), state: state.into() }]).unwrap_or_default(),
+            promises: promise.map(|(due, state)| vec![PromiseRecord { text: "p".into(), due: due.into(), state: state.into(), fired: false }]).unwrap_or_default(),
             tokens: 10, microdollars: 5, grade, version: 1, ..Default::default()
         }
     }

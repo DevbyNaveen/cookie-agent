@@ -223,7 +223,7 @@ pub fn detect() -> Option<Arc<dyn Sandbox>> {
 
 /// Each of stdout and stderr keeps at most this much.
 pub const OUTPUT_CAP: usize = 32 * 1024;
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// A tool that runs one `sh -c` command inside `sandbox`, in `workdir`.
 pub struct CommandTool {

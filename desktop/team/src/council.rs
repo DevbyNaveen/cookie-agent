@@ -341,7 +341,7 @@ impl Team {
             return;
         };
         let what = describe(p);
-        match self.exam(&p.target, &what, cases, crate::bench::Variant { model: None, tuning: Some(next.clone()), skills: None }).await {
+        match self.exam(&p.target, &what, cases, crate::bench::Variant { model: None, tuning: Some(next.clone()), skills: None, own_tools: false }).await {
             Ok(e) => {
                 let exam = crate::evolve::exam_json(&e);
                 p.exam = Some(exam.clone());

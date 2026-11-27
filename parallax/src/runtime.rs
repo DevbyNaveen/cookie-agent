@@ -19,8 +19,8 @@ use serde_json::{json, Value};
 use crate::verbs::Step;
 use crate::Parallax;
 
-const LIMIT: Duration = Duration::from_secs(240);
-const MAX_CALLS: usize = 500;
+const LIMIT: Duration = Duration::from_secs(1_800);
+const MAX_CALLS: usize = 5_000;
 
 fn helper(actions: &[crate::ActionSpec]) -> String {
     let mut s = String::from(

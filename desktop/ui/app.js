@@ -326,7 +326,8 @@ async function openAgent(id) {
   renderLog(r, lines);
   for (const job of live.values()) if (job.agent === r.id && !job.inbound && job.acc) dropSaidSoFar(job);
   // Until the person has written: a new hire may have greeted them first.
-  renderSuggest(r, !lines.some((l) => l.from === "you") && !busy.has(r.id) && needsOf(r.id).count === 0);
+  // The replies the agent offers for this moment (its own; gone once you write).
+  renderSuggest(r, !busy.has(r.id) && needsOf(r.id).count === 0);
   // What it holds for you sits at the end of its chat (today.js), then what waits for your yes.
   const desk = el("div", "desk");
   desk.id = "desk";
@@ -347,13 +348,9 @@ async function renderSuggest(r, show) {
   if (!show) return;
   const own = await call("starters", { id: r.id }).catch(() => []);
   if (current?.id !== r.id) return;
-  const job = r.job.replace(/\.$/, "");
-  const short = job.length > 70 ? job.split(/[.,;:—]/)[0] : job;
-  const ideas = own.length ? own : [
-    "Where should we start?",
-    `First step: ${short.charAt(0).toLowerCase() + short.slice(1)}`,
-    "What do you need from me?",
-  ];
+  // Only what the agent itself wrote for this person: no stock lines stand in for it.
+  if (!own.length) return;
+  const ideas = own;
   box.hidden = false;
   box.replaceChildren(...ideas.map((t) => {
     const b = el("button", null, t);
@@ -368,7 +365,10 @@ function renderLog(r, lines) {
   log.replaceChildren();
   const intro = el("div", "intro");
   const f = Faces.create(r.id, 96);
-  intro.append(f.el, el("h2", null, r.name), el("p", null, r.job));
+  // Under its name: the line it wrote about itself for you, else its job.
+  const about = el("p", null, r.job);
+  call("line", { id: r.id }).then((l) => { if (l && about.isConnected) about.textContent = l; }).catch(() => {});
+  intro.append(f.el, el("h2", null, r.name), about);
   log.append(intro);
   log.append(event([icon("sparkle"), "Hired ", strong(fmtDate(r.created_at))]));
   if (r.probation_until && r.probation_until > Date.now() / 1000) {
@@ -1637,7 +1637,7 @@ function onTeamEvent(ev) {
       // The decision shows on the step it was about, live as after a reload.
       if (was) for (const j of live.values()) if (j.agent === was.agent) for (const g of j.groups ?? []) for (const st of g.steps.values()) if (st.name === was.tool && st.end == null) { st.approval = ev.yes ? "allowed_once" : "denied"; paintGroup(g); }
       document.querySelectorAll(`[data-approval="${ev.id}"]`).forEach((c) => {
-        c.replaceWith(event([ev.yes ? "Approved" : ev.by === "stopped" ? "No longer needed" : "Denied", ev.by === "telegram" ? " from your phone" : ""]));
+        c.replaceWith(event([ev.yes ? "Approved" : ev.by === "stopped" ? "No longer needed" : ev.by === "timeout" ? "Nobody answered in time, so it didn't happen" : "Denied", ev.by === "telegram" ? " from your phone" : ""]));
       });
       renderNeeds();
       renderRoster();
@@ -1662,6 +1662,8 @@ function onTeamEvent(ev) {
       clearPending(job);
       live.delete(ev.job);
       busy.delete(ev.agent);
+      // It finished: whatever replies it chose to offer for this moment appear under the chat.
+      if (current?.id === ev.agent && view === "chat") setTimeout(() => { if (current?.id === ev.agent && !busy.has(ev.agent)) renderSuggest(current, needsOf(ev.agent).count === 0); }, 300);
       for (const t of job.threads?.values() ?? []) if (threadLive(t)) { t.state = ev.status === "stopped" ? "stopped" : "failed"; t.end = Date.now(); }
       for (const g of job.groups ?? []) { for (const s of g.steps.values()) s.end ??= Date.now(); g.closed = true; paintGroup(g); }
       allFaces(ev.agent, (f) => f.tool(null));
@@ -1834,6 +1836,12 @@ $("composer").onsubmit = async (e) => {
   const text = $("input").value.trim();
   // Naming another of your agents brings it in to answer here, even while this one works.
   const naming = [...text.matchAll(/(?:^|[^\w.])@([a-z0-9][a-z0-9-]*)(?![\w/-])/gi)].some((m) => addressBook.some((x) => x.kind === "team" && x.id !== agent.id && x.address.toLowerCase() === "@" + m[1].toLowerCase()));
+  // A question is open: what you type answers it (the waiting step gets it), not a new message.
+  const open = text && !naming && !pending.length ? questions.filter((q) => q.agent === agent.id).at(-1) : null;
+  if (open) {
+    if (await answerQuestion(open.id, text)) { $("input").value = ""; autosize(); drafts.delete(agent.id); syncSend(); }
+    return;
+  }
   if (busy.has(agent.id) && !naming) {
     if (!text) { await call("stop", { id: agent.id }); return; }
     // Mid-job: the words join the job in flight instead of starting a new one.
@@ -1973,6 +1981,20 @@ function rehearsalCard(r) {
     list.append(li);
   }
   card.append(list);
+  // What it made or changed inside its own worlds: done, shown here, then rewound.
+  for (const w of r.world_changes ?? []) {
+    const files = w.changes?.files ?? [];
+    const box = el("div", "rh-world");
+    box.append(el("strong", null, `In its world “${w.name}”: ${files.length} file${files.length === 1 ? "" : "s"} would change`));
+    const ul = el("ul", "rh-files");
+    for (const f of files.slice(0, 12)) {
+      const li = el("li", null, `${f.change} ${f.path}`);
+      if (f.lines?.length) li.append(el("pre", "rh-lines", f.lines.slice(0, 20).join("\n")));
+      ul.append(li);
+    }
+    box.append(ul);
+    card.append(box);
+  }
   if (r.answer) { const said = el("div", "rh-answer md"); said.innerHTML = Md.render(r.answer); card.append(said); }
   const foot = el("div", "rh-foot");
   if (r.ran_as) foot.append(el("span", "rh-ran", "Ran for real"));
@@ -2653,6 +2675,8 @@ async function boot() {
   if (fromLink && agentById(fromLink.agent)) { openAgent(fromLink.agent); return; }
   // First launch: the welcome (sign in, apps, hire) before anything else.
   if (await maybeWelcome()) return;
+  // Someone new who got here another way: Cookie still speaks first (once; a no-op for everyone else).
+  call("greet").then((g) => { if (g?.spoke) loadRoster().then(() => { if (!current && agentById("cookie")) openAgent("cookie"); }); }).catch(() => {});
   const only = new URLSearchParams(location.search).get("agent");
   if (only && agentById(only)) {
     // A window of its own: just this conversation, rail folded away.

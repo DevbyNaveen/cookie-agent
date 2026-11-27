@@ -224,8 +224,57 @@ pub(crate) fn tools(team: &Arc<Team>, agent: &str, agent_name: &str, trigger: &T
     // Someone outside can't make the agent question the person.
     if !matches!(trigger, Trigger::Contact { .. } | Trigger::Room { .. } | Trigger::Peer { .. } | Trigger::Test { .. } | Trigger::Shadow { .. }) {
         out.push(Arc::new(ask_tool(Arc::downgrade(team), agent.to_string(), agent_name.to_string())));
+        // What the person sees around its words, in its own hand: nothing here is a stock line.
+        out.push(Arc::new(offer_tool(Arc::downgrade(team), agent.to_string())));
+        out.push(Arc::new(line_tool(Arc::downgrade(team), agent.to_string())));
     }
     out
+}
+
+/// The replies offered under the chat, written by the agent for this person at this moment.
+fn offer_tool(team: Weak<Team>, agent: String) -> impl Tool {
+    tool(
+        "offer_replies",
+        "Put short replies under your chat that the person can tap to send you, in their voice: what they would most likely want to say or ask next, \
+         given where things stand now. Entirely your call whether to offer any, how many and what; an empty list clears them. \
+         They vanish when the person writes.",
+        json!({"type": "object", "properties": {"replies": {"type": "array", "items": {"type": "string"}}}, "required": ["replies"]}),
+        Effect::Read,
+        move |args: Value| {
+            let (team, agent) = (team.clone(), agent.clone());
+            async move {
+                let team = team.upgrade().ok_or("Cookie is closing.")?;
+                let replies: Vec<String> = args["replies"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|s| util::clip(s.trim(), 120)).filter(|s| !s.is_empty()).take(8).collect();
+                util::write_json(&team.paths.agent(&agent).join("starters.json"), &replies)?;
+                Ok(if replies.is_empty() { "No replies are offered now.".to_string() } else { format!("{} replies are offered under your chat.", replies.len()) })
+            }
+        },
+    )
+}
+
+/// The line under the agent's name: what it is for this person, in its own words.
+fn line_tool(team: Weak<Team>, agent: String) -> impl Tool {
+    tool(
+        "describe_myself",
+        "Write the one line the person sees under your name: what you are for them, in your words, from what you know of them and your job. \
+         Change it when what you do for them changes. It only changes what they read; your job stays what it is.",
+        json!({"type": "object", "properties": {"line": {"type": "string"}}, "required": ["line"]}),
+        Effect::Read,
+        move |args: Value| {
+            let (team, agent) = (team.clone(), agent.clone());
+            async move {
+                let team = team.upgrade().ok_or("Cookie is closing.")?;
+                let line = util::clip(args["line"].as_str().unwrap_or("").trim(), 220);
+                let path = team.paths.agent(&agent).join("line.txt");
+                if line.is_empty() {
+                    let _ = std::fs::remove_file(&path);
+                    return Ok("Your own line is cleared; your job is shown.".into());
+                }
+                std::fs::write(&path, &line).map_err(|e| e.to_string())?;
+                Ok("That is what the person now reads under your name.".into())
+            }
+        },
+    )
 }
 
 fn ask_tool(team: Weak<Team>, agent: String, agent_name: String) -> impl Tool {

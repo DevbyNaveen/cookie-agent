@@ -46,6 +46,12 @@ pub const FADE: f64 = 24.0 * 3600.0;
 pub const NOTICE_AT: f64 = 0.75;
 /// Notices per team per day, at most (labels are a person's time).
 pub const DAILY_CAP: i64 = 8;
+/// Signal kinds that wake an agent to work without telling the person
+/// anything (a watcher it wrote saw its condition): silent work, under its
+/// own daily cap, never the person's interruptions.
+pub const SILENT_KINDS: [&str; 1] = ["watch"];
+/// Silent wakes per agent per day, at most: a guard; their cost is the goal's budget.
+pub const SILENT_DAILY_CAP: i64 = 200;
 /// Signals a subject keeps.
 pub const MAX_CUES: usize = 20;
 /// A held plan due within this long is coming due: Cookie notices before the
@@ -132,7 +138,8 @@ impl Subject {
     }
 
     /// How much the team still wants `kind` on this subject, now.
-    fn wanted(&self, kind: &str, now: f64) -> f64 {
+    /// How much the team still wants this kind of signal here, 0–1, after its labels.
+    pub fn wanted(&self, kind: &str, now: f64) -> f64 {
         match self.habituation.get(kind) {
             Some(h) => habituation(h.w, (now - h.at) / 86_400.0),
             None => 1.0,
@@ -186,6 +193,13 @@ pub struct Team {
     /// Notices still waiting for a label (last week).
     pub open: usize,
     pub noticed_today: i64,
+    /// Silent wakes today ([`SILENT_KINDS`]).
+    pub worked_today: i64,
+}
+
+/// Whether every cue on a subject is silent work.
+pub fn silent(subject: &Subject) -> bool {
+    !subject.cues.is_empty() && subject.cues.iter().all(|c| SILENT_KINDS.contains(&c.kind.as_str()))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -383,12 +397,16 @@ pub fn consider(subject: &mut Subject, team: &Team, now: f64) -> Verdict {
         }
         return Verdict::Wait;
     }
-    if team.noticed_today >= DAILY_CAP {
+    // Two caps: the person's interruptions, and silent work.
+    let spent = if silent(subject) { team.worked_today >= SILENT_DAILY_CAP } else { team.noticed_today >= DAILY_CAP };
+    if spent {
         return Verdict::Wait;
     }
     let by_person = subject.cues.iter().any(|c| c.by_person);
     let since = subject.last_noticed_at.map(|t| (now - t) / 3600.0);
-    let score = utility(if hard { threshold } else { level }, threshold, by_person, since, team.open);
+    // Silent work tells nobody, so the rules for interrupting a person (someone on the team wrote on it,
+    // labels still open) don't apply; a hard silent cue the labels still want goes through.
+    let score = if hard && silent(subject) { 1.0 } else { utility(if hard { threshold } else { level }, threshold, by_person, since, team.open) };
     if score <= 0.0 {
         subject.pending_since = None;
         subject.cues.clear();
@@ -951,6 +969,21 @@ mod tests {
         assert_eq!(s.level, 0.0, "a hard cue adds no level");
         let Verdict::Notice(n) = consider(&mut s, &Team::default(), 0.0) else { panic!("noticed at once") };
         assert!(n.hard);
+    }
+
+    #[test]
+    fn silent_work_has_its_own_cap_and_is_tuned_by_labels() {
+        let now = 1_800_000_000.0;
+        let mut s = Subject::new("watch:w1", &["price".into()], now);
+        add(&mut s, Signal { id: "w1-1".into(), kind: "watch".into(), why: "price 480".into(), hard: true, at: now, ..Signal::default() }, now);
+        assert!(silent(&s));
+        let interruptions_spent = Team { noticed_today: DAILY_CAP, ..Team::default() };
+        assert!(matches!(consider(&mut s.clone(), &interruptions_spent, now), Verdict::Notice(_)), "the person's cap doesn't hold silent work");
+        let work_spent = Team { worked_today: SILENT_DAILY_CAP, ..Team::default() };
+        assert!(matches!(consider(&mut s, &work_spent, now), Verdict::Wait), "its own cap does");
+        let mut t = Subject::new("watch:w1", &["price".into()], now);
+        label(&mut t, &["watch".into()], "not_useful", now);
+        assert!(t.wanted("watch", now) <= 0.5, "a not useful halves what it is worth");
     }
 
     #[test]

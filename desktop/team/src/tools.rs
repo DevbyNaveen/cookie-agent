@@ -20,8 +20,11 @@ use serde_json::{json, Value};
 use crate::store::{AgentRecord, Schedule, Trigger};
 use crate::{util, Team};
 
+/// Readers of content someone else wrote, each given a quarantined `_fields` twin.
+const QUARANTINED_READERS: [&str; 5] = ["read_url", "read_page", "browser_read", "read_file", "mac_files_read"];
+
 /// How deep a chain of agents asking agents may go.
-pub const MAX_CHAIN: usize = 3;
+pub const MAX_CHAIN: usize = 6;
 
 pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, job: &str, approver: Option<Arc<dyn cookie_harness::Approver>>) -> Vec<Arc<dyn Tool>> {
     let g = &rec.grants;
@@ -50,6 +53,7 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
     }
     if g.files {
         out.push(Arc::new(write_file(work.clone())));
+        out.push(Arc::new(cookie_harness::edit::tool_for(work.clone())));
     }
     if g.web {
         out.extend(crate::pictures::tools());
@@ -70,18 +74,47 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
             }
         }
     }
+    // Tools it made for itself, and making one (`forge`): needs its own cage, like run_command.
+    if g.shell && !outside_now(trigger) {
+        out.extend(crate::forge::tools(team, &rec.id));
+        out.extend(crate::watchers::tools(team, &rec.id, trigger));
+    }
     if g.browser {
         out.extend(crate::browser::tools(team, &rec.id));
+        // Runs it saved, replayed with no model; saving one is the person's yes (`browser_runs`).
+        if crate::browser::available() {
+            out.extend(crate::browser_runs::tools(team, &rec.id));
+        }
     }
     // Its own software, beside the chat (`computer`); worlds of its own with "Worlds" on.
     if !matches!(trigger, Trigger::Contact { .. } | Trigger::Room { .. } | Trigger::Peer { .. }) {
         out.extend(crate::computer::workspace_tools(team, &rec.id));
         if g.worlds {
             out.extend(crate::computer::tools(team, &rec.id));
+            // Many writers at once, each in a copy of its world, merged back (`workers`).
+            let price = team.settings.try_read().ok().and_then(|s| s.price_of(&rec.model)).map(|p| cookie_harness::Price { input: p.input, output: p.output, cache_read: p.cache_read, cache_write: p.cache_write });
+            out.push(crate::workers::tool_for(team, rec, price));
+            out.push(crate::workers::race_tool(team, rec, price));
         }
     }
     if g.routines {
         out.extend(routine_tools(Arc::downgrade(team), rec.id.clone()));
+        // Goals it owns for days: set one (the person agrees once), keep its note, finish it (`goals`).
+        if !outside_now(trigger) {
+            out.extend(crate::goals::tools(team, &rec.id, trigger, job));
+        }
+    }
+    // A specialist's own data and tools (`specialists`): the invoice chaser's ledger.
+    if !outside_now(trigger) {
+        out.extend(crate::specialists::tools(team, &rec.id));
+    }
+    // Services the person connected by hand: brokers, machines, a phone line (`services`).
+    if !outside_now(trigger) && !crate::bench::is_probe(&rec.id) {
+        out.extend(crate::services::tools(team));
+    }
+    // A standing yes for a send it keeps asking for (`mandates`), never for outsiders.
+    if !outside_now(trigger) {
+        out.push(crate::mandates::tool_for(team, &rec.id));
     }
     // Talking to anyone, by address: teammates, contacts, invited agents.
     if let Some(t) = crate::talk::message_tool(team, rec, trigger) {
@@ -107,10 +140,13 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
         }
     }
     out.extend(crate::workbench::tools(team, &rec.id, &rec.name, trigger));
-    // The person's own files beyond its folder (Settings → Your files), never for
-    // someone reaching it from outside: a contact can't read your Documents through it.
-    if g.files && !outside {
-        out.extend(crate::access::tools(team, &rec.id, job));
+    // The person's own files beyond its folder (Settings → Your files) and the Mac's own apps,
+    // never for someone reaching it from outside: a contact can't read your Documents through it.
+    // A team in the cloud reaches them through the person's Mac (`hand`): same tools, same
+    // consent, run on the Mac when it is there and parked until it is.
+    if !outside && (g.files || g.mac) {
+        let mac_side = crate::hand::local_hand_tools(team, &rec.id, job, g.files, g.mac);
+        out.extend(if crate::hand::remote_hands() { crate::hand::proxied(team, &rec.id, job, mac_side) } else { mac_side });
     }
     // Images and video made with Higgsfield, when it is set up (`media`): each one approved first.
     if !outside && g.apps && crate::media::ready() && !crate::bench::is_probe(&rec.id) {
@@ -145,19 +181,9 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
         // Cookie hires the teammate the person asks for (they approve it first).
         out.push(crate::front::hire_tool(Arc::downgrade(team)));
     }
-    // The Mac's own apps, never for someone reaching it from outside.
-    if g.mac && !outside {
-        out.extend(crate::mac::tools());
-        out.extend(crate::control::tools());
-        out.extend(crate::hands::tools(team, &rec.id));
-        // 1Password sign-ins, once the person has allowed a vault for agents.
-        if !team.onepassword().vaults.is_empty() {
-            out.extend(crate::onepassword::tools(team));
-        }
-    }
     // Code that calls its read-only tools (only with "Run commands" on, never for outsiders).
     if g.shell && !outside {
-        if let Some(t) = crate::code::run_code_tool(&work, &out, team.cage(&rec.id), approver) {
+        if let Some(t) = crate::code::run_code_tool(&work, &out, team.cage(&rec.id), approver, g.web) {
             out.push(t);
         }
     }
@@ -167,8 +193,53 @@ pub(crate) fn for_agent(team: &Arc<Team>, rec: &AgentRecord, trigger: &Trigger, 
     if read_only {
         out.retain(|t| t.spec().effect == Effect::Read);
     }
+    // Each reader of outside content has a quarantined twin, `<name>_fields`: the content is
+    // read by a model with no tools and only the typed fields the agent names come back, so a
+    // stranger's mail or a page can give facts but never instructions (`quarantine::extract`).
+    // Work started by outside content (an email arriving, a contact, a peer, a watcher's page):
+    // its readers of outside content are only the quarantined twins, so what a stranger wrote
+    // reaches the agent as facts, never as words that could steer it. Work the person started
+    // gets both.
+    let fields_only = started_by_outside(team, trigger);
+    // The reader is the agent's own model, made fresh per call; a model that can't be reached
+    // now (no key) gets no twins rather than twins that always fail.
+    if let Ok(probe) = cookie_harness::Agent::new(&rec.model) {
+        drop(probe);
+        let twins: Vec<Arc<dyn Tool>> = out
+            .iter()
+            .filter(|t| t.spec().effect == Effect::Read && QUARANTINED_READERS.contains(&t.spec().name.as_str()))
+            .filter_map(|t| {
+                let model = rec.model.clone();
+                let fallback = rec.model.clone();
+                let reader = move || {
+                    cookie_harness::Agent::new(&model)
+                        .unwrap_or_else(|e| cookie_harness::Agent::with_provider(Arc::new(cookie_harness::providers::scripted::Scripted::new(vec![cookie_harness::providers::scripted::Scripted::text(&format!("{{\"error\": \"{e}\"}}"))])), &fallback))
+                };
+                cookie_harness::quarantine::extract(&format!("{}_fields", t.spec().name), t.clone(), reader).ok().map(|x| Arc::new(x) as Arc<dyn Tool>)
+            })
+            .collect();
+        out.extend(twins);
+        if fields_only {
+            // Pages are what someone else wrote; its own folder and the person's files stay readable.
+            out.retain(|t| !matches!(t.spec().name.as_str(), "read_url" | "read_page" | "browser_read"));
+        }
+    }
     // The same web read twice in ten minutes is answered from the first (`readcache`).
     crate::readcache::wrap(team, &rec.id, out)
+}
+
+/// Work begun by content from outside: a message from someone else, an email or app item that
+/// arrived and fired a routine, a page a watcher read.
+pub(crate) fn started_by_outside(team: &Team, trigger: &Trigger) -> bool {
+    match trigger {
+        Trigger::Contact { .. } | Trigger::Room { .. } | Trigger::Peer { .. } | Trigger::Inbox | Trigger::Watch { .. } => true,
+        Trigger::Routine { routine } => team.routines.try_read().map(|rs| rs.iter().any(|r| r.id == *routine && matches!(r.schedule, Schedule::App { .. }))).unwrap_or(true),
+        _ => false,
+    }
+}
+
+fn outside_now(trigger: &Trigger) -> bool {
+    matches!(trigger, Trigger::Contact { .. } | Trigger::Room { .. } | Trigger::Peer { .. })
 }
 
 fn write_file(root: PathBuf) -> impl Tool {
@@ -336,4 +407,20 @@ fn ask_agent(team: Weak<Team>, me: AgentRecord, chain: Vec<String>) -> impl Tool
         },
     )
     .with_preview(|args| format!("Ask {}: {}", args["agent"].as_str().unwrap_or("?"), util::clip(args["task"].as_str().unwrap_or(""), 600)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn work_begun_by_outside_content_is_known_as_such() {
+        let dir = tempfile::tempdir().unwrap();
+        let team = Team::open(dir.path()).unwrap();
+        assert!(started_by_outside(&team, &Trigger::Inbox));
+        assert!(started_by_outside(&team, &Trigger::Watch { watcher: "w".into() }));
+        assert!(!started_by_outside(&team, &Trigger::Chat));
+        assert!(!started_by_outside(&team, &Trigger::Goal { goal: "g".into() }));
+        assert!(!started_by_outside(&team, &Trigger::Routine { routine: "none".into() }), "a routine that isn't fired by an app is the person's own");
+    }
 }

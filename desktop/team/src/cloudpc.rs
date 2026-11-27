@@ -39,23 +39,27 @@ async fn ssm(cr: &Creds, target: &str, body: &Value) -> Result<Value, String> {
     let (amz, date) = aws::amz_dates(util::now());
     let ct = "application/x-amz-json-1.1";
     let tgt = format!("AmazonSSM.{target}");
-    let signed = "content-type;host;x-amz-date;x-amz-target";
-    let creq = format!("POST\n/\n\ncontent-type:{ct}\nhost:{host}\nx-amz-date:{amz}\nx-amz-target:{tgt}\n\n{signed}\n{}", sha_hex(payload.as_bytes()));
+    // A role's short-lived credentials carry a session token, which must be signed and sent.
+    let (signed, token_line) = match &cr.token {
+        Some(t) => ("content-type;host;x-amz-date;x-amz-security-token;x-amz-target", format!("x-amz-security-token:{t}\n")),
+        None => ("content-type;host;x-amz-date;x-amz-target", String::new()),
+    };
+    let creq = format!("POST\n/\n\ncontent-type:{ct}\nhost:{host}\nx-amz-date:{amz}\n{token_line}x-amz-target:{tgt}\n\n{signed}\n{}", sha_hex(payload.as_bytes()));
     let scope = format!("{date}/{}/ssm/aws4_request", cr.region);
     let sts = format!("AWS4-HMAC-SHA256\n{amz}\n{scope}\n{}", sha_hex(creq.as_bytes()));
     let k = hmac(&hmac(&hmac(&hmac(format!("AWS4{}", cr.secret).as_bytes(), &date), &cr.region), "ssm"), "aws4_request");
     let auth = format!("AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed}, Signature={}", cr.key, hex(&hmac(&k, &sts)));
-    let resp = reqwest::Client::new()
+    let mut req = reqwest::Client::new()
         .post(format!("https://{host}/"))
         .header("content-type", ct)
         .header("x-amz-date", &amz)
         .header("x-amz-target", &tgt)
         .header("authorization", auth)
-        .timeout(std::time::Duration::from_secs(30))
-        .body(payload)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+        .timeout(std::time::Duration::from_secs(30));
+    if let Some(t) = &cr.token {
+        req = req.header("x-amz-security-token", t);
+    }
+    let resp = req.body(payload).send().await.map_err(|e| e.to_string())?;
     let ok = resp.status().is_success();
     let v: Value = resp.json().await.unwrap_or(Value::Null);
     if ok {
@@ -126,13 +130,24 @@ impl Team {
         util::write_json(&self.computer_path(), c)
     }
 
-    fn computer_creds(&self, region: &str) -> Result<Creds, String> {
-        Ok(Creds {
-            key: self.keys.get("computer:aws:key").ok_or("The cloud computer's key isn't on this Mac.")?,
-            secret: self.keys.get("computer:aws:secret").ok_or("The cloud computer's key isn't on this Mac.")?,
-            token: None,
-            region: region.to_string(),
-        })
+    /// The narrow key the person saved, or, on a server in AWS, the role that server runs as
+    /// (nothing long-lived stored at all).
+    async fn computer_creds(&self, region: &str) -> Result<Creds, String> {
+        if let (Some(key), Some(secret)) = (self.keys.get("computer:aws:key"), self.keys.get("computer:aws:secret")) {
+            return Ok(Creds { key, secret, token: None, region: region.to_string() });
+        }
+        if cfg!(target_os = "macos") {
+            return Err("The cloud computer's key isn't on this Mac.".into());
+        }
+        static ROLE: std::sync::Mutex<Option<(Creds, u64)>> = std::sync::Mutex::new(None);
+        if let Some((c, until)) = ROLE.lock().unwrap().clone() {
+            if until > util::now() + 300 && c.region == region {
+                return Ok(c);
+            }
+        }
+        let got = Creds::from_instance_role(region).await.map_err(|e| format!("No key for the cloud computer, and no machine role: {e}"))?;
+        *ROLE.lock().unwrap() = Some(got.clone());
+        Ok(got.0)
     }
 
     /// Record what Cookie saw: a running machine has an open session, a stopped one none.
@@ -159,7 +174,7 @@ impl Team {
         let Some(c) = self.computer() else {
             return json!({"set_up": false});
         };
-        let state = match self.computer_creds(&c.region) {
+        let state = match self.computer_creds(&c.region).await {
             Ok(cr) => aws::state(&cr, &c.instance).await,
             Err(e) => Err(e),
         };
@@ -175,7 +190,7 @@ impl Team {
 
     pub async fn computer_wake(&self) -> Result<Value, String> {
         let c = self.computer().ok_or("There's no cloud computer set up.")?;
-        let cr = self.computer_creds(&c.region)?;
+        let cr = self.computer_creds(&c.region).await?;
         if aws::state(&cr, &c.instance).await? != "running" {
             // Spot capacity comes and goes in minutes: keep asking for a while before giving up.
             let mut wait = 10;
@@ -212,7 +227,7 @@ impl Team {
 
     pub async fn computer_sleep(&self) -> Result<Value, String> {
         let c = self.computer().ok_or("There's no cloud computer set up.")?;
-        let cr = self.computer_creds(&c.region)?;
+        let cr = self.computer_creds(&c.region).await?;
         aws::ec2(&cr, "StopInstances", &[("InstanceId.1".into(), c.instance.clone())]).await?;
         self.note_state("stopped");
         Ok(self.computer_status().await)
@@ -223,7 +238,7 @@ impl Team {
     pub async fn computer_px(&self, tool: &str, args: &Value) -> Result<Value, String> {
         use base64::Engine;
         let c = self.computer().ok_or("There's no cloud computer set up.")?;
-        let cr = self.computer_creds(&c.region)?;
+        let cr = self.computer_creds(&c.region).await?;
         if aws::state(&cr, &c.instance).await? != "running" {
             self.computer_wake().await?;
         }
@@ -302,7 +317,7 @@ impl Team {
     pub async fn computer_move(&self, market: &str) -> Result<Value, String> {
         let market = if market == "spot" { "spot" } else { "on-demand" };
         let mut c = self.computer().ok_or("There's no cloud computer set up.")?;
-        let cr = self.computer_creds(&c.region)?;
+        let cr = self.computer_creds(&c.region).await?;
         let old = c.instance.clone();
         let x = aws::ec2(&cr, "DescribeInstances", &[("InstanceId.1".into(), old.clone())]).await?;
         let image = field(&x, "imageId", 0).ok_or("No image id.")?.to_string();

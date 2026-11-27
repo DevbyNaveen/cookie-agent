@@ -30,14 +30,20 @@ use crate::{util, Team};
 
 const API: &str = "https://api.telegram.org";
 
+/// Telegram's Bot API, or a Bot API server of the person's own (`COOKIE_TELEGRAM_API`).
+fn api_base() -> String {
+    std::env::var("COOKIE_TELEGRAM_API").ok().filter(|v| v.starts_with("https://") || v.starts_with("http://127.0.0.1") || v.starts_with("http://localhost")).unwrap_or_else(|| API.to_string())
+}
+
 struct Bot {
     http: reqwest::Client,
     token: String,
+    api: String,
 }
 
 impl Bot {
     async fn call(&self, method: &str, body: Value) -> Result<Value, String> {
-        let url = format!("{API}/bot{}/{method}", self.token);
+        let url = format!("{}/bot{}/{method}", self.api, self.token);
         let v: Value = self.http.post(url).json(&body).send().await.map_err(|e| e.without_url().to_string())?.json().await.map_err(|e| e.without_url().to_string())?;
         if v["ok"].as_bool() == Some(true) {
             Ok(v["result"].clone())
@@ -50,7 +56,7 @@ impl Bot {
     async fn download(&self, file_id: &str) -> Result<Vec<u8>, String> {
         let f = self.call("getFile", json!({"file_id": file_id})).await?;
         let path = f["file_path"].as_str().ok_or("Telegram didn't say where the file is.")?;
-        let url = format!("{API}/file/bot{}/{path}", self.token);
+        let url = format!("{}/file/bot{}/{path}", self.api, self.token);
         let bytes = self.http.get(url).send().await.map_err(|e| e.without_url().to_string())?.bytes().await.map_err(|e| e.without_url().to_string())?;
         Ok(bytes.to_vec())
     }
@@ -65,7 +71,7 @@ impl Bot {
 impl Team {
     /// Save the bot token (to the Keychain), check it, and switch Telegram on.
     pub async fn telegram_connect(&self, token: &str) -> Result<String, String> {
-        let bot = Bot { http: reqwest::Client::new(), token: token.trim().to_string() };
+        let bot = Bot { http: reqwest::Client::new(), token: token.trim().to_string(), api: api_base() };
         let me = bot.call("getMe", json!({})).await.map_err(|e| format!("That token didn't work: {e}"))?;
         self.keys.set("telegram", token.trim())?;
         self.update_settings(|s| s.telegram.enabled = true).await?;
@@ -245,7 +251,7 @@ fn on_progress(live: &Mutex<HashMap<String, Live>>, jobs: &Mutex<HashMap<String,
 /// Send or edit each changed progress message, no faster than Telegram allows.
 async fn flush_progress(team: &Team, live: &Mutex<HashMap<String, Live>>) {
     let Some(token) = team.keys.get("telegram") else { return };
-    let bot = Bot { http: reqwest::Client::new(), token };
+    let bot = Bot { http: reqwest::Client::new(), token, api: api_base() };
     let due: Vec<(String, String, Option<i64>, String)> = {
         let mut all = live.lock().unwrap();
         all.iter_mut()
@@ -294,7 +300,7 @@ pub(crate) fn spawn(team: Arc<Team>) {
             let token = if s.telegram.enabled { t.keys.get("telegram") } else { None };
             match token {
                 Some(token) => {
-                    let bot = Bot { http: reqwest::Client::builder().timeout(Duration::from_secs(40)).build().unwrap_or_default(), token };
+                    let bot = Bot { http: reqwest::Client::builder().timeout(Duration::from_secs(40)).build().unwrap_or_default(), token, api: api_base() };
                     if let Err(e) = poll_once(&t, &bot, &j).await {
                         t.emit(TeamEvent::Channel { name: "telegram".into(), status: format!("error: {e}") });
                         tokio::time::sleep(Duration::from_secs(10)).await;
@@ -327,7 +333,7 @@ pub(crate) fn spawn(team: Arc<Team>) {
                 continue;
             }
             let Some(token) = team.keys.get("telegram") else { continue };
-            let bot = Bot { http: reqwest::Client::new(), token };
+            let bot = Bot { http: reqwest::Client::new(), token, api: api_base() };
             match ev {
                 TeamEvent::JobFinished { job, answer, error, .. } => {
                     let chat = jobs.lock().unwrap().remove(&job);
@@ -557,5 +563,71 @@ mod tests {
         assert_eq!(pick(&team, "sales: hi").map(|(x, r)| (x.name, r)), Some(("Sales".into(), "hi".into())));
         assert!(pick(&team, "hello").is_none());
         assert!(pick(&team, "@Sales").is_none());
+    }
+}
+
+#[cfg(test)]
+mod channel_tests {
+    use super::*;
+
+    /// A stand-in for Telegram: answers every call with ok and keeps what was sent.
+    async fn fake_telegram(updates: Value) -> (String, Arc<Mutex<Vec<(String, Value)>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen: Arc<Mutex<Vec<(String, Value)>>> = Default::default();
+        let s2 = seen.clone();
+        tokio::spawn(async move {
+            let mut served_updates = false;
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                let mut buf = vec![0u8; 65536];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let method = req.split_whitespace().nth(1).unwrap_or("").rsplit('/').next().unwrap_or("").to_string();
+                let body: Value = req.split("\r\n\r\n").nth(1).and_then(|b| serde_json::from_str(b).ok()).unwrap_or(Value::Null);
+                let result = if method == "getUpdates" && !served_updates {
+                    served_updates = true;
+                    updates.clone()
+                } else if method == "getUpdates" {
+                    json!([])
+                } else {
+                    json!({"message_id": 1})
+                };
+                s2.lock().unwrap().push((method, body));
+                let out = json!({"ok": true, "result": result}).to_string();
+                let _ = sock.write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{out}", out.len()).as_bytes()).await;
+            }
+        });
+        (base, seen)
+    }
+
+    fn said(seen: &Arc<Mutex<Vec<(String, Value)>>>) -> Vec<String> {
+        seen.lock().unwrap().iter().filter(|(m, _)| m == "sendMessage").map(|(_, b)| b["text"].as_str().unwrap_or("").to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_chat_links_with_its_code_then_sees_the_team() {
+        let dir = tempfile::tempdir().unwrap();
+        let team = Team::open(dir.path()).unwrap();
+        team.add_agent(crate::AgentRecord {
+            id: "w".into(), name: "Writing Desk".into(), model: "anthropic:x".into(), job: "drafts".into(), created_at: 0,
+            grants: crate::store::Grants::none(), limits: Default::default(), probation_until: None, parent: None, shadow_of: None, handover: None, origin: None, version: 1,
+        })
+        .await
+        .unwrap();
+        team.update_settings(|s| s.telegram.pending_code = Some("K7Q2".into())).await.unwrap();
+        let msg = |id: i64, text: &str| json!({"update_id": id, "message": {"message_id": id, "chat": {"id": 42}, "text": text}});
+        let (base, seen) = fake_telegram(json!([msg(1, "hello"), msg(2, "/start K7Q2"), msg(3, "/agents")])).await;
+        let bot = Bot { http: reqwest::Client::new(), token: "T".into(), api: base };
+        let jobs = Arc::new(Mutex::new(HashMap::new()));
+        poll_once(&team, &bot, &jobs).await.unwrap();
+        let out = said(&seen);
+        assert!(out[0].contains("isn't linked"), "a stranger's chat is refused: {out:?}");
+        assert!(out[1].starts_with("Linked."), "{out:?}");
+        assert!(out[2].contains("@Writing_Desk"), "{out:?}");
+        let s = team.settings().await;
+        assert!(s.telegram.chats.contains_key("42") && s.telegram.pending_code.is_none(), "linked once, the code spent");
+        assert_eq!(s.telegram.offset, 4, "every update is taken once");
     }
 }

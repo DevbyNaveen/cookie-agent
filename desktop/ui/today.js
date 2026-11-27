@@ -134,6 +134,75 @@ async function renderDesk(agentId) {
     parts.push(deskCard(agentId, `Promised (${promised.length})`, list));
   }
 
+  // A real specialist: its own ledger and goal (`specialists`). Offered to an agent whose job is invoices.
+  const specialty = await call("specialty", { agent: agentId }).catch(() => null);
+  if (stale()) return;
+  if (specialty === "invoices") {
+    const ledger = await call("invoices", { agent: agentId }).catch(() => []);
+    if (stale()) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const open = ledger.filter((i) => i.status === "open" || i.status === "reminded");
+    const g = el("div", "group");
+    g.append(setRow(`${ledger.length} invoices in its ledger`, `${open.length} open · ${ledger.filter((i) => i.status === "paid").length} paid`, null));
+    for (const i of open.slice(0, 6)) {
+      const r = setRow(`${i.who}: ${i.amount} ${i.currency}`, `Due ${i.due}${i.due < today ? " · overdue" : ""} · ${i.status}`, null);
+      if (i.due < today) r.classList.add("overdue");
+      g.append(r);
+    }
+    parts.push(deskCard(agentId, "Its ledger", g));
+  } else if (/invoice/i.test(`${who.name} ${who.job}`)) {
+    const g = el("div", "group");
+    const r = setRow("Make it a real invoice chaser", "It gets a ledger of your invoices, records each invoice email that arrives, and owns one goal: no invoice more than 14 days overdue without a reminder, checked against the ledger. Reminders still ask you.", null);
+    const acts = el("div", "row-actions");
+    acts.append(button("Set it up", "primary small", async () => {
+      try { await call("make_invoice_chaser", { agent: agentId }); toast("Set up", `${who.name} has its ledger, its routine on your mail, and its goal.`, "good"); refreshDesk(); }
+      catch (e) { toast("Couldn't set it up", String(e), "error"); }
+    }));
+    r.append(acts); g.append(r);
+    parts.push(deskCard(agentId, "A specialist, for real", g));
+  }
+
+  // What it owns for days: its goals, what it is watching for, and work waiting its turn.
+  const [goals, watching, queued] = await Promise.all([
+    call("goals", { agent: agentId }).catch(() => []),
+    call("watchers", { agent: agentId }).catch(() => []),
+    call("queued", { agent: agentId }).catch(() => []),
+  ]);
+  if (stale()) return;
+  const live = goals.filter((g) => g.status !== "done" || Date.now() / 1000 - (g.finished_at || 0) < 3 * 86400);
+  if (live.length) {
+    const list = el("div", "group");
+    for (const g of live.slice(0, 6)) {
+      const spent = `$${(g.spent_microdollars / 1e6).toFixed(2)}${g.budget_dollars ? ` of $${g.budget_dollars.toFixed(2)}` : ""}`;
+      const when = g.status === "done" ? `Done: ${g.evidence}` : g.status !== "active" ? (g.status === "out_of_budget" ? `Stopped at its budget (${spent}).` : "Stopped.")
+        : g.next_at ? `Next look ${new Date(g.next_at * 1000).toLocaleString()}: ${g.next_why}. ${spent} · ${g.sittings.length} sittings.` : `Waiting for a watcher. ${spent}.`;
+      const r = setRow(g.objective, `${g.progress ? plain(g.progress).slice(0, 220) + " · " : ""}${when}`, null);
+      const acts = el("div", "row-actions");
+      if (g.status === "active") acts.append(button("Stop", "quiet small danger", async () => { await call("goal_status", { id: g.id, status: "stopped" }); refreshDesk(); }));
+      else if (g.status !== "done") acts.append(button("Go on", "quiet small", async () => { await call("goal_status", { id: g.id, status: "active" }); refreshDesk(); }));
+      r.append(acts);
+      list.append(r);
+    }
+    parts.push(deskCard(agentId, `Goals it owns (${live.length})`, list));
+  }
+  const watchingNow = watching.filter((w) => w.active);
+  if (watchingNow.length) {
+    const list = el("div", "group");
+    for (const w of watchingNow.slice(0, 8)) {
+      const r = setRow(`Watching for: ${w.what}`, `Every ${w.every_minutes} min${w.online ? ", on the web" : ""} · ${w.runs} looks, ${w.hits} hits · last: ${w.last_said}`, null);
+      const acts = el("div", "row-actions");
+      acts.append(button("Stop", "quiet small", async () => { await call("stop_watcher", { id: w.id }); refreshDesk(); }));
+      r.append(acts);
+      list.append(r);
+    }
+    parts.push(deskCard(agentId, "Watching, for free", list));
+  }
+  if (queued.length) {
+    const list = el("div", "group");
+    for (const q of queued.slice(0, 5)) list.append(setRow(plain(q.text).slice(0, 160), `Waiting its turn since ${new Date(q.at * 1000).toLocaleTimeString()}`, null));
+    parts.push(deskCard(agentId, `Next up (${queued.length})`, list));
+  }
+
   // The front desk also holds what's about the whole team.
   if (agentId === "cookie") parts.push(...await teamDesk());
   if (stale()) return;
@@ -144,6 +213,35 @@ async function renderDesk(agentId) {
 /** Cookie's share of the desk: the morning recap, your mail, and Scout. */
 async function teamDesk() {
   const out = [];
+  // The morning table: the whole team on one screen, read from its records.
+  const m = await call("morning").catch(() => null);
+  if (m && (m.done.length || m.goals.length || m.waiting_for_you || m.due.length || m.queued || m.waiting_for_mac || m.watching)) {
+    const g = el("div", "group");
+    const c = m.counts;
+    const judged = [c.verified && `${c.verified} shown right`, c.corrected && `${c.corrected} you corrected`, c.failed && `${c.failed} failed`, c.unknown && `${c.unknown} not yet checked`].filter(Boolean).join(" · ");
+    g.append(setRow(`Since yesterday: ${m.done.length} done on their own${m.dollars ? `, $${m.dollars.toFixed(2)}` : ""}`, judged || "Nothing ran.", null));
+    const waits = [m.waiting_for_you && `${m.waiting_for_you} waiting for your yes`, m.due.length && `${m.due.length} promised for today`, m.waiting_for_mac && `${m.waiting_for_mac} waiting for your Mac`, m.queued && `${m.queued} queued`].filter(Boolean);
+    if (waits.length) g.append(setRow("Waiting", waits.join(" · "), null));
+    const live = m.goals.filter((x) => x.status === "active");
+    if (live.length || m.watching) g.append(setRow(`Carrying on its own: ${live.length} goal${live.length === 1 ? "" : "s"}, ${m.watching} watcher${m.watching === 1 ? "" : "s"}`, live.slice(0, 3).map((x) => `${agentById(x.agent)?.name ?? x.agent}: ${x.objective}`).join(" · ") + (m.watcher_hits_today ? ` · ${m.watcher_hits_today} watcher hits today` : ""), null));
+    for (const d of m.done.slice(0, 6)) {
+      const tag = { verified: "shown right", corrected: "corrected", failed: "failed", unknown: "not checked" }[d.end] || d.end;
+      const r = setRow(`${d.name}: ${plain(d.what)}`, `${tag} · ${plain(d.said)}`, null);
+      if (d.end === "failed") r.classList.add("overdue");
+      const acts = el("div", "row-actions");
+      acts.append(button("Open", "quiet small", () => openAgent(d.agent)));
+      r.append(acts);
+      g.append(r);
+    }
+    out.push(deskCard("cookie", "This morning", g));
+  }
+  // Work a cloud team parked because it needs this Mac (`hand`): it runs when Cookie is open here.
+  const mac = await call("waiting_on_mac").catch(() => null);
+  if (mac?.parked?.length) {
+    const list = el("div", "group");
+    for (const c of mac.parked.slice(0, 6)) list.append(setRow(`${agentById(c.agent)?.name ?? c.agent}: ${c.tool.replace(/_/g, " ")}`, `Parked ${new Date(c.at * 1000).toLocaleString()}`, null));
+    out.push(deskCard("cookie", `Waiting for your Mac (${mac.parked.length})`, list, el("p", "set-note", mac.mac_connected ? "Your Mac is connected: these run now." : "These run when Cookie is open on your Mac.")));
+  }
   const ideas = await call("scout").catch(() => []);
   // Hires Scout thinks you'd want.
   for (const idea of ideas) {

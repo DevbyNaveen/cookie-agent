@@ -17,3 +17,4 @@ tauri-plugin-global-shortcut = "2"
 cookie-team = { path = "../team" }
 serde_json = "1"
 tokio = { version = "1", features = ["sync", "rt-multi-thread"] }
+tokio-util = "0.7"

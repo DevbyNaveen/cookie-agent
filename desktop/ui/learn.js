@@ -9,31 +9,104 @@ async function loadQuestions() {
   renderNeeds();
 }
 
-function questionCard(q) {
-  const c = el("div", "approve-card ask-card");
-  c.dataset.question = q.id;
-  const head = el("div", "approve-head");
-  const f = Faces.create(q.agent, 24); f.setMood("waiting");
-  head.append(f.el, el("span", null, `${q.agent_name} asks`));
-  const body = el("div", "ask-q bubble md");
-  body.innerHTML = Md.render(q.question);
-  c.append(head, body);
-  const send = async (answer) => {
-    try { await call("answer_question", { id: q.id, answer }); }
-    catch (e) { toast("Couldn't answer", String(e), "error"); }
-  };
-  if (q.choices?.length) {
-    const choices = el("div", "ask-choices");
-    for (const ch of q.choices) choices.append(button(ch, "quiet small ask-choice", () => send(ch)));
-    c.append(choices);
-  }
-  const own = el("form", "ask-own");
-  const inp = input("", q.choices?.length ? "Or answer in your own words" : "Your answer");
-  own.append(inp, button("Answer", "primary small", () => own.requestSubmit()));
-  own.onsubmit = (e) => { e.preventDefault(); if (inp.value.trim()) send(inp.value); };
-  c.append(own);
-  return c;
+/** What you answered, by question id: the card keeps it once the job moves on. */
+const askedAnswers = new Map();
+const LETTERS = "ABCDE";
+
+/** Answer a question: the waiting tool call gets it, the job carries on. Never a new message. */
+async function answerQuestion(id, answer) {
+  askedAnswers.set(id, answer);
+  try { await call("answer_question", { id, answer }); return true; }
+  catch (e) { askedAnswers.delete(id); toast("Couldn't answer", String(e), "error"); return false; }
 }
+
+/** A question in the chat, Nod-style: lettered choices in one list, the last row your own words. */
+function questionCard(q) {
+  const row = el("div", "msg agent ask-row");
+  row.dataset.question = q.id;
+  const c = el("div", "ask-card");
+  const body = el("div", "ask-q md");
+  body.innerHTML = Md.render(q.question);
+  c.append(body);
+
+  const list = el("div", "ask-list");
+  list.setAttribute("role", "listbox");
+  list.setAttribute("aria-label", q.question);
+  const rows = [];
+  const lock = (on) => { c.classList.toggle("sending", on); rows.forEach((r) => (r.disabled = on)); ownIn.disabled = on; };
+  const pick = async (answer, r) => {
+    if (c.classList.contains("sending")) return;
+    rows.forEach((x) => x.classList.toggle("chosen", x === r));
+    lock(true);
+    if (!(await answerQuestion(q.id, answer))) { lock(false); r?.classList.remove("chosen"); }
+  };
+  (q.choices ?? []).forEach((ch, i) => {
+    const r = el("button", "ask-opt");
+    r.type = "button";
+    r.setAttribute("role", "option");
+    r.append(el("span", "ask-key", LETTERS[i]), el("span", "ask-text", ch));
+    r.onclick = () => pick(ch, r);
+    rows.push(r);
+    list.append(r);
+  });
+
+  // The last row: type your own answer right here.
+  const own = el("form", "ask-opt ask-own");
+  const pen = el("span", "ask-key ask-pen");
+  pen.innerHTML = '<svg><use href="#i-pencil"/></svg>';
+  const ownIn = el("input", "ask-own-in");
+  ownIn.placeholder = q.choices?.length ? "Type your own answer" : "Type your answer";
+  ownIn.setAttribute("aria-label", ownIn.placeholder);
+  const go = el("button", "ask-go");
+  go.type = "submit";
+  go.setAttribute("aria-label", "Send answer");
+  go.innerHTML = '<svg><use href="#i-up"/></svg>';
+  own.append(pen, ownIn, go);
+  own.onclick = (e) => { if (e.target === own || e.target === pen) ownIn.focus(); };
+  own.onsubmit = (e) => { e.preventDefault(); const v = ownIn.value.trim(); if (v) pick(v, own); };
+  ownIn.addEventListener("input", () => own.classList.toggle("typed", !!ownIn.value.trim()));
+  list.append(own);
+  c.append(list);
+
+  const foot = el("div", "ask-foot");
+  foot.append(el("span", null, `${q.agent_name} is waiting on you`), el("span", "ask-hint", q.choices?.length ? `Press ${LETTERS.slice(0, q.choices.length).split("").join(" ")} or type below` : "Or reply in the box below"));
+  c.append(foot);
+  row.append(c);
+  return row;
+}
+
+/** The card once answered: the question, and the answer you gave, marked. */
+function answeredCard(q, answer, by) {
+  const row = el("div", "msg agent ask-row");
+  const c = el("div", "ask-card answered");
+  const body = el("div", "ask-q md");
+  body.innerHTML = Md.render(q.question);
+  c.append(body);
+  if (answer) {
+    const list = el("div", "ask-list");
+    const i = (q.choices ?? []).indexOf(answer);
+    const r = el("div", "ask-opt chosen");
+    r.append(i >= 0 ? el("span", "ask-key", LETTERS[i]) : (() => { const k = el("span", "ask-key ask-pen"); k.innerHTML = '<svg><use href="#i-pencil"/></svg>'; return k; })(), el("span", "ask-text", answer));
+    list.append(r);
+    c.append(list);
+  }
+  c.append(el("div", "ask-foot", by === "timeout" ? "Unanswered: it carried on without" : by === "telegram" ? "Answered from your phone" : by === "mail" ? "Answered by mail" : "Answered"));
+  row.append(c);
+  return row;
+}
+
+// A–E pick a choice on the newest open card, when you aren't typing somewhere.
+addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+  const t = e.target;
+  if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+  if (document.querySelector("dialog[open]")) return;
+  const i = LETTERS.indexOf(e.key.toUpperCase());
+  if (i < 0) return;
+  const cards = [...document.querySelectorAll("#log .ask-row:not(:has(.answered)) .ask-card:not(.sending)")];
+  const opt = cards.at(-1)?.querySelectorAll("button.ask-opt")[i];
+  if (opt) { e.preventDefault(); opt.click(); }
+});
 
 function onQuestion(q) {
   questions.push(q);
@@ -47,9 +120,9 @@ function onQuestionAnswered(ev) {
   const q = questions.find((x) => x.id === ev.id);
   if (!q) return false;
   questions = questions.filter((x) => x.id !== ev.id);
-  document.querySelectorAll(`[data-question="${ev.id}"]`).forEach((c) => {
-    c.replaceWith(event([ev.by === "timeout" ? "Unanswered: it carried on without" : "Answered", ev.by === "telegram" ? " from your phone" : ""]));
-  });
+  const answer = ev.by === "timeout" ? undefined : askedAnswers.get(ev.id);
+  askedAnswers.delete(ev.id);
+  document.querySelectorAll(`[data-question="${ev.id}"]`).forEach((c) => c.replaceWith(answeredCard(q, answer, ev.by)));
   renderNeeds();
   renderRoster();
   if (busy.has(q.agent)) setMood(q.agent, "working");

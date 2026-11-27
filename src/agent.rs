@@ -60,6 +60,15 @@ pub struct Agent {
     pub(crate) finish_check: bool,
     /// Every action of a run, hashed, chained and signed (`trace`).
     pub(crate) trace: Option<crate::trace::Tracer>,
+    /// A stronger model to hand the rest of the run to when two rounds of
+    /// steps in a row fail (`Agent::escalate_to`): the cheap model does the
+    /// routine work, the strong one takes over where it gets stuck.
+    pub(crate) escalate: Option<(String, Arc<dyn Provider>)>,
+    /// Enkeon's reading tools that get a quarantined `_fields` twin, and
+    /// whether the twin replaces the tool (`Agent::quarantine_reads`).
+    pub(crate) quarantine: Vec<(String, bool)>,
+    /// A faster, cheaper model for the routine steps (`Agent::routine_model`).
+    pub(crate) routine: Option<(String, Arc<dyn Provider>)>,
 }
 
 /// Where a run starts from: what is trusted, what it may spend, how deep it
@@ -123,7 +132,7 @@ pub enum Event {
 }
 
 /// How many times a cut-off reply is continued before the run gives up.
-const CONTINUE_AT_MOST: usize = 3;
+const CONTINUE_AT_MOST: usize = 8;
 
 /// How many times a conversation the model said no longer fits is summarised
 /// and sent again before the run ends as `context_full`.
@@ -310,6 +319,14 @@ impl Agent {
             provenance.saw_untrusted();
         }
         let mut loop_guard = LoopGuard::default();
+        // The model this run asks now: its own, until it escalates.
+        let mut asking: (String, Arc<dyn Provider>) = (self.model.clone(), self.provider.clone());
+        let mut failed_rounds = 0usize;
+        let mut escalated = false;
+        // The last round only read, and every read worked: gathering, the routine model's work.
+        let mut gathering = false;
+        // The routine model tried to answer: this call goes to the main model instead.
+        let mut routine_off = false;
         let mut said: Vec<String> = Vec::new();
         // Why this run is writing its last answer, once it must.
         let mut closing: Option<String> = None;
@@ -380,10 +397,17 @@ impl Agent {
             } else {
                 meter.begin_call(&budget)?;
             }
-            let request = ModelRequest { model: &self.model, system: &system, messages: &view, tools: specs.clone(), reasoning: self.reasoning, output_schema: self.output_schema.as_ref(), prefix_ttl: self.prefix_ttl };
+            let on_routine = gathering && !routine_off && !escalated && closing.is_none() && self.routine.is_some();
+            let (call_model, call_provider) = match (&self.routine, on_routine) {
+                (Some((m, p)), true) => (m.clone(), p.clone()),
+                _ => (asking.0.clone(), asking.1.clone()),
+            };
+            let request = ModelRequest { model: &call_model, system: &system, messages: &view, tools: specs.clone(), reasoning: self.reasoning, output_schema: self.output_schema.as_ref(), prefix_ttl: self.prefix_ttl };
             let mut fell_back: Vec<(String, String)> = Vec::new();
             let mut forward = |event: ProviderEvent| {
                 on_event(match event {
+                    // The routine model's words aren't streamed: if it answers, the main model answers instead.
+                    ProviderEvent::TextDelta(_) if on_routine => return,
                     ProviderEvent::TextDelta(text) => Event::TextDelta(text),
                     ProviderEvent::ToolCallStarted { id, name } => {
                         open.push(id.clone());
@@ -395,9 +419,9 @@ impl Agent {
                     }
                 })
             };
-            let chat = telemetry::chat_span(&self.model, self.provider_name.as_deref());
+            let chat = telemetry::chat_span(&call_model, self.provider_name.as_deref());
             let response = tokio::select! {
-                response = self.provider.stream(request, &mut forward).instrument(chat.clone()) => response,
+                response = call_provider.stream(request, &mut forward).instrument(chat.clone()) => response,
                 _ = cancel.cancelled() => {
                     chat.record("error.type", "Cancelled");
                     return Err(Error::Cancelled);
@@ -492,6 +516,12 @@ impl Agent {
                 continue;
             }
 
+            // The answer is the main model's to give: the routine model's reply with no step in it is set aside.
+            if on_routine && !response.content.iter().any(|c| matches!(c, Content::ToolCall { .. })) {
+                routine_off = true;
+                continue;
+            }
+            routine_off = false;
             let reply = Message::assistant(response.content);
             let calls: Vec<(String, String, serde_json::Value)> = reply.tool_calls().map(|(id, name, args)| (id.into(), name.into(), args.clone())).collect();
             let answer = reply.text();
@@ -575,6 +605,22 @@ impl Agent {
                     _ => None,
                 })
                 .collect();
+            gathering = !finished.is_empty()
+                && finished.iter().all(|(_, err)| !*err)
+                && calls.iter().all(|(_, name, _)| tools.iter().any(|t| t.spec().name == *name && t.spec().effect == crate::tool::Effect::Read));
+            // Two rounds in a row where every step failed: a stronger model takes the rest of the run.
+            if !finished.is_empty() && finished.iter().all(|(_, err)| *err) {
+                failed_rounds += 1;
+            } else {
+                failed_rounds = 0;
+            }
+            if failed_rounds >= 2 && !escalated {
+                if let Some((model, provider)) = &self.escalate {
+                    on_event(Event::FellBack { from: asking.0.clone(), to: model.clone(), reason: "two rounds of steps failed in a row: a stronger model takes over".into() });
+                    asking = (model.clone(), provider.clone());
+                    escalated = true;
+                }
+            }
             let names = calls.iter().map(|(_, name, _)| name.as_str()).collect::<Vec<_>>().join(",");
             // Secrets a tool turned up are masked here, once: before the model
             // reads them, before the session file keeps them, before provenance.
@@ -701,6 +747,34 @@ mod tests {
             Ok(format!("{}: 9°C", args["city"].as_str().unwrap_or("?")))
         })
         .parallel_safe()
+    }
+
+    #[tokio::test]
+    async fn the_routine_model_gathers_and_the_main_model_plans_and_answers() {
+        // Main: plans the first read. Routine: the next read, then tries to answer (set aside).
+        let main = Arc::new(Scripted::new(vec![Scripted::call("c1", "weather", json!({"city": "Riga"})), Scripted::text("Riga is 9°C and Oslo is 9°C.")]));
+        let routine = Arc::new(Scripted::new(vec![Scripted::call("c2", "weather", json!({"city": "Oslo"})), Scripted::text("cheap answer")]));
+        let a = Agent::with_provider(main.clone(), "main").tool(weather()).routine_with("routine", routine.clone());
+        let (events, mut on) = collect();
+        let out = a.run_streaming(&mut Session::in_memory(), Message::user("weather in Riga and Oslo"), &RunControl::default(), &mut on).await.unwrap();
+        assert_eq!(out, "Riga is 9°C and Oslo is 9°C.", "the answer is the main model's");
+        assert_eq!(main.asked().len(), 2, "it planned and it answered");
+        assert_eq!(routine.asked().len(), 2, "it gathered, and its answer was set aside");
+        assert!(!events.lock().unwrap().iter().any(|e| matches!(e, Event::TextDelta(t) if t.contains("cheap"))), "its words never reached the screen");
+    }
+
+    #[tokio::test]
+    async fn two_failed_rounds_hand_the_rest_of_the_run_to_the_stronger_model() {
+        let broken = || tool("fetch", "Fetch", json!({"type": "object"}), Effect::Read, |_| async move { Err::<String, String>("upstream refused".into()) });
+        let cheap = Arc::new(Scripted::new(vec![Scripted::call("c1", "fetch", json!({})), Scripted::call("c2", "fetch", json!({})), Scripted::text("never asked")]));
+        let strong = Arc::new(Scripted::new(vec![Scripted::text("Solved another way.")]));
+        let a = Agent::with_provider(cheap.clone(), "cheap").tool(broken()).escalate_with("strong", strong.clone());
+        let (events, mut on) = collect();
+        let out = a.run_streaming(&mut Session::in_memory(), Message::user("get it"), &RunControl::default(), &mut on).await.unwrap();
+        assert_eq!(out, "Solved another way.");
+        assert_eq!(cheap.asked().len(), 2, "the cheap model is not asked again");
+        assert_eq!(strong.asked().len(), 1);
+        assert!(events.lock().unwrap().iter().any(|e| matches!(e, Event::FellBack { to, .. } if to == "strong")), "the switch is reported");
     }
 
     fn send_email(sent: Arc<AtomicUsize>) -> impl Tool {
@@ -1141,7 +1215,7 @@ mod tests {
     #[tokio::test]
     async fn the_step_budget_is_a_hard_stop() {
         let (a, _) = agent(vec![Scripted::call("c1", "weather", json!({"city": "Riga"})), Scripted::text("x")]);
-        let a = a.tool(weather()).budget(Budget { max_steps: 1, max_tokens: 1_000, max_dollars: None });
+        let a = a.tool(weather()).budget(Budget { max_steps: 1, max_tokens: 1_000, max_dollars: None, max_seconds: None });
         assert!(matches!(a.run("weather").await, Err(Error::Budget(_))));
     }
 
@@ -1556,14 +1630,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_reply_cut_off_again_and_again_is_an_error_not_an_answer() {
-        let (a, _) = agent(vec![cut("a"), cut("b"), cut("c"), cut("d")]);
+        let (a, _) = agent((0..=CONTINUE_AT_MOST).map(|i| cut(&i.to_string())).collect());
         assert!(matches!(a.run("explain").await, Err(Error::MaxTokens)));
     }
 
     #[tokio::test]
     async fn at_the_budget_a_closing_run_answers_from_what_it_found() {
         let (a, p) = agent(vec![Scripted::call("c1", "weather", json!({"city": "Riga"})), Scripted::text("Riga is sunny; I did not check Tartu.")]);
-        let a = a.tool(weather()).budget(Budget { max_steps: 1, max_tokens: 100_000, max_dollars: None }).close_with_answer();
+        let a = a.tool(weather()).budget(Budget { max_steps: 1, max_tokens: 100_000, max_dollars: None, max_seconds: None }).close_with_answer();
         let (events, mut on) = collect();
         let out = a.run_streaming(&mut Session::in_memory(), Message::user("weather in Riga and Tartu?"), &RunControl::default(), &mut on).await;
         assert_eq!(out.unwrap(), "Riga is sunny; I did not check Tartu.");
@@ -1572,7 +1646,7 @@ mod tests {
         assert!(events.lock().unwrap().iter().any(|e| matches!(e, Event::Closing { reason } if reason.contains("model calls"))));
         // Without it, the limit is an error as before.
         let (a, _) = agent(vec![Scripted::call("c1", "weather", json!({"city": "Riga"})), Scripted::text("never")]);
-        let a = a.tool(weather()).budget(Budget { max_steps: 1, max_tokens: 100_000, max_dollars: None });
+        let a = a.tool(weather()).budget(Budget { max_steps: 1, max_tokens: 100_000, max_dollars: None, max_seconds: None });
         assert!(matches!(a.run("weather?").await, Err(Error::Budget(_))));
     }
 

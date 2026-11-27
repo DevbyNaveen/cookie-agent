@@ -131,6 +131,9 @@ pub fn router(team: Arc<Team>) -> Router {
         .route("/challenge", get(challenge_page).post(challenge_try))
         .route("/challenge/board", get(challenge_board))
         .route("/healthz", get(|| async { "ok" }))
+        // The person's Mac, as the cloud team's hand (`hand`): it collects calls and answers them.
+        .route("/hand/next", get(hand_next))
+        .route("/hand/result", post(hand_result))
         // A job link from a message Cookie sent: the app opens it and asks for the PIN.
         .route("/j/{token}", get(|path: Path<String>| async move { axum::response::Redirect::to(&format!("/#link={}", path.0)) }))
         .route("/link/open", post(link_open))
@@ -181,6 +184,31 @@ fn authorised(team: &Team, presented: Option<&str>) -> bool {
         (_, Some(p)) if !p.is_empty() => team.session_ok(p),
         _ => false,
     }
+}
+
+/* ---------- the Mac as a hand ---------- */
+
+async fn hand_next(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if !authorised(&st.team, bearer(&headers)) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    Json(st.team.hand_next().await).into_response()
+}
+
+async fn hand_result(State(st): State<AppState>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
+    if !authorised(&st.team, bearer(&headers)) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Ok(call) = serde_json::from_value::<crate::hand::HandCall>(body["call"].clone()) else {
+        return (StatusCode::BAD_REQUEST, "a result names its call").into_response();
+    };
+    let result = match (body["ok"].as_str(), body["error"].as_str()) {
+        (Some(ok), _) => Ok(ok.to_string()),
+        (None, Some(e)) => Err(e.to_string()),
+        (None, None) => Err("the Mac sent no result".to_string()),
+    };
+    st.team.hand_result(call, result).await;
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /* ---------- job links ---------- */
@@ -426,4 +454,36 @@ async fn challenge_try(State(st): State<AppState>, ConnectInfo(addr): ConnectInf
 
 async fn challenge_board(State(st): State<AppState>) -> Response {
     Json(crate::challenge::board(&st.team)).into_response()
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn whatsapp_takes_only_what_meta_signed() {
+        let dir = tempfile::tempdir().unwrap();
+        let team = Team::open(dir.path()).unwrap();
+        team.keys.set("channel:whatsapp:verify", "v-token").unwrap();
+        team.keys.set("channel:whatsapp:app_secret", "s3cret").unwrap();
+        let mut all = team.channel_states();
+        all.entry("whatsapp".into()).or_default().enabled = true;
+        util::write_json(&team.paths.root.join("channels.json"), &all).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let app = router(team.clone());
+        tokio::spawn(async move { axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap() });
+        let http = reqwest::Client::new();
+        let verify = |t: &str| format!("{base}/hooks/whatsapp?hub.mode=subscribe&hub.verify_token={t}&hub.challenge=1234");
+        assert_eq!(http.get(verify("v-token")).send().await.unwrap().text().await.unwrap(), "1234", "the handshake with the right token");
+        assert_eq!(http.get(verify("wrong")).send().await.unwrap().status(), 403);
+        // A status update (no message), unsigned and then signed.
+        let body = br#"{"entry":[{"changes":[{"value":{"statuses":[{"status":"read"}]}}]}]}"#;
+        let unsigned = http.post(format!("{base}/hooks/whatsapp")).body(body.to_vec()).send().await.unwrap();
+        assert_eq!(unsigned.status(), 401, "nobody can post as Meta without its signature");
+        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, b"s3cret");
+        let tag: String = ring::hmac::sign(&key, body).as_ref().iter().map(|b| format!("{b:02x}")).collect();
+        let signed = http.post(format!("{base}/hooks/whatsapp")).header("x-hub-signature-256", format!("sha256={tag}")).body(body.to_vec()).send().await.unwrap();
+        assert_eq!(signed.status(), 200);
+    }
 }

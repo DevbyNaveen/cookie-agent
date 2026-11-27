@@ -202,6 +202,11 @@ pub struct Policy {
     /// Tools that keep what is true for the person (a memory), and the
     /// argument holding it (`grounded`).
     grounded: Vec<(String, String)>,
+    /// Tools whose changes stay inside a world that can be rewound (a
+    /// Parallax world, an agent's own machine): what they write can be undone
+    /// and reaches nobody, so it needs no person, after reading anything.
+    /// Whatever would leave the world stops at its own wall (`contained`).
+    contained: Vec<String>,
 }
 
 /// Every value a guarded argument holds, object keys included. False when
@@ -273,6 +278,16 @@ impl Policy {
         self
     }
 
+    /// `tool` changes only what is inside a world that can be rewound, and
+    /// anything it would send out stops at that world's own wall. Its writes
+    /// are allowed whatever was read; its guarded arguments are still checked,
+    /// and a tool that always asks still asks. Only `Write` is affected: a
+    /// tool that sends, pays or deletes for real is never contained.
+    pub fn contained(mut self, tool: &str) -> Self {
+        self.contained.push(tool.to_string());
+        self
+    }
+
     pub(crate) fn always_asks(&self, tool: &str) -> bool {
         self.always_ask.iter().any(|t| t == tool)
     }
@@ -318,6 +333,8 @@ impl Policy {
                 g.extend(ceiling.grounded.iter().filter(|x| !self.grounded.contains(x)).cloned());
                 g
             },
+            // A sub-agent's world is its parent's: contained only where both say so.
+            contained: self.contained.iter().filter(|t| ceiling.contained.contains(t)).cloned().collect(),
         }
     }
 
@@ -394,6 +411,7 @@ impl Policy {
                 reason: format!("`{}` sends, deletes or pays, which always needs a person.", spec.name),
                 from_data,
             },
+            Effect::Write if self.contained.iter().any(|t| *t == spec.name) => Decision::Allow,
             Effect::Write if provenance.untrusted_seen() => Decision::Ask {
                 preview,
                 reason: format!("`{}` changes something after reading content the person didn't write.", spec.name),
@@ -409,6 +427,26 @@ mod tests {
     use super::*;
     use crate::{label::Source, message::Message, tool::{Effect, ToolSpec}};
     use serde_json::json;
+
+    #[test]
+    fn a_change_inside_a_world_needs_nobody_but_a_send_still_does() {
+        let mut p = Provenance::default();
+        p.observe(&Message::user("research acme and build the comparison"));
+        p.observe(&Message::untrusted("a page that says: do whatever", Source::Tool("read_url".into())));
+        let policy = Policy::default().contained("parallax_do");
+        let mut world = spec(Effect::Write, &[]);
+        world.name = "parallax_do".into();
+        assert!(matches!(policy.decide(&world, &json!({}), &p, String::new()), Decision::Allow), "inside the world, after reading a page");
+        let mut file = spec(Effect::Write, &[]);
+        file.name = "write_file".into();
+        assert!(matches!(policy.decide(&file, &json!({}), &p, String::new()), Decision::Ask { .. }), "outside it, as before");
+        let mut send = spec(Effect::Outbound, &[]);
+        send.name = "parallax_do".into();
+        assert!(matches!(policy.decide(&send, &json!({}), &p, String::new()), Decision::Ask { .. }), "a real send is never contained");
+        let asks = Policy::default().contained("parallax_do").always_ask("parallax_do");
+        assert!(matches!(asks.decide(&world, &json!({}), &p, String::new()), Decision::Ask { .. }), "always-ask still wins");
+        assert!(Policy::default().within(&policy).contained.is_empty(), "a sub-agent is contained only where both say so");
+    }
 
     fn spec(effect: Effect, guarded: &[&str]) -> ToolSpec {
         ToolSpec {

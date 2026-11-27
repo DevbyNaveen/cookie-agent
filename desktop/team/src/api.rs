@@ -29,6 +29,8 @@ pub(crate) fn apply_settings(s: &mut Settings, p: &Value) {
     if let Some(v) = p.get("prices").and_then(|v| serde_json::from_value(v.clone()).ok()) { s.prices = v; }
     if let Some(v) = p.get("checker_model") { s.checker_model = v.as_str().map(str::trim).filter(|m| !m.is_empty()).map(str::to_string); }
     if let Some(v) = p.get("daily_notices").and_then(Value::as_i64) { s.daily_notices = v.clamp(0, 50); }
+    if let Some(v) = p.get("approval_wait_minutes").and_then(Value::as_i64) { s.approval_wait_minutes = v.clamp(0, 1440); }
+    if let Some(v) = p.get("keep_awake").and_then(Value::as_bool) { s.keep_awake = v; }
     if let Some(v) = p.get("market_url") { s.market_url = v.as_str().map(str::trim).filter(|m| !m.is_empty()).map(str::to_string); }
     if let Some(v) = p.get("wake").and_then(Value::as_bool) { s.wake = v; }
     if let Some(v) = p.get("cloud_store").and_then(Value::as_bool) { s.cloud.store = v; }
@@ -75,6 +77,8 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "set_me_photo" => ok(team.set_me_photo(opt::<String>(a, "path"), opt::<String>(a, "data"))?),
         "clear_me_photo" => ok(team.clear_me_photo()),
         "data_dir" => ok(team.paths.root.to_string_lossy()),
+        "use_own_model" => ok(team.use_own_model(&arg::<String>(a, "provider")?, opt::<String>(a, "key").as_deref(), &arg::<String>(a, "model")?).await?),
+        "own_model" => ok(team.settings().await.own_model),
         "providers" => {
             let mut p: Vec<&str> = Keys::present();
             if std::env::var("ENKEON_MODEL_KEY").is_ok_and(|k| !k.is_empty()) {
@@ -137,6 +141,11 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         /* jobs */
         "history" => ok(team.history(&arg::<String>(a, "id")?).await?),
         "starters" => ok(team.starters(&arg::<String>(a, "id")?)),
+        "line" => {
+            let id = arg::<String>(a, "id")?;
+            let ok_id = !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+            ok(if ok_id { std::fs::read_to_string(team.paths.agent(&id).join("line.txt")).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) } else { None })
+        }
         // The council (`council`): proposals with their votes, the person's decisions, Undo, the stand-in.
         "council" => ok(team.council_view().await),
         "council_decide" => ok(team.council_decide(&arg::<String>(a, "id")?, arg(a, "yes")?).await?),
@@ -173,7 +182,12 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "send" => {
             let attachments: Vec<Attachment> = opt(a, "attachments").unwrap_or_default();
             // An @ in the message brings that agent in to answer here (`mention`).
-            ok(team.send_in_chat(&arg::<String>(a, "id")?, arg(a, "text")?, attachments).await?)
+            // The person wrote: the replies the agent offered for the moment before are gone.
+            let id = arg::<String>(a, "id")?;
+            if id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+                let _ = std::fs::remove_file(team.paths.agent(&id).join("starters.json"));
+            }
+            ok(team.send_in_chat(&id, arg(a, "text")?, attachments).await?)
         }
         "stop" => ok(team.stop(&arg::<String>(a, "id")?)),
         // One helper, not the job: the rest go on.
@@ -219,6 +233,31 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "file_changes" => ok(team.file_changes(opt::<String>(a, "id").as_deref())),
         "undo_file_change" => ok(team.undo_file_change(&arg::<String>(a, "change")?)?),
         "open_promises" => ok(team.open_promises().await),
+        /* work that runs for days: goals, watchers, the queue, what waits for the Mac */
+        "goals" => ok(match opt::<String>(a, "agent") { Some(id) => team.goals_of(&id), None => team.goals() }),
+        "goal_status" => ok(team.set_goal_status(&arg::<String>(a, "id")?, &arg::<String>(a, "status")?)?),
+        "watchers" => ok(team.watchers().into_iter().filter(|w| opt::<String>(a, "agent").is_none_or(|id| w.agent == id)).collect::<Vec<_>>()),
+        "stop_watcher" => ok(team.stop_watcher(&arg::<String>(a, "id")?)?),
+        "queued" => ok(team.queued(&arg::<String>(a, "agent")?)),
+        "own_tools" => ok(team.own_tools(&arg::<String>(a, "agent")?)),
+        "track_record" => {
+            let id = arg::<String>(a, "agent")?;
+            let jobs: Vec<crate::store::Job> = crate::util::read_jsonl(&team.paths.jobs(&id));
+            ok(crate::outcome::track_record(&jobs, opt::<u64>(a, "days").unwrap_or(30), crate::util::now()))
+        }
+        "trials" => ok(team.trials()),
+        "make_invoice_chaser" => ok(team.make_invoice_chaser(&arg::<String>(a, "agent")?, opt::<f64>(a, "budget_dollars")).await?),
+        "invoices" => ok(team.invoices(&arg::<String>(a, "agent")?)),
+        "specialty" => ok(team.specialty(&arg::<String>(a, "agent")?)),
+        "browser_runs" => ok(team.browser_runs(&arg::<String>(a, "agent")?)),
+        "browser_replay" => ok(team.replay_browser_run(&arg::<String>(a, "agent")?, &arg::<String>(a, "name")?, &opt::<std::collections::BTreeMap<String, String>>(a, "values").unwrap_or_default()).await?),
+        "services" => ok(team.services()),
+        "service_add" => ok(team.add_service(&arg::<String>(a, "name")?, &arg::<String>(a, "kind")?, &arg::<String>(a, "base_url")?, &arg::<String>(a, "auth")?, &arg::<String>(a, "secret")?)?),
+        "service_remove" => ok(team.remove_service(&arg::<String>(a, "name")?)?),
+        "morning" => ok(team.morning(opt::<u64>(a, "hours").unwrap_or(24)).await),
+        "mandates" => ok(team.mandates()),
+        "end_mandate" => ok(team.end_mandate(&arg::<String>(a, "id")?)?),
+        "waiting_on_mac" => ok(serde_json::json!({"parked": team.parked_calls(), "mac_connected": crate::hand::connected()})),
 
         /* approvals and attention */
         "approvals" => ok(team.pending_approvals()),
@@ -351,7 +390,7 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "exam" => {
             let id: String = arg(a, "id")?;
             let cases = crate::evolve::pick_cases(team.bench_for(&id), opt::<usize>(a, "cases").unwrap_or(6).clamp(1, 20), util::now() / 86_400);
-            let variant = crate::bench::Variant { model: opt::<String>(a, "model"), tuning: None, skills: None };
+            let variant = crate::bench::Variant { model: opt::<String>(a, "model"), tuning: None, skills: None, own_tools: false };
             let what = variant.model.as_ref().map(|m| format!("Model: {m}")).unwrap_or_else(|| "As it is".into());
             ok(team.exam(&id, &what, cases, variant).await?)
         }
@@ -392,6 +431,11 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "browser" => ok(team.browser_view(&arg::<String>(a, "id")?).await),
         "browser_login" => ok(team.browser_login(&arg::<String>(a, "id")?, opt::<String>(a, "url")).await?),
         "browser_forget" => ok(team.browser_forget(&arg::<String>(a, "id")?).await?),
+        "browser_install" => ok(team.browser_install().await?),
+        "power" => ok(team.power_view().await),
+        "greet" => ok(team.greet().await),
+        "start_at_login" => ok(team.set_start_at_login(arg::<bool>(a, "on")?).await?),
+        "restart_kept" => ok(team.restart_kept()?),
         "set_cage" => ok(team.set_cage(&arg::<String>(a, "id")?, a.get("patch").unwrap_or(&Value::Null)).await?),
         "wakes" => ok(team.wake_status()),
         "cloud" => ok(team.cloud_status().await),
@@ -441,6 +485,10 @@ pub async fn call(team: &Arc<Team>, cmd: &str, args: Value) -> Result<Value, Str
         "apps" => ok(team.apps().await?),
         "apps_signin" => ok(team.apps_signin().await?),
         "app_connect" => ok(team.app_connect(&arg::<String>(a, "slug")?).await?),
+        "app_disconnect" => ok(team.app_disconnect(&arg::<String>(a, "slug")?).await?),
+        "dbs" => ok(team.dbs().await?),
+        "db_add" => ok(team.db_add(&arg::<String>(a, "label")?, &arg::<String>(a, "dsn")?).await?),
+        "db_remove" => ok(team.db_remove(&arg::<String>(a, "id")?).await?),
 
         /* each agent in Slack */
         "agent_slack" => ok(team.agent_slack(&arg::<String>(a, "agent")?).await?),

@@ -50,6 +50,9 @@ impl Agent {
             output_schema: None,
             check_after: Vec::new(),
             verification: Vec::new(),
+            escalate: None,
+            quarantine: Vec::new(),
+            routine: None,
             action_ledger: None,
             close_with_answer: false,
             finish_check: false,
@@ -77,6 +80,49 @@ impl Agent {
         if !then.is_empty() {
             self.provider = Arc::new(providers::fallback::Fallback::new(self.provider, then));
         }
+        self
+    }
+
+    /// The model (`provider:model`) that takes over the rest of a run when two
+    /// rounds of its steps fail in a row: run on a fast, cheap model and pay
+    /// for the strong one only where the work gets hard.
+    pub fn escalate_to(mut self, id: &str) -> Result<Self> {
+        let id = ModelId::parse(id)?;
+        self.escalate = Some((id.model.clone(), providers::resolve(&id)?));
+        Ok(self)
+    }
+
+    /// A faster, cheaper model (`provider:model`) for the routine steps: the
+    /// call after a round in which every step only read and worked (gathering).
+    /// The main model plans, changes things and gives the answer: a reply from
+    /// the routine model with no step in it is set aside and asked again of
+    /// the main model, and its words are never streamed.
+    pub fn routine_model(mut self, id: &str) -> Result<Self> {
+        let id = ModelId::parse(id)?;
+        self.routine = Some((id.model.clone(), providers::resolve(&id)?));
+        Ok(self)
+    }
+
+    /// The same with a provider already made.
+    pub fn routine_with(mut self, model: impl Into<String>, provider: Arc<dyn Provider>) -> Self {
+        self.routine = Some((model.into(), provider));
+        self
+    }
+
+    /// The same with a provider already made.
+    pub fn escalate_with(mut self, model: impl Into<String>, provider: Arc<dyn Provider>) -> Self {
+        self.escalate = Some((model.into(), provider));
+        self
+    }
+
+    /// Give each named reading tool from Enkeon (`connector_actions` reads
+    /// the person's mail and apps) a quarantined twin, `<name>_fields`: what
+    /// it returns is read by this agent's model with no tools, and only the
+    /// typed fields asked for come back (`quarantine::extract`). With
+    /// `replace`, the twin is offered instead of the tool: the run gets facts
+    /// from that content, never its words.
+    pub fn quarantine_reads(mut self, names: &[&str], replace: bool) -> Self {
+        self.quarantine = names.iter().map(|n| (n.to_string(), replace)).collect();
         self
     }
 

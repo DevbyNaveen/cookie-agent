@@ -17,7 +17,7 @@ use crate::{
 };
 
 /// Handoffs in one run before it is stopped as a loop.
-pub const MAX_HOPS: usize = 5;
+pub const MAX_HOPS: usize = 12;
 
 pub struct Handoff {
     spec: ToolSpec,
@@ -174,14 +174,18 @@ mod tests {
             let (_, a) = scripted((0..10).map(|i| Scripted::call(&format!("h{i}"), "other", json!({}))).collect());
             a
         };
-        let inner = ping().tool(Handoff::to("other", "x", ping().tool(Handoff::to("other", "x", ping().tool(Handoff::to("other", "x", ping().tool(Handoff::to("other", "x", ping().tool(Handoff::to("other", "x", ping().tool(Handoff::to("other", "x", ping()))))))))))));
+        // A chain one longer than the limit, each agent handing on to the next.
+        let mut inner = ping();
+        for _ in 0..=MAX_HOPS {
+            inner = ping().tool(Handoff::to("other", "x", inner));
+        }
         assert!(matches!(inner.run("go").await, Err(crate::Error::Loop(m)) if m.contains("handoff")));
     }
 
     #[tokio::test]
     async fn the_next_agent_s_own_limits_apply() {
         let (_, strict) = scripted(vec![Scripted::text("never")]);
-        let strict = strict.budget(crate::Budget { max_steps: 1, max_tokens: 1_000_000, max_dollars: None });
+        let strict = strict.budget(crate::Budget { max_steps: 1, max_tokens: 1_000_000, max_dollars: None, max_seconds: None });
         let (_, front) = scripted(vec![Scripted::call("h1", "strict", json!({}))]);
         let front = front.tool(Handoff::to("strict", "x", strict));
         assert!(matches!(front.run("go").await, Err(crate::Error::Budget(_))));

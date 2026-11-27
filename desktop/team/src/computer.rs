@@ -214,9 +214,12 @@ pub(crate) fn tools(team: &Arc<Team>, agent: &str) -> Vec<Arc<dyn Tool>> {
     let mut out: Vec<Arc<dyn Tool>> = Vec::new();
     for spec in parallax::mcp::tools() {
         let name = spec["name"].as_str().unwrap_or_default().to_string();
-        // Vaults need Linux with KVM: with a cloud computer set up they run there.
+        // Vaults need Linux with KVM. A team that runs on such a host (the cloud runner, beside its
+        // worlds) runs them itself; otherwise they run on the person's cloud computer, if set up.
         if name.starts_with("parallax_vault") {
-            if team.computer().is_some() {
+            if parallax::sizes::vault_available().is_ok() {
+                out.push(local_vault_tool(team, agent, &spec));
+            } else if team.computer().is_some() {
                 out.push(vault_tool(team, agent, &spec));
             }
             continue;
@@ -242,6 +245,32 @@ pub(crate) fn tools(team: &Arc<Team>, agent: &str) -> Vec<Arc<dyn Tool>> {
         })));
     }
     out
+}
+
+/// A vault tool run right here, on the host the team itself runs on: the agent's own Linux
+/// machine, with root, any software it installs, and the internet when it was made with it.
+fn local_vault_tool(team: &Arc<Team>, agent: &str, spec: &Value) -> Arc<dyn Tool> {
+    let name = spec["name"].as_str().unwrap_or_default().to_string();
+    let effect = if matches!(name.as_str(), "parallax_vaults" | "parallax_vault_look") { Effect::Read } else { Effect::Write };
+    let (t, a, n) = (Arc::downgrade(team), agent.to_string(), name.clone());
+    let about = format!(
+        "{} This is your own computer, on the same host as you: you are root in it, can install anything (apt, pip, npm), \
+         and it keeps its disk between jobs. Use it for any work a person would do at a Linux computer.",
+        spec["description"].as_str().unwrap_or("")
+    );
+    Arc::new(tool(&name, &about, spec["inputSchema"].clone(), effect, move |args: Value| {
+        let (t, a, n) = (t.clone(), a.clone(), n.clone());
+        async move {
+            let team = t.upgrade().ok_or("Cookie is closing.")?;
+            let px = team.parallax()?;
+            let r = parallax::mcp::call(&px, &n, &args, &a).await?;
+            Ok(util::clip(&match r {
+                Value::String(s) => s,
+                v if v["output"].is_string() => format!("exit {}\n{}", v["code"], v["output"].as_str().unwrap_or("")),
+                v => serde_json::to_string_pretty(&v).unwrap_or_default(),
+            }, 30_000))
+        }
+    }))
 }
 
 /// A vault tool, run on the cloud computer as this agent (`as`): its own Linux machine with a desktop.

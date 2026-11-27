@@ -3,11 +3,19 @@
 //! matters. Many steps become one turn, and the in-between results never
 //! enter the conversation.
 //!
-//! The script runs in the same sandbox as `run_command` (its folder only, no
-//! network). It can't open a socket, so it asks for a tool by writing a
-//! request file in its folder; Cookie, outside the sandbox, answers it. Only
-//! tools that read things on this computer are reachable: no web, no sending,
-//! no changes — so a script can't carry data anywhere the person didn't see.
+//! The script runs in the agent's cage (its folder only). It asks for a tool
+//! by writing a request file in its folder; Cookie, outside the sandbox,
+//! answers it, with the same consent as a call the agent makes itself.
+//!
+//! Two modes, after the Rule of Two (a run may hold at most two of: content
+//! it didn't write, the person's private data, a way out):
+//! - **offline** (the default): no network of its own; it may call every tool
+//!   the agent has, so it can read the person's things but can't carry them
+//!   anywhere except through tools that ask.
+//! - **online**: the network is open, so it can fetch, scrape, call public
+//!   APIs and install packages; and then it can't call any tool that reads the
+//!   person's private data (mail, apps, Mac, memory, signed-in browser). What
+//!   it can reach out with, it has never been shown.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -17,8 +25,8 @@ use std::time::Duration;
 use cookie_harness::tool::{tool, Effect, Tool};
 use serde_json::{json, Value};
 
-const RUN_LIMIT: Duration = Duration::from_secs(180);
-const MAX_CALLS: usize = 300;
+const RUN_LIMIT: Duration = Duration::from_secs(1_800);
+const MAX_CALLS: usize = 5_000;
 const OUTPUT_MAX: usize = 20_000;
 
 /// The tools a script may call: all of the agent's own, but not the ones that
@@ -31,6 +39,14 @@ fn script_may_call(t: &Arc<dyn Tool>, can_ask: bool) -> bool {
         return false;
     }
     can_ask || (t.spec().effect == Effect::Read && t.spec().guarded_args.is_empty() && !matches!(n, "web_search" | "read_url"))
+}
+
+/// The tools an online script may still call: none that read the person's
+/// private data. Its own folder, the public web, and making things.
+const ONLINE_TOOLS: [&str; 10] = ["web_search", "read_url", "read_url_fields", "read_file", "search_files", "write_file", "edit_file", "make_image", "make_video", "run_command"];
+
+fn online_may_call(t: &Arc<dyn Tool>) -> bool {
+    ONLINE_TOOLS.contains(&t.spec().name.as_str())
 }
 
 /// Does a call from a script need the person's yes? Anything that is not a
@@ -79,42 +95,79 @@ def call(tool, **args):
 /// `cage`: the agent's own (`cage`); `None` uses the harness's plain sandbox.
 /// `approver`: the job's own (`approvals::Broker`); every call that needs a
 /// yes is put to the person through it, as the same call would be outside a script.
-pub(crate) fn run_code_tool(work: &Path, tools: &[Arc<dyn Tool>], cage: Option<Arc<crate::cage::Cage>>, approver: Option<Arc<dyn cookie_harness::Approver>>) -> Option<Arc<dyn Tool>> {
-    let sandbox: Arc<dyn cookie_harness::sandbox::Sandbox> = match cage {
-        // Scripts reach the outside only through the tools they are given.
-        Some(c) => Arc::new(crate::cage::Cage { cfg: crate::cage::CageCfg { network: false, ..c.cfg.clone() }, ..(*c).clone() }),
-        None => cookie_harness::sandbox::detect().filter(|s| s.confines())?,
+pub(crate) fn run_code_tool(work: &Path, tools: &[Arc<dyn Tool>], cage: Option<Arc<crate::cage::Cage>>, approver: Option<Arc<dyn cookie_harness::Approver>>, may_go_online: bool) -> Option<Arc<dyn Tool>> {
+    // A script's cage lasts as long as a script may run, whatever a single command may.
+    let script_cfg = |c: &crate::cage::Cage, network: bool| crate::cage::CageCfg {
+        network,
+        timeout_seconds: RUN_LIMIT.as_secs() as u32,
+        cpu_seconds: (RUN_LIMIT.as_secs() as u32).max(c.cfg.cpu_seconds),
+        ..c.cfg.clone()
+    };
+    let (offline, online): (Arc<dyn cookie_harness::sandbox::Sandbox>, Option<Arc<dyn cookie_harness::sandbox::Sandbox>>) = match &cage {
+        Some(c) => (
+            Arc::new(crate::cage::Cage { cfg: script_cfg(c, false), ..(**c).clone() }),
+            may_go_online.then(|| Arc::new(crate::cage::Cage { cfg: script_cfg(c, true), ..(**c).clone() }) as Arc<dyn cookie_harness::sandbox::Sandbox>),
+        ),
+        // The harness's plain sandbox has no network switch: offline only.
+        None => (cookie_harness::sandbox::detect().filter(|s| s.confines())?, None),
     };
     if !Path::new("/usr/bin/python3").exists() && which_python().is_none() {
         return None;
     }
     let allowed: Vec<Arc<dyn Tool>> = tools.iter().filter(|t| script_may_call(t, approver.is_some())).cloned().collect();
-    if allowed.is_empty() {
+    if allowed.is_empty() && online.is_none() {
         return None;
     }
-    let listing = allowed
-        .iter()
-        .map(|t| format!("{}({}){}", t.spec().name, t.spec().schema["properties"].as_object().map(|p| p.keys().map(|k| format!("{k}=…")).collect::<Vec<_>>().join(", ")).unwrap_or_default(), if needs_yes(t.as_ref()) { " [asks the person]" } else { "" }))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let online_allowed: Vec<Arc<dyn Tool>> = allowed.iter().filter(|t| online_may_call(t)).cloned().collect();
+    let list = |tools: &[Arc<dyn Tool>]| {
+        tools
+            .iter()
+            .map(|t| format!("{}({}){}", t.spec().name, t.spec().schema["properties"].as_object().map(|p| p.keys().map(|k| format!("{k}=…")).collect::<Vec<_>>().join(", ")).unwrap_or_default(), if needs_yes(t.as_ref()) { " [asks the person]" } else { "" }))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let listing = list(&allowed);
+    let online_note = if online.is_some() {
+        format!(
+            " Set online=true for a script that needs the internet (fetch pages, call public APIs, pip install into your folder): it then \
+             has the network, and can call only {} — never a tool that reads the person's private data.",
+            if online_allowed.is_empty() { "no tools".to_string() } else { list(&online_allowed) }
+        )
+    } else {
+        String::new()
+    };
     let work = work.to_path_buf();
+    let minutes = RUN_LIMIT.as_secs() / 60;
     Some(Arc::new(tool(
         "run_code",
         &format!(
             "Run a Python script that calls your tools as functions, to do many steps in one go: loop over files, filter, \
              count, combine, and print only the result. `from cookie_tools import *` gives you: {listing}. Each returns the \
-             tool's text. The script's working directory is your folder (os.listdir and open work on your files); it has no network of its own. \
-             A tool marked [asks the person] waits for their yes, exactly as when you call it yourself, and raises an error if they say no. \
-             Prints are what you get back (up to 20 KB)."
+             tool's text. The script's working directory is your folder (os.listdir and open work on your files); offline it has no \
+             network of its own.{online_note} A tool marked [asks the person] waits for their yes, exactly as when you call it yourself, \
+             and raises an error if they say no. It may run up to {minutes} minutes. Prints are what you get back (up to 20 KB)."
         ),
-        json!({"type": "object", "properties": {"code": {"type": "string", "description": "a Python 3 script"}}, "required": ["code"]}),
+        json!({"type": "object", "properties": {
+            "code": {"type": "string", "description": "a Python 3 script"},
+            "online": {"type": "boolean", "description": "give the script the internet (and no private-data tools)"}
+        }, "required": ["code"]}),
         Effect::Write,
         move |args: Value| {
-            let (sandbox, allowed, work, approver) = (sandbox.clone(), allowed.clone(), work.clone(), approver.clone());
-            async move { run(sandbox, allowed, &work, args["code"].as_str().unwrap_or_default(), approver).await }
+            let (offline, online, allowed, online_allowed, work, approver) = (offline.clone(), online.clone(), allowed.clone(), online_allowed.clone(), work.clone(), approver.clone());
+            async move {
+                let code = args["code"].as_str().unwrap_or_default();
+                match (args["online"].as_bool().unwrap_or(false), online) {
+                    (true, Some(net)) => run(net, online_allowed, &work, code, approver).await,
+                    (true, None) => Err("Scripts can't go online for this agent (it has no web access, or no cage of its own).".into()),
+                    (false, _) => run(offline, allowed, &work, code, approver).await,
+                }
+            }
         },
     )
-    .with_preview(|args| format!("Run this script in its folder (anything it would change or send asks you first):\n{}", crate::util::clip(args["code"].as_str().unwrap_or(""), 3000)))))
+    .with_preview(|args| {
+        let net = if args["online"].as_bool().unwrap_or(false) { "online, with no access to your private data" } else { "offline" };
+        format!("Run this script in its folder, {net} (anything it would change or send asks you first):\n{}", crate::util::clip(args["code"].as_str().unwrap_or(""), 3000))
+    })))
 }
 
 fn which_python() -> Option<String> {
@@ -145,7 +198,7 @@ async fn run(sandbox: Arc<dyn cookie_harness::sandbox::Sandbox>, allowed: Vec<Ar
             _ = tokio::time::sleep(Duration::from_millis(30)) => {
                 if tokio::time::Instant::now() > deadline {
                     let _ = std::fs::remove_dir_all(&rpc);
-                    return Err("The script ran longer than three minutes and was stopped.".into());
+                    return Err(format!("The script ran longer than {} minutes and was stopped.", RUN_LIMIT.as_secs() / 60));
                 }
                 // Answer every request the script left.
                 for e in std::fs::read_dir(&rpc).into_iter().flatten().flatten() {
@@ -215,6 +268,17 @@ async fn run(sandbox: Arc<dyn cookie_harness::sandbox::Sandbox>, allowed: Vec<Ar
 mod tests {
     use super::*;
 
+    #[test]
+    fn an_online_script_never_holds_a_tool_that_reads_private_data() {
+        let t = |name: &str| -> Arc<dyn Tool> { Arc::new(tool(name, "x", json!({}), Effect::Read, |_a: Value| async { Ok(String::new()) })) };
+        for private in ["mac_files_read", "connector_call", "recall", "browser_read", "mac_notes_read", "search_history"] {
+            assert!(!online_may_call(&t(private)), "{private}");
+        }
+        for public in ["web_search", "read_url", "read_file", "write_file"] {
+            assert!(online_may_call(&t(public)), "{public}");
+        }
+    }
+
     #[tokio::test]
     #[cfg(target_os = "macos")]
     async fn a_script_calls_tools_through_files_inside_the_sandbox() {
@@ -228,7 +292,7 @@ mod tests {
             async move { std::fs::read_to_string(root.join(a["path"].as_str().unwrap_or(""))).map_err(|e| e.to_string()) }
         }));
         let sender: Arc<dyn Tool> = Arc::new(tool("messages_send", "send", json!({"type": "object"}), Effect::Outbound, |_a: Value| async { Ok("sent".to_string()) }));
-        let Some(t) = run_code_tool(&work, &[reader, sender], None, None) else { return }; // no sandbox on this machine
+        let Some(t) = run_code_tool(&work, &[reader, sender], None, None, false) else { return }; // no sandbox on this machine
         let code = "from cookie_tools import *\nprint('total', sum(len(read_file(path=p)) for p in ['a.txt', 'b.txt']))\ntry:\n    call('messages_send')\nexcept Exception as e:\n    print('refused', 'available' in str(e))\n";
         let out = t.call(json!({"code": code})).await.unwrap();
         assert!(out.contains("total 9"), "{out}");
@@ -260,7 +324,7 @@ mod tests {
                 assert!(r.preview.starts_with("From a script:"));
                 say
             }));
-            let Some(t) = run_code_tool(&work, &[sender], None, Some(approver)) else { return };
+            let Some(t) = run_code_tool(&work, &[sender], None, Some(approver), false) else { return };
             let code = "from cookie_tools import *\ntry:\n    print(messages_send(to='mara'))\nexcept Exception as e:\n    print('error', e)\n";
             let out = t.call(json!({"code": code})).await.unwrap();
             assert!(out.contains(want), "{out}");

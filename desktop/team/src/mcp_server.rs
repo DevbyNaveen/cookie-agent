@@ -29,7 +29,7 @@ use crate::{util, Team};
 pub const PROTOCOL: &str = "2025-06-18";
 /// How long `ask_agent` waits for an answer before handing back the job to come back for.
 const WAIT_DEFAULT: u64 = 120;
-const WAIT_MAX: u64 = 600;
+const WAIT_MAX: u64 = 3_600;
 
 fn tools() -> Value {
     json!([

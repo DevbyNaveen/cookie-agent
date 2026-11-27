@@ -666,9 +666,14 @@ const PANELS = {
     if (!browser.available) br.append(el("p", "set-note", "Install Chrome, Chromium, Brave or Edge to give agents a browser."));
     else {
       const on = !!a.grants.browser;
-      br.append(setRow("Browser", on ? `Uses ${browser.browser}, with a profile of its own${browser.has_profile ? ` (${humanSize(browser.bytes)})` : ""}. ${browser.running ? "Open now." : ""}` : "Turn on “Its own browser” in About to let it use one.", null));
+      const dl = browser.downloading;
+      if (dl) br.append(setRow("Browser", `Downloading a browser for Cookie's agents: ${humanSize(dl.done)} of ${humanSize(dl.total)}.`, null));
+      else if (browser.to_download) br.append(setRow("Browser", "This computer has no Chrome. Cookie downloads one of its own the first time an agent needs it (about 200 MB, once, from Google, checked before it runs).",
+        button("Download now", "quiet small", async () => { toast("Downloading a browser", "About 200 MB. You can keep working."); refreshProfile(); try { await call("browser_install"); toast("Browser ready", "Agents with “Its own browser” can use it."); } catch (e) { toast("Couldn't get a browser", String(e), "error"); } refreshProfile(); })));
+      else br.append(setRow("Browser", on ? `Uses ${browser.browser}, with a profile of its own${browser.has_profile ? ` (${humanSize(browser.bytes)})` : ""}. ${browser.running ? "Open now." : ""}` : "Turn on “Its own browser” in About to let it use one.", null));
       br.append(setRow("Sign it in", browser.signing_in ? "Its browser window is open. Sign in, then close the window." : "Opens its browser in a window. Sign in to the sites it should use; close the window when done. Cookie never sees the passwords.",
         button("Open its browser", "quiet small", async () => { await call("browser_login", { id: a.id }); toast("Its browser is open", "Sign in where it should work, then close the window."); refreshProfile(); })));
+      if (browser.sites && browser.sites.length) br.append(setRow("Signed in at", `${browser.sites.join(", ")}. It uses these sign-ins only when you send it to that site or approve a click. A page it reads can't take it there.`, null));
       if (browser.has_profile) br.append(setRow("Sign out of everything", "Deletes its browser profile: every sign-in and cookie.",
         button("Forget", "quiet small danger", async () => { await call("browser_forget", { id: a.id }); toast("Signed out", `${a.name}'s browser starts fresh.`); refreshProfile(); })));
     }

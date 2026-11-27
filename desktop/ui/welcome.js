@@ -25,6 +25,9 @@ async function maybeWelcome() {
   let st = null;
   try { st = await call("enkeon"); } catch {}
   if (st?.paired) { try { localStorage.setItem(WELCOMED, "1"); } catch {} return false; }
+  // Running on the person's own key or a local model: no Enkeon account needed.
+  const own = await call("own_model").catch(() => null);
+  if (own) { try { localStorage.setItem(WELCOMED, "1"); } catch {} return false; }
   let seen = false;
   try { seen = !!localStorage.getItem(WELCOMED); } catch {}
   openWelcome(seen || rows.some((r) => r.id !== "cookie") ? "signin" : "hello");
@@ -70,23 +73,28 @@ async function welcomeStep(step) {
   if (step === "hello") return welcomeHello();
   if (step === "signin") return welcomeSignin();
   if (step === "apps") return welcomeApps();
+  if (step === "own") return welcomeOwn();
   // Done: a new team hires; a team that already has agents goes back to them.
   closeWelcome(async () => {
     providers = await call("providers").catch(() => providers);
     const team = rows.filter((r) => r.id !== "cookie");
-    if (team.length) { sortRows(); openAgent((rows.find((r) => needsOf(r.id).count > 0) ?? rows[0]).id); }
-    else openHire();
+    if (team.length) { sortRows(); openAgent((rows.find((r) => needsOf(r.id).count > 0) ?? rows[0]).id); return; }
+    // A new person: Cookie speaks first, in its own chat, and builds the team with them.
+    await call("greet").catch(() => null);
+    await loadRoster().catch(() => {});
+    if (agentById("cookie")) openAgent("cookie"); else openHire();
   });
 }
 
 /* ---------- 1. meet the crew ---------- */
 function welcomeHello() {
   const crew = el("div", "wl-crew");
-  const shapes = ["bot", "orb", "wisp", "crystal", "star", "ghost", "cloud"];
+  // Cookie itself stands in the middle, with six of the crew around it.
+  const shapes = ["bot", "orb", "wisp", "cookie", "star", "crystal", "cloud"];
   const tricks = [["corkscrew", 0.5], ["spin2", 0.4], ["front", 0.46], ["back", 0.46]];
   shapes.forEach((shape, i) => {
     const big = i === 3;
-    const f = Faces.create(Faces.idFor("welcome", shape), big ? 104 : 72, undefined, { view: 2.4 });
+    const f = Faces.create(shape === "cookie" ? "cookie" : Faces.idFor("welcome", shape), big ? 104 : 72, undefined, { view: 2.4 });
     welcomeFaces.push(f);
     const slot = el("div", "wl-slot" + (big ? " big" : ""));
     slot.style.setProperty("--i", i);
@@ -103,28 +111,100 @@ function welcomeHello() {
     welcomeTimers.push(setTimeout(loop, 1800 + i * 700 + Math.random() * 1500));
   });
   const go = button("Sign in with Enkeon", "primary wl-go", () => welcomeStep("signin"));
+  const own = button("Use my own key or a local model", "quiet wl-go", () => welcomeStep("own"));
   welcomeFrame("hello",
     crew,
     el("h1", "wl-title", "Beyond assistants."),
     el("p", "wl-tag", "Agents that grow up."),
     el("p", "wl-sub", "A team of agents on your Mac, each with its own job, memory and face. They learn from every job, work while you sleep, and ask before anything that matters."),
-    box("div", "wl-actions", go),
+    box("div", "wl-actions", go, own),
   );
   setTimeout(() => go.focus(), 50);
+}
+
+/* ---------- or: your own key, or a model on this Mac ---------- */
+async function welcomeOwn() {
+  const PROVIDERS = [
+    ["anthropic", "Anthropic", "claude-sonnet-5-5"],
+    ["openai", "OpenAI", "the model name, as OpenAI lists it"],
+    ["gemini", "Gemini", "the model name, as Google lists it"],
+    ["openrouter", "OpenRouter", "lab/model, like anthropic/claude-sonnet-4.5"],
+    ["ollama", "A model on this Mac (Ollama)", ""],
+  ];
+  const which = el("select", "text-in");
+  for (const [v, t] of PROVIDERS) { const o = el("option", null, t); o.value = v; which.append(o); }
+  const key = input("", "Your API key (kept in your Keychain)"); key.type = "password";
+  const model = input("claude-sonnet-5-5", "");
+  const local = el("select", "text-in"); local.hidden = true;
+  const note = el("p", "wl-sub", "");
+  const err = el("p", "error-line"); err.hidden = true;
+  const sync = async () => {
+    const p = PROVIDERS.find((x) => x[0] === which.value);
+    const isLocal = which.value === "ollama";
+    key.hidden = isLocal; model.hidden = isLocal; local.hidden = !isLocal;
+    model.placeholder = p[2]; if (which.value === "anthropic" && !model.value) model.value = "claude-sonnet-5-5";
+    if (which.value !== "anthropic" && model.value === "claude-sonnet-5-5") model.value = "";
+    if (isLocal) {
+      const st = await call("local_models").catch(() => null);
+      const installed = st?.installed || [];
+      local.replaceChildren(...installed.map((m) => { const o = el("option", null, m); o.value = m; return o; }));
+      note.textContent = installed.length ? "Free and offline: nothing leaves this Mac." : "Ollama isn't running, or has no models yet. Install it from ollama.com and pull a model (for example: ollama pull qwen3), then come back.";
+    } else {
+      note.textContent = "Cookie checks the key with one short call before it starts. You can sign in with Enkeon later for memory across your tools and the connected apps.";
+    }
+  };
+  which.onchange = sync;
+  const go = button("Start with this", "primary wl-go", async () => {
+    err.hidden = true; go.disabled = true; go.textContent = "Checking…";
+    try {
+      const isLocal = which.value === "ollama";
+      const r = await call("use_own_model", { provider: which.value, key: isLocal ? null : key.value, model: isLocal ? local.value : model.value });
+      toast("Ready", `Cookie runs on ${r.model}.`, "good");
+      welcomeStep("hire");
+    } catch (e) { err.textContent = String(e); err.hidden = false; }
+    go.disabled = false; go.textContent = "Start with this";
+  });
+  welcomeFrame("signin",
+    el("h1", "wl-title sm", "Your own model"),
+    el("p", "wl-sub", "Run Cookie on your own key, or on a model on this Mac. No account needed."),
+    which, key, model, local, note, err,
+    box("div", "wl-actions", button("Back", "quiet wl-go", () => welcomeStep("hello")), go),
+  );
+  await sync();
+  setTimeout(() => (key.hidden ? local : key).focus(), 50);
 }
 
 /* ---------- 2. sign in, pick the brain ---------- */
 async function welcomeSignin() {
   const status = el("div", "wl-status");
-  const face = Faces.create(Faces.idFor("welcome", "orb"), 88, undefined, { view: 2.4 });
-  welcomeFaces.push(face);
-  face.setMood("thinking");
+  // Three of the crew wait with you: Cookie in the middle, a teammate on each side.
+  const crew = el("div", "wl-crew trio");
+  const trio = [[Faces.idFor("welcome", "orb"), 64], ["cookie", 96], [Faces.idFor("welcome", "star"), 64]].map(([id, size], i) => {
+    const f = Faces.create(id, size, undefined, { view: 2.4 });
+    welcomeFaces.push(f);
+    const slot = el("div", "wl-slot" + (i === 1 ? " big" : ""));
+    slot.style.setProperty("--i", i);
+    slot.append(f.el);
+    crew.append(slot);
+    // Each arrives with a hop, then moves now and then while it waits.
+    welcomeTimers.push(setTimeout(() => f.jump(0.28, 600), 200 + i * 130));
+    const loop = () => {
+      if (!crew.isConnected) return;
+      const r = Math.random();
+      if (r < 0.45) f.jump(0.22 + Math.random() * 0.2, 800);
+      else if (r < 0.7) { f.jump(0.4, 1000); setTimeout(() => f.flip(i === 1 ? "front" : "spin2", 600), 200); }
+      else { const b = trio[(i + 1) % 3]?.el.getBoundingClientRect(); if (b) f.glanceAt(b.left + b.width / 2, b.top + b.height / 2, 1600); }
+      welcomeTimers.push(setTimeout(loop, 3600 + Math.random() * 4200));
+    };
+    welcomeTimers.push(setTimeout(loop, 2200 + i * 900 + Math.random() * 1500));
+    return f;
+  });
+  const face = trio[1];
+  trio.forEach((f) => f.setMood("thinking"));
   welcomeFrame("signin",
-    box("div", "wl-hero", face.el),
+    crew,
     el("h1", "wl-title sm", "Sign in with Enkeon"),
-    el("p", "wl-sub", "Your agents remember into an Enkeon brain, with proof for every memory, and reach your apps through it. Cookie keeps its own key for this Mac in your Keychain; your password never comes here."),
     status,
-    el("p", "wl-fine", "Cookie works signed in, so every agent has a memory with proof and your apps from the first job."),
   );
   let started = false;
   const tick = async () => {
@@ -133,7 +213,7 @@ async function welcomeSignin() {
     try { st = await call("enkeon"); } catch (e) { status.replaceChildren(el("p", "error-line", String(e))); return; }
     const p = st.pairing;
     if (st.paired) {
-      face.setMood("done");
+      trio.forEach((f, i) => { f.setMood("done"); setTimeout(() => f.jump(0.36, 700), i * 90); });
       face.fx("sparkle");
       status.replaceChildren(box("div", "wl-ok", icon("check"), el("span", null, `Signed in. Your agents remember into “${st.paired.project_name}”.`)));
       welcomeTimers.push(setTimeout(() => welcomeStep("apps"), 1300));
@@ -154,14 +234,18 @@ async function welcomeSignin() {
     if (p.state === "waiting") {
       const code = el("div", "wl-code");
       for (const ch of p.user_code) code.append(el("span", ch === "-" ? "dash" : "", ch));
-      status.replaceChildren(code, el("p", "wl-hint", "Confirm this code in the browser window that opened."), button("Open the browser again", "quiet small", () => Api.openUrl(p.url).catch(() => {})));
+      status.replaceChildren(code, el("p", "wl-hint", "Confirm this code in your browser."), button("Open the browser again", "quiet small", () => Api.openUrl(p.url).catch(() => {})));
     } else if (p.state === "choose") {
-      face.setMood("idle");
+      trio.forEach((f) => f.setMood("idle"));
       const list = el("div", "wl-brains");
       for (const proj of p.projects) {
         const b = el("button", "wl-brain");
         b.type = "button";
-        b.append(el("span", "wl-brain-dot"), el("span", null, proj.name));
+        // Each brain wears Enkeon's own mark.
+        const mark = typeof logoTile === "function" ? logoTile("enkeon", "Enkeon") : el("span", "app-tile");
+        mark.classList.add("wl-brain-mark");
+        b.append(mark, el("span", "wl-brain-name", proj.name.trim()));
+        b.title = proj.name.trim();
         b.onclick = async () => {
           b.disabled = true;
           try { await call("pair_choose", { project: proj.id }); tick(); }
@@ -169,7 +253,8 @@ async function welcomeSignin() {
         };
         list.append(b);
       }
-      status.replaceChildren(el("p", "wl-hint", "Which brain should your agents remember into?"), list);
+      status.replaceChildren(el("p", "wl-hint", "Choose the brain your agents remember into."), list);
+      if (p.projects.length > 12) status.append(el("p", "wl-more", `${p.projects.length} brains. Scroll for the rest.`));
       return; // waits for a click
     }
     welcomeTimers.push(setTimeout(tick, 2000));
@@ -183,7 +268,8 @@ function welcomeApps() {
   welcomeFrame("apps",
     el("h1", "wl-title sm", "Connect the apps they work with"),
     el("p", "wl-sub", "Enkeon keeps the accounts and syncs them into your brain, so every agent can use them. Each app signs in on its own page; nothing is sent without your yes."),
-    grid,
+    // The apps scroll in their own space and fade out at its foot; Continue and Later stay put.
+    box("div", "wl-scroll", grid),
     box("div", "wl-actions", button("Continue", "primary wl-go", () => welcomeStep("hire")), button("Later", "quiet wl-skip", () => welcomeStep("hire"))),
   );
   renderApps(grid);

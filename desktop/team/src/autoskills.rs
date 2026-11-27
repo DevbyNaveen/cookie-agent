@@ -45,9 +45,9 @@ use crate::{util, Team};
 /// Core skills an agent holds at most: two or three focused skills do best.
 pub const CORE_MAX: usize = 3;
 /// Practice tasks written for an agent's tests.
-pub const PRACTICE: usize = 6;
+pub const PRACTICE: usize = 24;
 /// Cases one skill exam runs (each on both sides).
-pub const EXAM_CASES: usize = 6;
+pub const EXAM_CASES: usize = 36;
 /// Good jobs before a skill found while working becomes core.
 pub const PROMOTE_WINS: u32 = 3;
 /// What find_skill offers at most.
@@ -363,7 +363,7 @@ impl Team {
     }
 
     /// May skill work spend more this month?
-    fn may_spend(&self) -> bool {
+    pub(crate) fn may_spend(&self) -> bool {
         let c = self.auto_cfg();
         let (micro, tokens) = c.spent.get(&Self::month()).copied().unwrap_or((0, 0));
         c.tests && (micro as f64) < c.month_dollars * 1_000_000.0 && tokens < c.month_tokens
@@ -407,7 +407,7 @@ impl Team {
 
     /// One model call for skill work, recorded as a job of the agent's: the answer as JSON.
     pub(crate) async fn side_call(&self, rec: &AgentRecord, label: &str, instructions: &str, input: String, schema: Value) -> Result<Value, String> {
-        let agent = Agent::new(&rec.model).map_err(|e| e.to_string())?.without_enkeon().instructions(instructions).output_schema(schema).close_with_answer();
+        let agent = Agent::new(&rec.model).map_err(|e| e.to_string())?.without_enkeon().instructions(instructions).output_schema(closed(schema)).close_with_answer();
         let agent = match self.settings().await.prices.get(&rec.model) {
             Some(p) => agent.prices(cookie_harness::Price { input: p.input, output: p.output, cache_read: p.cache_read, cache_write: p.cache_write }),
             None => agent,
@@ -504,7 +504,7 @@ impl Team {
     }
 
     /// A paired exam: `with` against `without`. Counts its spend.
-    async fn skill_exam(self: &Arc<Self>, rec: &AgentRecord, what: &str, with: Variant, without: Variant) -> Result<(SkillTest, Verdict), String> {
+    pub(crate) async fn skill_exam(self: &Arc<Self>, rec: &AgentRecord, what: &str, with: Variant, without: Variant) -> Result<(SkillTest, Verdict), String> {
         if !self.may_spend() {
             return Err("Skill tests have reached this month's limit (Settings → Skills).".into());
         }
@@ -874,18 +874,23 @@ impl Team {
             match self.skill_exam(&rec, &format!("Proposed edit: {}", util::clip(&s.why, 80)), with_edit, as_is).await {
                 Ok((test, v)) => {
                     let skill = s.edits[0].skill.clone();
-                    // "helps" or "no_better" means the edited copy did at least as well.
-                    if test.verdict != "worse" || v == Verdict::Drop {
+                    // Kept only when the edited copy passed strictly more of its cases: a tie is noise,
+                    // and a skill that changes itself on noise drifts (self-written edits help only when checked).
+                    if v == Verdict::Drop && test.with > test.without {
                         match self.apply_edits(agent, &s.edits) {
                             Ok(version) => {
                                 let what = format!("{} ({} of {} with the change, {} before)", s.why, test.with, test.total, test.without);
+                                // Live on trial: read against real work, put back if it does clearly worse (`trials`).
+                                if let Some(v) = &version {
+                                    self.start_trial(agent, &skill, v, &what);
+                                }
                                 self.log_change(agent, Change { at: util::now(), skill: skill.clone(), kind: "edited".into(), what: what.clone(), test: Some(test), version });
                                 self.notice(agent, &format!("{} improved {skill}", rec.name), &what, None, false);
                             }
                             Err(e) => self.log_change(agent, Change { at: util::now(), skill, kind: "not_kept".into(), what: e, ..Default::default() }),
                         }
                     } else {
-                        let what = format!("{}: its tests did worse with it ({} of {}, {} without).", s.why, test.with, test.total, test.without);
+                        let what = format!("{}: its tests did no better with it ({} of {}, {} without).", s.why, test.with, test.total, test.without);
                         self.log_change(agent, Change { at: util::now(), skill, kind: "not_kept".into(), what, test: Some(test), ..Default::default() });
                     }
                 }
@@ -1301,5 +1306,37 @@ mod tests {
         assert_eq!(v["skills"][0]["stage"], "core");
         assert_eq!(v["waiting"], 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A schema every provider's structured output accepts: each object says it takes no other keys.
+/// Providers refuse a schema that leaves that out, and one forgotten line must not cost a job.
+pub(crate) fn closed(mut schema: Value) -> Value {
+    fn walk(v: &mut Value) {
+        match v {
+            Value::Object(map) => {
+                if map.get("type").and_then(Value::as_str) == Some("object") && !map.contains_key("additionalProperties") {
+                    map.insert("additionalProperties".into(), Value::Bool(false));
+                }
+                map.values_mut().for_each(walk);
+            }
+            Value::Array(items) => items.iter_mut().for_each(walk),
+            _ => {}
+        }
+    }
+    walk(&mut schema);
+    schema
+}
+
+#[cfg(test)]
+mod closed_tests {
+    use super::*;
+
+    #[test]
+    fn every_object_in_a_schema_is_closed() {
+        let s = closed(serde_json::json!({"type": "object", "properties": {"a": {"type": "array", "items": {"type": "object", "properties": {"b": {"type": "string"}}}}, "c": {"type": "object", "additionalProperties": true}}}));
+        assert_eq!(s["additionalProperties"], false);
+        assert_eq!(s["properties"]["a"]["items"]["additionalProperties"], false);
+        assert_eq!(s["properties"]["c"]["additionalProperties"], true, "a choice already made is kept");
     }
 }

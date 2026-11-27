@@ -23,6 +23,7 @@ pub fn resolve(id: &ModelId) -> Result<Arc<dyn Provider>> {
         "openai" => Ok(Arc::new(openai::OpenAiProvider::openai_from_env()?)),
         "gemini" => Ok(Arc::new(gemini::GeminiProvider::from_env()?)),
         "ollama" => Ok(Arc::new(openai::OpenAiProvider::ollama_from_env())),
+        "openrouter" => Ok(Arc::new(openai::OpenAiProvider::openrouter_from_env()?)),
         #[cfg(feature = "bedrock")]
         "bedrock" => Ok(Arc::new(bedrock::BedrockProvider::from_env()?)),
         #[cfg(not(feature = "bedrock"))]
@@ -70,6 +71,7 @@ pub fn warm_url(id: &ModelId) -> Option<String> {
         "anthropic" => Some(var("ANTHROPIC_BASE_URL").unwrap_or_else(|| "https://api.anthropic.com".into())),
         "openai" => Some("https://api.openai.com".into()),
         "gemini" => Some("https://generativelanguage.googleapis.com".into()),
+        "openrouter" => Some("https://openrouter.ai".into()),
         #[cfg(feature = "bedrock")]
         "bedrock" => {
             let region = bedrock::region_for_model(var("AWS_REGION").or_else(|| var("AWS_DEFAULT_REGION")).as_deref(), &id.model).ok()?;
@@ -104,6 +106,72 @@ pub fn http_error(status: u16, body: &str) -> Error {
         return Error::Unavailable(said);
     }
     Error::Provider(said)
+}
+
+/// Tries for a server error or a dropped connection.
+pub const ATTEMPTS: u32 = 4;
+/// Tries for a rate limit. Quotas are per minute, so a refusal now says
+/// little about twenty seconds from now: a burst rides through the window
+/// instead of failing the run.
+pub const THROTTLED_ATTEMPTS: u32 = 7;
+/// The longest single wait, whatever the provider's `retry-after` says.
+const LONGEST_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Sends one request, retrying what is worth another try: throttling (429),
+/// overload (529) and server errors, and connections that dropped before an
+/// answer. Nothing has reached the caller yet, so a retry can't say anything
+/// twice. A call that timed out is not sent again: it may still be running
+/// at the provider, and a second one could pay twice. The provider's own
+/// `retry-after` is honoured, up to a minute.
+pub(crate) async fn send_retrying(build: impl Fn() -> reqwest::RequestBuilder) -> Result<reqwest::Response> {
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let wait = match build().send().await {
+            Ok(response) if response.status().is_success() => return Ok(response),
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let after = retry_after(response.headers());
+                let text = response.text().await.unwrap_or_default();
+                let error = http_error(status, &text);
+                let throttled = status == 429;
+                let limit = if throttled { THROTTLED_ATTEMPTS } else { ATTEMPTS };
+                if !error.may_fall_back() || attempt >= limit {
+                    return Err(error);
+                }
+                after.unwrap_or_else(|| if throttled { throttle_backoff(attempt) } else { backoff(attempt) })
+            }
+            Err(e) if e.is_builder() || e.is_timeout() || attempt >= ATTEMPTS => return Err(send_error(e)),
+            Err(_) => backoff(attempt),
+        };
+        tracing::debug!(attempt, wait_ms = wait.as_millis() as u64, "model call retried");
+        tokio::time::sleep(wait.min(LONGEST_WAIT)).await;
+    }
+}
+
+/// `retry-after` in seconds (the form every model API sends), or
+/// `retry-after-ms`, which OpenAI and Anthropic also send.
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
+    let number = |name: &str| headers.get(name)?.to_str().ok()?.trim().parse::<f64>().ok().filter(|n| n.is_finite() && *n >= 0.0);
+    number("retry-after-ms").map(|ms| std::time::Duration::from_millis(ms as u64)).or_else(|| number("retry-after").map(std::time::Duration::from_secs_f64))
+}
+
+fn jitter() -> f64 {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    f64::from(nanos % 1_000_000) / 1_000_000.0
+}
+
+/// "Full jitter": a random wait up to 1, 2, 4… s, so callers that failed
+/// together don't retry together.
+fn backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(1 << attempt.saturating_sub(1).min(5)).mul_f64(jitter())
+}
+
+/// After throttling, "equal jitter": at least half of 2, 4, 8… s, so each
+/// retry lands later in the window while callers still spread out.
+fn throttle_backoff(attempt: u32) -> std::time::Duration {
+    let cap = std::time::Duration::from_secs(1 << attempt.clamp(1, 5));
+    cap / 2 + (cap / 2).mul_f64(jitter())
 }
 
 /// A request that never got an HTTP answer, or a reply cut off on the way:
@@ -167,6 +235,58 @@ mod tests {
         }
     }
 
+    /// A server that answers each connection with the next canned reply.
+    async fn serve(replies: Vec<&'static str>) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = hits.clone();
+        tokio::spawn(async move {
+            for reply in replies {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                socket.write_all(reply.as_bytes()).await.unwrap();
+                let _ = socket.shutdown().await;
+            }
+        });
+        (url, hits)
+    }
+
+    const THROTTLED: &str = "HTTP/1.1 429 Too Many Requests\r\nretry-after-ms: 5\r\ncontent-length: 4\r\nconnection: close\r\n\r\nslow";
+    const OVERLOADED: &str = "HTTP/1.1 529 Overloaded\r\nretry-after: 0\r\ncontent-length: 4\r\nconnection: close\r\n\r\nbusy";
+    const OK: &str = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok";
+    const REFUSED: &str = "HTTP/1.1 401 Unauthorized\r\ncontent-length: 3\r\nconnection: close\r\n\r\nkey";
+
+    #[tokio::test]
+    async fn a_throttled_or_overloaded_call_is_sent_again_until_it_answers() {
+        let (url, hits) = serve(vec![THROTTLED, OVERLOADED, OK]).await;
+        let client = super::http_client();
+        let response = super::send_retrying(|| client.get(&url)).await.unwrap();
+        assert_eq!(response.text().await.unwrap(), "ok");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn a_refusal_is_not_sent_again() {
+        let (url, hits) = serve(vec![REFUSED, OK]).await;
+        let client = super::http_client();
+        let e = super::send_retrying(|| client.get(&url)).await.unwrap_err();
+        assert!(e.to_string().contains("401"), "{e}");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn retries_stop_at_the_limit_and_say_the_last_error() {
+        let (url, hits) = serve(vec![OVERLOADED; super::ATTEMPTS as usize + 2]).await;
+        let client = super::http_client();
+        let e = super::send_retrying(|| client.get(&url)).await.unwrap_err();
+        assert!(e.may_fall_back(), "the caller may still try another model: {e}");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), super::ATTEMPTS as usize);
+    }
+
     #[test]
     fn warming_names_the_host_the_model_is_called_on() {
         let id = |text: &str| crate::model_id::ModelId::parse(text).unwrap();
@@ -177,6 +297,18 @@ mod tests {
             super::warm_url(&id("bedrock:eu.anthropic.claude-sonnet-4-6")).as_deref(),
             Some("https://bedrock-runtime.eu-central-1.amazonaws.com")
         );
+    }
+
+    #[test]
+    fn openrouter_is_a_known_provider_that_needs_its_key_and_takes_any_labs_model_name() {
+        let id = crate::model_id::ModelId::parse("openrouter:anthropic/claude-sonnet-4.5").unwrap();
+        assert_eq!(id.model, "anthropic/claude-sonnet-4.5", "the lab's name stays in the model");
+        match super::resolve(&id) {
+            Ok(_) => assert!(std::env::var("OPENROUTER_API_KEY").is_ok()),
+            Err(crate::Error::Provider(m)) => assert!(m.contains("OPENROUTER_API_KEY"), "{m}"),
+            Err(other) => panic!("{other}"),
+        }
+        assert_eq!(super::warm_url(&id).as_deref(), Some("https://openrouter.ai"));
     }
 
     #[test]

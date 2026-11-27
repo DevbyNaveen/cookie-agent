@@ -82,6 +82,9 @@ pub struct Variant {
     /// Its skills changed (`autoskills`): some taken away, some added, some edited.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skills: Option<crate::autoskills::SkillDelta>,
+    /// With the tools it made for itself (`forge`); a probe starts without them otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_tools: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -171,16 +174,20 @@ pub fn candidates(agent: &str, jobs: &[Job], removed: &[String]) -> Vec<BenchCas
     let mut out: Vec<BenchCase> = Vec::new();
     let mut picked: Vec<&Job> = jobs
         .iter()
-        .filter(|j| matches!(j.trigger, Trigger::Chat | Trigger::Routine { .. } | Trigger::Channel { .. } | Trigger::Telegram { .. }))
+        .filter(|j| matches!(j.trigger, Trigger::Chat | Trigger::Routine { .. } | Trigger::Channel { .. } | Trigger::Telegram { .. } | Trigger::Goal { .. }))
         .filter(|j| j.status == JobStatus::Done && crate::outcome::clean(j) && !j.cut_off && j.steered == 0)
+        // A job the person corrected is no reference answer to replay against.
+        .filter(|j| crate::outcome::end_state(j) != crate::outcome::EndState::Corrected)
         .filter(|j| {
             let words = j.input.split_whitespace().count();
             words >= 4 && j.input.chars().count() <= 4_000 && !j.answer.trim().is_empty()
         })
         .filter(|j| !removed.contains(&j.id))
         .collect();
-    // Graded good first, then the newest.
-    picked.sort_by(|a, b| (b.grade == Some(1)).cmp(&(a.grade == Some(1))).then(b.started_at.cmp(&a.started_at)));
+    // Shown right first (graded good, a goal's check passed, a send the person looked at), then the newest:
+    // a change is judged against what really worked, not against what merely finished.
+    let verified = |j: &Job| crate::outcome::end_state(j) == crate::outcome::EndState::Verified;
+    picked.sort_by(|a, b| verified(b).cmp(&verified(a)).then((b.grade == Some(1)).cmp(&(a.grade == Some(1)))).then(b.started_at.cmp(&a.started_at)));
     for j in picked {
         if out.iter().any(|c| cookie_harness::lessons::similarity(&c.input, &j.input) >= SAME_JOB) {
             continue;
@@ -307,6 +314,20 @@ impl Team {
     }
 
     /// Run `cases` on two copies of the agent, `baseline` and `variant`, paired.
+    /// Who judges work done on `model`, so it never grades itself where that can be helped: the
+    /// checker model (Settings), else a model of another family the person already set up, else a
+    /// stronger Claude, else the same model.
+    pub(crate) async fn judge_model(&self, model: &str) -> String {
+        let settings = self.settings().await;
+        let set_up: Vec<String> = self.agents().await.into_iter().map(|a| a.model).chain(settings.backup_models.values().cloned()).collect();
+        settings
+            .checker_model
+            .clone()
+            .or_else(|| crate::failover::other_family(model, set_up.iter().filter(|m| cookie_harness::Agent::new(m).is_ok())))
+            .or_else(|| crate::failover::stronger(model).filter(|m| cookie_harness::Agent::new(m).is_ok()))
+            .unwrap_or_else(|| model.to_string())
+    }
+
     pub async fn exam_between(self: &Arc<Self>, agent: &str, what: &str, cases: Vec<BenchCase>, baseline: Variant, variant: Variant) -> Result<Exam, String> {
         let rec = self.agent(agent).await?;
         if cases.is_empty() {
@@ -315,8 +336,9 @@ impl Team {
         if let Some(m) = &variant.model {
             cookie_harness::Agent::new(m).map_err(|e| e.to_string())?;
         }
-        // One judge for both sides: the checker model, else the agent's own (never the candidate's).
-        let judge = self.settings().await.checker_model.unwrap_or_else(|| rec.model.clone());
+        // One judge for both sides, never the agent grading itself where that can be helped: the checker
+        // model (another provider, set in Settings), else a stronger model than the agent's, else its own.
+        let judge = self.judge_model(&rec.model).await;
         let mut exam = Exam {
             id: util::new_id("exam"),
             agent: agent.into(),
@@ -364,7 +386,7 @@ impl Team {
         }
         let tuning = v.tuning.clone().unwrap_or_else(|| self.tuning(&rec.id));
         let began = std::time::Instant::now();
-        let job = match self.run_probe_job_with(&probe, &case.input, Trigger::Test { case: case.id.clone() }, Some(tuning), v.skills.as_ref()).await {
+        let job = match self.run_probe_job_with(&probe, &case.input, Trigger::Test { case: case.id.clone() }, Some(tuning), v.skills.as_ref(), v.own_tools).await {
             Ok(j) => j,
             Err(e) => return CaseResult { case: case.id.clone(), pass: false, reason: format!("It didn't finish: {e}"), ms: began.elapsed().as_millis() as u64, ..CaseResult::default() },
         };

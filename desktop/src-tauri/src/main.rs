@@ -17,9 +17,37 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
 
+/// The team this window shows: the one on this Mac, or one that lives elsewhere (in the cloud,
+/// beside its Parallax worlds) that this app is signed in to (`cookie_team::remote`).
+struct Where {
+    dir: std::path::PathBuf,
+    remote: Option<(cookie_team::remote::Remote, String)>,
+}
+
 #[tauri::command]
-async fn call(cmd: String, args: Option<Value>, team: State<'_, Arc<Team>>) -> Result<Value, String> {
-    cookie_team::api::call(&team, &cmd, args.unwrap_or(Value::Null)).await
+async fn call(cmd: String, args: Option<Value>, team: State<'_, Arc<Team>>, place: State<'_, Where>) -> Result<Value, String> {
+    let args = args.unwrap_or(Value::Null);
+    // Which team the window talks to is this app's own business.
+    match cmd.as_str() {
+        "remote_status" => {
+            return Ok(serde_json::json!({
+                "remote": place.remote.as_ref().map(|(r, _)| serde_json::json!({"url": r.url, "hand": r.hand})),
+            }))
+        }
+        "remote_attach" => {
+            let v = cookie_team::remote::attach(&place.dir, args["url"].as_str().unwrap_or(""), args["token"].as_str().unwrap_or(""), args["hand"].as_bool().unwrap_or(true)).await?;
+            return Ok(serde_json::json!({"attached": v, "restart": true}));
+        }
+        "remote_detach" => {
+            cookie_team::remote::detach(&place.dir)?;
+            return Ok(serde_json::json!({"detached": true, "restart": true}));
+        }
+        _ => {}
+    }
+    match &place.remote {
+        Some((r, token)) => cookie_team::remote::call(r, token, &cmd, args).await,
+        None => cookie_team::api::call(&team, &cmd, args).await,
+    }
 }
 
 /// Show one of Cookie's own folders in Finder (or the system file manager).
@@ -234,9 +262,28 @@ fn main() {
             let dir = app.path().app_data_dir()?;
             let team = Team::open(&dir).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             app.manage(team.clone());
-            // The team's background work (routines, Telegram, the server) needs the async runtime.
-            let starter = team.clone();
-            tauri::async_runtime::spawn(async move { starter.start() });
+            let remote = cookie_team::remote::load(&dir);
+            app.manage(Where { dir: dir.clone(), remote: remote.clone() });
+            if let Some((r, token)) = remote {
+                // A team that lives elsewhere: this window follows it, and (when the person allowed it)
+                // this Mac is its hand. The local team is only the Mac's own tools, never started, so
+                // no routine runs twice.
+                let stop = tokio_util::sync::CancellationToken::new();
+                let handle = app.handle().clone();
+                let state = app.handle().clone();
+                let (r2, t2, s2) = (r.clone(), token.clone(), stop.clone());
+                tauri::async_runtime::spawn(async move {
+                    cookie_team::remote::follow(r2, t2, s2, move |ev| { let _ = handle.emit("team", &ev); }, move |st| { let _ = state.emit("remote", st); }).await
+                });
+                if r.hand {
+                    let (local, url) = (team.clone(), r.url.clone());
+                    tauri::async_runtime::spawn(async move { cookie_team::hand::serve_as_hand(local, url, token, stop).await });
+                }
+            } else {
+                // The team's background work (routines, Telegram, the server) needs the async runtime.
+                let starter = team.clone();
+                tauri::async_runtime::spawn(async move { starter.start() });
+            }
 
             // Team events → the window, and notifications when it can't be seen.
             let handle = app.handle().clone();

@@ -51,6 +51,11 @@ pub fn read_json<T: DeserializeOwned + Default>(path: &Path) -> T {
     std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
+/// A JSON file read as `T`, or nothing when it is missing or doesn't parse.
+pub fn read_json_opt<T: DeserializeOwned>(path: &Path) -> Option<T> {
+    std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok())
+}
+
 /// Append one JSON line.
 pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     use std::io::Write;

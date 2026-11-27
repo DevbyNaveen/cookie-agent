@@ -52,15 +52,15 @@ use crate::{util, Team};
 
 pub const NAME: &str = "hire_contractor";
 /// Contractors at work at the same time, per job.
-pub const AT_ONCE: usize = 3;
+pub const AT_ONCE: usize = 8;
 /// Contractors one job may bring in.
-pub const PER_JOB: usize = 6;
+pub const PER_JOB: usize = 24;
 /// Review rounds per role in one job.
-pub const ROUNDS: usize = 2;
+pub const ROUNDS: usize = 4;
 /// Model calls one contractor may make.
-pub const STEPS: usize = 14;
+pub const STEPS: usize = 80;
 /// How long one may work.
-pub const WALL: Duration = Duration::from_secs(300);
+pub const WALL: Duration = Duration::from_secs(1800);
 /// Accepted jobs, in this many days, before hiring it for good is offered.
 pub const PROMOTE_AFTER: usize = 3;
 pub const PROMOTE_DAYS: u64 = 30;
@@ -306,7 +306,7 @@ impl Tool for Contractors {
             .tools(given)
             // No memory, no apps, no sign-ins of its own: only what it was handed.
             .without_enkeon()
-            .budget(Budget { max_steps: STEPS, max_tokens: self.rec.limits.tokens.max(1_000), max_dollars: None });
+            .budget(Budget { max_steps: STEPS, max_tokens: self.rec.limits.tokens.max(1_000), max_dollars: None, max_seconds: None });
         if let Some(p) = self.price.filter(|_| c.model == self.rec.model) {
             agent = agent.prices(p);
         }

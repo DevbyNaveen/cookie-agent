@@ -48,6 +48,23 @@ pub struct Rehearsal {
     /// The job it became when the person said go.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ran_as: Option<String>,
+    /// What it changed inside its own worlds, shown and then rewound: the result, previewed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub world_changes: Vec<serde_json::Value>,
+}
+
+/// What changed in each world since its mark (world, name, checkpoint), then each put back.
+pub(crate) fn capture_and_rewind(worlds: &parallax::Worlds, marks: &[(String, String, u64)]) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for (world, name, n) in marks {
+        let (Ok(then), Ok(now)) = (worlds.checkpoint_files(world, *n), worlds.files(world)) else { continue };
+        let diff = parallax::world::diff_dirs(&then, &now);
+        if diff["count"].as_u64().unwrap_or(0) > 0 {
+            out.push(serde_json::json!({"world": world, "name": name, "changes": diff}));
+            let _ = worlds.rewind(world, *n);
+        }
+    }
+    out
 }
 
 impl Team {
@@ -92,10 +109,19 @@ impl Team {
             ..Rehearsal::default()
         };
         self.save_rehearsal(&r);
+        // Its worlds as they are now: what the rehearsal changes in them is shown, then undone.
+        let marks: Vec<(String, String, u64)> = self
+            .parallax()
+            .map(|px| px.worlds.list().into_iter().filter(|w| w.owner == rec.id).filter_map(|w| px.worlds.checkpoint(&w.id, "Before a rehearsal").ok().map(|n| (w.id, w.name, n))).collect())
+            .unwrap_or_default();
         let (team, id) = (self.clone(), r.id.clone());
         tokio::spawn(async move {
             let mut r = r;
-            match team.run_and_wait(&r.agent.clone(), text, Vec::new(), Trigger::Rehearse).await {
+            let ran = team.run_and_wait(&r.agent.clone(), text, Vec::new(), Trigger::Rehearse).await;
+            if let Ok(px) = team.parallax() {
+                r.world_changes = capture_and_rewind(&px.worlds, &marks);
+            }
+            match ran {
                 Ok(job) => {
                     r.job = job.id.clone();
                     r.answer = util::clip(&job.answer, 6000);
@@ -137,5 +163,25 @@ impl Team {
         r.ran_as = Some(job.clone());
         self.save_rehearsal(&r);
         Ok(job)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_rehearsal_shows_what_it_changed_in_its_world_and_leaves_the_world_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = parallax::Worlds::new(dir.path());
+        let w = ws.create("site", None, "a").unwrap();
+        std::fs::write(ws.files(&w.id).unwrap().join("index.html"), "<h1>Old</h1>").unwrap();
+        let n = ws.checkpoint(&w.id, "Before a rehearsal").unwrap();
+        std::fs::write(ws.files(&w.id).unwrap().join("index.html"), "<h1>New</h1>").unwrap();
+        std::fs::write(ws.files(&w.id).unwrap().join("book.html"), "booking").unwrap();
+        let shown = super::capture_and_rewind(&ws, &[(w.id.clone(), w.name.clone(), n)]);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0]["changes"]["count"], 2);
+        assert_eq!(std::fs::read_to_string(ws.files(&w.id).unwrap().join("index.html")).unwrap(), "<h1>Old</h1>", "rewound");
+        assert!(!ws.files(&w.id).unwrap().join("book.html").exists());
+        assert!(super::capture_and_rewind(&ws, &[(w.id.clone(), w.name, n)]).is_empty(), "nothing changed: nothing shown");
     }
 }

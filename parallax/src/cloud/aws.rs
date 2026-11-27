@@ -17,6 +17,7 @@ use ring::hmac;
 
 use crate::util;
 
+#[derive(Clone)]
 pub struct Creds {
     pub key: String,
     pub secret: String,
@@ -34,6 +35,45 @@ impl Creds {
             region: v("AWS_REGION").or_else(|| v("AWS_DEFAULT_REGION")).ok_or("AWS_REGION isn't set.")?,
         })
     }
+}
+
+impl Creds {
+    /// The credentials of the role this EC2 machine runs as, from its metadata service
+    /// (IMDSv2: a session token first, so a request forged through the machine can't
+    /// read them). Short-lived; the caller asks again as they near expiry.
+    pub async fn from_instance_role(region: &str) -> Result<(Creds, u64), String> {
+        let http = reqwest::Client::builder().timeout(Duration::from_secs(3)).build().map_err(|e| e.to_string())?;
+        let base = "http://169.254.169.254/latest";
+        let token = http.put(format!("{base}/api/token")).header("X-aws-ec2-metadata-token-ttl-seconds", "300").send().await.map_err(|e| format!("no instance metadata: {e}"))?.text().await.map_err(|e| e.to_string())?;
+        let get = |path: String| {
+            let (http, token) = (http.clone(), token.clone());
+            async move { http.get(format!("{base}/{path}")).header("X-aws-ec2-metadata-token", token).send().await.map_err(|e| e.to_string())?.error_for_status().map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string()) }
+        };
+        let role = get("meta-data/iam/security-credentials/".into()).await?.lines().next().unwrap_or("").trim().to_string();
+        if role.is_empty() {
+            return Err("This machine has no role.".into());
+        }
+        let v: serde_json::Value = serde_json::from_str(&get(format!("meta-data/iam/security-credentials/{role}")).await?).map_err(|e| e.to_string())?;
+        let field = |k: &str| v[k].as_str().map(str::to_string).ok_or_else(|| format!("The role's credentials have no {k}."));
+        let expires = chrono_free_expiry(v["Expiration"].as_str().unwrap_or(""));
+        Ok((Creds { key: field("AccessKeyId")?, secret: field("SecretAccessKey")?, token: Some(field("Token")?), region: region.to_string() }, expires))
+    }
+}
+
+/// `2026-11-28T12:34:56Z` as epoch seconds; now + 10 minutes when it can't be read.
+fn chrono_free_expiry(s: &str) -> u64 {
+    let n = |a: usize, b: usize| s.get(a..b).and_then(|x| x.parse::<i64>().ok());
+    let fallback = util::now() + 600;
+    let (Some(y), Some(mo), Some(d), Some(h), Some(mi), Some(se)) = (n(0, 4), n(5, 7), n(8, 10), n(11, 13), n(14, 16), n(17, 19)) else { return fallback };
+    // Days from civil (Howard Hinnant).
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let doy = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let t = days * 86_400 + h * 3600 + mi * 60 + se;
+    if t > 0 { t as u64 } else { fallback }
 }
 
 fn hmac_sha256(key: &[u8], data: &str) -> Vec<u8> {
@@ -171,6 +211,13 @@ impl Pool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_role_credentials_expiry_reads_as_epoch_seconds() {
+        assert_eq!(chrono_free_expiry("2026-11-27T00:00:00Z"), 1_795_737_600);
+        assert_eq!(chrono_free_expiry("2026-11-27T08:30:15Z"), 1_795_737_600 + 8 * 3600 + 30 * 60 + 15);
+        assert!(chrono_free_expiry("garbage") > util::now());
+    }
 
     /// AWS's SigV4 test suite, "get-vanilla": a GET of / on example.amazonaws.com.
     #[test]

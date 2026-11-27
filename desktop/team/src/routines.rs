@@ -12,6 +12,9 @@ use crate::events::TeamEvent;
 use crate::store::{Routine, Schedule, Trigger};
 use crate::{util, Team};
 
+/// How soon a failed routine run is tried again, once.
+const RETRY_AFTER: u64 = 600;
+
 const DAYS: [(&str, Weekday); 7] = [
     ("mon", Weekday::Mon), ("tue", Weekday::Tue), ("wed", Weekday::Wed), ("thu", Weekday::Thu),
     ("fri", Weekday::Fri), ("sat", Weekday::Sat), ("sun", Weekday::Sun),
@@ -120,6 +123,7 @@ impl Team {
             created_at: now,
             last_run: None,
             workflow: None,
+            retrying: false,
         };
         let mut rs = self.routines.write().await;
         rs.push(r.clone());
@@ -184,6 +188,23 @@ impl Team {
             Some(flow) => self.start_workflow(&r.agent, flow, r.task.clone(), true).await,
             None => self.start_job(&r.agent, r.task.clone(), Vec::new(), Trigger::Routine { routine: r.id.clone() }).await,
         }
+    }
+
+    /// A routine's job ended. One that failed (the network, a model that was down) is tried
+    /// once more ten minutes on, sooner than its next turn; a second failure waits for that turn.
+    pub(crate) async fn routine_ended(&self, routine: &str, failed: bool) {
+        let mut rs = self.routines.write().await;
+        let Some(r) = rs.iter_mut().find(|r| r.id == routine) else { return };
+        if failed && !r.retrying {
+            r.retrying = true;
+            let again = util::now() + RETRY_AFTER;
+            r.next_run = Some(r.next_run.map_or(again, |t| t.min(again)));
+        } else if r.retrying {
+            r.retrying = false;
+        } else {
+            return;
+        }
+        let _ = self.save_routines(&rs).await;
     }
 
     async fn tick(self: &Arc<Self>) {
@@ -338,6 +359,29 @@ pub(crate) fn spawn_scheduler(team: Arc<Team>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_failed_routine_is_tried_once_more_and_no_more() {
+        let dir = std::env::temp_dir().join(format!("cookie-retry-{}", util::random_hex(4)));
+        let team = Team::open(&dir).unwrap();
+        let far = util::now() + 86_400;
+        team.routines.write().await.push(Routine { id: "r1".into(), agent: "a".into(), task: "x".into(), schedule: Schedule::Day { at: "08:00".into() }, enabled: true, created_at: 0, last_run: None, next_run: Some(far), workflow: None, retrying: false });
+        let next = |t: Arc<Team>| async move { let r = t.routines.read().await[0].clone(); (r.next_run.unwrap(), r.retrying) };
+        // A run that worked changes nothing.
+        team.routine_ended("r1", false).await;
+        assert_eq!(next(team.clone()).await, (far, false));
+        // A failure: once more, ten minutes on.
+        team.routine_ended("r1", true).await;
+        let (at, retrying) = next(team.clone()).await;
+        assert!(retrying && at <= util::now() + RETRY_AFTER && at < far);
+        // The retry failing too does not ask for a third; the next failure gets its own retry.
+        team.routines.write().await[0].next_run = Some(far);
+        team.routine_ended("r1", true).await;
+        assert_eq!(next(team.clone()).await, (far, false));
+        team.routine_ended("r1", true).await;
+        assert!(next(team.clone()).await.1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn next_runs_are_in_the_future_and_respect_days() {

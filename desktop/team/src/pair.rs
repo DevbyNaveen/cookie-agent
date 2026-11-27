@@ -261,7 +261,11 @@ impl Team {
                 }
             };
             match r["status"].as_str() {
-                Some("approved") => break r["jwt"].as_str().ok_or("Enkeon approved but sent no sign-in.")?.to_string(),
+                Some("approved") => {
+                    // Signing in once is enough: the renewal token goes to the Keychain (`apps`).
+                    self.keep_renewal(r["refresh_token"].as_str());
+                    break r["jwt"].as_str().ok_or("Enkeon approved but sent no sign-in.")?.to_string();
+                }
                 Some("expired") => {
                     set_pairing(|p| p.state = "expired".into());
                     return Ok(());
@@ -346,6 +350,7 @@ impl Team {
     pub fn unpair(&self) -> Result<Value, String> {
         let p: Paired = util::read_json(&self.paired_path());
         self.store_paired_key(None)?;
+        self.keep_renewal(None);
         let _ = std::fs::remove_file(self.paired_path());
         self.load_pairing();
         self.pair_cancel();

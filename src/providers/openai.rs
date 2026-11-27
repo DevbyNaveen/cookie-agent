@@ -7,7 +7,6 @@ use serde_json::{json, Value};
 
 use super::{
     fence::{fence, fence_tag, image_notice},
-    http_error,
     sse::SseDecoder,
 };
 use crate::{
@@ -46,6 +45,15 @@ impl OpenAiProvider {
         let mut provider = Self::new(base, Some(key));
         provider.max_tokens_field = "max_completion_tokens";
         Ok(provider)
+    }
+
+    /// OpenRouter: hundreds of models from every lab behind one key, in the
+    /// OpenAI format. Models are named as OpenRouter names them, like
+    /// `openrouter:anthropic/claude-sonnet-4.5` or `openrouter:openai/gpt-5`.
+    pub fn openrouter_from_env() -> Result<Self> {
+        let key = std::env::var("OPENROUTER_API_KEY").map_err(|_| Error::Provider("OPENROUTER_API_KEY is not set".into()))?;
+        let base = std::env::var("OPENROUTER_BASE_URL").unwrap_or_else(|_| "https://openrouter.ai/api/v1".into());
+        Ok(Self::new(base, Some(key)))
     }
 
     pub fn ollama_from_env() -> Self {
@@ -315,17 +323,14 @@ impl ChunkAssembler {
 
 impl OpenAiProvider {
     async fn post(&self, body: &Value) -> Result<reqwest::Response> {
-        let mut call = self.client.post(format!("{}/chat/completions", self.base_url)).json(body);
-        if let Some(key) = &self.api_key {
-            call = call.bearer_auth(key);
-        }
-        let response = call.send().await.map_err(super::send_error)?;
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(http_error(status.as_u16(), &text));
-        }
-        Ok(response)
+        super::send_retrying(|| {
+            let call = self.client.post(format!("{}/chat/completions", self.base_url)).json(body);
+            match &self.api_key {
+                Some(key) => call.bearer_auth(key),
+                None => call,
+            }
+        })
+        .await
     }
 }
 

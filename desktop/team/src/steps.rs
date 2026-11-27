@@ -36,6 +36,10 @@ pub(crate) fn words(team: &Team, name: &str, args: &Value) -> (String, String, O
             let f = file("path").map(|f| format!(" {f}")).unwrap_or_else(|| " a file".into());
             (format!("Writing{f}"), format!("Wrote{f}"), None)
         }
+        "edit_file" => {
+            let f = file("path").map(|f| format!(" {f}")).unwrap_or_else(|| " a file".into());
+            (format!("Editing{f}"), format!("Edited{f}"), None)
+        }
         "run_command" => ("Running a command".into(), "Ran a command".into(), None),
         "recall" => (format!("Remembering{}", quoted("query")), format!("Checked memory{}", quoted("query")), None),
         "remember" | "save_note" => ("Saving to memory".into(), "Saved to memory".into(), None),

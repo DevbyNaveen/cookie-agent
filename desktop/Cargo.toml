@@ -8,3 +8,9 @@ resolver = "2"
 [profile.dev]
 debug = 0
 incremental = false
+
+# Release builds strip debug symbols by default; on macOS 27 that leaves the
+# proc-macro libraries unloadable ("mis-aligned LINKEDIT string pool"), so
+# nothing is stripped here.
+[profile.release]
+strip = "none"

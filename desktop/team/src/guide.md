@@ -220,6 +220,8 @@ The chip filters the list. ⌘T opens the next agent that needs you, newest firs
 
 **Notices.** These arrive as toasts. Click one to open its agent, or × to dismiss it. Settings → General → **News per day** (default 8) caps interruptions across the team, but a request for a yes always gets through. After 3 dismissals in a row, an agent's routine news waits until the person opens it.
 
+**Only Cookie speaks unprompted.** Other agents' news (not a request for a yes) is held and Cookie brings it as one notice, "News from your team", at most every half hour, within the day's limit. A request for a yes still comes straight from the agent that needs it. Cookie's chat opens with **This morning**: what the team did on its own since yesterday and whether anything showed it right, what waits for the person, what is due today, and the goals and watchers it is carrying.
+
 ## chips | Permission and model chips under the composer
 > Left chip: files level and "n of 6 on" quick permissions; right chip: the agent's model. Click either to change it.
 **The permission chip (shield).** It shows the files level and how many quick permissions are on. Clicking it opens:
@@ -279,7 +281,7 @@ Profile → About → **What it can use**. A tool whose grant is off isn't offer
 - **Memory** [on]: notes, or Enkeon `recall`/`remember`. Also `skills_list`, `skill_view`, `skill_manage`, `note_about_person`, `forget_about_person`, `search_history`, and `share_with_team`.
 - **Set routines** [on]: `set_routine`, `list_routines`, `stop_routine` (the UI says it asks first).
 - **Ask teammates** [on]: `message` to your own agents.
-- **Helpers** [on]: up to 4 read-only helpers at once.
+- **Helpers** [on]: up to 16 read-only helpers at once.
 - **Contractors** [on]: temporary specialists.
 - **Connected apps** [on]: `connector_actions`, `connector_call`, your own MCP servers' tools, and `make_image`/`make_video` when Higgsfield is set. Billed per call.
 - **Use this Mac** [off; on for Cookie]: Mac apps, opening and controlling apps, Hands, and 1Password.
@@ -292,12 +294,12 @@ Profile → About → **What it can use**. A tool whose grant is off isn't offer
 Agents from packs or TEAM.md start with every grant off.
 
 ## limits | Limits, budgets and probation
-> Per agent: Steps per job (24), Dollars per job and per month (none by default); probation records changes as "Would have…" instead of making them.
-**Limits.** Profile → About → **Limits**, then **Save limits**.
-- **Steps per job:** model calls before it must answer. Default 24.
-- **Dollars per job:** needs a price for its model (Settings → Models).
+> Per agent: dollars and minutes per job, dollars per month; probation records changes as "Would have…" instead of making them.
+**Limits.** Profile → About → **Limits**, then **Save limits**. Work is limited by money and time, not by counting steps.
+- **Dollars per job:** $20 by default; needs a price for its model (Settings → Models).
+- **Minutes per job:** 240 by default (`agent.limits.job_minutes`). Work that runs for days is a goal, in many jobs.
 - **Dollars per month:** past it, new jobs are refused until the person raises it.
-- There is also a hidden limit of 400,000 tokens per job.
+- **Steps per job:** model calls, 1,000 by default: only a guard against a job going round in circles. There is a token guard too (40 million).
 - Helpers and contractors spend the agent's own budget.
 - Other budgets live elsewhere: skill tests (Settings → Skills), nightly exams (Settings → Evolution), and network answers per day (Network).
 
@@ -391,7 +393,7 @@ Under **New routine**, write the task, then choose when it runs:
 - Every day, or Weekdays, at a time
 - Every week, on a day and at a time
 - Every few hours: 1, 2, 4 or 8
-- When something arrives in an app: any app, Gmail, Outlook, Slack, GitHub, Linear, Notion, Google Calendar, Google Drive, Jira, HubSpot or Salesforce, optionally "Only if it mentions…". This needs Enkeon with apps connected. Each item starts it once, at most 30 times a day.
+- When something arrives in an app: any app, Gmail, Outlook, Slack, GitHub, Linear, Notion, Google Calendar, Google Drive, Jira, HubSpot or Salesforce, optionally "Only if it mentions…". This needs Enkeon with apps connected. Each item starts it once, at most 200 times a day.
 - When its web address is called: it gets a secret, shown once, and can be called 60 times an hour at most.
 
 Click **Add routine**.
@@ -410,6 +412,14 @@ A routine waits while its agent is busy, and one missed while the Mac slept runs
 
 **What agents can do themselves**
 `set_routine`, `list_routines`, `stop_routine` (with Set routines on).
+
+**Goals: work that runs for days.** When the person hands an agent an outcome rather than a task ("keep my invoices paid", "get the site live", "20 qualified leads a week"), the agent proposes a goal with `set_goal`: what it is for, what shows it is done (checkable by someone else), its plan and a budget in dollars. The person says yes once, with the plan in front of them; that yes covers every sitting after it. Sending, deleting and paying still ask every time.
+
+A goal works in sittings. Each sitting starts from the agent's own progress note, so it picks up where the last one stopped, and ends with `goal_progress`: the updated note and when to look next (in so many minutes, at a time, or when one of its watchers fires). Said nothing, it looks again in a day. Between sittings nothing runs and nothing is spent. A goal ends with `goal_done` and the evidence that it is met; that sitting counts as verified in the agent's record. A goal stops at its budget, and at most 48 sittings run in a day. Goal sittings are silent work: they never count against the person's interruptions. The desk shows each goal: where it stands, when it looks next, what it has spent, with Stop and Go on.
+
+**Promises fire.** When an answer promises something for a day ("I'll check Friday whether Acme paid"), the agent is woken that morning to keep it.
+
+**Watchers.** Instead of checking back itself, an agent can `set_watcher`: a small Python program that runs every few minutes (two at the most often) in its own sandbox. It is given the state it kept last time and prints, as its last line, `{"hit": true|false, "what": "...", "state": ...}`. A hit wakes the agent, or the goal it belongs to; nothing else costs anything. A watcher must run properly once before it is set, stops itself after five failures in a row, and wakes its agent at most 24 times a day. With `online` it may read the web; then, like an online script, it never gets the person's private data, only its own state. `stop_watcher` lists or stops them; the desk shows each one.
 
 ## webhook-routines | Webhook routines (web address)
 > A routine can start when another app POSTs to its address with a Bearer secret; it needs "This team over HTTP" on in Settings → Sharing.
@@ -629,6 +639,10 @@ A fork is a copy on another model that answers every chat job in shadow.
 - Compare the answers side by side.
 - **Promote fork** switches the agent to the fork's model; **Drop fork** removes it.
 
+**On trial.** A skill change an agent keeps goes live on trial for 14 days: the jobs that used it are read against the jobs before it, by how they ended (shown right, or corrected or failed). A clear drop puts the change back by itself and the person is told. A tool an agent made is replayed on its past work with and without it, retired if that work does worse, and retired if more than 4 in 10 of its calls fail. Exams use up to 36 cases, judged by the checker model, else a model of another family the person already uses.
+
+**Invoice chaser.** An agent whose job is invoices can be made a real specialist from its desk: a ledger of the person's invoices, a routine that records each invoice email, and one goal (no invoice more than 14 days overdue without a reminder) whose done is checked against the ledger by code.
+
 ## evolution-settings | Settings → Evolution: nightly exams
 > Settings → Evolution turns on nightly tuning: one change per agent tried on a copy against your jobs, kept only if as good or better.
 **Tune agents at night**
@@ -699,6 +713,28 @@ Anything that leaves a world (a send, a payment, putting something live) waits u
 - Engines are reached with `parallax_do` (engine, action, args): files, sheet, document, pdf, image, video, data, browser, web, blocks, app, hosting, motion and slides.
 
 Worlds are not given to outsiders.
+
+**Freedom inside its worlds, walls at the edge.** Every change inside an agent's own Parallax worlds and its own Linux machine (a vault) can be undone or rewound and reaches nobody, so it runs without asking, even after reading outside content. Two steps still ask after that: writing a world back into the person's own folder (`parallax_keep`), and opening a new machine, which may be given the internet. What would leave a world (a send, a payment, putting something live) waits at its wall for the person.
+
+Work is limited by money and time, not by counting steps: each job has a dollar limit (with prices set) and a time limit (240 minutes by default; `agent.limits.job_minutes`). The model-call count is only a guard against a job going round in circles.
+
+**Workers.** `workers` splits work into parts done at the same time, each part by a fresh worker in its own instant copy of a world; the copies are merged back file by file. A file two workers changed differently is left as it was and named for the agent to settle, and the whole merge can be rewound.
+
+**Scripts online.** `run_code` with `online` gives a script the internet (to fetch, call public APIs, install packages into the agent's folder) and then lets it call only tools that don't read the person's private data. Offline, a script may call every tool the agent has, and everything that needs a yes still asks.
+
+**Tools it makes.** With no tool that fits, an agent can `make_tool`: a Python program, one example call and what its answer must contain. It is kept only if that example passes in its sandbox, and the person sees its code before it is kept. From the next job it is `own_<name>`.
+
+**A stronger model where it gets stuck.** When two rounds of an agent's steps fail in a row, a stronger model takes the rest of the job (Haiku and Sonnet go to Opus, Opus to Fable), and the chat says so.
+
+**Mandates.** When an agent keeps asking for the same kind of send to the same people, it can `propose_mandate`: the tool, the exact addresses it may reach, how many times at most, and for how many days (90 at most). The person sees the whole scope once. Within it, those sends go out without a card, each with a receipt naming the mandate. A mandate never covers a payment, an order, a trade, a delete, anyone not on its list, or a value chosen by content the person didn't write; those ask every time.
+
+**Where the team lives.** Settings → Sharing → Where your team lives: give the address and token of a team that runs in the cloud (or on a home runner), and this window becomes a window onto it. That team keeps working with the Mac closed, and the phone, Telegram and WhatsApp see the same team. With "Let it use this Mac" on, the cloud team reaches the person's files and Mac apps through this Mac while Cookie is open here, and each use asks as it always did. Work that needs the Mac while it is away is parked and runs when Cookie opens; its result comes back to the agent as a new message, and Cookie's desk lists what is waiting for the Mac. On a server, saved keys are sealed with the host's own key.
+
+**Handoffs don't block.** A message to one of your own agents is a handoff: the sender carries on and the answer comes back to it as a new message (`wait` makes it wait instead). Work that arrives for a busy agent waits its turn in that agent's queue instead of being refused.
+
+**Races judged by another model.** `race` tries 2 to 6 approaches to the same work at once, each by a worker in its own copy of a world. A separate model (the checker, else one of another family the person uses, else a stronger one) judges what each changed against the criteria, and only the winner is merged back; the merge can be rewound. With a test command, `parallax_race` decides by the test instead.
+
+**Rehearsals show world changes.** A rehearsal now also shows what it would make or change inside the agent's own worlds, file by file, and then puts the worlds back as they were.
 
 ## media | Images, videos, motion graphics and slides
 > Higgsfield make_image/make_video (asks, uses credits); Parallax motion (HyperFrames video) and slides (.pptx, HTML, PDF) engines via parallax_do.
@@ -787,6 +823,8 @@ Point to Settings → Channels. "Other people's agents" opens Share.
 - Each server has an on/off switch and Remove.
 - Agents with Connected apps on get its tools. Each call asks, unless the server marks the tool read-only.
 
+**Services.** Connect apps → Services connects a service by hand: a broker's API, a machine on the person's network (a 3D printer, Home Assistant), or a Twilio line for calls, with its address and key (kept in the Keychain). `service_read` reads from it at that address only. `service_act` (an order, a print, a switch) and `phone_call` ask the person every time, whatever trust was earned, and no mandate covers them. A call opens by saying it is an AI calling for the person. A machine that moves needs a stop of its own outside Cookie.
+
 ## onepassword | 1Password sign-ins
 > Connect 1Password so agents can sign in for you: Cookie fills the login only on its own site after your yes; the agent never sees the password.
 **Setup**
@@ -825,6 +863,8 @@ A teammate's job shows as "Asked by <name>".
 Outsiders (contacts, rooms, other people's agents) never get `message`, so nobody outside can relay through an agent. A contact at "talk" level, or a room, gets read-only tools.
 
 Guests in a chat are covered in mentions.
+
+**Work beside work.** An agent's own work (a goal's sitting, a promise, a watcher's hit, a teammate's handoff, mail to Cookie) runs beside its main job, up to four at once, each in a conversation of its own; anything more waits in its queue. What the person types always goes to the main job.
 
 ## network | Cookie Network: address, contacts, knocks, rooms, deals
 > Your @handle and each agent's @handle/agent; strangers knock, you accept at talk or work level; rooms, deals and web guests live on the Network page.

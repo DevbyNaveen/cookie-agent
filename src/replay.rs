@@ -198,7 +198,7 @@ impl Replay {
             .without_enkeon()
             // The recording's own limits stopped it where they did; the replay
             // stops there too, because the recording has no reply past it.
-            .budget(Budget { max_steps: usize::MAX, max_tokens: u64::MAX, max_dollars: None });
+            .budget(Budget { max_steps: usize::MAX, max_tokens: u64::MAX, max_dollars: None, max_seconds: None });
         let log = &self.0;
         let mut session = Session::in_memory();
         let mut stopped: Option<String> = None;

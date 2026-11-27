@@ -116,7 +116,8 @@ impl Team {
         let history: Vec<(String, bool)> = jobs
             .iter()
             .filter(|j| real(j) && j.started_at >= since && !j.lessons.iter().any(|p| p.offered))
-            .map(|j| (j.input.clone(), outcome::clean(j)))
+            // Only endings something outside the agent judged: unknown is neither a win nor a loss.
+            .filter_map(|j| outcome::end_state(j).learned().map(|won| (j.input.clone(), won)))
             .collect();
         let wins = history.iter().filter(|(_, c)| *c).count() as i64;
         let pooled = Arm { wins, losses: history.len() as i64 - wins };
@@ -157,10 +158,12 @@ impl Team {
             return None;
         }
         let mut held = self.lessons(agent);
-        let clean = outcome::clean(job);
-        for p in job.lessons.iter().filter(|p| p.offered) {
-            if let Some(l) = held.iter_mut().find(|l| l.id == p.id) {
-                lessons::score(l, clean);
+        // A lesson is scored only on an ending the world or the person judged.
+        if let Some(won) = outcome::end_state(job).learned() {
+            for p in job.lessons.iter().filter(|p| p.offered) {
+                if let Some(l) = held.iter_mut().find(|l| l.id == p.id) {
+                    lessons::score(l, won);
+                }
             }
         }
         // Earlier jobs that failed on this same call, this same way.
@@ -197,7 +200,7 @@ impl Team {
                             withheld: 0,
                             last_used_at: None,
                             created_at: util::now() as f64,
-                            outside: !matches!(job.trigger, Trigger::Chat | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Inbox | Trigger::Memory { .. }),
+                            outside: !matches!(job.trigger, Trigger::Chat | Trigger::Welcome | Trigger::Routine { .. } | Trigger::Telegram { .. } | Trigger::Channel { .. } | Trigger::Inbox | Trigger::Memory { .. } | Trigger::Goal { .. } | Trigger::Promise { .. } | Trigger::Watch { .. }),
                             kind: "lesson".into(),
                         };
                         held.push(l.clone());
@@ -212,8 +215,8 @@ impl Team {
 
     /// The person graded a job not good: its lessons' wins become losses.
     pub(crate) fn rescore_lessons(&self, agent: &str, job: &Job) {
-        if !outcome::clean(&Job { grade: None, ..job.clone() }) {
-            return; // it was already scored a loss
+        if outcome::end_state(&Job { grade: None, ..job.clone() }).learned() != Some(true) {
+            return; // it was already scored a loss, or never scored
         }
         let mut held = self.lessons(agent);
         for p in job.lessons.iter().filter(|p| p.offered) {
@@ -306,8 +309,13 @@ mod tests {
         let failed = Job { id: "j1".into(), agent: "a".into(), ..job("file the receipts into the folder", vec![bad("mac_files_write", "bad_arguments")], false) };
         let l = team.learn_from("a", &failed).expect("a lesson");
         assert_eq!(team.lessons("a").len(), 1);
-        // A later job carries it and ends clean: a win.
-        let clean = Job { id: "j2".into(), agent: "a".into(), lessons: vec![lessons::Picked { id: l.id.clone(), offered: true }], ..job("file the receipts", vec![], false) };
+        // A later job carries it and only finishes: nothing said it was right, so nothing is scored.
+        let carried = lessons::Picked { id: l.id.clone(), offered: true };
+        let finished = Job { id: "j2".into(), agent: "a".into(), lessons: vec![carried.clone()], ..job("file the receipts", vec![], false) };
+        team.learn_from("a", &finished);
+        assert_eq!((team.lessons("a")[0].wins, team.lessons("a")[0].losses), (0, 0), "finishing is not a win");
+        // One the world showed right: a win.
+        let clean = Job { id: "j3".into(), verified_by: Some("the file is in the folder".into()), ..finished };
         team.learn_from("a", &clean);
         assert_eq!(team.lessons("a")[0].wins, 1);
         // The person says it wasn't good: the win becomes a loss.

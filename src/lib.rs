@@ -13,6 +13,7 @@ mod calls;
 pub mod compaction;
 pub mod cookie;
 pub mod durable;
+pub mod edit;
 pub mod enkeon;
 pub mod flow;
 #[cfg(test)]

@@ -21,9 +21,9 @@ use crate::{
 /// How long a model that was out of reach is tried after the others.
 pub const COOLDOWN: Duration = Duration::from_secs(60);
 
-// ponytail: one table per process, keyed by model name. A run that is a
-// process of its own (`cookie serve` per job) remembers only its own turns;
-// across processes the caller's breaker is the memory.
+// One table per process, keyed by model name. A run that is a process of its
+// own (`cookie serve` per job) remembers only its own turns; across processes
+// the caller's breaker is the memory.
 static COOLING: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(Default::default);
 
 pub struct Fallback {

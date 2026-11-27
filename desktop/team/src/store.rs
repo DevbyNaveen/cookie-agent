@@ -79,19 +79,39 @@ impl Grants {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Limits {
-    /// Model calls per job.
+    /// Model calls per job: a guard against a run going round in circles, not a
+    /// measure of work. Work is bounded by dollars and minutes.
     pub steps: usize,
-    /// Tokens per job.
+    /// Tokens per job (input, output and cache writes): the same kind of guard.
     pub tokens: u64,
     /// Dollars per job (needs prices for its model in settings).
     pub job_dollars: Option<f64>,
     /// Dollars per calendar month; past it, jobs wait until you raise it.
     pub month_dollars: Option<f64>,
+    /// Minutes of work per job, wall clock.
+    pub job_minutes: Option<u64>,
 }
+
+/// The limits every agent had before work was budgeted in dollars and minutes:
+/// an agent still holding exactly these is moved to the new ones.
+const OLD_DEFAULT: (usize, u64) = (24, 400_000);
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { steps: 24, tokens: 400_000, job_dollars: None, month_dollars: None }
+        Self { steps: 1_000, tokens: 40_000_000, job_dollars: Some(20.0), month_dollars: None, job_minutes: Some(240) }
+    }
+}
+
+impl Limits {
+    /// The limits a job runs under: an agent left on the old step-count defaults
+    /// gets today's, and one the person set keeps what they set.
+    pub fn effective(&self) -> Limits {
+        // A record from before `job_minutes` existed reads it as today's default, so the step and
+        // token pair is what tells an untouched agent apart.
+        if (self.steps, self.tokens) == OLD_DEFAULT {
+            return Limits { job_dollars: self.job_dollars.or(Limits::default().job_dollars), month_dollars: self.month_dollars, job_minutes: self.job_minutes, ..Limits::default() };
+        }
+        self.clone()
     }
 }
 
@@ -234,6 +254,12 @@ pub struct Settings {
     pub checker_model: Option<String>,
     /// Interruptions per day across all agents (approvals always get through).
     pub daily_notices: i64,
+    /// Minutes a request for your yes waits before it counts as a no and the job moves on (0: as long as it takes).
+    pub approval_wait_minutes: i64,
+    /// While plugged in, this Mac doesn't go to sleep on its own (`power`).
+    pub keep_awake: bool,
+    /// A login item starts Cookie at login and again after a crash (`power`).
+    pub start_at_login: bool,
     pub telegram: Telegram,
     pub server: Server,
     pub invites: Vec<Invite>,
@@ -256,6 +282,12 @@ pub struct Settings {
     pub twin: crate::twin::TwinCfg,
     /// Each agent's backup model, when the person chose one (`failover`); else Cookie picks.
     pub backup_models: BTreeMap<String, String>,
+    /// Each agent's model for routine steps, when the person chose one; `off` for none; else
+    /// the tier below its own on the same route (`failover::cheaper`).
+    pub routine_models: BTreeMap<String, String>,
+    /// The model the person chose to run Cookie on without an Enkeon account (their own key, or
+    /// a local model): checked with one real call when chosen.
+    pub own_model: Option<String>,
     /// A teammate standing in as the front desk while Cookie's results are poor (`council`).
     pub stand_in: Option<crate::council::StandIn>,
 }
@@ -276,6 +308,9 @@ impl Default for Settings {
             prices: BTreeMap::new(),
             checker_model: None,
             daily_notices: cookie_harness::attention::DAILY_CAP,
+            approval_wait_minutes: 60,
+            keep_awake: false,
+            start_at_login: false,
             telegram: Telegram::default(),
             server: Server::default(),
             invites: Vec::new(),
@@ -287,6 +322,8 @@ impl Default for Settings {
             cloud: CloudCfg::default(),
             evolve: crate::evolve::EvolveCfg::default(),
             backup_models: BTreeMap::new(),
+            routine_models: BTreeMap::new(),
+            own_model: None,
             stand_in: None,
             twin: crate::twin::TwinCfg::normal(),
         }
@@ -330,6 +367,14 @@ pub enum Trigger {
     Rehearse,
     /// A step of a saved workflow (`workflows`).
     Workflow { flow: String, run: String },
+    /// The person opened Cookie for the first time and has said nothing yet: Cookie speaks first (`front`).
+    Welcome,
+    /// A goal it owns came due: its next step, from where its progress note left off (`goals`).
+    Goal { goal: String },
+    /// Something it promised came due ("I'll check Friday") (`goals`).
+    Promise { job: String, index: usize },
+    /// A watcher it wrote saw what it was watching for (`watchers`).
+    Watch { watcher: String },
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -363,6 +408,9 @@ pub struct PromiseRecord {
     pub due: String,
     /// `open`, `kept`, `missed`, set by the person.
     pub state: String,
+    /// It came due and its agent was woken to keep it (`goals::fire_promises`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fired: bool,
 }
 
 /// One job, as its agent's record keeps it.
@@ -441,6 +489,13 @@ pub struct Job {
     /// Every action it took: why it was allowed and what it came to (`receipts`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub receipts: Vec<crate::receipts::ActionReceipt>,
+    /// What showed the work was right, from outside the agent: a goal's check that
+    /// passed, the person's thumbs-up (`outcome::end_state`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_by: Option<String>,
+    /// What showed it was wrong: the person's next words correcting it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corrected_by: Option<String>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -481,6 +536,9 @@ pub struct Routine {
     /// Run this saved workflow instead (`workflows`), with `task` as its input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow: Option<String>,
+    /// Its last run failed and is being tried once more (`Team::retry_routine`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retrying: bool,
 }
 
 /// A saved test: an input and what a good answer must do.
@@ -593,5 +651,20 @@ mod grant_tests {
         off.worlds = false;
         let back: super::Grants = serde_json::from_value(serde_json::to_value(&off).unwrap()).unwrap();
         assert!(!back.worlds, "switched off survives a save and a load");
+    }
+}
+
+#[cfg(test)]
+mod limits_tests {
+    use super::*;
+
+    #[test]
+    fn an_agent_left_on_the_old_step_count_works_by_dollars_and_minutes() {
+        let old: Limits = serde_json::from_str(r#"{"steps": 24, "tokens": 400000, "job_dollars": null, "month_dollars": 30.0}"#).unwrap();
+        let now = old.effective();
+        assert_eq!(now.steps, Limits::default().steps, "the step count is only a runaway guard now");
+        assert_eq!((now.job_dollars, now.job_minutes, now.month_dollars), (Some(20.0), Some(240), Some(30.0)), "the person's monthly cap stays");
+        let set = Limits { steps: 60, ..Limits::default() };
+        assert_eq!(set.effective(), set, "what the person set is kept");
     }
 }

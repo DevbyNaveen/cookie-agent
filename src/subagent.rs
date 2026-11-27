@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// How many delegations deep a tree may go.
-pub const MAX_DEPTH: usize = 3;
+pub const MAX_DEPTH: usize = 5;
 
 pub struct SubAgent {
     spec: ToolSpec,
@@ -189,7 +189,9 @@ impl Agent {
     /// Run as a sub-agent: a fresh context holding only the task, the
     /// parent's provenance, at most the parent's remaining budget, and the
     /// parent's cancellation. Returns what it spent and reported either way.
-    pub(crate) async fn run_delegated(
+    /// Public so an application can build its own kinds of sub-agent (a
+    /// worker in a world copy of its own) on the same budget and provenance.
+    pub async fn run_delegated(
         &self,
         name: &str,
         input: crate::message::Message,
@@ -356,7 +358,7 @@ mod tests {
         ]);
         let child = child.tool(weather());
         let (parent_p, parent) = scripted(vec![Scripted::call("d1", "forecaster", json!({"task": "weather"})), Scripted::text("never")]);
-        let parent = parent.budget(Budget { max_steps: 3, max_tokens: 1_000_000, max_dollars: None }).tool(SubAgent::reader("forecaster", "x", child).unwrap());
+        let parent = parent.budget(Budget { max_steps: 3, max_tokens: 1_000_000, max_dollars: None, max_seconds: None }).tool(SubAgent::reader("forecaster", "x", child).unwrap());
         assert!(matches!(parent.run("weather?").await, Err(Error::Budget(_))));
         assert_eq!(child_p.seen().len(), 2, "the child got the 2 calls the parent had left");
         assert_eq!(parent_p.seen().len(), 1, "the parent was charged and stopped");
@@ -445,7 +447,7 @@ mod tests {
             Scripted::text("Acme costs 5 EUR [s1]."),
         ];
         // The parent's call, the helper's two, the check and the rewrite: five.
-        let budget = |steps| Budget { max_steps: steps, max_tokens: 1_000_000, max_dollars: None };
+        let budget = |steps| Budget { max_steps: steps, max_tokens: 1_000_000, max_dollars: None, max_seconds: None };
         let (_, helper) = researcher(script());
         let (_, parent) = lead(helper);
         assert!(matches!(parent.budget(budget(5)).run("x").await, Err(Error::Budget(_))), "nothing left for the parent's answer");
@@ -555,7 +557,7 @@ mod tests {
             Scripted::text("never"),
         ]);
         let parent = parent
-            .budget(Budget { max_steps: 4, max_tokens: 1_000_000, max_dollars: None })
+            .budget(Budget { max_steps: 4, max_tokens: 1_000_000, max_dollars: None, max_seconds: None })
             .tool(SubAgent::reader("a", "x", a).unwrap())
             .tool(SubAgent::reader("b", "x", b).unwrap());
         let _ = parent.run("go").await;
@@ -621,7 +623,7 @@ mod tests {
             Scripted::call_many(&[("d1", "a", json!({"task": "go"})), ("d2", "b", json!({"task": "go"}))]),
             Scripted::text("never"),
         ]);
-        let parent = parent.budget(Budget { max_steps: 4, max_tokens: 1_000_000, max_dollars: None }).tool(a).tool(b);
+        let parent = parent.budget(Budget { max_steps: 4, max_tokens: 1_000_000, max_dollars: None, max_seconds: None }).tool(a).tool(b);
         let _ = parent.run("go").await;
         let below: usize = seen.iter().map(|p| p.seen().len()).sum();
         assert!(below <= 3, "the top had 3 calls left; everything below it made {below}");

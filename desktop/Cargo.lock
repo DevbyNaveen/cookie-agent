@@ -808,6 +808,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-notification",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -914,6 +915,7 @@ dependencies = [
  "toml 0.8.2",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

@@ -44,8 +44,8 @@ pub const APPS: [(&str, &str); 12] = [
 ];
 
 /// Starts per routine per day, webhook calls per routine per hour, ids remembered, text kept per item.
-pub const DAILY_CAP: u32 = 30;
-pub const WEBHOOK_PER_HOUR: u32 = 60;
+pub const DAILY_CAP: u32 = 200;
+pub const WEBHOOK_PER_HOUR: u32 = 600;
 const SEEN_KEEP: usize = 300;
 const ITEM_MAX: usize = 20_000;
 pub const WEBHOOK_BODY_MAX: usize = 64 * 1024;
@@ -319,7 +319,7 @@ mod tests {
     async fn team_with(schedule: Schedule) -> (Arc<Team>, String, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("cookie-triggers-{}", util::random_hex(4)));
         let team = Team::open(&dir).unwrap();
-        let r = Routine { id: "r1".into(), agent: "a".into(), task: "Draft a reply".into(), schedule, enabled: true, created_at: 0, last_run: None, next_run: None, workflow: None };
+        let r = Routine { id: "r1".into(), agent: "a".into(), task: "Draft a reply".into(), schedule, enabled: true, created_at: 0, last_run: None, next_run: None, workflow: None, retrying: false };
         team.routines.write().await.push(r);
         (team, "r1".into(), dir)
     }

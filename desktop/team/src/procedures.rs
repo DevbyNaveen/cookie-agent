@@ -32,7 +32,7 @@ use crate::{util, Team};
 /// Failed runs in a row before a recipe turns itself off.
 pub const MAX_FAILURES: u32 = 2;
 /// A run with more calls than this was exploring, not following a method.
-const MAX_STEPS: usize = 40;
+const MAX_STEPS: usize = 200;
 /// Arguments longer than this are not kept in a recipe (the content of a
 /// file or a message is the day's, not the method's).
 const ARG_CHARS: usize = 600;

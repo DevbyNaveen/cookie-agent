@@ -465,7 +465,7 @@ impl Team {
             .approver(person)
             .without_enkeon()
             .close_with_answer()
-            .budget(Budget { max_steps: rec.limits.steps.clamp(8, 30), max_tokens: rec.limits.tokens.clamp(50_000, 600_000), max_dollars: price.map(|_| 1.0) });
+            .budget(Budget { max_steps: rec.limits.steps.clamp(8, 30), max_tokens: rec.limits.tokens.clamp(50_000, 600_000), max_dollars: price.map(|_| 1.0), max_seconds: None });
         if let Some(p) = price {
             agent = agent.prices(p);
         }

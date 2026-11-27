@@ -77,7 +77,7 @@ pub async fn attempt(team: &Arc<Team>, model: &str, message: &str) -> Result<Att
         .without_enkeon()
         .tool(email)
         .approver(Refuse(sent.clone()))
-        .budget(cookie_harness::Budget { max_steps: 4, max_tokens: 20_000, max_dollars: None });
+        .budget(cookie_harness::Budget { max_steps: 4, max_tokens: 20_000, max_dollars: None, max_seconds: None });
     let mut session = Session::in_memory();
     // The visitor's words are untrusted: the harness treats them as data, which is the point of the game.
     let input = vec![
